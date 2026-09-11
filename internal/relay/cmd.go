@@ -50,13 +50,9 @@ func sanitizeLog(s string) string {
 //	RELAY_NAME                   - node ID (default: "relay-" + hostname)
 //	GROUP_CACHE_SIZE             - completed groups retained per track (default: 8)
 //	FRAME_CAPACITY               - frame buffer size in bytes (default: 1500)
-//	PEERS                        - comma-separated list of static peer addresses	//	LOCAL_RESOLVER_ADDR            - Nomad HTTP API address (default: http://localhost:4646)
-//	LOCAL_RESOLVER_SERVICE_NAME    - Nomad service name to query (default: "qumo-relay")
-//	LOCAL_RESOLVER_INTERVAL        - Nomad discovery polling interval (default: "15s")
-//	REMOTE_RESOLVER_URL      - remote traffic resolver URL (optional)
-//	REMOTE_AUTH_TOKEN        - bearer token for remote resolver
-//	REMOTE_RESOLVE_INTERVAL  - remote discovery polling interval (default: "15s")
-//	REMOTE_TLS_ENABLED       - "true" to enable TLS for remote resolver
+//	PEERS                        - comma-separated list of static peer addresses
+//	UPSTREAM_ADDR                - comma-separated list of upstream relay addresses
+//	                               (e.g. "role-hub.qumo-relay.service.consul:4433" or direct IP:port)
 //	CORS_ALLOWED_ORIGINS     - comma-separated WebTransport origins allowed to
 //	                           connect (default: same-origin only; "*" allows any;
 //	                           "same-host" allows any port on the request's host).
@@ -130,20 +126,7 @@ func Run(args []string) error {
 		)
 	}
 
-	// Remote resolver TLS: present this node's cert and trust only the CA pool.
-	// Built only when mTLS is active (caPool != nil).
-	var remoteResolverTLS *tls.Config
-	if caPool != nil {
-		remoteResolverTLS = &tls.Config{
-			MinVersion:   tls.VersionTLS12,
-			Certificates: tlsConfig.Certificates, // relay cert used as client cert
-			RootCAs:      caPool,
-		}
-	}
-
-	// Create peer resolvers.
-	localResolver := NewLocalResolver()
-	remoteResolver := NewRemoteResolver(remoteResolverTLS)
+	upstreamAddr := os.Getenv("UPSTREAM_ADDR")
 
 	// Credential client: credential introspection + usage metering (optional).
 	credentialClient := NewCredentialClient()
@@ -153,20 +136,13 @@ func Run(args []string) error {
 	}
 
 	relayCfg := Config{
-		NodeID:                nodeID,
-		Role:                  flags.Role,
-		GroupCacheSize:        groupCacheSize,
-		FrameCapacity:         frameCapacity,
-		Peers:                 peers,
-		LocalResolverInterval: localResolver.Interval(),
-		NextSessionURI:        os.Getenv("GOAWAY_REDIRECT_URI"),
-	}
-	// The remote resolver is optional: NewRemoteResolver returns nil when
-	// REMOTE_RESOLVER_URL is unset (the common single-node/demo case). The
-	// consumer already treats a nil resolver + zero interval as "disabled"
-	// (server.go), so mirror that here rather than dereferencing nil.
-	if remoteResolver != nil {
-		relayCfg.RemoteResolverInterval = remoteResolver.Interval()
+		NodeID:         nodeID,
+		Role:           flags.Role,
+		GroupCacheSize: groupCacheSize,
+		FrameCapacity:  frameCapacity,
+		Peers:          peers,
+		UpstreamAddr:   upstreamAddr,
+		NextSessionURI: os.Getenv("GOAWAY_REDIRECT_URI"),
 	}
 
 	// Setup signal handling for graceful shutdown
@@ -232,8 +208,6 @@ func Run(args []string) error {
 		Config:           &relayCfg,
 		TrackMux:         trackMux,
 		AllowedOrigins:   cors.LoadAllowed(),
-		localResolver:    localResolver,
-		remoteResolver:   remoteResolver,
 		credentialClient: credentialClient,
 		meter:            meter,
 	}
@@ -275,11 +249,8 @@ func Run(args []string) error {
 	for _, p := range relayCfg.Peers {
 		log.Printf("\t%-8s: %s\n", "Peer", sanitizeLog(p.Address))
 	}
-	if remoteResolver != nil {
-		log.Printf("\t%-8s: %s (interval: %s)\n", "Resolver", sanitizeLog(remoteResolver.url), remoteResolver.Interval())
-	}
-	if relayCfg.LocalResolverInterval > 0 {
-		log.Printf("\t%-8s: %s (interval: %s)\n", "Resolver", "local ("+localResolver.serviceName+")", localResolver.Interval())
+	if relayCfg.UpstreamAddr != "" {
+		log.Printf("\t%-8s: %s\n", "Upstream", sanitizeLog(relayCfg.UpstreamAddr))
 	}
 	if credentialClient != nil {
 		log.Printf("\t%-8s: %s (metering every 30s)\n", "Credentials", sanitizeLog(credentialClient.baseURL))

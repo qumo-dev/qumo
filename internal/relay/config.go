@@ -1,6 +1,5 @@
 package relay
 
-import "time"
 
 // Config holds the relay server configuration.
 type Config struct {
@@ -29,13 +28,10 @@ type Config struct {
 	// ANNOUNCE_PLEASE, and register them on the local TrackMux.
 	Peers []Peer
 
-	// LocalResolverInterval is the polling interval for Nomad service discovery.
-	// If zero, local discovery is disabled.
-	LocalResolverInterval time.Duration
-
-	// RemoteResolverInterval is the polling interval for the remote
-	// traffic resolver. If zero, remote discovery is disabled.
-	RemoteResolverInterval time.Duration
+	// UpstreamAddr is the address of an upstream relay to connect to.
+	// Used by edge relays to connect to upstream hub relays (e.g. role-hub.qumo-relay.service.consul:4433),
+	// or any relay connecting upstream. Multiple comma-separated addresses can be specified.
+	UpstreamAddr string
 
 	// NextSessionURI is the redirect URI sent to clients/peers in a GOAWAY
 	// message during graceful shutdown (gomoqt Server.NextSessionURI). Empty

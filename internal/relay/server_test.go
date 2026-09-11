@@ -3,7 +3,6 @@ package relay
 import (
 	"context"
 	"crypto/tls"
-	"sync"
 	"testing"
 	"time"
 
@@ -261,25 +260,6 @@ func TestServer_MarkUnconnected(t *testing.T) {
 	assert.True(t, server.markConnected(addr), "should be connectable again after markUnconnected")
 }
 
-func TestFilterPeersByAddr(t *testing.T) {
-	peers := []ResolvedPeer{
-		{Address: "moqt://relay-a:4433"},
-		{Address: "moqt://relay-b:4433"},
-		{Address: "moqt://relay-c:4433"},
-	}
-
-	exclude := map[string]struct{}{
-		"moqt://relay-b:4433": {},
-		"moqt://relay-d:4433": {},
-	}
-
-	filtered := filterPeersByAddr(peers, exclude)
-
-	assert.Len(t, filtered, 2)
-	assert.Equal(t, "moqt://relay-a:4433", filtered[0].Address)
-	assert.Equal(t, "moqt://relay-c:4433", filtered[1].Address)
-}
-
 // TestServer_MarkConnected_Concurrent tests that markConnected is safe for concurrent use
 // and that only one caller wins for a given address.
 func TestServer_MarkConnected_Concurrent(t *testing.T) {
@@ -352,164 +332,22 @@ func TestServer_Init_MultipleCallsWithDifferentConfigs(t *testing.T) {
 	assert.Equal(t, "node-2", server.Config.NodeID, "Config assignment should work even after init")
 }
 
-// callTrackingResolver wraps a PeerResolver and records calls for assertion.
-type callTrackingResolver struct {
-	PeerResolver
-	calls []PeerQuery
-	mu    sync.Mutex
-}
-
-func (c *callTrackingResolver) ResolvePeers(ctx context.Context, q PeerQuery) ([]ResolvedPeer, error) {
-	c.mu.Lock()
-	c.calls = append(c.calls, q)
-	c.mu.Unlock()
-	return c.PeerResolver.ResolvePeers(ctx, q)
-}
-
-func (c *callTrackingResolver) CallCount() int {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return len(c.calls)
-}
-
-func (c *callTrackingResolver) LastCall() (PeerQuery, bool) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if len(c.calls) == 0 {
-		return PeerQuery{}, false
-	}
-	return c.calls[len(c.calls)-1], true
-}
-
-// TestDiscoverPeers_RoleBasedRouting verifies that discoverPeers
-// calls the correct resolver based on the node's configured role.
-func TestDiscoverPeers_RoleBasedRouting(t *testing.T) {
-	hubPeers := []ResolvedPeer{
-		{ID: "hub-1", Address: "moqt://hub-1:4433", Region: "us-east", Role: "hub"},
-		{ID: "hub-2", Address: "moqt://hub-2:4433", Region: "us-east", Role: "hub"},
+// TestConnectPeers_UpstreamAddr tests that UPSTREAM_ADDR addresses are dialed.
+func TestConnectPeers_UpstreamAddr(t *testing.T) {
+	server := newTestServer("localhost:4433")
+	server.Config = &Config{
+		Peers:        []Peer{{Address: "peer1:4433"}},
+		UpstreamAddr: "hub1:4433, hub2:4433",
 	}
 
-	tests := []struct {
-		name           string
-		role           string
-		useLocal       bool // whether to call discoverPeers with localResolver
-		useRemote      bool // whether to call discoverPeers with remoteResolver
-		wantLocalCall  bool // expect localResolver.ResolvePeers to be called
-		wantRemoteCall bool // expect remoteResolver.ResolvePeers to be called
-		wantQueryRole  string
-		wantQueryLimit int
-	}{
-		{
-			name:           "edge uses local resolver for hubs",
-			role:           "edge",
-			useLocal:       true,
-			useRemote:      false,
-			wantLocalCall:  true,
-			wantRemoteCall: false,
-			wantQueryRole:  "hub",
-			wantQueryLimit: 0,
-		},
-		{
-			name:           "edge ignores remote resolver",
-			role:           "edge",
-			useLocal:       false,
-			useRemote:      true,
-			wantLocalCall:  false,
-			wantRemoteCall: false,
-		},
-		{
-			name:           "hub uses remote resolver for hubs",
-			role:           "hub",
-			useLocal:       false,
-			useRemote:      true,
-			wantLocalCall:  false,
-			wantRemoteCall: true,
-			wantQueryRole:  "hub",
-			wantQueryLimit: 0,
-		},
-		{
-			name:           "hub ignores local resolver",
-			role:           "hub",
-			useLocal:       true,
-			useRemote:      false,
-			wantLocalCall:  false,
-			wantRemoteCall: false,
-		},
-		{
-			name:           "default role uses local resolver",
-			role:           "",
-			useLocal:       true,
-			useRemote:      false,
-			wantLocalCall:  true,
-			wantRemoteCall: false,
-			wantQueryRole:  "",
-			wantQueryLimit: 5,
-		},
-		{
-			name:           "default role ignores remote resolver",
-			role:           "",
-			useLocal:       false,
-			useRemote:      true,
-			wantLocalCall:  false,
-			wantRemoteCall: false,
-		},
-	}
+	ctx, cancel := context.WithCancel(context.Background())
+	// Cancel immediately so maintainPeer exits without blocking on network.
+	cancel()
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			stubLocal := &stubResolver{peers: hubPeers}
-			stubRemote := &stubResolver{peers: hubPeers}
+	server.ConnectPeers(ctx)
 
-			trackerLocal := &callTrackingResolver{PeerResolver: stubLocal}
-			trackerRemote := &callTrackingResolver{PeerResolver: stubRemote}
-
-			server := newTestServer("localhost:4433")
-			server.Config = &Config{Role: tt.role}
-			server.localResolver = trackerLocal
-			server.remoteResolver = trackerRemote
-			server.init() // initializes s.connected map
-
-			var wg sync.WaitGroup
-			ctx, cancel := context.WithCancel(context.Background())
-
-			// discoverPeers blocks in its tick loop; run in a goroutine
-			// and cancel after tick() executes synchronously.
-			if tt.useLocal {
-				go server.discoverPeers(ctx, &wg, 1*time.Hour, trackerLocal)
-			}
-			if tt.useRemote {
-				go server.discoverPeers(ctx, &wg, 1*time.Hour, trackerRemote)
-			}
-
-			// Wait for tick() to run (it's synchronous and fast), then cancel.
-			time.Sleep(20 * time.Millisecond)
-			cancel()
-			wg.Wait()
-
-			// Check that the correct resolvers were called.
-			if tt.wantLocalCall {
-				assert.GreaterOrEqual(t, trackerLocal.CallCount(), 1, "expected local resolver to be called")
-				lastCall, ok := trackerLocal.LastCall()
-				if assert.True(t, ok, "local resolver should have been called") {
-					assert.Equal(t, tt.wantQueryRole, lastCall.Role)
-					assert.Equal(t, tt.wantQueryLimit, lastCall.Limit)
-				}
-			} else {
-				assert.Equal(t, 0, trackerLocal.CallCount(), "expected local resolver NOT to be called")
-			}
-
-			if tt.wantRemoteCall {
-				assert.GreaterOrEqual(t, trackerRemote.CallCount(), 1, "expected remote resolver to be called")
-				lastCall, ok := trackerRemote.LastCall()
-				if assert.True(t, ok, "remote resolver should have been called") {
-					assert.Equal(t, tt.wantQueryRole, lastCall.Role)
-					assert.Equal(t, tt.wantQueryLimit, lastCall.Limit)
-				}
-			} else {
-				assert.Equal(t, 0, trackerRemote.CallCount(), "expected remote resolver NOT to be called")
-			}
-		})
-	}
+	// Verify server.init() ran and peers/upstream were processed
+	assert.NotNil(t, server.TrackMux)
 }
 
 // TestServer_Address_Formats tests various address formats

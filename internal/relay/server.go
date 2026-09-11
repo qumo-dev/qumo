@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -57,10 +58,6 @@ type Server struct {
 	// fan-out. Created and started in init(); stopped by samplerCancel.
 	sampler       *statsSampler
 	samplerCancel context.CancelFunc
-
-	// resolvers for peer discovery
-	localResolver  PeerResolver // Nomad native (within-cluster)
-	remoteResolver PeerResolver // Remote traffic resolver (cross-cluster)
 
 	// connectedMu guards connected, which tracks peer addresses already dialing
 	// or connected to prevent duplicate maintainPeer goroutines.
@@ -217,127 +214,42 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	return nil
 }
 
-// ConnectPeers dials configured peer relays and discovers their announcements
-// via ANNOUNCE_PLEASE. Received announcements are registered on the local
-// TrackMux so that subscribers can transparently access remote content.
-// It also starts peer discovery loops for configured resolvers.
+// ConnectPeers dials configured peer relays and upstream addresses, discovering
+// their announcements via ANNOUNCE_PLEASE. Received announcements are registered
+// on the local TrackMux so that subscribers can transparently access remote content.
 // It blocks until ctx is cancelled.
 func (s *Server) ConnectPeers(ctx context.Context) {
 	s.init()
 	var wg sync.WaitGroup
 
-	// Static peers from config.
-	for _, peer := range s.Config.Peers {
-		if !s.markConnected(peer.Address) {
-			continue
+	dialPeer := func(addr string) {
+		addr = strings.TrimSpace(addr)
+		if addr == "" {
+			return
+		}
+		if !s.markConnected(addr) {
+			return
 		}
 		wg.Go(func() {
-			s.maintainPeer(ctx, peer)
-			s.markUnconnected(peer.Address)
+			s.maintainPeer(ctx, Peer{Address: addr})
+			s.markUnconnected(addr)
 		})
 	}
 
-	// Dynamic peer discovery loops.
-	// Local resolver: local cluster discovery (edge→all hubs, default→flat peers).
-	if s.localResolver != nil && s.Config.LocalResolverInterval > 0 {
-		wg.Go(func() {
-			s.discoverPeers(ctx, &wg, s.Config.LocalResolverInterval, s.localResolver)
-		})
+	// Static peers from config.
+	for _, peer := range s.Config.Peers {
+		dialPeer(peer.Address)
 	}
 
-	// Remote resolver: cross-cluster hub discovery.
-	if s.remoteResolver != nil && s.Config.RemoteResolverInterval > 0 {
-		wg.Go(func() {
-			s.discoverPeers(ctx, &wg, s.Config.RemoteResolverInterval, s.remoteResolver)
-		})
+	// Upstream relay address(es) (e.g. role-hub.qumo-relay.service.consul:4433).
+	// Used by edge relays to connect upstream, or any relay hierarchy.
+	if s.Config.UpstreamAddr != "" {
+		for u := range strings.SplitSeq(s.Config.UpstreamAddr, ",") {
+			dialPeer(u)
+		}
 	}
 
 	wg.Wait()
-}
-
-// filterPeersByAddr removes peers whose addresses are present in the exclude map.
-func filterPeersByAddr(peers []ResolvedPeer, exclude map[string]struct{}) []ResolvedPeer {
-	filtered := make([]ResolvedPeer, 0, len(peers))
-	for _, p := range peers {
-		if _, ok := exclude[p.Address]; ok {
-			continue
-		}
-		filtered = append(filtered, p)
-	}
-	return filtered
-}
-
-// discoverPeers runs the role-aware peer discovery loop using resolver.
-// It builds topology connections according to the node's role (edge/hub/default)
-// and re-checks at interval. Already-connected peers are skipped.
-func (s *Server) discoverPeers(ctx context.Context, wg *sync.WaitGroup, interval time.Duration, resolver PeerResolver) {
-	// connect dials each peer not already connected (server-wide dedup by address).
-	connect := func(peers []ResolvedPeer) {
-		for _, p := range peers {
-			if !s.markConnected(p.Address) {
-				continue
-			}
-			p := p
-			wg.Go(func() {
-				s.maintainPeer(ctx, Peer{Address: p.Address})
-				s.markUnconnected(p.Address)
-			})
-		}
-	}
-
-	// connectFirst dials only the first peer from the slice.
-	connectFirst := func(peers []ResolvedPeer) {
-		if len(peers) > 0 {
-			connect(peers[:1])
-		}
-	}
-
-	tick := func() {
-		switch s.Config.Role {
-		case "edge":
-			// Edge nodes connect to ALL local hubs (load-balanced content relay).
-			// No edge-to-edge or cross-region connections.
-			// Only use the local (Nomad) resolver — never query the enterprise resolver.
-			if resolver == s.localResolver {
-				if peers, err := resolver.ResolvePeers(ctx, PeerQuery{Role: "hub"}); err == nil {
-					connect(peers)
-				}
-			}
-
-		case "hub":
-			// Hub nodes connect to remote hubs (cross-cluster) via remote resolver.
-			// No local hub-to-hub connections (reduces hops/latency within cluster).
-			if resolver == s.remoteResolver {
-				if peers, err := resolver.ResolvePeers(ctx, PeerQuery{Role: "hub"}); err == nil {
-					connectFirst(peers)
-				}
-			}
-			// When local resolver (Nomad) is the resolver being used, hubs
-			// do nothing — no local hub connections needed.
-
-		default:
-			// Flat discovery: any peers in the cluster (for nodes without role set).
-			// Only use the local (Nomad) resolver.
-			if resolver == s.localResolver {
-				if peers, err := resolver.ResolvePeers(ctx, PeerQuery{Limit: 5}); err == nil {
-					connect(peers)
-				}
-			}
-		}
-	}
-
-	tick()
-
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			tick()
-		}
-	}
 }
 
 // markConnected records addr as connected and returns true if it was not already present.
