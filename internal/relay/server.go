@@ -158,9 +158,11 @@ func (s *Server) init() {
 			s.framePool = resolveFramePool(s.Config)
 		}
 
+		s.connectedMu.Lock()
 		if s.connected == nil {
 			s.connected = make(map[string]struct{})
 		}
+		s.connectedMu.Unlock()
 
 		if s.alternates == nil {
 			s.alternates = make(map[moqt.BroadcastPath]*alternate)
@@ -292,11 +294,26 @@ func resolveUpstreamAddrs(ctx context.Context, raw string) []string {
 	return results
 }
 
+// isConnected reports whether addr is currently in the connected set.
+// It is safe for concurrent use.
+func (s *Server) isConnected(addr string) bool {
+	s.connectedMu.Lock()
+	defer s.connectedMu.Unlock()
+	if s.connected == nil {
+		return false
+	}
+	_, ok := s.connected[addr]
+	return ok
+}
+
 // markConnected records addr as connected and returns true if it was not already present.
 // It is safe for concurrent use.
 func (s *Server) markConnected(addr string) bool {
 	s.connectedMu.Lock()
 	defer s.connectedMu.Unlock()
+	if s.connected == nil {
+		s.connected = make(map[string]struct{})
+	}
 	if _, ok := s.connected[addr]; ok {
 		return false
 	}
@@ -310,6 +327,9 @@ func (s *Server) markConnected(addr string) bool {
 func (s *Server) markUnconnected(addr string) {
 	s.connectedMu.Lock()
 	defer s.connectedMu.Unlock()
+	if s.connected == nil {
+		return
+	}
 	delete(s.connected, addr)
 	metricPeersConnected.Dec()
 	// The per-addr session RTT/bitrate series are reaped by the stats sampler

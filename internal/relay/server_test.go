@@ -342,6 +342,8 @@ func TestConnectPeers_UpstreamAddr(t *testing.T) {
 		UpstreamAddr: "hub1:4433, hub2:4433",
 	}
 
+	server.init()
+
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() {
@@ -354,12 +356,9 @@ func TestConnectPeers_UpstreamAddr(t *testing.T) {
 	// all three addresses (1 from PEERS, 2 trimmed from UPSTREAM_ADDR) well
 	// before any real dial to these unreachable hosts could complete.
 	assert.Eventually(t, func() bool {
-		server.connectedMu.Lock()
-		defer server.connectedMu.Unlock()
-		_, peer1 := server.connected["peer1:4433"]
-		_, hub1 := server.connected["hub1:4433"]
-		_, hub2 := server.connected["hub2:4433"]
-		return peer1 && hub1 && hub2
+		return server.isConnected("peer1:4433") &&
+			server.isConnected("hub1:4433") &&
+			server.isConnected("hub2:4433")
 	}, 5*time.Second, 20*time.Millisecond, "PEERS and UPSTREAM_ADDR addresses should all be dialed")
 
 	cancel()

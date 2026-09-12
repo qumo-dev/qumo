@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **`UPSTREAM_ADDR` configuration for hierarchical and edge relays (`internal/relay`).**
+  Edge relays connect upstream to regional hub relays (or hierarchical relays
+  connect to upstream relays) specified via `UPSTREAM_ADDR`. When a DNS hostname
+  (such as Consul DNS `role-hub.qumo-relay.service.consul:4433`) is supplied,
+  all resolved A and AAAA records are connected to so that the edge acts as a
+  multi-homed L7 load balancer with automatic connection maintenance and backoff.
+
+### Removed
+- **Retired legacy `LocalResolver` and `RemoteResolver` (`internal/relay`).**
+  Replaced dynamic control-plane peer discovery microservices and Nomad API
+  polling with direct DNS and static peer configuration (`UPSTREAM_ADDR` / `PEERS`).
+
 ### Changed
 - **Hub role dials all remote hubs, not just the first (`internal/relay`).**
   Cross-cluster hub↔hub links previously dialed only the first resolved
