@@ -21,6 +21,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   polling with direct DNS and static peer configuration (`UPSTREAM_ADDR` / `PEERS`).
 
 ### Changed
+- **Use standard library `uuid` package for broadcast session IDs (`internal/relay`).**
+  Replaced hand-rolled UUID v4 generation (`crypto/rand` + `encoding/hex`) in
+  `newUUIDv4` with Go 1.27's standard library `uuid.NewV4()`.
+
 - **Hub role dials all remote hubs, not just the first (`internal/relay`).**
   Cross-cluster hub↔hub links previously dialed only the first resolved
   remote peer — a single point of failure for the region's inter-cluster

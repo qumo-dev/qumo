@@ -2,15 +2,16 @@ package relay
 
 import (
 	"testing"
+	"uuid"
 
 	"github.com/qumo-dev/gomoqt/moqt"
 )
 
 // BenchmarkNewUUIDv4 targets the per-session broadcast ID generation in the
-// meter (crypto/rand + hex formatting).
+// meter (stdlib uuid.NewV4).
 func BenchmarkNewUUIDv4(b *testing.B) {
 	for i := 0; i < b.N; i++ {
-		_ = newUUIDv4()
+		_ = uuid.NewV4()
 	}
 }
 

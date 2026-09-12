@@ -10,6 +10,7 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+	"uuid"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -47,20 +48,20 @@ func collectUsageEvents(mu *sync.Mutex, out *[]UsageEvent) http.HandlerFunc {
 
 var uuidV4Re = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)
 
-func TestNewUUIDv4_Format(t *testing.T) {
+func TestBroadcastSession_ID_Format(t *testing.T) {
 	for range 20 {
-		id := newUUIDv4()
-		assert.Regexp(t, uuidV4Re, id, "UUID must match RFC 4122 v4 format")
+		s := newBroadcastSession("test-token")
+		assert.Regexp(t, uuidV4Re, s.id.String(), "UUID must match RFC 4122 v4 format")
 	}
 }
 
-func TestNewUUIDv4_Uniqueness(t *testing.T) {
-	seen := make(map[string]struct{}, 200)
+func TestBroadcastSession_ID_Uniqueness(t *testing.T) {
+	seen := make(map[uuid.UUID]struct{}, 200)
 	for range 200 {
-		id := newUUIDv4()
-		_, dup := seen[id]
-		assert.False(t, dup, "newUUIDv4 must not produce duplicate IDs")
-		seen[id] = struct{}{}
+		s := newBroadcastSession("test-token")
+		_, dup := seen[s.id]
+		assert.False(t, dup, "newBroadcastSession must not produce duplicate IDs")
+		seen[s.id] = struct{}{}
 	}
 }
 
@@ -70,7 +71,7 @@ func TestNewBroadcastSession(t *testing.T) {
 	s := newBroadcastSession("owner-tok")
 	require.NotNil(t, s)
 	assert.Equal(t, "owner-tok", s.ownerTokenID)
-	assert.Regexp(t, uuidV4Re, s.id, "session ID must be a valid UUID v4")
+	assert.Regexp(t, uuidV4Re, s.id.String(), "session ID must be a valid UUID v4")
 	assert.Zero(t, s.ingressBytes.Load(), "ingress counter must start at zero")
 	assert.Zero(t, s.egressBytes.Load(), "egress counter must start at zero")
 }
@@ -111,7 +112,7 @@ func TestBroadcastSession_ToEvent(t *testing.T) {
 	event := s.toEvent()
 	after := time.Now()
 
-	assert.Equal(t, s.id, event.BroadcastSessionID)
+	assert.Equal(t, s.id.String(), event.BroadcastSessionID)
 	assert.Equal(t, "owner-x", event.OwnerTokenID)
 	assert.Equal(t, int64(128), event.Metrics["gateway.ingress_bytes"])
 	assert.Equal(t, int64(512), event.Metrics["gateway.egress_bytes"])
@@ -184,7 +185,7 @@ func TestMeter_Deregister_RemovesFromActiveSetAndSendsFinalReport(t *testing.T) 
 	events := received
 	mu.Unlock()
 	require.Len(t, events, 1, "Deregister must POST exactly one final usage event")
-	assert.Equal(t, sess.id, events[0].BroadcastSessionID)
+	assert.Equal(t, sess.id.String(), events[0].BroadcastSessionID)
 	assert.Equal(t, "tok-final", events[0].OwnerTokenID)
 	assert.Equal(t, int64(1000), events[0].Metrics["gateway.ingress_bytes"])
 	assert.Equal(t, int64(4000), events[0].Metrics["gateway.egress_bytes"])
@@ -219,11 +220,11 @@ func TestMeter_Report_AggregatesAllActiveSessions(t *testing.T) {
 	for _, e := range events {
 		byID[e.BroadcastSessionID] = e
 	}
-	require.Contains(t, byID, s1.id)
-	require.Contains(t, byID, s2.id)
-	assert.Equal(t, int64(100), byID[s1.id].Metrics["gateway.ingress_bytes"])
-	assert.Equal(t, int64(200), byID[s2.id].Metrics["gateway.ingress_bytes"])
-	assert.Equal(t, int64(800), byID[s2.id].Metrics["gateway.egress_bytes"])
+	require.Contains(t, byID, s1.id.String())
+	require.Contains(t, byID, s2.id.String())
+	assert.Equal(t, int64(100), byID[s1.id.String()].Metrics["gateway.ingress_bytes"])
+	assert.Equal(t, int64(200), byID[s2.id.String()].Metrics["gateway.ingress_bytes"])
+	assert.Equal(t, int64(800), byID[s2.id.String()].Metrics["gateway.egress_bytes"])
 }
 
 func TestMeter_Report_NoOpWhenNoSessions(t *testing.T) {
