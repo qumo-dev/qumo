@@ -7,7 +7,7 @@ require (
 	github.com/okdaichi/qumo-ledger v0.1.0
 	github.com/prometheus/client_golang v1.24.1
 	github.com/prometheus/client_model v0.6.3
-	github.com/quic-go/quic-go v0.61.0
+	github.com/quic-go/quic-go v0.62.0
 	github.com/qumo-dev/gomoqt v0.17.0
 	github.com/stretchr/testify v1.12.1
 	golang.org/x/sync v0.22.0
