@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **Hub role dials all remote hubs, not just the first (`internal/relay`).**
+  Cross-cluster hub↔hub links previously dialed only the first resolved
+  remote peer — a single point of failure for the region's inter-cluster
+  connectivity, and resolver-order herding where every hub landed on the
+  same remote peer. Hubs now dial the remote hubs the registry returns,
+  minus self (the registry lists every hub, including the requester) and
+  minus peers whose side owns the pair's outbound session per a
+  deterministic node-ID tie-break — without it, both hubs of a pair dial
+  each other in the same tick window and carry two parallel sessions.
+  Multiple remote announcements of the same broadcast are resolved
+  per-track by route election (`compareRoutes`). The remote resolver now
+  sends `?hub=<RELAY_NAME>` as a proper query parameter (a base URL that
+  already carried a query was previously mangled into the path), letting
+  the registry skip the requester's row and bound the mesh degree, and
+  peer-resolution failures are logged instead of silently skipping the
+  tick. Prerequisite for multi-region topologies (see discussion #379);
+  peer-lifecycle follow-ups tracked in #381.
+
 ### Fixed
 - **Docs site: corrected claims that contradicted the code** — verified every
   documented default, metric name, and flag against the source and a running

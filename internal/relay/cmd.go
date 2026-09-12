@@ -136,6 +136,7 @@ func Run(args []string) error {
 		}
 	}
 
+
 	// Credential client: credential introspection + usage metering (optional).
 	credentialClient := NewCredentialClient()
 	var meter *Meter
