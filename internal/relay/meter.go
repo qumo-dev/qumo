@@ -13,8 +13,8 @@ import (
 // announced broadcast path. It is minted at ANNOUNCE time and lives until
 // the publisher session ends.
 type broadcastSession struct {
-	id           string // UUID v4, minted at ANNOUNCE
-	ownerTokenID string // token_id from the credential introspection response
+	id           uuid.UUID // UUID v4, minted at ANNOUNCE
+	ownerTokenID string    // token_id from the credential introspection response
 
 	ingressBytes atomic.Int64
 	egressBytes  atomic.Int64
@@ -22,7 +22,7 @@ type broadcastSession struct {
 
 func newBroadcastSession(ownerTokenID string) *broadcastSession {
 	return &broadcastSession{
-		id:           newUUIDv4(),
+		id:           uuid.NewV4(),
 		ownerTokenID: ownerTokenID,
 	}
 }
@@ -32,7 +32,7 @@ func (s *broadcastSession) addEgress(n int64)  { s.egressBytes.Add(n) }
 
 func (s *broadcastSession) toEvent() UsageEvent {
 	return UsageEvent{
-		BroadcastSessionID: s.id,
+		BroadcastSessionID: s.id.String(),
 		OwnerTokenID:       s.ownerTokenID,
 		Metrics: map[string]int64{
 			"gateway.ingress_bytes": s.ingressBytes.Load(),
@@ -115,7 +115,4 @@ func (m *Meter) report(ctx context.Context) {
 	}
 }
 
-// newUUIDv4 generates a random UUID v4 string using standard library uuid.
-func newUUIDv4() string {
-	return uuid.NewV4().String()
-}
+
