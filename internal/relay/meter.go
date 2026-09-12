@@ -2,12 +2,11 @@ package relay
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"log/slog"
 	"sync"
 	"sync/atomic"
 	"time"
+	"uuid"
 )
 
 // broadcastSession tracks cumulative ingress and egress bytes for a single
@@ -116,23 +115,7 @@ func (m *Meter) report(ctx context.Context) {
 	}
 }
 
-// newUUIDv4 generates a random UUID v4 string using crypto/rand.
+// newUUIDv4 generates a random UUID v4 string using standard library uuid.
 func newUUIDv4() string {
-	var b [16]byte
-	_, _ = rand.Read(b[:])      // crypto/rand.Read never fails on supported platforms
-	b[6] = (b[6] & 0x0f) | 0x40 // version 4
-	b[8] = (b[8] & 0x3f) | 0x80 // variant RFC 4122
-
-	var buf [36]byte
-	hex.Encode(buf[0:8], b[0:4])
-	buf[8] = '-'
-	hex.Encode(buf[9:13], b[4:6])
-	buf[13] = '-'
-	hex.Encode(buf[14:18], b[6:8])
-	buf[18] = '-'
-	hex.Encode(buf[19:23], b[8:10])
-	buf[23] = '-'
-	hex.Encode(buf[24:36], b[10:16])
-
-	return string(buf[:])
+	return uuid.NewV4().String()
 }
