@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"strings"
 	"sync"
@@ -241,15 +242,54 @@ func (s *Server) ConnectPeers(ctx context.Context) {
 		dialPeer(peer.Address)
 	}
 
-	// Upstream relay address(es) (e.g. role-hub.qumo-relay.service.consul:4433).
+	// Upstream relay address (e.g. role-hub.qumo-relay.service.consul:4433).
 	// Used by edge relays to connect upstream, or any relay hierarchy.
+	// When a hostname is provided (e.g. Consul DNS), all resolved A/AAAA records
+	// are connected to so the edge acts as a multi-homed L7 load balancer.
 	if s.Config.UpstreamAddr != "" {
-		for u := range strings.SplitSeq(s.Config.UpstreamAddr, ",") {
+		for _, u := range resolveUpstreamAddrs(ctx, s.Config.UpstreamAddr) {
 			dialPeer(u)
 		}
 	}
 
 	wg.Wait()
+}
+
+// resolveUpstreamAddrs resolves raw upstream address entries (supporting single DNS
+// name with multiple A/AAAA records as well as comma-separated addresses).
+// For each host:port, if host is not an IP, it attempts net.DefaultResolver.LookupIPAddr
+// and returns ip:port for every resolved address. If resolution fails or yields no IPs,
+// it falls back to the original entry.
+func resolveUpstreamAddrs(ctx context.Context, raw string) []string {
+	var results []string
+	for _, entry := range splitAddrList(raw) {
+		host, port, err := net.SplitHostPort(entry)
+		if err != nil {
+			// No port or unparseable host:port (e.g. invalid string) - keep as-is.
+			results = append(results, entry)
+			continue
+		}
+		if ip := net.ParseIP(host); ip != nil {
+			// Already an IP address.
+			results = append(results, entry)
+			continue
+		}
+
+		lookupCtx, cancel := context.WithTimeout(ctx, 500*time.Millisecond)
+		ips, err := net.DefaultResolver.LookupIPAddr(lookupCtx, host)
+		cancel()
+
+		if err != nil || len(ips) == 0 {
+			// Fallback to original host:port if DNS lookup fails.
+			results = append(results, entry)
+			continue
+		}
+
+		for _, ip := range ips {
+			results = append(results, net.JoinHostPort(ip.IP.String(), port))
+		}
+	}
+	return results
 }
 
 // markConnected records addr as connected and returns true if it was not already present.

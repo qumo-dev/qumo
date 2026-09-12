@@ -89,16 +89,10 @@ func Run(args []string) error {
 	}
 
 	var peers []Peer
-	if raw := os.Getenv("PEERS"); raw != "" {
-		for p := range strings.SplitSeq(raw, ",") {
-			p = strings.TrimSpace(p)
-			if p != "" {
-				peers = append(peers, Peer{Address: p})
-			}
-		}
+	for _, p := range splitAddrList(os.Getenv("PEERS")) {
+		peers = append(peers, Peer{Address: p})
 	}
 
-	// Setup TLS before remote resolver TLS config is built.
 	tlsConfig, err := setupTLS(certFile, keyFile)
 	if err != nil {
 		return fmt.Errorf("failed to setup TLS: %w", err)
@@ -127,6 +121,20 @@ func Run(args []string) error {
 	}
 
 	upstreamAddr := os.Getenv("UPSTREAM_ADDR")
+
+	// Nomad-native and remote-cluster peer resolution were retired in favor of
+	// static PEERS/UPSTREAM_ADDR. Warn rather than silently ignore these, so an
+	// operator upgrading a deployment that still sets them notices peer
+	// discovery stopped instead of losing fan-out with no explanation.
+	for _, retired := range []string{
+		"LOCAL_RESOLVER_ADDR", "LOCAL_RESOLVER_SERVICE_NAME", "LOCAL_RESOLVER_INTERVAL",
+		"REMOTE_RESOLVER_URL", "REMOTE_AUTH_TOKEN", "REMOTE_RESOLVE_INTERVAL", "REMOTE_TLS_ENABLED",
+	} {
+		if os.Getenv(retired) != "" {
+			slog.Warn("relay: env var no longer has any effect; peer resolution is now static (PEERS / UPSTREAM_ADDR)",
+				"var", retired)
+		}
+	}
 
 	// Credential client: credential introspection + usage metering (optional).
 	credentialClient := NewCredentialClient()
@@ -243,6 +251,9 @@ func Run(args []string) error {
 
 	log.Printf("\t%-8s: %s\n", "Host", sanitizeLog(addr))
 	log.Printf("\t%-8s: %s\n", "Node ID", sanitizeLog(relayCfg.NodeID))
+	if relayCfg.Role != "" {
+		log.Printf("\t%-8s: %s\n", "Role", sanitizeLog(relayCfg.Role))
+	}
 	log.Printf("\t%-8s: WebTransport endpoint\n", "/")
 	log.Printf("\t%-8s: health probe\n", "/health")
 	log.Printf("\t%-8s: Prometheus metrics\n", "/metrics")
@@ -425,7 +436,9 @@ func relayUsage(w io.Writer) {
 Start the MoQT relay server.
 
 Flags:
-  --role <hub|edge>  node topology role (default: flat / single-node)
+  --role <hub|edge>  node topology role, logged for operator visibility only
+                     (default: flat / single-node); connection topology is
+                     controlled by PEERS / UPSTREAM_ADDR, not this flag
 
 All other configuration is via environment variables;
 see relay-config.example.env for the full list.
@@ -437,9 +450,11 @@ see relay-config.example.env for the full list.
 // are flags; secrets and deployment configuration stay env (see
 // relay-config.example.env). Add future runtime knobs (e.g. --log-level) here.
 type relayFlags struct {
-	// Role is the node's topology role: "hub" (inter-region), "edge"
-	// (client-facing), or empty for a flat / single-node relay. Flag-only (no
-	// env equivalent) to avoid two sources of truth.
+	// Role is an operator-facing label for this node's topology role: "hub"
+	// (inter-region), "edge" (client-facing), or empty for a flat / single-node
+	// relay. It is logged at startup for visibility only — it does not shape
+	// connection behavior; that is controlled by PEERS / UPSTREAM_ADDR.
+	// Flag-only (no env equivalent) to avoid two sources of truth.
 	Role string
 }
 
@@ -450,8 +465,10 @@ func parseRelayArgs(args []string) (relayFlags, error) {
 	fs := flag.NewFlagSet("qumo relay", flag.ContinueOnError)
 	fs.SetOutput(io.Discard) // Run owns help/usage rendering
 	fs.StringVar(&f.Role, "role", "",
-		`node topology role: "hub" (inter-region) or "edge" (client-facing); `+
-			`empty (default) is a flat / single-node relay.`)
+		`operator-facing topology label: "hub" (inter-region) or "edge" `+
+			`(client-facing); empty (default) is a flat / single-node relay. `+
+			`Logged for visibility only — does not affect connection behavior `+
+			`(see PEERS / UPSTREAM_ADDR).`)
 	if err := fs.Parse(args); err != nil {
 		return relayFlags{}, err
 	}

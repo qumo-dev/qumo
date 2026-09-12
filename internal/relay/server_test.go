@@ -3,6 +3,7 @@ package relay
 import (
 	"context"
 	"crypto/tls"
+	"net"
 	"testing"
 	"time"
 
@@ -332,7 +333,8 @@ func TestServer_Init_MultipleCallsWithDifferentConfigs(t *testing.T) {
 	assert.Equal(t, "node-2", server.Config.NodeID, "Config assignment should work even after init")
 }
 
-// TestConnectPeers_UpstreamAddr tests that UPSTREAM_ADDR addresses are dialed.
+// TestConnectPeers_UpstreamAddr tests that both PEERS and UPSTREAM_ADDR
+// addresses are dialed, including that UPSTREAM_ADDR entries are trimmed.
 func TestConnectPeers_UpstreamAddr(t *testing.T) {
 	server := newTestServer("localhost:4433")
 	server.Config = &Config{
@@ -341,13 +343,27 @@ func TestConnectPeers_UpstreamAddr(t *testing.T) {
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
-	// Cancel immediately so maintainPeer exits without blocking on network.
+	done := make(chan struct{})
+	go func() {
+		server.ConnectPeers(ctx)
+		close(done)
+	}()
+
+	// Each dial is marked connected synchronously in dialPeer before its
+	// maintainPeer goroutine ever touches the network, so this should observe
+	// all three addresses (1 from PEERS, 2 trimmed from UPSTREAM_ADDR) well
+	// before any real dial to these unreachable hosts could complete.
+	assert.Eventually(t, func() bool {
+		server.connectedMu.Lock()
+		defer server.connectedMu.Unlock()
+		_, peer1 := server.connected["peer1:4433"]
+		_, hub1 := server.connected["hub1:4433"]
+		_, hub2 := server.connected["hub2:4433"]
+		return peer1 && hub1 && hub2
+	}, 5*time.Second, 20*time.Millisecond, "PEERS and UPSTREAM_ADDR addresses should all be dialed")
+
 	cancel()
-
-	server.ConnectPeers(ctx)
-
-	// Verify server.init() ran and peers/upstream were processed
-	assert.NotNil(t, server.TrackMux)
+	<-done
 }
 
 // TestServer_Address_Formats tests various address formats
@@ -372,4 +388,28 @@ func TestServer_Address_Formats(t *testing.T) {
 			assert.Equal(t, tt.addr, server.MOQServer.Addr, "Address should be preserved")
 		})
 	}
+}
+
+// TestResolveUpstreamAddrs verifies that resolveUpstreamAddrs handles IPs,
+// multi-record lookups (localhost resolves to 127.0.0.1 and/or ::1), and unparseable strings.
+func TestResolveUpstreamAddrs(t *testing.T) {
+	ctx := context.Background()
+
+	// 1. IP address passes through unchanged.
+	ipResults := resolveUpstreamAddrs(ctx, "127.0.0.1:4433")
+	assert.Equal(t, []string{"127.0.0.1:4433"}, ipResults)
+
+	// 2. localhost resolves to local IP(s) with port preserved.
+	lhResults := resolveUpstreamAddrs(ctx, "localhost:4433")
+	assert.NotEmpty(t, lhResults)
+	for _, r := range lhResults {
+		host, port, err := net.SplitHostPort(r)
+		assert.NoError(t, err)
+		assert.Equal(t, "4433", port)
+		assert.NotNil(t, net.ParseIP(host))
+	}
+
+	// 3. Comma-separated addresses work as expected.
+	multiResults := resolveUpstreamAddrs(ctx, "127.0.0.1:4433, 10.0.0.1:4433")
+	assert.Equal(t, []string{"127.0.0.1:4433", "10.0.0.1:4433"}, multiResults)
 }

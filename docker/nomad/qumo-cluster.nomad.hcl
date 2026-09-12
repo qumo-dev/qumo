@@ -1,15 +1,16 @@
 # Single-region (asia) qumo cluster on Nomad.
 #
-# Purpose: exercise the LocalResolver (Nomad native service discovery) path that
-# the static-PEERS topology compose never touches. Edges discover the local hubs
-# via Nomad and dial them; hubs do nothing on the local resolver (by design —
-# see internal/relay/server.go). This is the within-cluster (intra-region) path.
+# Purpose: exercise the static UPSTREAM_ADDR edge->hub topology (see
+# internal/relay/server.go ConnectPeers) on real Nomad-launched containers,
+# complementing docker-compose.static.yml's plain-Docker-Compose version.
 #
-# Cross-region hub<->hub is NOT covered here: that is the RemoteResolver / control
-# plane /peers path, which is a different mechanism (see docker/nomad/README.md).
+# There is no dynamic peer discovery any more (the former Nomad-native
+# LocalResolver / cross-cluster RemoteResolver mechanisms were removed);
+# edges are pointed at the hubs via a fixed UPSTREAM_ADDR list, resolved
+# through Docker's embedded DNS using each hub's network_aliases on the
+# shared "qumo-net" network.
 #
-# Both groups register the SAME service name "qumo-relay" with different role
-# tags — exactly what LocalResolver filters on (PeerQuery{Role:"hub"}).
+# Cross-region hub<->hub is out of scope here — see docker/nomad/README.md.
 
 job "qumo-cluster" {
   datacenters = ["dc1"]
@@ -34,9 +35,12 @@ job "qumo-cluster" {
         image        = "qumo:local" # build first: docker build -f docker/Dockerfile -t qumo:local .
         network_mode = "qumo-net"   # share the compose network with edges + Nomad
         ports        = ["moqt"]
-        # --role is a CLI flag, not an env var (see `qumo relay --help`); the
-        # hub/edge branch in server.go's peer-discovery loop keys off this.
-        args = ["relay", "--role", "hub"]
+        # network_aliases gives each hub a stable, per-index DNS name on
+        # qumo-net (Docker's embedded DNS resolves it for other containers on
+        # the same user-defined network) so edges can dial it by name instead
+        # of a discovered/dynamic address.
+        network_aliases = ["hub-${NOMAD_ALLOC_INDEX}"]
+        args            = ["relay", "--role", "hub"]
       }
 
       # Task-level service (required for address_mode = "driver").
@@ -50,10 +54,6 @@ job "qumo-cluster" {
       env {
         RELAY_ADDR = "0.0.0.0:4433"
         RELAY_NAME = "hub-asia-${NOMAD_ALLOC_INDEX}"
-        # Hubs point at the local resolver too, though they take no local action.
-        LOCAL_RESOLVER_ADDR         = "http://nomad:4646"
-        LOCAL_RESOLVER_SERVICE_NAME = "qumo-relay"
-        LOCAL_RESOLVER_INTERVAL     = "5s"
       }
 
       resources {
@@ -93,10 +93,9 @@ job "qumo-cluster" {
       env {
         RELAY_ADDR = "0.0.0.0:4433"
         RELAY_NAME = "edge-asia-${NOMAD_ALLOC_INDEX}"
-        # The path under test: edge -> LocalResolver -> Nomad -> all local hubs.
-        LOCAL_RESOLVER_ADDR         = "http://nomad:4646"
-        LOCAL_RESOLVER_SERVICE_NAME = "qumo-relay"
-        LOCAL_RESOLVER_INTERVAL     = "5s"
+        # Static upstream list: both hub aliases from the "hubs" group above.
+        # Fixed to match that group's count = 2; bump both together.
+        UPSTREAM_ADDR = "hub-0:4433,hub-1:4433"
       }
 
       resources {

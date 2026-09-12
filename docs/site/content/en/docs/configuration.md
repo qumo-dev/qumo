@@ -24,7 +24,9 @@ qumo relay
 | `RELAY_ADDR` | `:4433` | Bind address (QUIC/MoQT). Dual-stack — binds both IPv4 and IPv6, so `localhost` works on hosts where it resolves to `::1` (e.g. Windows). Also serves HTTP health/metrics on the same port. |
 | `CERT_FILE` / `KEY_FILE` | `certs/server.crt` / `certs/server.key` | TLS certificate and key. Required — the relay exits at startup if it can't load them. |
 
-The node's **topology role** is a CLI flag, not an env var:
+The node's **topology role** is a CLI flag, not an env var. It is an
+operator-facing label logged at startup for visibility only — it does not
+affect which peers are dialed (see `PEERS` / `UPSTREAM_ADDR` below):
 
 ```bash
 qumo relay --role hub    # or "edge"; omit for a standalone / flat relay
@@ -41,33 +43,13 @@ qumo relay --role hub    # or "edge"; omit for a standalone / flat relay
 | Variable | Default | Description |
 |---|---|---|
 | `PEERS` | (empty) | Comma-separated peer relay addresses (`moqt://host:4433,...`). The node connects to each and relays their announcements. |
+| `UPSTREAM_ADDR` | (empty) | Comma-separated upstream relay address(es), e.g. an edge relay's hub(s), or any relay connecting upward in a hierarchy (`role-hub.qumo-relay.service.consul:4433` or a direct `host:port`). Dialed the same way as `PEERS`. |
 
-See [Deployment → Peer topology]({{< relref "deployment/peer-topology" >}}) for
-how static peers, Nomad discovery, and the remote resolver fit together.
-
-## Local resolver — Nomad-native discovery
-
-| Variable | Default | Description |
-|---|---|---|
-| `LOCAL_RESOLVER_ADDR` | (empty) | Nomad HTTP API address. Takes precedence over `NOMAD_ADDR`. |
-| `NOMAD_ADDR` | (empty) | Nomad sets this inside an allocation; used when `LOCAL_RESOLVER_ADDR` is unset. |
-| `LOCAL_RESOLVER_SERVICE_NAME` | `qumo-relay` | Nomad service name to query for peer discovery. |
-| `LOCAL_RESOLVER_INTERVAL` | `15s` | Polling interval. |
-
-The address resolves in that order — `LOCAL_RESOLVER_ADDR`, then `NOMAD_ADDR`,
-then `http://localhost:4646` if neither is set. Inside a Nomad allocation the
-middle one is normally what applies, with no configuration of your own.
-
-See [Deployment → Nomad]({{< relref "deployment/nomad" >}}).
-
-## Remote traffic resolver (optional)
-
-| Variable | Default | Description |
-|---|---|---|
-| `REMOTE_RESOLVER_URL` | (empty) | Base URL of the remote traffic resolver (e.g. qumo backend control plane). Enables cross-cluster hub discovery. |
-| `REMOTE_AUTH_TOKEN` | (empty) | Bearer token sent to the remote resolver. |
-| `REMOTE_RESOLVE_INTERVAL` | `15s` | Polling interval. |
-| `REMOTE_TLS_ENABLED` | `false` | Enable TLS (mTLS, using `CERT_FILE`/`CA_FILE`) for the remote resolver connection. |
+There is no runtime peer-discovery service — both variables are static,
+dialed once at startup and re-dialed with backoff on disconnect. See
+[Deployment → Peer topology]({{< relref "deployment/peer-topology" >}}) for
+how they fit together, and [Deployment → Nomad]({{< relref "deployment/nomad" >}})
+for a worked example of giving relays stable addresses on Nomad.
 
 ## mTLS (optional)
 

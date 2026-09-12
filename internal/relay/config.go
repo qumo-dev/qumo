@@ -1,5 +1,20 @@
 package relay
 
+import "strings"
+
+// splitAddrList splits a comma-separated address list, trimming whitespace and
+// dropping empty entries. Used for both PEERS and UPSTREAM_ADDR so the two
+// share one parsing rule.
+func splitAddrList(raw string) []string {
+	var addrs []string
+	for a := range strings.SplitSeq(raw, ",") {
+		a = strings.TrimSpace(a)
+		if a != "" {
+			addrs = append(addrs, a)
+		}
+	}
+	return addrs
+}
 
 // Config holds the relay server configuration.
 type Config struct {

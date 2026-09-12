@@ -8,7 +8,7 @@ Files
 - `docker-compose.yml` — single relay (local build)
 - `docker-compose.external.yml` — single relay (pre-built image)
 - `docker-compose.static.yml` — **full 3-region topology** (hub + edge per region), wired with **static `PEERS`** (no discovery)
-- `docker-compose.nomad.yml` + `nomad/` — **real single-region Nomad cluster** that exercises the `LocalResolver` (Nomad service discovery) path; see [`nomad/README.md`](nomad/README.md)
+- `docker-compose.nomad.yml` + `nomad/` — **real single-region Nomad cluster** that exercises the static-`UPSTREAM_ADDR` edge→hub topology on Nomad-launched containers; see [`nomad/README.md`](nomad/README.md)
 - `docker-compose.demo.yml` — **local multi-scenario demo**: relay (MoQ-MoQ echo) + RTMP + RTSP origins up at once, with opt-in ffmpeg test-pattern pushers. Managed via `mage demo:up` / `mage demo:push` / `mage demo:down`
 
 Quick start (single relay)
@@ -98,13 +98,7 @@ Environment variables (relay)
 | `RELAY_NAME` | `relay-$HOSTNAME` | Node ID |
 | `CERT_FILE` / `KEY_FILE` | `certs/server.crt` / `certs/server.key` | TLS cert/key (mount them; e.g. from `mage cert`) |
 | `PEERS` | (empty) | Comma-separated static peer addresses |
-| `LOCAL_RESOLVER_ADDR` | `http://localhost:4646` | Nomad HTTP API address |
-| `LOCAL_RESOLVER_SERVICE_NAME` | `qumo-relay` | Nomad service name to query |
-| `LOCAL_RESOLVER_INTERVAL` | `15s` | Local resolver poll interval |
-| `REMOTE_RESOLVER_URL` | (empty) | Remote traffic resolver URL |
-| `REMOTE_AUTH_TOKEN` | (empty) | Bearer token for remote resolver |
-| `REMOTE_RESOLVE_INTERVAL` | `15s` | Remote resolver poll interval |
-| `REMOTE_TLS_ENABLED` | `false` | Enable TLS for remote resolver |
+| `UPSTREAM_ADDR` | (empty) | Comma-separated upstream relay address(es), e.g. for an edge dialing hub(s) |
 
 Build locally
 
