@@ -5,7 +5,9 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -57,10 +59,6 @@ type Server struct {
 	// fan-out. Created and started in init(); stopped by samplerCancel.
 	sampler       *statsSampler
 	samplerCancel context.CancelFunc
-
-	// resolvers for peer discovery
-	localResolver  PeerResolver // Nomad native (within-cluster)
-	remoteResolver PeerResolver // Remote traffic resolver (cross-cluster)
 
 	// connectedMu guards connected, which tracks peer addresses already dialing
 	// or connected to prevent duplicate maintainPeer goroutines.
@@ -160,9 +158,11 @@ func (s *Server) init() {
 			s.framePool = resolveFramePool(s.Config)
 		}
 
+		s.connectedMu.Lock()
 		if s.connected == nil {
 			s.connected = make(map[string]struct{})
 		}
+		s.connectedMu.Unlock()
 
 		if s.alternates == nil {
 			s.alternates = make(map[moqt.BroadcastPath]*alternate)
@@ -217,150 +217,93 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	return nil
 }
 
-// ConnectPeers dials configured peer relays and discovers their announcements
-// via ANNOUNCE_PLEASE. Received announcements are registered on the local
-// TrackMux so that subscribers can transparently access remote content.
-// It also starts peer discovery loops for configured resolvers.
+// ConnectPeers dials configured peer relays and upstream addresses, discovering
+// their announcements via ANNOUNCE_PLEASE. Received announcements are registered
+// on the local TrackMux so that subscribers can transparently access remote content.
 // It blocks until ctx is cancelled.
 func (s *Server) ConnectPeers(ctx context.Context) {
 	s.init()
 	var wg sync.WaitGroup
 
-	// Static peers from config.
-	for _, peer := range s.Config.Peers {
-		if !s.markConnected(peer.Address) {
-			continue
+	dialPeer := func(addr string) {
+		addr = strings.TrimSpace(addr)
+		if addr == "" {
+			return
+		}
+		if !s.markConnected(addr) {
+			return
 		}
 		wg.Go(func() {
-			s.maintainPeer(ctx, peer)
-			s.markUnconnected(peer.Address)
+			s.maintainPeer(ctx, Peer{Address: addr})
+			s.markUnconnected(addr)
 		})
 	}
 
-	// Dynamic peer discovery loops.
-	// Local resolver: local cluster discovery (edge→all hubs, default→flat peers).
-	if s.localResolver != nil && s.Config.LocalResolverInterval > 0 {
-		wg.Go(func() {
-			s.discoverPeers(ctx, &wg, s.Config.LocalResolverInterval, s.localResolver)
-		})
+	// Static peers from config.
+	for _, peer := range s.Config.Peers {
+		dialPeer(peer.Address)
 	}
 
-	// Remote resolver: cross-cluster hub discovery.
-	if s.remoteResolver != nil && s.Config.RemoteResolverInterval > 0 {
-		wg.Go(func() {
-			s.discoverPeers(ctx, &wg, s.Config.RemoteResolverInterval, s.remoteResolver)
-		})
+	// Upstream relay address (e.g. role-hub.qumo-relay.service.consul:4433).
+	// Used by edge relays to connect upstream, or any relay hierarchy.
+	// When a hostname is provided (e.g. Consul DNS), all resolved A/AAAA records
+	// are connected to so the edge acts as a multi-homed L7 load balancer.
+	if s.Config.UpstreamAddr != "" {
+		for _, u := range resolveUpstreamAddrs(ctx, s.Config.UpstreamAddr) {
+			dialPeer(u)
+		}
 	}
 
 	wg.Wait()
 }
 
-// remoteHubPeers filters the remote registry's hub list for dialing. The
-// registry lists every hub including the requester, so self is dropped, and
-// the mutual-dial tie-break keeps exactly one side of each hub pair holding
-// the outbound session: without it both hubs resolve each other in the same
-// tick window and the pair carries two parallel QUIC sessions. The dialer is
-// the peer whose node ID sorts lower, which both sides compute identically
-// from the same registry list. Peers without an ID cannot be tie-broken and
-// are dialed; an empty node ID disables filtering entirely.
-func remoteHubPeers(peers []ResolvedPeer, nodeID string) []ResolvedPeer {
-	if nodeID == "" {
-		return peers
-	}
-	filtered := make([]ResolvedPeer, 0, len(peers))
-	for _, p := range peers {
-		if p.ID == nodeID {
-			continue // never dial ourselves
+// resolveUpstreamAddrs resolves raw upstream address entries (supporting single DNS
+// name with multiple A/AAAA records as well as comma-separated addresses).
+// For each host:port, if host is not an IP, it attempts net.DefaultResolver.LookupIPAddr
+// and returns ip:port for every resolved address. If resolution fails or yields no IPs,
+// it falls back to the original entry.
+func resolveUpstreamAddrs(ctx context.Context, raw string) []string {
+	var results []string
+	for _, entry := range splitAddrList(raw) {
+		host, port, err := net.SplitHostPort(entry)
+		if err != nil {
+			// No port or unparseable host:port (e.g. invalid string) - keep as-is.
+			results = append(results, entry)
+			continue
 		}
-		if p.ID != "" && p.ID < nodeID {
-			continue // the peer's side owns this pair's outbound session
+		if ip := net.ParseIP(host); ip != nil {
+			// Already an IP address.
+			results = append(results, entry)
+			continue
 		}
-		filtered = append(filtered, p)
+
+		lookupCtx, cancel := context.WithTimeout(ctx, 500*time.Millisecond)
+		ips, err := net.DefaultResolver.LookupIPAddr(lookupCtx, host)
+		cancel()
+
+		if err != nil || len(ips) == 0 {
+			// Fallback to original host:port if DNS lookup fails.
+			results = append(results, entry)
+			continue
+		}
+
+		for _, ip := range ips {
+			results = append(results, net.JoinHostPort(ip.IP.String(), port))
+		}
 	}
-	return filtered
+	return results
 }
 
-// discoverPeers runs the role-aware peer discovery loop using resolver.
-// It builds topology connections according to the node's role (edge/hub/default)
-// and re-checks at interval. Already-connected peers are skipped.
-func (s *Server) discoverPeers(ctx context.Context, wg *sync.WaitGroup, interval time.Duration, resolver PeerResolver) {
-	// connect dials each peer not already connected (server-wide dedup by
-	// address). The goroutine is registered with wg before markConnected runs
-	// inside it, so an observer that waits on the connected map and then calls
-	// wg.Wait can never race a WaitGroup.Add after Wait. The check-and-set
-	// dedup is unchanged; a concurrent duplicate spawn loses the race inside
-	// the goroutine and exits immediately.
-	connect := func(peers []ResolvedPeer) {
-		for _, p := range peers {
-			p := p
-			wg.Go(func() {
-				if !s.markConnected(p.Address) {
-					return
-				}
-				defer s.markUnconnected(p.Address)
-				s.maintainPeer(ctx, Peer{Address: p.Address})
-			})
-		}
+// isConnected reports whether addr is currently in the connected set.
+// It is safe for concurrent use.
+func (s *Server) isConnected(addr string) bool {
+	s.connectedMu.Lock()
+	defer s.connectedMu.Unlock()
+	if s.connected == nil {
+		return false
 	}
-
-	tick := func() {
-		switch s.Config.Role {
-		case "edge":
-			// Edge nodes connect to ALL local hubs (load-balanced content relay).
-			// No edge-to-edge or cross-region connections.
-			// Only use the local (Nomad) resolver — never query the enterprise resolver.
-			if resolver == s.localResolver {
-				if peers, err := resolver.ResolvePeers(ctx, PeerQuery{Role: "hub"}); err != nil {
-					slog.Warn("relay: local peer resolution failed", "err", err)
-				} else {
-					connect(peers)
-				}
-			}
-
-		case "hub":
-			// Hub nodes connect to the remote hubs (cross-cluster) via the remote
-			// resolver, minus self and the peers whose side owns the pair's outbound
-			// session (remoteHubPeers). Duplicate announcements of the same broadcast
-			// across those sessions are resolved per track by route election
-			// (compareRoutes) — that is the sense in which broad connectivity is
-			// safe; it does not bound the mesh degree or prune peers that leave the
-			// registry (#381). No local hub-to-hub connections (the edge mesh already
-			// reaches every local source).
-			if resolver == s.remoteResolver {
-				if peers, err := resolver.ResolvePeers(ctx, PeerQuery{Role: "hub"}); err != nil {
-					slog.Warn("relay: remote peer resolution failed", "err", err)
-				} else {
-					connect(remoteHubPeers(peers, s.Config.NodeID))
-				}
-			}
-			// When local resolver (Nomad) is the resolver being used, hubs
-			// do nothing — no local hub connections needed.
-
-		default:
-			// Flat discovery: any peers in the cluster (for nodes without role set).
-			// Only use the local (Nomad) resolver.
-			if resolver == s.localResolver {
-				if peers, err := resolver.ResolvePeers(ctx, PeerQuery{Limit: 5}); err != nil {
-					slog.Warn("relay: local peer resolution failed", "err", err)
-				} else {
-					connect(peers)
-				}
-			}
-		}
-	}
-
-	tick()
-
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			tick()
-		}
-	}
+	_, ok := s.connected[addr]
+	return ok
 }
 
 // markConnected records addr as connected and returns true if it was not already present.
@@ -368,6 +311,9 @@ func (s *Server) discoverPeers(ctx context.Context, wg *sync.WaitGroup, interval
 func (s *Server) markConnected(addr string) bool {
 	s.connectedMu.Lock()
 	defer s.connectedMu.Unlock()
+	if s.connected == nil {
+		s.connected = make(map[string]struct{})
+	}
 	if _, ok := s.connected[addr]; ok {
 		return false
 	}
@@ -381,6 +327,9 @@ func (s *Server) markConnected(addr string) bool {
 func (s *Server) markUnconnected(addr string) {
 	s.connectedMu.Lock()
 	defer s.connectedMu.Unlock()
+	if s.connected == nil {
+		return
+	}
 	delete(s.connected, addr)
 	metricPeersConnected.Dec()
 	// The per-addr session RTT/bitrate series are reaped by the stats sampler

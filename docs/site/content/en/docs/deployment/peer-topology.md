@@ -25,19 +25,21 @@ relay) is a CLI flag on `qumo relay` — see [CLI → relay]({{< relref "../cli/
 
 ## Peer discovery
 
-On startup, each relay discovers peers through one or more `PeerResolver`
-implementations:
+There is no runtime discovery service — on startup, each relay dials a fixed,
+comma-separated list of addresses from two env vars:
 
-1. **Static peers** (`PEERS`) — dial each address directly and maintain the connection.
-2. **Nomad native discovery** (within-cluster) — automatically discovers peers within
-   the same Nomad cluster via the Nomad service API. Edges discover all local
-   hubs; hubs discover nothing locally (no local hub↔hub connections). See
-   [Nomad]({{< relref "nomad" >}}).
-3. **Remote resolver** (cross-cluster, optional) — queries an external traffic
-   resolver API (e.g. qumo-enterprise) for cross-cluster hub discovery. Hubs
-   discover remote hubs; edges never query the remote resolver.
+1. **`PEERS`** — static peer addresses to dial and maintain a connection to.
+2. **`UPSTREAM_ADDR`** — upstream relay address(es), e.g. for an edge dialing
+   its hub(s), or any relay connecting upward in a hierarchy. Accepts a name
+   that resolves to a stable address for the peer (a Consul DNS name, a Docker
+   network alias, a fixed host:port). See [Nomad]({{< relref "nomad" >}}) for
+   a worked example on Nomad.
 
-Each connection dials QUIC with ALPN `moq-lite-04`, exchanges `ANNOUNCE_PLEASE` /
+Both lists are dialed the same way and merged. `--role hub`/`--role edge` is a
+CLI flag on `qumo relay`; it is an operator-facing label logged at startup for
+visibility only and has no effect on which addresses are dialed.
+
+Each connection dials QUIC with ALPN `moqt`, exchanges `ANNOUNCE_PLEASE` /
 `ANNOUNCE`, and registers the peer's tracks on the local `TrackMux`. On
 disconnect the connection is retried with exponential backoff (1s base, 30s
 cap, ±25% jitter).
@@ -46,13 +48,10 @@ cap, ±25% jitter).
 graph TD
     Start["Relay Startup"]
 
-    Start -->|"for each PEER"| ALPN
-    Start -->|"Nomad API (within-cluster)"| Resolve["PeerResolver.ResolvePeers"]
-    Start -->|"Remote resolver (cross-cluster)"| Resolve
+    Start -->|"for each PEERS address"| ALPN
+    Start -->|"for each UPSTREAM_ADDR address"| ALPN
 
-    Resolve -->|"returned peer list"| ALPN
-
-    ALPN["QUIC dial (ALPN: moq-lite-04)"] --> Announce["ANNOUNCE_PLEASE / ANNOUNCE"]
+    ALPN["QUIC dial (ALPN: moqt)"] --> Announce["ANNOUNCE_PLEASE / ANNOUNCE"]
     Announce --> TrackMux["Register tracks on local TrackMux"]
     TrackMux --> Serve["Serve subscribers"]
 
@@ -97,5 +96,5 @@ shutdown, it redirects clients/peers to a successor relay. See
 ## Related
 
 - [Docker]({{< relref "docker" >}}) — running relays as containers, with static `PEERS`.
-- [Nomad]({{< relref "nomad" >}}) — the Nomad-native `LocalResolver` path.
-- [Configuration → Static peers]({{< relref "../configuration" >}}#static-peers) and [Local resolver]({{< relref "../configuration" >}}#local-resolver--nomad-native-discovery).
+- [Nomad]({{< relref "nomad" >}}) — the same static-address topology, deployed on Nomad.
+- [Configuration → Static peers]({{< relref "../configuration" >}}#static-peers).

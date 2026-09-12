@@ -1,6 +1,20 @@
 package relay
 
-import "time"
+import "strings"
+
+// splitAddrList splits a comma-separated address list, trimming whitespace and
+// dropping empty entries. Used for both PEERS and UPSTREAM_ADDR so the two
+// share one parsing rule.
+func splitAddrList(raw string) []string {
+	var addrs []string
+	for a := range strings.SplitSeq(raw, ",") {
+		a = strings.TrimSpace(a)
+		if a != "" {
+			addrs = append(addrs, a)
+		}
+	}
+	return addrs
+}
 
 // Config holds the relay server configuration.
 type Config struct {
@@ -29,13 +43,10 @@ type Config struct {
 	// ANNOUNCE_PLEASE, and register them on the local TrackMux.
 	Peers []Peer
 
-	// LocalResolverInterval is the polling interval for Nomad service discovery.
-	// If zero, local discovery is disabled.
-	LocalResolverInterval time.Duration
-
-	// RemoteResolverInterval is the polling interval for the remote
-	// traffic resolver. If zero, remote discovery is disabled.
-	RemoteResolverInterval time.Duration
+	// UpstreamAddr is the address of an upstream relay to connect to.
+	// Used by edge relays to connect to upstream hub relays (e.g. role-hub.qumo-relay.service.consul:4433),
+	// or any relay connecting upstream. Multiple comma-separated addresses can be specified.
+	UpstreamAddr string
 
 	// NextSessionURI is the redirect URI sent to clients/peers in a GOAWAY
 	// message during graceful shutdown (gomoqt Server.NextSessionURI). Empty

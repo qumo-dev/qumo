@@ -107,29 +107,27 @@ graph LR
 
 ### Peer Discovery
 
-On startup, each relay discovers peers through one or more `PeerResolver` implementations:
+On startup, each relay dials peer addresses from two static, comma-separated env vars — there is no runtime service discovery:
 
-1. **Static peers** (`PEERS`): dial each address directly and maintain the connection.
-2. **Nomad native discovery** (within-cluster): automatically discovers peers within the same Nomad cluster via the Nomad service API. Edges discover all local hubs; hubs discover nothing locally (no local hub↔hub connections).
-3. **Remote resolver** (cross-cluster, optional): queries an external traffic resolver API (e.g. qumo-enterprise) for cross-cluster hub discovery. Hubs discover remote hubs; edges never query the remote resolver.
+1. **`PEERS`**: static peer addresses to dial and maintain a connection to.
+2. **`UPSTREAM_ADDR`**: upstream relay address(es) to connect to (e.g. an edge relay dialing a hub, or any relay hierarchy). Accepts a DNS name that resolves to multiple/changing backends (e.g. `role-hub.qumo-relay.service.consul:4433`) as well as direct `host:port`.
 
-Each connection dials QUIC with ALPN `moqt`, exchanges `ANNOUNCE_PLEASE` / `ANNOUNCE`, and registers the peer's tracks on the local `TrackMux`. On disconnect the connection is retried after 5 s.
+Both lists are dialed the same way and merged: each address is dialed once at startup and re-dialed with backoff on disconnect. `--role <hub|edge>` is an operator-facing label logged for visibility only; it does not affect which peers are dialed.
+
+Each connection dials QUIC with ALPN `moqt`, exchanges `ANNOUNCE_PLEASE` / `ANNOUNCE`, and registers the peer's tracks on the local `TrackMux`. On disconnect the connection is retried with exponential backoff (1s–30s).
 
 ```mermaid
 graph TD
     Start["Relay Startup"]
 
-    Start -->|"for each PEER"| ALPN
-    Start -->|"Nomad API (within-cluster)"| Resolve["PeerResolver.ResolvePeers"]
-    Start -->|"Remote resolver (cross-cluster)"| Resolve
+    Start -->|"for each PEERS address"| ALPN
+    Start -->|"for each UPSTREAM_ADDR address"| ALPN
 
-    Resolve -->|"returned peer list"| ALPN
-
-    ALPN["QUIC dial (ALPN: moq-lite-04)"] --> Announce["ANNOUNCE_PLEASE / ANNOUNCE"]
+    ALPN["QUIC dial (ALPN: moqt)"] --> Announce["ANNOUNCE_PLEASE / ANNOUNCE"]
     Announce --> TrackMux["Register tracks on local TrackMux"]
     TrackMux --> Serve["Serve subscribers"]
 
-    ALPN -->|"failed"| Retry["Wait 5s → retry"]
+    ALPN -->|"failed"| Retry["Backoff (1s-30s) → retry"]
     Serve -->|"disconnected"| Retry
     Retry --> ALPN
 ```

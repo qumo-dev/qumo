@@ -27,8 +27,7 @@ certificate automatically.)
 Setting `CA_FILE` enables mutual TLS for the relay's peer mesh:
 
 - incoming connections must present a client cert signed by this CA;
-- the dialer presents this node's `CERT_FILE` cert to remote relays and trusts only the CA pool;
-- remote resolver clients also present the client cert and verify the remote server against this CA (when `REMOTE_TLS_ENABLED=true`).
+- the dialer presents this node's `CERT_FILE` cert to remote relays and trusts only the CA pool.
 
 Because mTLS is required by default once `CA_FILE` is set, browsers — which
 don't present a client cert — can no longer connect. If the same relay also
@@ -37,9 +36,3 @@ certs are still verified when presented, but connections without one are
 accepted. See
 [Configuration → mTLS]({{< relref "../configuration" >}}#mtls-optional) for
 the `CA_FILE` / `MTLS_REQUIRED` variable reference.
-
-## Remote resolver TLS
-
-`REMOTE_TLS_ENABLED=true` enables mTLS specifically for the connection to a
-remote traffic resolver, reusing `CERT_FILE` and `CA_FILE` for client auth.
-See [Configuration → Remote traffic resolver]({{< relref "../configuration" >}}#remote-traffic-resolver-optional).

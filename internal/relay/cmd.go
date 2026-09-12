@@ -50,13 +50,9 @@ func sanitizeLog(s string) string {
 //	RELAY_NAME                   - node ID (default: "relay-" + hostname)
 //	GROUP_CACHE_SIZE             - completed groups retained per track (default: 8)
 //	FRAME_CAPACITY               - frame buffer size in bytes (default: 1500)
-//	PEERS                        - comma-separated list of static peer addresses	//	LOCAL_RESOLVER_ADDR            - Nomad HTTP API address (default: http://localhost:4646)
-//	LOCAL_RESOLVER_SERVICE_NAME    - Nomad service name to query (default: "qumo-relay")
-//	LOCAL_RESOLVER_INTERVAL        - Nomad discovery polling interval (default: "15s")
-//	REMOTE_RESOLVER_URL      - remote traffic resolver URL (optional)
-//	REMOTE_AUTH_TOKEN        - bearer token for remote resolver
-//	REMOTE_RESOLVE_INTERVAL  - remote discovery polling interval (default: "15s")
-//	REMOTE_TLS_ENABLED       - "true" to enable TLS for remote resolver
+//	PEERS                        - comma-separated list of static peer addresses
+//	UPSTREAM_ADDR                - comma-separated list of upstream relay addresses
+//	                               (e.g. "role-hub.qumo-relay.service.consul:4433" or direct IP:port)
 //	CORS_ALLOWED_ORIGINS     - comma-separated WebTransport origins allowed to
 //	                           connect (default: same-origin only; "*" allows any;
 //	                           "same-host" allows any port on the request's host).
@@ -93,16 +89,10 @@ func Run(args []string) error {
 	}
 
 	var peers []Peer
-	if raw := os.Getenv("PEERS"); raw != "" {
-		for p := range strings.SplitSeq(raw, ",") {
-			p = strings.TrimSpace(p)
-			if p != "" {
-				peers = append(peers, Peer{Address: p})
-			}
-		}
+	for _, p := range splitAddrList(os.Getenv("PEERS")) {
+		peers = append(peers, Peer{Address: p})
 	}
 
-	// Setup TLS before remote resolver TLS config is built.
 	tlsConfig, err := setupTLS(certFile, keyFile)
 	if err != nil {
 		return fmt.Errorf("failed to setup TLS: %w", err)
@@ -130,20 +120,22 @@ func Run(args []string) error {
 		)
 	}
 
-	// Remote resolver TLS: present this node's cert and trust only the CA pool.
-	// Built only when mTLS is active (caPool != nil).
-	var remoteResolverTLS *tls.Config
-	if caPool != nil {
-		remoteResolverTLS = &tls.Config{
-			MinVersion:   tls.VersionTLS12,
-			Certificates: tlsConfig.Certificates, // relay cert used as client cert
-			RootCAs:      caPool,
+	upstreamAddr := os.Getenv("UPSTREAM_ADDR")
+
+	// Nomad-native and remote-cluster peer resolution were retired in favor of
+	// static PEERS/UPSTREAM_ADDR. Warn rather than silently ignore these, so an
+	// operator upgrading a deployment that still sets them notices peer
+	// discovery stopped instead of losing fan-out with no explanation.
+	for _, retired := range []string{
+		"LOCAL_RESOLVER_ADDR", "LOCAL_RESOLVER_SERVICE_NAME", "LOCAL_RESOLVER_INTERVAL",
+		"REMOTE_RESOLVER_URL", "REMOTE_AUTH_TOKEN", "REMOTE_RESOLVE_INTERVAL", "REMOTE_TLS_ENABLED",
+	} {
+		if os.Getenv(retired) != "" {
+			slog.Warn("relay: env var no longer has any effect; peer resolution is now static (PEERS / UPSTREAM_ADDR)",
+				"var", retired)
 		}
 	}
 
-	// Create peer resolvers.
-	localResolver := NewLocalResolver()
-	remoteResolver := NewRemoteResolver(remoteResolverTLS, nodeID)
 
 	// Credential client: credential introspection + usage metering (optional).
 	credentialClient := NewCredentialClient()
@@ -153,20 +145,13 @@ func Run(args []string) error {
 	}
 
 	relayCfg := Config{
-		NodeID:                nodeID,
-		Role:                  flags.Role,
-		GroupCacheSize:        groupCacheSize,
-		FrameCapacity:         frameCapacity,
-		Peers:                 peers,
-		LocalResolverInterval: localResolver.Interval(),
-		NextSessionURI:        os.Getenv("GOAWAY_REDIRECT_URI"),
-	}
-	// The remote resolver is optional: NewRemoteResolver returns nil when
-	// REMOTE_RESOLVER_URL is unset (the common single-node/demo case). The
-	// consumer already treats a nil resolver + zero interval as "disabled"
-	// (server.go), so mirror that here rather than dereferencing nil.
-	if remoteResolver != nil {
-		relayCfg.RemoteResolverInterval = remoteResolver.Interval()
+		NodeID:         nodeID,
+		Role:           flags.Role,
+		GroupCacheSize: groupCacheSize,
+		FrameCapacity:  frameCapacity,
+		Peers:          peers,
+		UpstreamAddr:   upstreamAddr,
+		NextSessionURI: os.Getenv("GOAWAY_REDIRECT_URI"),
 	}
 
 	// Setup signal handling for graceful shutdown
@@ -232,8 +217,6 @@ func Run(args []string) error {
 		Config:           &relayCfg,
 		TrackMux:         trackMux,
 		AllowedOrigins:   cors.LoadAllowed(),
-		localResolver:    localResolver,
-		remoteResolver:   remoteResolver,
 		credentialClient: credentialClient,
 		meter:            meter,
 	}
@@ -269,17 +252,17 @@ func Run(args []string) error {
 
 	log.Printf("\t%-8s: %s\n", "Host", sanitizeLog(addr))
 	log.Printf("\t%-8s: %s\n", "Node ID", sanitizeLog(relayCfg.NodeID))
+	if relayCfg.Role != "" {
+		log.Printf("\t%-8s: %s\n", "Role", sanitizeLog(relayCfg.Role))
+	}
 	log.Printf("\t%-8s: WebTransport endpoint\n", "/")
 	log.Printf("\t%-8s: health probe\n", "/health")
 	log.Printf("\t%-8s: Prometheus metrics\n", "/metrics")
 	for _, p := range relayCfg.Peers {
 		log.Printf("\t%-8s: %s\n", "Peer", sanitizeLog(p.Address))
 	}
-	if remoteResolver != nil {
-		log.Printf("\t%-8s: %s (interval: %s)\n", "Resolver", sanitizeLog(remoteResolver.url), remoteResolver.Interval())
-	}
-	if relayCfg.LocalResolverInterval > 0 {
-		log.Printf("\t%-8s: %s (interval: %s)\n", "Resolver", "local ("+localResolver.serviceName+")", localResolver.Interval())
+	if relayCfg.UpstreamAddr != "" {
+		log.Printf("\t%-8s: %s\n", "Upstream", sanitizeLog(relayCfg.UpstreamAddr))
 	}
 	if credentialClient != nil {
 		log.Printf("\t%-8s: %s (metering every 30s)\n", "Credentials", sanitizeLog(credentialClient.baseURL))
@@ -454,7 +437,9 @@ func relayUsage(w io.Writer) {
 Start the MoQT relay server.
 
 Flags:
-  --role <hub|edge>  node topology role (default: flat / single-node)
+  --role <hub|edge>  node topology role, logged for operator visibility only
+                     (default: flat / single-node); connection topology is
+                     controlled by PEERS / UPSTREAM_ADDR, not this flag
 
 All other configuration is via environment variables;
 see relay-config.example.env for the full list.
@@ -466,9 +451,11 @@ see relay-config.example.env for the full list.
 // are flags; secrets and deployment configuration stay env (see
 // relay-config.example.env). Add future runtime knobs (e.g. --log-level) here.
 type relayFlags struct {
-	// Role is the node's topology role: "hub" (inter-region), "edge"
-	// (client-facing), or empty for a flat / single-node relay. Flag-only (no
-	// env equivalent) to avoid two sources of truth.
+	// Role is an operator-facing label for this node's topology role: "hub"
+	// (inter-region), "edge" (client-facing), or empty for a flat / single-node
+	// relay. It is logged at startup for visibility only — it does not shape
+	// connection behavior; that is controlled by PEERS / UPSTREAM_ADDR.
+	// Flag-only (no env equivalent) to avoid two sources of truth.
 	Role string
 }
 
@@ -479,8 +466,10 @@ func parseRelayArgs(args []string) (relayFlags, error) {
 	fs := flag.NewFlagSet("qumo relay", flag.ContinueOnError)
 	fs.SetOutput(io.Discard) // Run owns help/usage rendering
 	fs.StringVar(&f.Role, "role", "",
-		`node topology role: "hub" (inter-region) or "edge" (client-facing); `+
-			`empty (default) is a flat / single-node relay.`)
+		`operator-facing topology label: "hub" (inter-region) or "edge" `+
+			`(client-facing); empty (default) is a flat / single-node relay. `+
+			`Logged for visibility only — does not affect connection behavior `+
+			`(see PEERS / UPSTREAM_ADDR).`)
 	if err := fs.Parse(args); err != nil {
 		return relayFlags{}, err
 	}

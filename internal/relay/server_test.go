@@ -3,7 +3,7 @@ package relay
 import (
 	"context"
 	"crypto/tls"
-	"sync"
+	"net"
 	"testing"
 	"time"
 
@@ -261,7 +261,6 @@ func TestServer_MarkUnconnected(t *testing.T) {
 	assert.True(t, server.markConnected(addr), "should be connectable again after markUnconnected")
 }
 
-
 // TestServer_MarkConnected_Concurrent tests that markConnected is safe for concurrent use
 // and that only one caller wins for a given address.
 func TestServer_MarkConnected_Concurrent(t *testing.T) {
@@ -334,257 +333,39 @@ func TestServer_Init_MultipleCallsWithDifferentConfigs(t *testing.T) {
 	assert.Equal(t, "node-2", server.Config.NodeID, "Config assignment should work even after init")
 }
 
-// callTrackingResolver wraps a PeerResolver and records calls for assertion.
-type callTrackingResolver struct {
-	PeerResolver
-	calls []PeerQuery
-	mu    sync.Mutex
-}
-
-func (c *callTrackingResolver) ResolvePeers(ctx context.Context, q PeerQuery) ([]ResolvedPeer, error) {
-	c.mu.Lock()
-	c.calls = append(c.calls, q)
-	c.mu.Unlock()
-	return c.PeerResolver.ResolvePeers(ctx, q)
-}
-
-func (c *callTrackingResolver) CallCount() int {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return len(c.calls)
-}
-
-func (c *callTrackingResolver) LastCall() (PeerQuery, bool) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if len(c.calls) == 0 {
-		return PeerQuery{}, false
-	}
-	return c.calls[len(c.calls)-1], true
-}
-
-// TestDiscoverPeers_RoleBasedRouting verifies that discoverPeers
-// calls the correct resolver based on the node's configured role.
-func TestDiscoverPeers_RoleBasedRouting(t *testing.T) {
-	hubPeers := []ResolvedPeer{
-		{ID: "hub-1", Address: "moqt://hub-1:4433", Region: "us-east", Role: "hub"},
-		{ID: "hub-2", Address: "moqt://hub-2:4433", Region: "us-east", Role: "hub"},
-	}
-
-	tests := []struct {
-		name           string
-		role           string
-		useLocal       bool // whether to call discoverPeers with localResolver
-		useRemote      bool // whether to call discoverPeers with remoteResolver
-		wantLocalCall  bool // expect localResolver.ResolvePeers to be called
-		wantRemoteCall bool // expect remoteResolver.ResolvePeers to be called
-		wantQueryRole  string
-		wantQueryLimit int
-	}{
-		{
-			name:           "edge uses local resolver for hubs",
-			role:           "edge",
-			useLocal:       true,
-			useRemote:      false,
-			wantLocalCall:  true,
-			wantRemoteCall: false,
-			wantQueryRole:  "hub",
-			wantQueryLimit: 0,
-		},
-		{
-			name:           "edge ignores remote resolver",
-			role:           "edge",
-			useLocal:       false,
-			useRemote:      true,
-			wantLocalCall:  false,
-			wantRemoteCall: false,
-		},
-		{
-			name:           "hub uses remote resolver for hubs",
-			role:           "hub",
-			useLocal:       false,
-			useRemote:      true,
-			wantLocalCall:  false,
-			wantRemoteCall: true,
-			wantQueryRole:  "hub",
-			wantQueryLimit: 0,
-		},
-		{
-			name:           "hub ignores local resolver",
-			role:           "hub",
-			useLocal:       true,
-			useRemote:      false,
-			wantLocalCall:  false,
-			wantRemoteCall: false,
-		},
-		{
-			name:           "default role uses local resolver",
-			role:           "",
-			useLocal:       true,
-			useRemote:      false,
-			wantLocalCall:  true,
-			wantRemoteCall: false,
-			wantQueryRole:  "",
-			wantQueryLimit: 5,
-		},
-		{
-			name:           "default role ignores remote resolver",
-			role:           "",
-			useLocal:       false,
-			useRemote:      true,
-			wantLocalCall:  false,
-			wantRemoteCall: false,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			stubLocal := &stubResolver{peers: hubPeers}
-			stubRemote := &stubResolver{peers: hubPeers}
-
-			trackerLocal := &callTrackingResolver{PeerResolver: stubLocal}
-			trackerRemote := &callTrackingResolver{PeerResolver: stubRemote}
-
-			server := newTestServer("localhost:4433")
-			server.Config = &Config{Role: tt.role}
-			server.localResolver = trackerLocal
-			server.remoteResolver = trackerRemote
-			server.init() // initializes s.connected map
-
-			var wg sync.WaitGroup
-			ctx, cancel := context.WithCancel(context.Background())
-
-			// discoverPeers blocks in its tick loop; run in a goroutine
-			// and cancel after tick() executes synchronously.
-			if tt.useLocal {
-				go server.discoverPeers(ctx, &wg, 1*time.Hour, trackerLocal)
-			}
-			if tt.useRemote {
-				go server.discoverPeers(ctx, &wg, 1*time.Hour, trackerRemote)
-			}
-
-			// Wait for tick() to run (it's synchronous and fast), then cancel.
-			time.Sleep(20 * time.Millisecond)
-			cancel()
-			wg.Wait()
-
-			// Check that the correct resolvers were called.
-			if tt.wantLocalCall {
-				assert.GreaterOrEqual(t, trackerLocal.CallCount(), 1, "expected local resolver to be called")
-				lastCall, ok := trackerLocal.LastCall()
-				if assert.True(t, ok, "local resolver should have been called") {
-					assert.Equal(t, tt.wantQueryRole, lastCall.Role)
-					assert.Equal(t, tt.wantQueryLimit, lastCall.Limit)
-				}
-			} else {
-				assert.Equal(t, 0, trackerLocal.CallCount(), "expected local resolver NOT to be called")
-			}
-
-			if tt.wantRemoteCall {
-				assert.GreaterOrEqual(t, trackerRemote.CallCount(), 1, "expected remote resolver to be called")
-				lastCall, ok := trackerRemote.LastCall()
-				if assert.True(t, ok, "remote resolver should have been called") {
-					assert.Equal(t, tt.wantQueryRole, lastCall.Role)
-					assert.Equal(t, tt.wantQueryLimit, lastCall.Limit)
-				}
-			} else {
-				assert.Equal(t, 0, trackerRemote.CallCount(), "expected remote resolver NOT to be called")
-			}
-		})
-	}
-}
-
-// TestDiscoverPeers_HubDialsAllRemoteHubs verifies that a hub node dials
-// every remote hub the tie-break assigns to it: self is excluded (the
-// registry lists every hub, including the requester) and hubs whose node ID
-// sorts below ours are left to place the call themselves. Addresses are
-// recorded in server.connected by the dial goroutines spawned from the first
-// tick, so the snapshot is taken before cancel() lets maintainPeer's cleanup
-// remove them.
-func TestDiscoverPeers_HubDialsAllRemoteHubs(t *testing.T) {
-	// hub-2 is us: hub-0 and hub-1 sort lower (their side dials us), hub-2 is
-	// self, hub-3 and hub-4 sort higher (we dial them).
-	peers := []ResolvedPeer{
-		{ID: "hub-0", Address: "moqt://hub-0:4433", Region: "us-east", Role: "hub"},
-		{ID: "hub-1", Address: "moqt://hub-1:4433", Region: "eu-west", Role: "hub"},
-		{ID: "hub-2", Address: "moqt://hub-2:4433", Region: "ap-south", Role: "hub"},
-		{ID: "hub-3", Address: "moqt://hub-3:4433", Region: "us-west", Role: "hub"},
-		{ID: "hub-4", Address: "moqt://hub-4:4433", Region: "sa-east", Role: "hub"},
-	}
-
+// TestConnectPeers_UpstreamAddr tests that both PEERS and UPSTREAM_ADDR
+// addresses are dialed, including that UPSTREAM_ADDR entries are trimmed.
+func TestConnectPeers_UpstreamAddr(t *testing.T) {
 	server := newTestServer("localhost:4433")
-	server.Config = &Config{Role: "hub", NodeID: "hub-2"}
-	server.remoteResolver = &stubResolver{peers: peers}
+	server.Config = &Config{
+		Peers:        []Peer{{Address: "peer1:4433"}},
+		UpstreamAddr: "hub1:4433, hub2:4433",
+	}
+
 	server.init()
 
-	var wg sync.WaitGroup
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	go server.discoverPeers(ctx, &wg, 1*time.Hour, server.remoteResolver)
+	done := make(chan struct{})
+	go func() {
+		server.ConnectPeers(ctx)
+		close(done)
+	}()
 
-	// Not synctest: maintainPeer's dial goroutines run real address
-	// resolution inside gomoqt, which a bubble cannot advance. Entries are
-	// only ever added until cancel(), so a bounded wait on the count is safe.
-	require.Eventually(t, func() bool {
-		server.connectedMu.Lock()
-		defer server.connectedMu.Unlock()
-		return len(server.connected) == 2
-	}, 2*time.Second, 5*time.Millisecond, "expected the two tie-break-assigned hubs to be marked dialing")
-
-	server.connectedMu.Lock()
-	got := make([]string, 0, len(server.connected))
-	for addr := range server.connected {
-		got = append(got, addr)
-	}
-	server.connectedMu.Unlock()
+	// Each dial is marked connected synchronously in dialPeer before its
+	// maintainPeer goroutine ever touches the network, so this should observe
+	// all three addresses (1 from PEERS, 2 trimmed from UPSTREAM_ADDR) well
+	// before any real dial to these unreachable hosts could complete.
+	assert.Eventually(t, func() bool {
+		return server.isConnected("peer1:4433") &&
+			server.isConnected("hub1:4433") &&
+			server.isConnected("hub2:4433")
+	}, 5*time.Second, 20*time.Millisecond, "PEERS and UPSTREAM_ADDR addresses should all be dialed")
 
 	cancel()
-	wg.Wait()
-
-	assert.ElementsMatch(t,
-		[]string{"moqt://hub-3:4433", "moqt://hub-4:4433"},
-		got, "hub should dial only self-excluded, tie-break-assigned remote hubs")
+	<-done
 }
 
-// TestRemoteHubPeers covers the registry-list filter directly: self-exclusion,
-// the mutual-dial tie-break, ID-less peers (cannot be tie-broken, dialed),
-// and the empty-node-ID pass-through.
-func TestRemoteHubPeers(t *testing.T) {
-	peers := []ResolvedPeer{
-		{ID: "hub-a", Address: "moqt://hub-a:4433"},
-		{ID: "hub-b", Address: "moqt://hub-b:4433"},
-		{ID: "hub-c", Address: "moqt://hub-c:4433"},
-		{ID: "", Address: "moqt://anon:4433"},
-	}
 
-	tests := map[string]struct {
-		nodeID string
-		want   []string
-	}{
-		"empty node ID disables filtering": {
-			nodeID: "",
-			want:   []string{"moqt://hub-a:4433", "moqt://hub-b:4433", "moqt://hub-c:4433", "moqt://anon:4433"},
-		},
-		"self excluded, lower IDs deferred to their side, ID-less dialed": {
-			nodeID: "hub-b",
-			want:   []string{"moqt://hub-c:4433", "moqt://anon:4433"},
-		},
-		"lowest node ID dials everything but self": {
-			nodeID: "hub-a",
-			want:   []string{"moqt://hub-b:4433", "moqt://hub-c:4433", "moqt://anon:4433"},
-		},
-	}
-	for name, tt := range tests {
-		t.Run(name, func(t *testing.T) {
-			got := remoteHubPeers(peers, tt.nodeID)
-			addrs := make([]string, 0, len(got))
-			for _, p := range got {
-				addrs = append(addrs, p.Address)
-			}
-			assert.ElementsMatch(t, tt.want, addrs)
-		})
-	}
-}
 
 // TestServer_Address_Formats tests various address formats
 func TestServer_Address_Formats(t *testing.T) {
@@ -608,4 +389,28 @@ func TestServer_Address_Formats(t *testing.T) {
 			assert.Equal(t, tt.addr, server.MOQServer.Addr, "Address should be preserved")
 		})
 	}
+}
+
+// TestResolveUpstreamAddrs verifies that resolveUpstreamAddrs handles IPs,
+// multi-record lookups (localhost resolves to 127.0.0.1 and/or ::1), and unparseable strings.
+func TestResolveUpstreamAddrs(t *testing.T) {
+	ctx := context.Background()
+
+	// 1. IP address passes through unchanged.
+	ipResults := resolveUpstreamAddrs(ctx, "127.0.0.1:4433")
+	assert.Equal(t, []string{"127.0.0.1:4433"}, ipResults)
+
+	// 2. localhost resolves to local IP(s) with port preserved.
+	lhResults := resolveUpstreamAddrs(ctx, "localhost:4433")
+	assert.NotEmpty(t, lhResults)
+	for _, r := range lhResults {
+		host, port, err := net.SplitHostPort(r)
+		assert.NoError(t, err)
+		assert.Equal(t, "4433", port)
+		assert.NotNil(t, net.ParseIP(host))
+	}
+
+	// 3. Comma-separated addresses work as expected.
+	multiResults := resolveUpstreamAddrs(ctx, "127.0.0.1:4433, 10.0.0.1:4433")
+	assert.Equal(t, []string{"127.0.0.1:4433", "10.0.0.1:4433"}, multiResults)
 }

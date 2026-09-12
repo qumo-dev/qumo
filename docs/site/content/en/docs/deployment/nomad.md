@@ -1,61 +1,65 @@
 ---
 title: Nomad
-description: Nomad-native peer discovery — relays find their local-cluster peers via the Nomad service catalog instead of static PEERS.
+description: Deploying qumo relays on Nomad using the static UPSTREAM_ADDR / PEERS topology.
 weight: 3
 ---
 
-Instead of hand-listing `PEERS`, relays running inside a Nomad cluster can
-discover their local-cluster peers through Nomad's own service catalog. This
-is scoped to **within one cluster** (one region); cross-region hub↔hub
-discovery uses the separate remote resolver instead (see
-[Configuration → Remote traffic resolver]({{< relref "../configuration" >}}#remote-traffic-resolver-optional)).
+qumo has no runtime peer-discovery service — relays connect to a fixed,
+comma-separated list of addresses configured via `PEERS` and `UPSTREAM_ADDR`
+(see [Configuration → Static peers]({{< relref "../configuration" >}}#static-peers)).
+Running on Nomad is no different: point each relay's `UPSTREAM_ADDR` (and/or
+`PEERS`) at a stable address for the peer(s) it should connect to.
 
 ## How it works
 
-- Each relay registers itself as a Nomad service (via your job spec's
-  `service` block), tagged with its role.
-- **Edges** poll the service catalog for peers tagged `role=hub` and connect
-  to *all* of them — this is correct as long as each region runs its own
-  Nomad cluster, since an edge has no way to filter by region within one
-  cluster's catalog.
-- **Hubs** take no action on the local resolver — they don't connect to other
-  local hubs (cross-region hub↔hub is the remote resolver's job, not
-  Nomad's).
+- Each relay is a normal Nomad task; no `service` discovery lookups happen at
+  the relay's own initiative.
+- To give a relay a **stable address** other relays can dial (e.g. a hub other
+  edges connect to), give its Nomad job a fixed, well-known address — a static
+  host port, a Consul DNS name (e.g. `role-hub.qumo-relay.service.consul:4433`
+  when running Consul alongside Nomad), or a Docker network alias if relays
+  share a Docker network (see the demo below).
+- **Edges** set `UPSTREAM_ADDR` to their hub's address(es). **Hubs** leave it
+  unset unless they too connect upward (e.g. a further regional hub).
 
 ## Configuration
 
 | Variable | Default | Description |
 |---|---|---|
-| `LOCAL_RESOLVER_ADDR` | (empty) | Nomad HTTP API address (e.g. `http://nomad.service.consul:4646`). Overrides `NOMAD_ADDR`. |
-| `NOMAD_ADDR` | (empty) | Set by Nomad inside an allocation; used when `LOCAL_RESOLVER_ADDR` is unset. |
-| `LOCAL_RESOLVER_SERVICE_NAME` | `qumo-relay` | Nomad service name to query for peer discovery. |
-| `LOCAL_RESOLVER_INTERVAL` | `15s` | Polling interval. |
+| `UPSTREAM_ADDR` | (empty) | Comma-separated upstream relay address(es) to dial, e.g. an edge's hub(s). |
+| `PEERS` | (empty) | Comma-separated static peer addresses (symmetric peering, not upstream-specific). |
 
-Running inside a Nomad allocation you normally set neither: Nomad exports
-`NOMAD_ADDR` itself, and the relay falls back to it, then to
-`http://localhost:4646` if that is absent too. Set `LOCAL_RESOLVER_ADDR` only
-to point at an API address Nomad did not provide.
+`--role hub`/`--role edge` is a CLI flag on `qumo relay` — it is an
+operator-facing label logged at startup for visibility only and does not
+affect which addresses are dialed. See
+[CLI → relay]({{< relref "../cli/relay" >}}).
 
-See [Configuration → Local resolver]({{< relref "../configuration" >}}#local-resolver--nomad-native-discovery)
-for the full reference. `--role hub`/`--role edge` is a CLI flag on
-`qumo relay`, not an env var — see [CLI → relay]({{< relref "../cli/relay" >}}).
+## Demo job spec
 
-## Job spec
-
-Register each relay under the same service name, tagged by role, so
-`LOCAL_RESOLVER_SERVICE_NAME` resolves both:
+`docker/nomad/qumo-cluster.nomad.hcl` runs a real single-region Nomad cluster
+exercising this topology: 2 hubs, each given a stable Docker-network alias via
+the docker driver's `network_aliases` config, and 2 edges with a fixed
+`UPSTREAM_ADDR = "hub-0:4433,hub-1:4433"`. See
+[`docker/nomad/README.md`](https://github.com/qumo-dev/qumo/blob/main/docker/nomad/README.md)
+for how to run and verify it.
 
 ```hcl
-service {
-  name         = "qumo-relay"
-  port         = "moqt"
-  address_mode = "driver" # register the container's actual reachable IP
-  tags         = ["role=hub"]  # or "role=edge"
+# hub task
+config {
+  network_mode    = "qumo-net"
+  network_aliases = ["hub-${NOMAD_ALLOC_INDEX}"]
+  args            = ["relay", "--role", "hub"]
+}
+
+# edge task
+env {
+  UPSTREAM_ADDR = "hub-0:4433,hub-1:4433"
 }
 ```
 
-`LocalResolver` filters strictly on the `role=` tag — any other tags are
-ignored by the relay itself.
+For a production Nomad deployment with Consul installed, a Consul DNS name
+(`<service>.service.consul`) is usually the simpler stable address to put in
+`UPSTREAM_ADDR` instead of a fixed per-index alias.
 
 ## Verify
 
@@ -64,6 +68,5 @@ nomad service info qumo-relay
 ```
 
 On an **edge**, `qumo_relay_peers_connected` (from `/metrics`) should reach
-the number of hubs registered; on a **hub**, it should stay `0` — hubs take
-no local action by design. Give it ~`LOCAL_RESOLVER_INTERVAL` after the
-allocations report healthy.
+the number of addresses in its `UPSTREAM_ADDR`; on a **hub** with no
+`UPSTREAM_ADDR`/`PEERS` set, it stays `0`.

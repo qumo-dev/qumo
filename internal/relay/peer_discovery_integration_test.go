@@ -13,16 +13,12 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
-	"encoding/json"
 	"encoding/pem"
 	"fmt"
 	"math/big"
 	"net"
-	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"strconv"
 	"testing"
 	"time"
 
@@ -45,13 +41,13 @@ func freeUDPPort(t *testing.T) int {
 	return c.LocalAddr().(*net.UDPAddr).Port
 }
 
-// TestPeerDiscovery_EdgeConnectsToHubViaLocalResolver is an in-process integration
-// test for the LocalResolver path: a real edge relay discovers a real hub relay
-// through a fake Nomad service-catalog endpoint and completes a QUIC/MOQT
+// TestPeerDiscovery_EdgeConnectsToHubViaUpstreamAddr is an in-process
+// integration test for the UPSTREAM_ADDR path: a real edge relay, configured
+// with UpstreamAddr pointing at a real hub relay, completes a QUIC/MOQT
 // handshake to it. No Docker or Nomad required — this complements the manual
-// docker/nomad simulation and would catch regressions in the discover→dial loop
-// (e.g. the #93 class, where an edge filtered out all hubs).
-func TestPeerDiscovery_EdgeConnectsToHubViaLocalResolver(t *testing.T) {
+// docker/nomad simulation and would catch regressions in the dial loop (e.g.
+// the #93 class, where an edge filtered out all hubs).
+func TestPeerDiscovery_EdgeConnectsToHubViaUpstreamAddr(t *testing.T) {
 	certFile, keyFile := createTempCert(t)
 	cert, err := tls.LoadX509KeyPair(certFile, keyFile)
 	require.NoError(t, err)
@@ -103,36 +99,13 @@ func TestPeerDiscovery_EdgeConnectsToHubViaLocalResolver(t *testing.T) {
 		return true
 	}, 5*time.Second, 100*time.Millisecond, "hub never became reachable")
 
-	// ── Fake Nomad: serves the hub as a `qumo-relay` service tagged role=hub ──
-	host, portStr, err := net.SplitHostPort(hubAddr)
-	require.NoError(t, err)
-	port, err := strconv.Atoi(portStr)
-	require.NoError(t, err)
-	nomad := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_ = json.NewEncoder(w).Encode([]localService{{
-			ID:          "hub-1",
-			ServiceName: "qumo-relay",
-			Address:     host,
-			Port:        port,
-			Tags:        []string{"role=hub", "region=test"},
-			Datacenter:  "dc1",
-		}})
-	}))
-	t.Cleanup(nomad.Close)
-
-	// ── Edge relay: LocalResolver pointed at the fake Nomad ──
+	// ── Edge relay: UpstreamAddr pointed directly at the hub ──
 	edge := &Server{
 		MOQServer: &moqt.Server{Addr: "127.0.0.1:0", TLSConfig: serverTLS, QUICConfig: quicCfg},
 		MOQDialer: &moqt.Dialer{TLSConfig: dialerTLS, QUICConfig: quicCfg},
 		Config: &Config{
 			NodeID: "edge-1", Role: "edge",
-			LocalResolverInterval: 200 * time.Millisecond,
-		},
-		localResolver: &LocalResolver{
-			addr:        nomad.URL,
-			serviceName: "qumo-relay",
-			interval:    200 * time.Millisecond,
-			httpClient:  nomad.Client(),
+			UpstreamAddr: hubAddr,
 		},
 	}
 
@@ -140,10 +113,10 @@ func TestPeerDiscovery_EdgeConnectsToHubViaLocalResolver(t *testing.T) {
 	t.Cleanup(cancel)
 	go edge.ConnectPeers(ctx)
 
-	// ── Assert: the edge discovered the hub via Nomad and completed the dial ──
+	// ── Assert: the edge dialed UpstreamAddr and completed the handshake ──
 	require.Eventually(t, func() bool {
 		return testutil.ToFloat64(metricPeerDialAttempts.WithLabelValues(hubAddr, "ok")) >= 1
-	}, 10*time.Second, 200*time.Millisecond, "edge never completed a QUIC handshake to the discovered hub")
+	}, 10*time.Second, 200*time.Millisecond, "edge never completed a QUIC handshake to the upstream hub")
 
 	require.GreaterOrEqual(t, testutil.ToFloat64(metricPeersConnected), 1.0,
 		"peers_connected should reflect the maintained edge→hub connection")
