@@ -1,5 +1,5 @@
-# Real single-region Nomad cluster for manually verifying the LocalResolver
-# (Nomad native service discovery) path. This is a SIMULATION, not an automated
+# Real single-region Nomad cluster for manually verifying the static UPSTREAM_ADDR
+# edge->hub topology. This is a SIMULATION, not an automated
 # test — bring it up and verify by hand per docker/nomad/README.md.
 #
 # Prerequisite — build the relay image into the host Docker first, so Nomad's

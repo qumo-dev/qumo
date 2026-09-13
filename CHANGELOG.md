@@ -18,7 +18,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Removed
 - **Retired legacy `LocalResolver` and `RemoteResolver` (`internal/relay`).**
   Replaced dynamic control-plane peer discovery microservices and Nomad API
-  polling with direct DNS and static peer configuration (`UPSTREAM_ADDR` / `PEERS`).
+  polling with direct DNS and static peer configuration (`UPSTREAM_ADDR` / `PEERS`),
+  and cleaned up remaining historical references across docs and Nomad manifests.
 
 ### Changed
 - **Use standard library `uuid` package for broadcast session IDs (`internal/relay`).**

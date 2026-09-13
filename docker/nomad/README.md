@@ -19,10 +19,10 @@ fixed `UPSTREAM_ADDR = "hub-0:4433,hub-1:4433"` matching the hubs group's
 `count`. Hubs get no `UPSTREAM_ADDR`, so within one cluster only edge→hub
 connections form.
 
-There is no dynamic peer discovery (the former Nomad-native `LocalResolver`
-and cross-cluster `RemoteResolver` mechanisms were removed; see
-internal/relay/server.go `ConnectPeers`), so this sim only demonstrates a
-fixed topology, not runtime discovery of scaled-up/down hubs.
+There is no dynamic peer discovery (peer routing uses static
+`PEERS` and `UPSTREAM_ADDR`; see internal/relay/server.go `ConnectPeers`),
+so this sim only demonstrates a fixed topology, not runtime discovery
+of scaled-up/down hubs.
 
 > This is a manual simulation. There are **no automated integration tests** wired
 > to it by design.

@@ -4,11 +4,9 @@
 # internal/relay/server.go ConnectPeers) on real Nomad-launched containers,
 # complementing docker-compose.static.yml's plain-Docker-Compose version.
 #
-# There is no dynamic peer discovery any more (the former Nomad-native
-# LocalResolver / cross-cluster RemoteResolver mechanisms were removed);
-# edges are pointed at the hubs via a fixed UPSTREAM_ADDR list, resolved
-# through Docker's embedded DNS using each hub's network_aliases on the
-# shared "qumo-net" network.
+# There is no dynamic peer discovery; edges are pointed at the hubs via
+# a fixed UPSTREAM_ADDR list, resolved through Docker's embedded DNS
+# using each hub's network_aliases on the shared "qumo-net" network.
 #
 # Cross-region hub<->hub is out of scope here — see docker/nomad/README.md.
 
