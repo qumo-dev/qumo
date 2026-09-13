@@ -155,7 +155,7 @@ qumo/
 │   ├── docker-compose.yml               # Single relay (local build)
 │   ├── docker-compose.external.yml      # Single relay (GHCR prebuilt)
 │   ├── docker-compose.static.yml        # 3-region topology, static PEERS (no discovery)
-│   ├── docker-compose.nomad.yml         # Single-region Nomad cluster (LocalResolver)
+│   ├── docker-compose.nomad.yml         # Single-region Nomad cluster (UPSTREAM_ADDR sim)
 │   ├── nomad/                           # Nomad agent config + job spec
 │   └── README.md               # Docker usage guide
 │

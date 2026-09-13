@@ -249,7 +249,6 @@ CERT_FILE=cert.pem, KEY_FILE=key.pem  # self-signed dev cert
 CA_FILE=cert.pem                   # same file is both cert and CA
 RELAY_GOGC=800                     # match existing bench config
 GROUP_CACHE_SIZE=8                 # default
-LOCAL_RESOLVER_INTERVAL=0s         # no Nomad
 --role (unset)                     # flat mode (no hub/edge)
 ```
 
