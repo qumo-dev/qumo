@@ -10,7 +10,7 @@ require (
 	github.com/quic-go/quic-go v0.62.0
 	github.com/qumo-dev/gomoqt v0.17.0
 	github.com/stretchr/testify v1.12.1
-	golang.org/x/sync v0.22.0
+	golang.org/x/sync v0.23.0
 )
 
 require (
