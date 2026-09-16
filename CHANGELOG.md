@@ -8,9 +8,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
-- **Per-track relay subscription and distributor metrics (`internal/relay`).**
-  Adds Prometheus gauges for active subscriptions and counters for distributor
-  reuse/setup, labeled by observed broadcast path and track name.
+- **Per-track relay subscription and upstream request metrics (`internal/relay`).**
+  Adds Prometheus gauges for active subscriptions, distributor reuse and
+  upstream request counters, errors, and duration, labeled by observed
+  broadcast path and track name.
 
 - **`/routes` relay route snapshot endpoint (`internal/relay`).** Exposes
   active broadcast paths with their selected upstream source, hop count,
