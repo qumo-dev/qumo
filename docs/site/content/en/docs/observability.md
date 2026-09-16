@@ -37,11 +37,18 @@ All metrics are under the `qumo_relay_` prefix.
 |---|---|---|
 | `qumo_relay_sessions_active` | Gauge | Current number of active MoQT relay sessions. |
 | `qumo_relay_subscribers_active` | Gauge | Current number of active MoQT track subscribers. |
+| `qumo_relay_track_subscriptions_active{path,track}` | Gauge | Current downstream subscriptions observed for a broadcast path and track. |
+| `qumo_relay_track_cache_hits_total{path,track}` | Counter | Track subscription requests served by an existing relay distributor. |
+| `qumo_relay_track_cache_misses_total{path,track}` | Counter | Track subscription requests that required upstream track setup. |
 | `qumo_relay_session_rtt_ms{remote}` | Gauge | Smoothed RTT to each MoQT session, in ms. |
 | `qumo_relay_session_rtt_seconds{remote}` | Histogram | Distribution of session RTT. |
 | `qumo_relay_session_estimated_bitrate_bps{remote}` | Gauge | Estimated available bandwidth per session. |
 | `qumo_relay_conn_smoothed_rtt_ms{remote}` | Gauge | QUIC-layer smoothed RTT (native QUIC connections only; WebTransport connections are skipped since the transport doesn't expose `ConnectionStats()`). |
 | `qumo_relay_conn_packet_loss_rate{remote}` | Gauge | Cumulative packet loss rate (lost/sent) for native QUIC connections. |
+
+Track labels are derived from observed broadcast requests and are intentionally
+limited to the broadcast path and track name. Subscriber IDs, session IDs, and
+remote addresses are not labels, avoiding unbounded per-subscriber series.
 
 ### Peer mesh
 

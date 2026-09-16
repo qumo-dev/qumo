@@ -11,6 +11,7 @@ import (
 type overlayPathStatus struct {
 	Path        string    `json:"path"`
 	Active      bool      `json:"active"`
+	AnnouncedAt time.Time `json:"announced_at"`
 	Hops        int       `json:"hops"`
 	RTTMs       int64     `json:"rtt_ms,omitempty"`
 	BitrateBps  uint64    `json:"bitrate_bps"`

@@ -23,6 +23,9 @@ func TestMetrics_Initialization(t *testing.T) {
 	metricSubscribersActive.Set(25.0)
 	assert.Equal(t, 25.0, testutil.ToFloat64(metricSubscribersActive))
 
+	metricTrackSubscriptionsActive.WithLabelValues("/live/camera", "video").Set(2.0)
+	assert.Equal(t, 2.0, testutil.ToFloat64(metricTrackSubscriptionsActive.WithLabelValues("/live/camera", "video")))
+
 	metricGroupFillsInflight.Set(3.0)
 	assert.Equal(t, 3.0, testutil.ToFloat64(metricGroupFillsInflight))
 
@@ -65,6 +68,12 @@ func TestMetrics_Initialization(t *testing.T) {
 	metricSubscribeErrorsTotal.WithLabelValues("not_found").Inc()
 	assert.Equal(t, 1.0, testutil.ToFloat64(metricSubscribeErrorsTotal.WithLabelValues("not_found")))
 
+	metricTrackCacheHitsTotal.WithLabelValues("/live/camera", "video").Inc()
+	assert.Equal(t, 1.0, testutil.ToFloat64(metricTrackCacheHitsTotal.WithLabelValues("/live/camera", "video")))
+
+	metricTrackCacheMissesTotal.WithLabelValues("/live/camera", "video").Inc()
+	assert.Equal(t, 1.0, testutil.ToFloat64(metricTrackCacheMissesTotal.WithLabelValues("/live/camera", "video")))
+
 	// Verify histogram vectors
 	metricSessionRTTHistogram.Reset()
 	histRTT := metricSessionRTTHistogram.WithLabelValues("test_client")
@@ -92,6 +101,9 @@ func TestMetrics_Lint(t *testing.T) {
 		metricConnSmoothedRTT,
 		metricConnPacketLossRate,
 		metricSubscribersActive,
+		metricTrackSubscriptionsActive,
+		metricTrackCacheHitsTotal,
+		metricTrackCacheMissesTotal,
 		metricSubscriberSkipsTotal,
 		metricBufferDepthGroups,
 		metricGroupFillsInflight,

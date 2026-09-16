@@ -321,11 +321,13 @@ func (h *relayHandler) ServeTrack(tw *moqt.TrackWriter) {
 	// Fast path: reuse existing distributor
 	trackID := "[" + h.nodeID + "]" + string(tw.BroadcastPath) + "/" + string(tw.TrackName)
 	if d, ok := h.tracks.load(trackID); ok {
+		metricTrackCacheHitsTotal.WithLabelValues(string(tw.BroadcastPath), string(tw.TrackName)).Inc()
 		logger.Debug("relay: ServeTrack fast path — reusing distributor", "track_id", trackID)
 		d.egress(tw)
 		return
 	}
 
+	metricTrackCacheMissesTotal.WithLabelValues(string(tw.BroadcastPath), string(tw.TrackName)).Inc()
 	logger.Debug("relay: ServeTrack — no existing distributor, will subscribe upstream", "track_id", trackID)
 
 	// Dedup: only one upstream subscribe per track name at a time
@@ -549,6 +551,10 @@ func (d *trackDistributor) egress(tw *moqt.TrackWriter) {
 
 	metricSubscribersActive.Inc()
 	defer metricSubscribersActive.Dec()
+	path := tw.BroadcastPath.String()
+	track := string(tw.TrackName)
+	metricTrackSubscriptionsActive.WithLabelValues(path, track).Inc()
+	defer metricTrackSubscriptionsActive.WithLabelValues(path, track).Dec()
 
 	// Track the last seen notify sequence so we can detect new data without
 	// per-subscriber channels or RWMutex contention. Each call to broadcast()
