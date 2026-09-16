@@ -198,7 +198,7 @@ func resolveFramePool(cfg *Config) *FramePool {
 	return DefaultFramePool
 }
 
-func (s *Server) setPathStatus(path moqt.BroadcastPath, stats RouteStats, source string) {
+func (s *Server) setPathStatus(path moqt.BroadcastPath, stats RouteStats, source string, handler *relayHandler) {
 	if s == nil {
 		return
 	}
@@ -215,10 +215,11 @@ func (s *Server) setPathStatus(path moqt.BroadcastPath, stats RouteStats, source
 		BitrateBps:  stats.EstimatedBitrate,
 		Source:      source,
 		LastUpdated: time.Now(),
+		handler:     handler,
 	}
 }
 
-func (s *Server) clearPathStatus(path moqt.BroadcastPath) {
+func (s *Server) clearPathStatus(path moqt.BroadcastPath, handler *relayHandler) {
 	if s == nil {
 		return
 	}
@@ -227,7 +228,9 @@ func (s *Server) clearPathStatus(path moqt.BroadcastPath) {
 	if s.pathStatus == nil {
 		return
 	}
-	delete(s.pathStatus, path)
+	if current, ok := s.pathStatus[path]; ok && current.handler == handler {
+		delete(s.pathStatus, path)
+	}
 }
 
 // ListenAndServe starts the relay server.
@@ -612,7 +615,7 @@ func (s *Server) installRoute(h *relayHandler) {
 	if h.session != nil && h.session.RemoteAddr() != nil {
 		source = h.session.RemoteAddr().String()
 	}
-	s.setPathStatus(h.announcement.BroadcastPath(), h.RouteStats(), source)
+	s.setPathStatus(h.announcement.BroadcastPath(), h.RouteStats(), source, h)
 
 	// Register the broadcast session with the meter so usage is reported
 	// periodically and on session close.
@@ -631,7 +634,7 @@ func (s *Server) installRoute(h *relayHandler) {
 	// inline; promotion re-enters the TrackMux and must run only after end()
 	// (and TrackMux's own removal handler) has fully completed.
 	h.announcement.AfterFunc(func() {
-		s.clearPathStatus(h.announcement.BroadcastPath())
+		s.clearPathStatus(h.announcement.BroadcastPath(), h)
 		go s.promoteAlternate(h.announcement.BroadcastPath())
 	})
 

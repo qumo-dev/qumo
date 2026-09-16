@@ -16,6 +16,7 @@ type overlayPathStatus struct {
 	BitrateBps  uint64    `json:"bitrate_bps"`
 	Source      string    `json:"source,omitempty"`
 	LastUpdated time.Time `json:"last_updated"`
+	handler     *relayHandler
 }
 
 // overlayStatus is a structured JSON snapshot for placement and route visibility.
