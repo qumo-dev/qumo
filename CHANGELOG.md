@@ -8,6 +8,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **`/routes` relay route snapshot endpoint (`internal/relay`).** Exposes
+  active broadcast paths with their selected upstream source, hop count,
+  RTT estimate, bitrate, and route update time for incident investigation.
+  This complements Prometheus `/metrics`, which remains the source for
+  time-series dashboards and alerts.
+
 - **`UPSTREAM_ADDR` configuration for hierarchical and edge relays (`internal/relay`).**
   Edge relays connect upstream to regional hub relays (or hierarchical relays
   connect to upstream relays) specified via `UPSTREAM_ADDR`. When a DNS hostname
