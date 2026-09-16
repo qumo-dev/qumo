@@ -134,11 +134,11 @@ const (
 	decisionRTT                          // candidate has significantly lower RTT
 
 	// Reject decisions: candidate is not better.
-	decisionDeadCandidate      // candidate is not alive
-	decisionInferiorHops       // candidate has more hops
-	decisionInferiorBitrate    // candidate has lower bitrate
-	decisionInferiorRTT        // candidate has higher or equal RTT
-	decisionEqualOrUnknown     // RTT unknown (0) for one or both routes
+	decisionDeadCandidate   // candidate is not alive
+	decisionInferiorHops    // candidate has more hops
+	decisionInferiorBitrate // candidate has lower bitrate
+	decisionInferiorRTT     // candidate has higher or equal RTT
+	decisionEqualOrUnknown  // RTT unknown (0) for one or both routes
 
 	decisionLowBitrateMargin // candidate has higher bitrate but not by enough margin
 	decisionLowRTTMargin     // candidate has lower RTT but not by enough margin
@@ -321,6 +321,7 @@ func (h *relayHandler) ServeTrack(tw *moqt.TrackWriter) {
 	// Fast path: reuse existing distributor
 	trackID := "[" + h.nodeID + "]" + string(tw.BroadcastPath) + "/" + string(tw.TrackName)
 	if d, ok := h.tracks.load(trackID); ok {
+		metricTrackDistributorReusesTotal.WithLabelValues(string(tw.BroadcastPath), string(tw.TrackName)).Inc()
 		logger.Debug("relay: ServeTrack fast path — reusing distributor", "track_id", trackID)
 		d.egress(tw)
 		return
@@ -385,8 +386,14 @@ func (h *relayHandler) subscribe(name moqt.TrackName) *trackDistributor {
 		"announcement_active", announcement.IsActive(),
 	)
 
+	path := string(announcement.BroadcastPath())
+	track := string(name)
+	metricTrackUpstreamRequestsTotal.WithLabelValues(path, track).Inc()
+	start := time.Now()
 	src, err := session.Subscribe(h.ctx, announcement.BroadcastPath(), name, nil)
+	metricTrackUpstreamRequestDuration.WithLabelValues(path, track).Observe(time.Since(start).Seconds())
 	if err != nil {
+		metricTrackUpstreamRequestErrorsTotal.WithLabelValues(path, track).Inc()
 		slog.Warn("relay: upstream subscribe failed",
 			"node", h.nodeID,
 			"broadcast_path", announcement.BroadcastPath(),
@@ -549,6 +556,10 @@ func (d *trackDistributor) egress(tw *moqt.TrackWriter) {
 
 	metricSubscribersActive.Inc()
 	defer metricSubscribersActive.Dec()
+	path := tw.BroadcastPath.String()
+	track := string(tw.TrackName)
+	metricTrackSubscriptionsActive.WithLabelValues(path, track).Inc()
+	defer metricTrackSubscriptionsActive.WithLabelValues(path, track).Dec()
 
 	// Track the last seen notify sequence so we can detect new data without
 	// per-subscriber channels or RWMutex contention. Each call to broadcast()

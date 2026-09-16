@@ -199,6 +199,56 @@ var (
 		Help:      "Current number of active MoQT track subscribers.",
 	})
 
+	metricTrackSubscriptionsActive = promauto.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Namespace: "qumo",
+			Subsystem: "relay",
+			Name:      "track_subscriptions_active",
+			Help:      "Current downstream subscriptions observed for each broadcast path and track.",
+		},
+		[]string{"path", "track"},
+	)
+
+	metricTrackDistributorReusesTotal = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Namespace: "qumo",
+			Subsystem: "relay",
+			Name:      "track_distributor_reuses_total",
+			Help:      "Total track subscription requests served by an existing relay distributor.",
+		},
+		[]string{"path", "track"},
+	)
+
+	metricTrackUpstreamRequestsTotal = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Namespace: "qumo",
+			Subsystem: "relay",
+			Name:      "track_upstream_requests_total",
+			Help:      "Total upstream track subscription requests.",
+		},
+		[]string{"path", "track"},
+	)
+
+	metricTrackUpstreamRequestErrorsTotal = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Namespace: "qumo",
+			Subsystem: "relay",
+			Name:      "track_upstream_request_errors_total",
+			Help:      "Total failed upstream track subscription requests.",
+		},
+		[]string{"path", "track"},
+	)
+
+	metricTrackUpstreamRequestDuration = promauto.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Namespace: "qumo",
+			Subsystem: "relay",
+			Name:      "track_upstream_request_duration_seconds",
+			Help:      "Duration of upstream track subscription requests.",
+		},
+		[]string{"path", "track"},
+	)
+
 	// metricSubscriberSkipsTotal counts how many times a subscriber was skipped
 	// forward because it fell behind the ring buffer.
 	metricSubscriberSkipsTotal = promauto.NewCounter(prometheus.CounterOpts{

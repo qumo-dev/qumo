@@ -23,6 +23,9 @@ func TestMetrics_Initialization(t *testing.T) {
 	metricSubscribersActive.Set(25.0)
 	assert.Equal(t, 25.0, testutil.ToFloat64(metricSubscribersActive))
 
+	metricTrackSubscriptionsActive.WithLabelValues("/live/camera", "video").Set(2.0)
+	assert.Equal(t, 2.0, testutil.ToFloat64(metricTrackSubscriptionsActive.WithLabelValues("/live/camera", "video")))
+
 	metricGroupFillsInflight.Set(3.0)
 	assert.Equal(t, 3.0, testutil.ToFloat64(metricGroupFillsInflight))
 
@@ -65,6 +68,18 @@ func TestMetrics_Initialization(t *testing.T) {
 	metricSubscribeErrorsTotal.WithLabelValues("not_found").Inc()
 	assert.Equal(t, 1.0, testutil.ToFloat64(metricSubscribeErrorsTotal.WithLabelValues("not_found")))
 
+	metricTrackDistributorReusesTotal.WithLabelValues("/live/camera", "video").Inc()
+	assert.Equal(t, 1.0, testutil.ToFloat64(metricTrackDistributorReusesTotal.WithLabelValues("/live/camera", "video")))
+
+	metricTrackUpstreamRequestsTotal.WithLabelValues("/live/camera", "video").Inc()
+	assert.Equal(t, 1.0, testutil.ToFloat64(metricTrackUpstreamRequestsTotal.WithLabelValues("/live/camera", "video")))
+
+	metricTrackUpstreamRequestErrorsTotal.WithLabelValues("/live/camera", "video").Inc()
+	assert.Equal(t, 1.0, testutil.ToFloat64(metricTrackUpstreamRequestErrorsTotal.WithLabelValues("/live/camera", "video")))
+
+	metricTrackUpstreamRequestDuration.WithLabelValues("/live/camera", "video").Observe(0.1)
+	assert.Equal(t, 1, testutil.CollectAndCount(metricTrackUpstreamRequestDuration))
+
 	// Verify histogram vectors
 	metricSessionRTTHistogram.Reset()
 	histRTT := metricSessionRTTHistogram.WithLabelValues("test_client")
@@ -92,6 +107,11 @@ func TestMetrics_Lint(t *testing.T) {
 		metricConnSmoothedRTT,
 		metricConnPacketLossRate,
 		metricSubscribersActive,
+		metricTrackSubscriptionsActive,
+		metricTrackDistributorReusesTotal,
+		metricTrackUpstreamRequestsTotal,
+		metricTrackUpstreamRequestErrorsTotal,
+		metricTrackUpstreamRequestDuration,
 		metricSubscriberSkipsTotal,
 		metricBufferDepthGroups,
 		metricGroupFillsInflight,

@@ -207,14 +207,16 @@ func (s *Server) setPathStatus(path moqt.BroadcastPath, stats RouteStats, source
 	if s.pathStatus == nil {
 		s.pathStatus = make(map[moqt.BroadcastPath]overlayPathStatus)
 	}
+	now := time.Now()
 	s.pathStatus[path] = overlayPathStatus{
 		Path:        path.String(),
 		Active:      true,
+		AnnouncedAt: now,
 		Hops:        stats.Hops,
 		RTTMs:       stats.RTT.Milliseconds(),
 		BitrateBps:  stats.EstimatedBitrate,
 		Source:      source,
-		LastUpdated: time.Now(),
+		LastUpdated: now,
 		handler:     handler,
 	}
 }
