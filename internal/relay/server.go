@@ -70,6 +70,11 @@ type Server struct {
 	// announcement ends. See retainRoute / promoteAlternate.
 	routeMu    sync.Mutex
 	alternates map[moqt.BroadcastPath]*alternate
+
+	// pathStatusMu guards pathStatus, the deploy-facing snapshot of active
+	// broadcast paths and their route metrics.
+	pathStatusMu sync.Mutex
+	pathStatus   map[moqt.BroadcastPath]overlayPathStatus
 }
 
 func (s *Server) ServeHealth(w http.ResponseWriter, r *http.Request) {
@@ -79,6 +84,15 @@ func (s *Server) ServeHealth(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.statusHandler.ServeHTTP(w, r)
+}
+
+func (s *Server) ServeStatus(w http.ResponseWriter, r *http.Request) {
+	s.init()
+	if s.statusHandler == nil {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		return
+	}
+	s.statusHandler.ServeStatus(w, r)
 }
 
 func (s *Server) HandleWebTransport(w http.ResponseWriter, r *http.Request) {
@@ -107,6 +121,10 @@ func (s *Server) init() {
 
 		if s.statusHandler == nil {
 			s.statusHandler = newStatusHandler()
+		}
+		s.statusHandler.server = s
+		if s.pathStatus == nil {
+			s.pathStatus = make(map[moqt.BroadcastPath]overlayPathStatus)
 		}
 
 		// Wire relay-specific fields into the caller-provided MoQServer.
@@ -178,6 +196,41 @@ func resolveFramePool(cfg *Config) *FramePool {
 		return NewFramePool(cfg.FrameCapacity)
 	}
 	return DefaultFramePool
+}
+
+func (s *Server) setPathStatus(path moqt.BroadcastPath, stats RouteStats, source string, handler *relayHandler) {
+	if s == nil {
+		return
+	}
+	s.pathStatusMu.Lock()
+	defer s.pathStatusMu.Unlock()
+	if s.pathStatus == nil {
+		s.pathStatus = make(map[moqt.BroadcastPath]overlayPathStatus)
+	}
+	s.pathStatus[path] = overlayPathStatus{
+		Path:        path.String(),
+		Active:      true,
+		Hops:        stats.Hops,
+		RTTMs:       stats.RTT.Milliseconds(),
+		BitrateBps:  stats.EstimatedBitrate,
+		Source:      source,
+		LastUpdated: time.Now(),
+		handler:     handler,
+	}
+}
+
+func (s *Server) clearPathStatus(path moqt.BroadcastPath, handler *relayHandler) {
+	if s == nil {
+		return
+	}
+	s.pathStatusMu.Lock()
+	defer s.pathStatusMu.Unlock()
+	if s.pathStatus == nil {
+		return
+	}
+	if current, ok := s.pathStatus[path]; ok && current.handler == handler {
+		delete(s.pathStatus, path)
+	}
 }
 
 // ListenAndServe starts the relay server.
@@ -525,11 +578,11 @@ func (s *Server) serveSession(sess *moqt.Session, requireAuth bool) {
 		}
 		if !rejected {
 			slog.Info("relay: route accepted (new broadcast)",
-			"node", s.Config.NodeID,
-			"broadcast_path", ann.BroadcastPath(),
-			"hops", candidateStats.Hops,
-			"rtt_ms", candidateStats.RTT.Milliseconds(),
-			"bitrate_bps", candidateStats.EstimatedBitrate,
+				"node", s.Config.NodeID,
+				"broadcast_path", ann.BroadcastPath(),
+				"hops", candidateStats.Hops,
+				"rtt_ms", candidateStats.RTT.Milliseconds(),
+				"bitrate_bps", candidateStats.EstimatedBitrate,
 			)
 			s.installRoute(handler)
 		}
@@ -558,6 +611,12 @@ func (s *Server) installRoute(h *relayHandler) {
 	// Session-end cleanup of the handler's child context is registered in
 	// newRelayHandler (where the session is guaranteed non-nil), not here.
 
+	source := ""
+	if h.session != nil && h.session.RemoteAddr() != nil {
+		source = h.session.RemoteAddr().String()
+	}
+	s.setPathStatus(h.announcement.BroadcastPath(), h.RouteStats(), source, h)
+
 	// Register the broadcast session with the meter so usage is reported
 	// periodically and on session close.
 	if h.broadSession != nil {
@@ -575,6 +634,7 @@ func (s *Server) installRoute(h *relayHandler) {
 	// inline; promotion re-enters the TrackMux and must run only after end()
 	// (and TrackMux's own removal handler) has fully completed.
 	h.announcement.AfterFunc(func() {
+		s.clearPathStatus(h.announcement.BroadcastPath(), h)
 		go s.promoteAlternate(h.announcement.BroadcastPath())
 	})
 
