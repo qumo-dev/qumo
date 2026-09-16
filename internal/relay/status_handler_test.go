@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/qumo-dev/gomoqt/moqt"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -84,4 +85,34 @@ func TestStatusHandler_InvalidMethod(t *testing.T) {
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	assert.Equal(t, http.StatusMethodNotAllowed, rec.Code)
+}
+
+func TestStatusHandler_OverlayStatus(t *testing.T) {
+	h := newStatusHandler()
+	h.server = &Server{
+		pathStatus: map[moqt.BroadcastPath]overlayPathStatus{
+			moqt.BroadcastPath("live/camera1"): {
+				Path:       "live/camera1",
+				Active:     true,
+				Hops:       2,
+				RTTMs:      42,
+				BitrateBps: 3000000,
+				Source:     "10.0.0.10:4433",
+			},
+		},
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/status", nil)
+	w := httptest.NewRecorder()
+	h.ServeStatus(w, req)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	var resp overlayStatus
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	require.Len(t, resp.Paths, 1)
+	assert.Equal(t, "live/camera1", resp.Paths[0].Path)
+	assert.Equal(t, 2, resp.Paths[0].Hops)
+	assert.Equal(t, int64(42), resp.Paths[0].RTTMs)
+	assert.Equal(t, uint64(3000000), resp.Paths[0].BitrateBps)
+	assert.Equal(t, "10.0.0.10:4433", resp.Paths[0].Source)
 }
