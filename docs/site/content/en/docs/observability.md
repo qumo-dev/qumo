@@ -22,10 +22,38 @@ curl http://localhost:4433/metrics
 
 `/routes` is a point-in-time JSON snapshot for incident investigation. It
 reports each active broadcast path, its selected upstream source, hop count,
-upstream RTT estimate, estimated bitrate, and route update time. It is
+announcement time, upstream RTT estimate, estimated bitrate, and route update
+time. It is
 intentionally separate from `/metrics`: Prometheus remains the source for
 time-series dashboards and alerts, while `/routes` exposes the current
 path-to-route mapping.
+
+Example response:
+
+```json
+{
+  "timestamp": "2026-09-17T00:00:12.345Z",
+  "uptime": "2h14m8.2s",
+  "live": true,
+  "ready": true,
+  "paths": [
+    {
+      "path": "/live/camera",
+      "active": true,
+      "announced_at": "2026-09-16T23:58:01.120Z",
+      "hops": 2,
+      "rtt_ms": 18,
+      "bitrate_bps": 4500000,
+      "source": "hub-a:4433",
+      "last_updated": "2026-09-17T00:00:10.901Z"
+    }
+  ]
+}
+```
+
+An empty `paths` array means that the relay is healthy but has no active
+broadcast route at the time of the request. The snapshot is local to the
+relay; it is not a cluster-wide route inventory.
 
 ## Prometheus metrics
 
@@ -51,6 +79,30 @@ All metrics are under the `qumo_relay_` prefix.
 Track labels are derived from observed broadcast requests and are intentionally
 limited to the broadcast path and track name. Subscriber IDs, session IDs, and
 remote addresses are not labels, avoiding unbounded per-subscriber series.
+
+Example `/metrics` output for one observed track:
+
+```text
+# HELP qumo_relay_track_subscriptions_active Current number of downstream subscriptions observed for each broadcast path and track.
+# TYPE qumo_relay_track_subscriptions_active gauge
+qumo_relay_track_subscriptions_active{path="/live/camera",track="video"} 3
+# HELP qumo_relay_track_distributor_reuses_total Total track subscription requests served by an existing relay distributor.
+# TYPE qumo_relay_track_distributor_reuses_total counter
+qumo_relay_track_distributor_reuses_total{path="/live/camera",track="video"} 12
+# HELP qumo_relay_track_upstream_requests_total Total upstream track subscription requests.
+# TYPE qumo_relay_track_upstream_requests_total counter
+qumo_relay_track_upstream_requests_total{path="/live/camera",track="video"} 1
+# HELP qumo_relay_track_upstream_request_errors_total Total failed upstream track subscription requests.
+# TYPE qumo_relay_track_upstream_request_errors_total counter
+qumo_relay_track_upstream_request_errors_total{path="/live/camera",track="video"} 0
+# HELP qumo_relay_track_upstream_request_duration_seconds Duration of upstream track subscription requests.
+# TYPE qumo_relay_track_upstream_request_duration_seconds histogram
+qumo_relay_track_upstream_request_duration_seconds_sum{path="/live/camera",track="video"} 0.042
+```
+
+`track_upstream_requests_total` counts upstream `Subscribe` calls, not every
+downstream request. Concurrent downstream requests that share one in-flight
+upstream setup are deduplicated.
 
 ### Peer mesh
 
