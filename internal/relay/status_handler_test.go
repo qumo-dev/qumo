@@ -102,7 +102,7 @@ func TestStatusHandler_OverlayStatus(t *testing.T) {
 		},
 	}
 
-	req := httptest.NewRequest(http.MethodGet, "/status", nil)
+	req := httptest.NewRequest(http.MethodGet, "/routes", nil)
 	w := httptest.NewRecorder()
 	h.ServeStatus(w, req)
 

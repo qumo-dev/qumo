@@ -5,18 +5,27 @@ weight: 4
 ---
 
 The relay's HTTP port (same port as QUIC/MoQT — `RELAY_ADDR`, default
-`:4433`) serves three endpoints alongside the MoQT WebTransport handler:
+`:4433`) serves these endpoints alongside the MoQT WebTransport handler:
 
 | Path | Purpose |
 |---|---|
 | `/health` | Health/status probe |
+| `/routes` | Current broadcast paths and selected upstream route details |
 | `/metrics` | Prometheus metrics |
 | `/debug/pprof/*` | Runtime profiling (opt-in via `RELAY_PPROF=1`) |
 
 ```bash
 curl http://localhost:4433/health
+curl http://localhost:4433/routes
 curl http://localhost:4433/metrics
 ```
+
+`/routes` is a point-in-time JSON snapshot for incident investigation. It
+reports each active broadcast path, its selected upstream source, hop count,
+upstream RTT estimate, estimated bitrate, and route update time. It is
+intentionally separate from `/metrics`: Prometheus remains the source for
+time-series dashboards and alerts, while `/routes` exposes the current
+path-to-route mapping.
 
 ## Prometheus metrics
 

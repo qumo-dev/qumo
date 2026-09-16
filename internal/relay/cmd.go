@@ -222,7 +222,7 @@ func Run(args []string) error {
 
 	httpMux.HandleFunc("/", relayServer.HandleWebTransport)
 	httpMux.HandleFunc("/health", relayServer.ServeHealth)
-	httpMux.HandleFunc("/status", relayServer.ServeStatus)
+	httpMux.HandleFunc("/routes", relayServer.ServeStatus)
 	httpMux.Handle("/metrics", promhttp.Handler())
 
 	// /debug/stages exposes gomoqt's per-stage accept pipeline counters when the
