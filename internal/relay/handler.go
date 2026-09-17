@@ -107,6 +107,9 @@ type relayHandler struct {
 	nodeID       string
 	broadSession *broadcastSession // nil when metering is disabled
 
+	trackInfoCache sync.Map           // moqt.TrackName -> moqt.PublishInfo
+	infoFlights    singleflight.Group // deduplicates concurrent upstream TrackInfo queries
+
 	// sampler is the server-wide stats sampler, passed to each track
 	// distributor this handler creates (see subscribe). nil is valid (nil-safe
 	// methods) for a handler built without a Server.
@@ -313,22 +316,41 @@ func (h *relayHandler) RouteStats() RouteStats {
 }
 
 // TrackInfo implements moqt.TrackInfoProvider by querying the upstream session
-// for the track's immutable publisher properties (TRACK_INFO).
+// for the track's immutable publisher properties (TRACK_INFO), caching the result
+// and deduplicating concurrent upstream queries with singleflight.
 func (h *relayHandler) TrackInfo(name moqt.TrackName) (pubInfo moqt.PublishInfo, ok bool) {
+	// Fast path: cache hit
+	if val, found := h.trackInfoCache.Load(name); found {
+		return val.(moqt.PublishInfo), true
+	}
+
 	if h.session == nil || h.announcement == nil || !h.announcement.IsActive() || h.ctx.Err() != nil {
 		return moqt.PublishInfo{}, false
 	}
+
 	defer func() {
 		if r := recover(); r != nil {
 			pubInfo = moqt.PublishInfo{}
 			ok = false
 		}
 	}()
-	info, err := h.session.TrackInfo(h.ctx, h.announcement.BroadcastPath(), name)
-	if err != nil || info == nil {
+
+	res, err, _ := h.infoFlights.Do(string(name), func() (any, error) {
+		// Double-check cache inside flight
+		if val, found := h.trackInfoCache.Load(name); found {
+			return val.(moqt.PublishInfo), nil
+		}
+		info, err := h.session.TrackInfo(h.ctx, h.announcement.BroadcastPath(), name)
+		if err != nil || info == nil {
+			return nil, errTrackNotFound
+		}
+		h.trackInfoCache.Store(name, *info)
+		return *info, nil
+	})
+	if err != nil || res == nil {
 		return moqt.PublishInfo{}, false
 	}
-	return *info, true
+	return res.(moqt.PublishInfo), true
 }
 
 func (h *relayHandler) ServeTrack(tw *moqt.TrackWriter) {

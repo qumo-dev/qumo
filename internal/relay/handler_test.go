@@ -224,6 +224,21 @@ func TestRelayHandler_RouteStats_Interface(t *testing.T) {
 	// Since session is a dummy &moqt.Session{} without active transport, TrackInfo should return false cleanly without panic
 	_, found := tip.TrackInfo("video")
 	assert.False(t, found)
+
+	// Pre-populate cache to test fast-path hit
+	h.trackInfoCache.Store(moqt.TrackName("video"), moqt.PublishInfo{
+		Priority:   128,
+		Ordered:    true,
+		MaxLatency: 2000,
+		Timescale:  1_000_000,
+	})
+
+	info, found := tip.TrackInfo("video")
+	assert.True(t, found)
+	assert.Equal(t, moqt.TrackPriority(128), info.Priority)
+	assert.True(t, info.Ordered)
+	assert.Equal(t, uint64(2000), info.MaxLatency)
+	assert.Equal(t, uint64(1_000_000), info.Timescale)
 }
 
 // TestRelayHandler_Hops_LocalAnnouncement confirms that a locally created
