@@ -52,6 +52,7 @@ func maxGroupFillsInFlightOrPanic() int {
 }
 
 var _ moqt.TrackHandler = (*relayHandler)(nil)
+var _ moqt.TrackInfoProvider = (*relayHandler)(nil)
 var _ RouteReporter = (*relayHandler)(nil)
 var _ Drainable = (*relayHandler)(nil)
 
@@ -309,6 +310,25 @@ func (h *relayHandler) RouteStats() RouteStats {
 	}
 
 	return rs
+}
+
+// TrackInfo implements moqt.TrackInfoProvider by querying the upstream session
+// for the track's immutable publisher properties (TRACK_INFO).
+func (h *relayHandler) TrackInfo(name moqt.TrackName) (pubInfo moqt.PublishInfo, ok bool) {
+	if h.session == nil || h.announcement == nil || !h.announcement.IsActive() || h.ctx.Err() != nil {
+		return moqt.PublishInfo{}, false
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			pubInfo = moqt.PublishInfo{}
+			ok = false
+		}
+	}()
+	info, err := h.session.TrackInfo(h.ctx, h.announcement.BroadcastPath(), name)
+	if err != nil || info == nil {
+		return moqt.PublishInfo{}, false
+	}
+	return *info, true
 }
 
 func (h *relayHandler) ServeTrack(tw *moqt.TrackWriter) {

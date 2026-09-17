@@ -21,6 +21,7 @@ const (
 )
 
 var _ moqt.TrackHandler = (*ingestHandler)(nil)
+var _ moqt.TrackInfoProvider = (*ingestHandler)(nil)
 
 // ---------------------------------------------------------------------------
 // ingestHandler — moqt.TrackHandler implementation
@@ -57,6 +58,35 @@ func newIngestHandler(ctx context.Context) (*ingestHandler, error) {
 // blocks until the subscriber disconnects or the publisher ends.
 func (h *ingestHandler) ServeTrack(tw *moqt.TrackWriter) {
 	h.broadcast.ServeTrack(tw)
+}
+
+// TrackInfo implements moqt.TrackInfoProvider by returning the immutable publisher
+// properties for video, audio, and the MSF catalog track according to moq-lite draft-05.
+func (h *ingestHandler) TrackInfo(name moqt.TrackName) (moqt.PublishInfo, bool) {
+	switch name {
+	case "video":
+		return moqt.PublishInfo{
+			Priority:   128,
+			Ordered:    true,
+			MaxLatency: 2000,
+			Timescale:  1_000_000,
+		}, true
+	case "audio":
+		return moqt.PublishInfo{
+			Priority:   128,
+			Ordered:    false,
+			MaxLatency: 2000,
+			Timescale:  1_000_000,
+		}, true
+	case h.broadcast.CatalogTrackName():
+		return moqt.PublishInfo{
+			Priority:  255,
+			Ordered:   true,
+			Timescale: 1000,
+		}, true
+	default:
+		return moqt.PublishInfo{}, false
+	}
 }
 
 // registerVideo adds (or replaces) the video track in the broadcast catalog

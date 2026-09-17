@@ -207,7 +207,7 @@ func TestRelayHandler_SingleflightDedup(t *testing.T) {
 // ============================================================================
 
 // TestRelayHandler_RouteStats_Interface verifies that *relayHandler satisfies
-// the RouteReporter interface and is discoverable via type assertion.
+// the RouteReporter and moqt.TrackInfoProvider interfaces and is discoverable via type assertion.
 func TestRelayHandler_RouteStats_Interface(t *testing.T) {
 	ctx := context.Background()
 	h := newTestRelayHandler(ctx)
@@ -216,6 +216,14 @@ func TestRelayHandler_RouteStats_Interface(t *testing.T) {
 	rr, ok := th.(RouteReporter)
 	require.True(t, ok, "*relayHandler must implement RouteReporter")
 	assert.NotNil(t, rr)
+
+	tip, ok := th.(moqt.TrackInfoProvider)
+	require.True(t, ok, "*relayHandler must implement moqt.TrackInfoProvider")
+	assert.NotNil(t, tip)
+
+	// Since session is a dummy &moqt.Session{} without active transport, TrackInfo should return false cleanly without panic
+	_, found := tip.TrackInfo("video")
+	assert.False(t, found)
 }
 
 // TestRelayHandler_Hops_LocalAnnouncement confirms that a locally created

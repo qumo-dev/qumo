@@ -23,6 +23,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 - **Bumped `github.com/qumo-dev/gomoqt` to v0.18.0 (#392).**
+  - Implemented `moqt.TrackInfoProvider` across `internal/ingest` and `internal/relay`
+    to answer `TRACK_INFO` control requests with immutable publisher properties
+    (delivery priority, group ordering preference, max latency, and timescale)
+    as specified in `moq-lite` draft-05.
   - Aligned MOQ Streaming Format catalog generation and parsing with
     `draft-ietf-moq-msf-01` §5.1.7 and §5.2.13 (`InitRef` referencing
     `InitDataList` entries rather than inline `InitData` strings).

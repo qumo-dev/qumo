@@ -752,3 +752,37 @@ func TestRegisterVideoAndAudio(t *testing.T) {
 	require.NoError(t, json.Unmarshal(raw["tracks"], &tracks))
 	assert.Len(t, tracks, 2)
 }
+
+func TestIngestHandler_TrackInfo(t *testing.T) {
+	h, err := newIngestHandler(context.Background())
+	require.NoError(t, err)
+
+	var tip moqt.TrackInfoProvider = h
+
+	// Test video track info
+	vInfo, ok := tip.TrackInfo("video")
+	assert.True(t, ok)
+	assert.Equal(t, moqt.TrackPriority(128), vInfo.Priority)
+	assert.True(t, vInfo.Ordered)
+	assert.Equal(t, uint64(2000), vInfo.MaxLatency)
+	assert.Equal(t, uint64(1_000_000), vInfo.Timescale)
+
+	// Test audio track info
+	aInfo, ok := tip.TrackInfo("audio")
+	assert.True(t, ok)
+	assert.Equal(t, moqt.TrackPriority(128), aInfo.Priority)
+	assert.False(t, aInfo.Ordered)
+	assert.Equal(t, uint64(2000), aInfo.MaxLatency)
+	assert.Equal(t, uint64(1_000_000), aInfo.Timescale)
+
+	// Test catalog track info
+	cInfo, ok := tip.TrackInfo(h.broadcast.CatalogTrackName())
+	assert.True(t, ok)
+	assert.Equal(t, moqt.TrackPriority(255), cInfo.Priority)
+	assert.True(t, cInfo.Ordered)
+	assert.Equal(t, uint64(1000), cInfo.Timescale)
+
+	// Unknown track
+	_, ok = tip.TrackInfo("unknown")
+	assert.False(t, ok)
+}
