@@ -22,6 +22,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and cleaned up remaining historical references across docs and Nomad manifests.
 
 ### Changed
+- **Bumped `github.com/qumo-dev/gomoqt` to v0.18.0 (#392).**
+  - Aligned MOQ Streaming Format catalog generation and parsing with
+    `draft-ietf-moq-msf-01` §5.1.7 and §5.2.13 (`InitRef` referencing
+    `InitDataList` entries rather than inline `InitData` strings).
+  - Updated `moqt.Dialer.DialQUIC` callers across the relay server and integration
+    tests to supply the new `path` parameter.
+
 - **Use standard library `uuid` package for broadcast session IDs (`internal/relay`).**
   Replaced hand-rolled UUID v4 generation (`crypto/rand` + `encoding/hex`) in
   `newUUIDv4` with Go 1.27's standard library `uuid.NewV4()`.
