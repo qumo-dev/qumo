@@ -132,7 +132,7 @@ func connect(ctx context.Context, cfg feedConfig) (*moqt.Session, mediaInfo, err
 	// that is not ready yet rather than a usable feed, and failing the connect
 	// lets connectWithRetry wait with the same backoff it uses for a missing
 	// broadcast.
-	packager, err := packagerForTrack(track)
+	packager, err := packagerForTrack(catalog, track)
 	if err != nil {
 		// not actionable: the close outcome is irrelevant once the catalog could not describe the track.
 		_ = session.CloseWithError(moqt.NoError, "catalog cannot describe the track")
@@ -152,7 +152,7 @@ func connect(ctx context.Context, cfg feedConfig) (*moqt.Session, mediaInfo, err
 }
 
 // packagerForTrack builds the CMAF packager a catalog track describes.
-func packagerForTrack(t *msf.Track) (*cmaf.Packager, error) {
+func packagerForTrack(c msf.Catalog, t *msf.Track) (*cmaf.Packager, error) {
 	if t.Width == nil || t.Height == nil {
 		return nil, fmt.Errorf("hls: track %q states no picture size", t.Name)
 	}
@@ -161,8 +161,9 @@ func packagerForTrack(t *msf.Track) (*cmaf.Packager, error) {
 		Width:  uint16(*t.Width),
 		Height: uint16(*t.Height),
 		// AVC and HEVC carry their parameter sets out of band; the LOC
-		// publisher puts them in the catalog as initData.
-		Description: initFromTrack(t),
+		// publisher puts them in the catalog's InitDataList, referenced by
+		// the track's initRef.
+		Description: initFromTrack(c, t),
 	})
 }
 
@@ -224,13 +225,24 @@ func trackSchema(t *msf.Track) ledger.TrackSchema {
 	return s
 }
 
-// initFromTrack base64-decodes the track's InitData (the fMP4 init), returning
-// nil when the track carries none or it is malformed.
-func initFromTrack(t *msf.Track) []byte {
-	if t.InitData == "" {
+// initFromTrack base64-decodes the fMP4 init data the track's initRef points
+// at in the catalog's InitDataList, returning nil when the track carries no
+// initRef, the ref is unresolved, or the data is malformed.
+func initFromTrack(c msf.Catalog, t *msf.Track) []byte {
+	if t.InitRef == "" {
 		return nil
 	}
-	b, err := base64.StdEncoding.DecodeString(t.InitData)
+	var data string
+	for i := range c.InitDataList {
+		if c.InitDataList[i].ID == t.InitRef {
+			data = c.InitDataList[i].Data
+			break
+		}
+	}
+	if data == "" {
+		return nil
+	}
+	b, err := base64.StdEncoding.DecodeString(data)
 	if err != nil {
 		// Treated as absent: the packager rejects a track it cannot describe
 		// (an AVC catalog without parameter sets) with a clearer message than a

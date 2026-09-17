@@ -108,7 +108,7 @@ func (c *Collector) collectCatalog(ctx context.Context, sess *moqt.Session, obs 
 			Name:     t.Name,
 			Role:     string(t.Role),
 			Codec:    t.Codec,
-			InitData: t.InitData,
+			InitData: resolveInitData(cat, t.InitRef),
 		}
 		if t.Width != nil {
 			to.Width = int(*t.Width)
@@ -120,6 +120,21 @@ func (c *Collector) collectCatalog(ctx context.Context, sess *moqt.Session, obs 
 		obs.Order = append(obs.Order, t.Name)
 	}
 	return nil
+}
+
+// resolveInitData looks up the base64 init data an InitRef points at in the
+// catalog's InitDataList (draft-ietf-moq-msf-01 §5.1.7/§5.2.13). Returns ""
+// when ref is empty or unresolved.
+func resolveInitData(cat msf.Catalog, ref string) string {
+	if ref == "" {
+		return ""
+	}
+	for i := range cat.InitDataList {
+		if cat.InitDataList[i].ID == ref {
+			return cat.InitDataList[i].Data
+		}
+	}
+	return ""
 }
 
 // collectMedia subscribes to one media track and drains up to MaxGroups groups

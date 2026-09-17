@@ -66,25 +66,30 @@ func Test_trackSchema(t *testing.T) {
 func Test_packagerForTrack(t *testing.T) {
 	w, h := int64(1280), int64(720)
 
-	p, err := packagerForTrack(&msf.Track{
+	p, err := packagerForTrack(msf.Catalog{}, &msf.Track{
 		Name: "video", Packaging: msf.PackagingLOC,
 		Codec: "vp09.00.10.08", Width: &w, Height: &h,
 	})
 	require.NoError(t, err)
 	assert.NotEmpty(t, p.Init(), "the init segment comes from the catalog, not from media")
 
-	_, err = packagerForTrack(&msf.Track{Name: "video", Codec: "vp09.00.10.08"})
+	_, err = packagerForTrack(msf.Catalog{}, &msf.Track{Name: "video", Codec: "vp09.00.10.08"})
 	assert.Error(t, err, "no picture size")
 }
 
-// initFromTrack base64-decodes the catalog InitData (the fMP4 init), tolerating
-// its absence or malformed values.
+// initFromTrack base64-decodes the catalog's InitDataList entry the track's
+// initRef points at (the fMP4 init), tolerating its absence or malformed values.
 func Test_initFromTrack(t *testing.T) {
 	want := []byte("fmp4-init-bytes")
+	catalog := msf.Catalog{InitDataList: []msf.InitDataRef{
+		{ID: "video", Type: "inline", Data: base64.StdEncoding.EncodeToString(want)},
+		{ID: "bad", Type: "inline", Data: "!!!not-base64!!!"},
+	}}
 
-	assert.Equal(t, want, initFromTrack(&msf.Track{InitData: base64.StdEncoding.EncodeToString(want)}))
-	assert.Nil(t, initFromTrack(&msf.Track{}), "no InitData yields no init")
-	assert.Nil(t, initFromTrack(&msf.Track{InitData: "!!!not-base64!!!"}), "malformed InitData yields no init")
+	assert.Equal(t, want, initFromTrack(catalog, &msf.Track{InitRef: "video"}))
+	assert.Nil(t, initFromTrack(catalog, &msf.Track{}), "no InitRef yields no init")
+	assert.Nil(t, initFromTrack(catalog, &msf.Track{InitRef: "missing"}), "unresolved InitRef yields no init")
+	assert.Nil(t, initFromTrack(catalog, &msf.Track{InitRef: "bad"}), "malformed init data yields no init")
 }
 
 // wallclockAt derives a group's wall-clock anchor from its media time, so the

@@ -346,7 +346,7 @@ func (s *Server) maintainPeer(ctx context.Context, peer Peer) {
 			return
 		}
 
-		sess, err := s.MOQDialer.DialQUIC(ctx, peer.Address, s.TrackMux)
+		sess, err := s.MOQDialer.DialQUIC(ctx, peer.Address, "", s.TrackMux)
 		if err != nil {
 			metricPeerDialAttempts.WithLabelValues(peer.Address, "error").Inc()
 			metricDialRetriesTotal.WithLabelValues(peer.Address).Inc()
@@ -376,7 +376,7 @@ func (s *Server) maintainPeer(ctx context.Context, peer Peer) {
 			if !jitterDelay(ctx, 100*time.Millisecond) {
 				return
 			}
-			sess, err = s.MOQDialer.DialQUIC(ctx, peer.Address, s.TrackMux)
+			sess, err = s.MOQDialer.DialQUIC(ctx, peer.Address, "", s.TrackMux)
 			if err != nil {
 				metricPeerDialAttempts.WithLabelValues(peer.Address, "error").Inc()
 				metricDialRetriesTotal.WithLabelValues(peer.Address).Inc()

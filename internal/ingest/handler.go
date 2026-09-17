@@ -73,11 +73,44 @@ func (h *ingestHandler) registerVideo(cfg *AVCConfig) error {
 		Codec:     cfg.CodecString(),
 		Width:     new(int64(cfg.Width)),
 		Height:    new(int64(cfg.Height)),
-		InitData:  videoInitData(cfg),
+	}
+	if err := h.setInitData(&track, "video", videoInitData(cfg)); err != nil {
+		return err
 	}
 	return h.broadcast.RegisterTrack(track, moqt.TrackHandlerFunc(func(tw *moqt.TrackWriter) {
 		h.video.serve(tw)
 	}))
+}
+
+// setInitData records data as an inline entry in the broadcast's catalog
+// InitDataList and points track.InitRef at it (draft-ietf-moq-msf-01
+// §5.1.7/§5.2.13 replaced the per-track inline initData with a catalog-level
+// list referenced by id). A no-op when data is empty.
+func (h *ingestHandler) setInitData(track *msf.Track, id, data string) error {
+	if data == "" {
+		return nil
+	}
+	catalog := h.broadcast.Catalog()
+	replaced := false
+	for i := range catalog.InitDataList {
+		if catalog.InitDataList[i].ID == id {
+			catalog.InitDataList[i].Data = data
+			replaced = true
+			break
+		}
+	}
+	if !replaced {
+		catalog.InitDataList = append(catalog.InitDataList, msf.InitDataRef{
+			ID:   id,
+			Type: "inline",
+			Data: data,
+		})
+	}
+	if err := h.broadcast.SetCatalog(catalog); err != nil {
+		return fmt.Errorf("setting init data: %w", err)
+	}
+	track.InitRef = id
+	return nil
 }
 
 // videoInitData returns the Base64-encoded AVCDecoderConfigurationRecord for a
@@ -106,7 +139,9 @@ func (h *ingestHandler) registerAudio(cfg *AACConfig) error {
 		Codec:         cfg.CodecString(),
 		SampleRate:    new(int64(cfg.SampleRate)),
 		ChannelConfig: strconv.Itoa(cfg.ChannelConfig),
-		InitData:      audioInitData(cfg),
+	}
+	if err := h.setInitData(&track, "audio", audioInitData(cfg)); err != nil {
+		return err
 	}
 	return h.broadcast.RegisterTrack(track, moqt.TrackHandlerFunc(func(tw *moqt.TrackWriter) {
 		h.audio.serve(tw)

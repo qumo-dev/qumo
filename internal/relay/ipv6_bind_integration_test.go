@@ -71,7 +71,7 @@ func TestServer_DualStackBind_ReachableOverIPv6(t *testing.T) {
 		for _, target := range targets {
 			probe := &moqt.Dialer{TLSConfig: dialerTLS, QUICConfig: quicCfg}
 			ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
-			sess, derr := probe.DialQUIC(ctx, target, moqt.NewTrackMux(0))
+			sess, derr := probe.DialQUIC(ctx, target, "", moqt.NewTrackMux(0))
 			cancel()
 			if derr != nil {
 				return false
