@@ -255,6 +255,12 @@ func pullStream(ctx context.Context, srcURL string, sess *Session) error {
 	}
 	slog.Info("RTSP pull streaming started", "source", srcURL, "tracks", len(channelToTrack))
 
+	// Start a keepalive goroutine to prevent the server from dropping the
+	// session. RTSP servers (e.g. mediamtx) tear down sessions after the
+	// timeout window (typically 60s) if no keepalive is received.
+	stopKeepalive := startKeepalive(ctx, client)
+	defer stopKeepalive()
+
 	for ctx.Err() == nil {
 		frame, err := client.ReadInterleaved()
 		if err != nil {
@@ -267,6 +273,50 @@ func pullStream(ctx context.Context, srcURL string, sess *Session) error {
 		track.handleFrame(frame)
 	}
 	return nil
+}
+
+// defaultSessionTimeout is assumed when the RTSP server does not advertise a
+// timeout in the Session header (RFC 2326 §12.37 defaults to 60 seconds).
+const defaultSessionTimeout = 60 * time.Second
+
+// startKeepalive launches a background goroutine that sends periodic
+// GET_PARAMETER requests to keep the RTSP session alive. It returns a stop
+// function that cancels the goroutine. The keepalive interval is half the
+// session timeout, clamped to [5s, 30s].
+func startKeepalive(ctx context.Context, client *rtsp.Client) func() {
+	timeout := client.SessionTimeout()
+	if timeout == 0 {
+		timeout = defaultSessionTimeout
+	}
+	interval := timeout / 2
+	if interval < 5*time.Second {
+		interval = 5 * time.Second
+	}
+	if interval > 30*time.Second {
+		interval = 30 * time.Second
+	}
+
+	done := make(chan struct{})
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				if err := client.SendKeepalive(); err != nil {
+					slog.Debug("RTSP keepalive failed", "error", err)
+					return
+				}
+				slog.Debug("RTSP keepalive sent", "interval", interval)
+			case <-ctx.Done():
+				return
+			case <-done:
+				return
+			}
+		}
+	}()
+
+	return func() { close(done) }
 }
 
 // resolveControlURL resolves an SDP media's a=control URL against the session
