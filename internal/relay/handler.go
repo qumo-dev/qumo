@@ -52,6 +52,7 @@ func maxGroupFillsInFlightOrPanic() int {
 }
 
 var _ moqt.TrackHandler = (*relayHandler)(nil)
+var _ moqt.TrackInfoProvider = (*relayHandler)(nil)
 var _ RouteReporter = (*relayHandler)(nil)
 var _ Drainable = (*relayHandler)(nil)
 
@@ -105,6 +106,9 @@ type relayHandler struct {
 	flights      singleflight.Group
 	nodeID       string
 	broadSession *broadcastSession // nil when metering is disabled
+
+	trackInfoCache sync.Map           // moqt.TrackName -> moqt.PublishInfo
+	infoFlights    singleflight.Group // deduplicates concurrent upstream TrackInfo queries
 
 	// sampler is the server-wide stats sampler, passed to each track
 	// distributor this handler creates (see subscribe). nil is valid (nil-safe
@@ -309,6 +313,51 @@ func (h *relayHandler) RouteStats() RouteStats {
 	}
 
 	return rs
+}
+
+// TrackInfo implements moqt.TrackInfoProvider by querying the upstream session
+// for the track's immutable publisher properties (TRACK_INFO), caching the result
+// and deduplicating concurrent upstream queries with singleflight.
+func (h *relayHandler) TrackInfo(name moqt.TrackName) (pubInfo moqt.PublishInfo, ok bool) {
+	// Fast path: cache hit
+	if val, found := h.trackInfoCache.Load(name); found {
+		return val.(moqt.PublishInfo), true
+	}
+
+	// Capture local snapshots for thread-safety and stable references
+	session := h.session
+	announcement := h.announcement
+	ctx := h.ctx
+
+	if session == nil || announcement == nil || !announcement.IsActive() || ctx.Err() != nil {
+		return moqt.PublishInfo{}, false
+	}
+
+	path := announcement.BroadcastPath()
+
+	defer func() {
+		if r := recover(); r != nil {
+			pubInfo = moqt.PublishInfo{}
+			ok = false
+		}
+	}()
+
+	res, err, _ := h.infoFlights.Do(string(name), func() (any, error) {
+		// Double-check cache inside flight
+		if val, found := h.trackInfoCache.Load(name); found {
+			return val.(moqt.PublishInfo), nil
+		}
+		info, err := session.TrackInfo(ctx, path, name)
+		if err != nil || info == nil {
+			return nil, errTrackNotFound
+		}
+		h.trackInfoCache.Store(name, *info)
+		return *info, nil
+	})
+	if err != nil || res == nil {
+		return moqt.PublishInfo{}, false
+	}
+	return res.(moqt.PublishInfo), true
 }
 
 func (h *relayHandler) ServeTrack(tw *moqt.TrackWriter) {

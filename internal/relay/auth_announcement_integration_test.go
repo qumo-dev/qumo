@@ -165,7 +165,7 @@ func startAuthRelay(t *testing.T, stub *stubCredentialBackend) (addr string, shu
 		probe := &moqt.Dialer{TLSConfig: dialerTLS, QUICConfig: quicCfg}
 		ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 		defer cancel()
-		sess, derr := probe.DialQUIC(ctx, addr, moqt.NewTrackMux(0))
+		sess, derr := probe.DialQUIC(ctx, addr, "", moqt.NewTrackMux(0))
 		if derr != nil {
 			return false
 		}

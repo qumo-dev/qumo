@@ -651,13 +651,33 @@ func TestRegisterVideo(t *testing.T) {
 	require.NoError(t, json.Unmarshal(tracks[0]["codec"], &codec))
 	assert.Equal(t, "avc1.64001f", codec)
 
-	// initData carries the Base64-encoded AVCDecoderConfigurationRecord.
-	var initData string
-	require.NoError(t, json.Unmarshal(tracks[0]["initData"], &initData))
-	decoded, err := base64.StdEncoding.DecodeString(initData)
+	// initRef points at the catalog's InitDataList entry carrying the
+	// Base64-encoded AVCDecoderConfigurationRecord.
+	var initRef string
+	require.NoError(t, json.Unmarshal(tracks[0]["initRef"], &initRef))
+	decoded, err := base64.StdEncoding.DecodeString(initDataByID(t, raw, initRef))
 	require.NoError(t, err)
 	require.NotEmpty(t, decoded)
 	assert.Equal(t, byte(0x01), decoded[0], "configurationVersion")
+}
+
+// initDataByID looks up the base64 Data of the InitDataList entry with the
+// given id from a parsed catalog's raw JSON.
+func initDataByID(t *testing.T, raw map[string]json.RawMessage, id string) string {
+	t.Helper()
+	var entries []map[string]json.RawMessage
+	require.NoError(t, json.Unmarshal(raw["initDataList"], &entries))
+	for _, entry := range entries {
+		var entryID string
+		require.NoError(t, json.Unmarshal(entry["id"], &entryID))
+		if entryID == id {
+			var data string
+			require.NoError(t, json.Unmarshal(entry["data"], &data))
+			return data
+		}
+	}
+	t.Fatalf("initDataList entry %q not found", id)
+	return ""
 }
 
 func TestRegisterAudio(t *testing.T) {
@@ -690,10 +710,11 @@ func TestRegisterAudio(t *testing.T) {
 	require.NoError(t, json.Unmarshal(tracks[0]["codec"], &codec))
 	assert.Equal(t, "mp4a.40.2", codec)
 
-	// initData carries the Base64-encoded AudioSpecificConfig (2 bytes for AAC-LC).
-	var initData string
-	require.NoError(t, json.Unmarshal(tracks[0]["initData"], &initData))
-	decoded, err := base64.StdEncoding.DecodeString(initData)
+	// initRef points at the catalog's InitDataList entry carrying the
+	// Base64-encoded AudioSpecificConfig (2 bytes for AAC-LC).
+	var initRef string
+	require.NoError(t, json.Unmarshal(tracks[0]["initRef"], &initRef))
+	decoded, err := base64.StdEncoding.DecodeString(initDataByID(t, raw, initRef))
 	require.NoError(t, err)
 	assert.Len(t, decoded, 2)
 }
@@ -730,4 +751,38 @@ func TestRegisterVideoAndAudio(t *testing.T) {
 	var tracks []map[string]json.RawMessage
 	require.NoError(t, json.Unmarshal(raw["tracks"], &tracks))
 	assert.Len(t, tracks, 2)
+}
+
+func TestIngestHandler_TrackInfo(t *testing.T) {
+	h, err := newIngestHandler(context.Background())
+	require.NoError(t, err)
+
+	var tip moqt.TrackInfoProvider = h
+
+	// Test video track info
+	vInfo, ok := tip.TrackInfo("video")
+	assert.True(t, ok)
+	assert.Equal(t, moqt.TrackPriority(128), vInfo.Priority)
+	assert.True(t, vInfo.Ordered)
+	assert.Equal(t, uint64(2000), vInfo.MaxLatency)
+	assert.Equal(t, uint64(1_000_000), vInfo.Timescale)
+
+	// Test audio track info
+	aInfo, ok := tip.TrackInfo("audio")
+	assert.True(t, ok)
+	assert.Equal(t, moqt.TrackPriority(128), aInfo.Priority)
+	assert.False(t, aInfo.Ordered)
+	assert.Equal(t, uint64(2000), aInfo.MaxLatency)
+	assert.Equal(t, uint64(1_000_000), aInfo.Timescale)
+
+	// Test catalog track info
+	cInfo, ok := tip.TrackInfo(h.broadcast.CatalogTrackName())
+	assert.True(t, ok)
+	assert.Equal(t, moqt.TrackPriority(255), cInfo.Priority)
+	assert.True(t, cInfo.Ordered)
+	assert.Equal(t, uint64(1000), cInfo.Timescale)
+
+	// Unknown track
+	_, ok = tip.TrackInfo("unknown")
+	assert.False(t, ok)
 }

@@ -275,10 +275,20 @@ func catalogVideoInitData(t *testing.T, cat msf.Catalog) []byte {
 		if string(tr.Role) != string(msf.RoleVideo) {
 			continue
 		}
-		if tr.InitData == "" {
+		if tr.InitRef == "" {
 			return nil
 		}
-		b, err := base64.StdEncoding.DecodeString(tr.InitData)
+		var data string
+		for i := range cat.InitDataList {
+			if cat.InitDataList[i].ID == tr.InitRef {
+				data = cat.InitDataList[i].Data
+				break
+			}
+		}
+		if data == "" {
+			return nil
+		}
+		b, err := base64.StdEncoding.DecodeString(data)
 		require.NoError(t, err, "decoding video initData")
 		return b
 	}

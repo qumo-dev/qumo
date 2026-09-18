@@ -215,6 +215,7 @@ func TestRun_Unit(t *testing.T) {
 func TestMain_Subprocess(t *testing.T) {
 	tests := map[string]struct {
 		args               []string // args passed to the child main (after program name)
+		env                []string
 		wantExitNonZero    bool
 		wantOutputContains []string
 	}{
@@ -229,7 +230,10 @@ func TestMain_Subprocess(t *testing.T) {
 			wantOutputContains: []string{"unknown command", "Usage: qumo"},
 		},
 		"relay env validation error": {
-			// cli.RunRelay fails fast when it can't load the default TLS cert/key.
+			// cli.RunRelay fails fast when it can't load the TLS cert/key.
+			// Point at a non-existent cert so the test doesn't depend on whether
+			// local certs/server.crt exists.
+			env:                []string{"CERT_FILE=nonexistent.crt", "KEY_FILE=nonexistent.key"},
 			args:               []string{"relay"},
 			wantExitNonZero:    true,
 			wantOutputContains: []string{"failed to setup TLS", "error:"},
@@ -238,7 +242,7 @@ func TestMain_Subprocess(t *testing.T) {
 
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
-			out, exitErr := runChildMain(t, tt.args...)
+			out, exitErr := runChildMain(t, tt.env, tt.args...)
 
 			if tt.wantExitNonZero {
 				// Expect non-zero exit
@@ -258,7 +262,7 @@ func TestMain_Subprocess(t *testing.T) {
 
 // runChildMain re-executes the test binary in a special child mode that calls
 // main(). It returns combined stdout+stderr and any exec error.
-func runChildMain(t *testing.T, args ...string) (string, error) {
+func runChildMain(t *testing.T, extraEnv []string, args ...string) (string, error) {
 	exe, err := os.Executable()
 	if err != nil {
 		t.Fatalf("os.Executable: %v", err)
@@ -268,6 +272,7 @@ func runChildMain(t *testing.T, args ...string) (string, error) {
 	cmd := exec.Command(exe, cmdArgs...)
 	// Signal to the child that it should execute main().
 	cmd.Env = append(os.Environ(), "QUOMO_TEST_MAIN=1")
+	cmd.Env = append(cmd.Env, extraEnv...)
 	b, err := cmd.CombinedOutput()
 	return string(b), err
 }

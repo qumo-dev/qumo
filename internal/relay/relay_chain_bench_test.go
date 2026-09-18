@@ -160,7 +160,7 @@ func chainWaitReachable(tb testing.TB, addr string, pool *x509.CertPool, quicCfg
 	for time.Now().Before(deadline) {
 		probe := &moqt.Dialer{TLSConfig: chainDialerTLS(pool), QUICConfig: quicCfg}
 		ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
-		sess, err := probe.DialQUIC(ctx, addr, moqt.NewTrackMux(0))
+		sess, err := probe.DialQUIC(ctx, addr, "", moqt.NewTrackMux(0))
 		cancel()
 		if err == nil {
 			_ = sess.CloseWithError(0, "probe")
