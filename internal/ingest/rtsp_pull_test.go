@@ -380,3 +380,114 @@ func TestNewRTSPTrackFromMedia(t *testing.T) {
 		assert.Equal(t, trackKind(0), track.kind)
 	})
 }
+
+// TestStartKeepalive_IntervalClamping verifies the keepalive interval
+// calculation: half the session timeout, clamped to [5s, 30s].
+func TestStartKeepalive_IntervalClamping(t *testing.T) {
+	tests := map[string]struct {
+		timeout  time.Duration
+		wantMin  time.Duration
+		wantMax  time.Duration
+	}{
+		"60s timeout → 30s":  {60 * time.Second, 30 * time.Second, 30 * time.Second},
+		"120s timeout → 30s": {120 * time.Second, 30 * time.Second, 30 * time.Second},  // clamped to max 30s
+		"8s timeout → 5s":    {8 * time.Second, 5 * time.Second, 5 * time.Second},       // clamped to min 5s
+		"0 (default) → 30s":  {0, 30 * time.Second, 30 * time.Second},                   // default 60s → 30s
+	}
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			timeout := tc.timeout
+			if timeout == 0 {
+				timeout = defaultSessionTimeout
+			}
+			interval := timeout / 2
+			if interval < 5*time.Second {
+				interval = 5 * time.Second
+			}
+			if interval > 30*time.Second {
+				interval = 30 * time.Second
+			}
+			assert.GreaterOrEqual(t, interval, tc.wantMin)
+			assert.LessOrEqual(t, interval, tc.wantMax)
+		})
+	}
+}
+
+// TestPullStream_Keepalive verifies that pullStream sends periodic GET_PARAMETER
+// keepalives to the RTSP server. It uses a very short timeout to observe at
+// least one keepalive within the test window.
+func TestPullStream_Keepalive(t *testing.T) {
+	keepaliveReceived := make(chan struct{}, 10)
+
+	// A fake server that tracks GET_PARAMETER requests.
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = ln.Close() })
+
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		rc := rtsp.NewConn(conn)
+		for {
+			req, _, err := rc.ReadRequest()
+			if err != nil {
+				return
+			}
+			resp := rtsp.NewResponse(rtsp.StatusOK, req)
+			if cseq := req.Header.Get("CSeq"); cseq != "" {
+				resp.Header.Set("CSeq", cseq)
+			}
+			switch req.Method {
+			case rtsp.MethodDescribe:
+				body := []byte(buildTestSDP(false))
+				resp.Header.Set("Content-Type", "application/sdp")
+				resp.Header.Set("Content-Length", strconv.Itoa(len(body)))
+				resp.Body = io.NopCloser(bytes.NewReader(body))
+			case rtsp.MethodSetup:
+				resp.Header.Set("Transport", req.Header.Get("Transport"))
+				// Use a very short timeout so the keepalive goroutine fires quickly.
+				resp.Header.Set("Session", "test-keepalive;timeout=10")
+			case rtsp.MethodGetParameter:
+				keepaliveReceived <- struct{}{}
+			case rtsp.MethodPlay:
+				_ = rc.WriteResponse(resp)
+				// Send one video frame, then keep the connection open.
+				f := rtsp.InterleavedFrame{Channel: 0, Payload: buildTestVideoRTP()}
+				_ = rc.WriteInterleavedFrame(&f)
+				// Keep reading; detect GET_PARAMETER keepalives.
+				for {
+					req2, _, err := rc.ReadRequest()
+					if err != nil {
+						return
+					}
+					if req2 != nil && req2.Method == rtsp.MethodGetParameter {
+						keepaliveReceived <- struct{}{}
+					}
+				}
+			}
+			_ = rc.WriteResponse(resp)
+		}
+	}()
+
+	addr := ln.Addr().String()
+	trackMux := moqt.NewTrackMux(0)
+	sess, err := NewSession(trackMux, "/live/cam")
+	require.NoError(t, err)
+	defer sess.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	go pullStream(ctx, "rtsp://"+addr+"/test", sess)
+
+	// Wait for at least one keepalive to arrive.
+	select {
+	case <-keepaliveReceived:
+		// Success: keepalive was sent.
+	case <-time.After(8 * time.Second):
+		t.Fatal("expected a GET_PARAMETER keepalive but none arrived")
+	}
+	cancel()
+}

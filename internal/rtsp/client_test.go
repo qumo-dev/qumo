@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -124,4 +125,102 @@ func TestClient_SetupReturnsErrorOn461(t *testing.T) {
 	_, err = client.Setup(context.Background(), "rtsp://"+addr+"/test/trackID=0", 0, 1)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "SETUP")
+}
+
+func TestParseSessionTimeout(t *testing.T) {
+	tests := map[string]struct {
+		session string
+		want    time.Duration
+	}{
+		"with timeout":         {"12345;timeout=60", 60 * time.Second},
+		"timeout only":         {";timeout=30", 30 * time.Second},
+		"no timeout":           {"12345", 0},
+		"empty":                {"", 0},
+		"timeout with spaces":  {"12345; timeout = 120", 120 * time.Second},
+		"zero timeout":         {"12345;timeout=0", 0},
+		"invalid timeout":      {"12345;timeout=abc", 0},
+		"multiple params":      {"12345;timeout=45;foo=bar", 45 * time.Second},
+		"case insensitive key": {"12345;Timeout=90", 90 * time.Second},
+	}
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			got := parseSessionTimeout(tc.session)
+			assert.Equal(t, tc.want, got)
+		})
+	}
+}
+
+func TestClient_SetupCapturesSessionTimeout(t *testing.T) {
+	addr := startFakeServer(t, func(rw *bufio.ReadWriter) {
+		// DESCRIBE → 200 + SDP.
+		ReadRequest(rw.Reader)
+		sdp := "v=0\r\nm=video 0 RTP/AVP 96\r\na=rtpmap:96 H264/90000\r\na=control:trackID=0\r\n"
+		fmt.Fprintf(rw, "RTSP/1.0 200 OK\r\nCSeq: 1\r\nContent-Type: application/sdp\r\nContent-Length: %d\r\n\r\n%s",
+			len(sdp), sdp)
+		rw.Flush()
+
+		// SETUP → 200 with Session + timeout.
+		ReadRequest(rw.Reader)
+		writeRTSPResponse(rw, 200, "2",
+			"Transport: RTP/AVP/TCP;unicast;interleaved=0-1",
+			"Session: abcdef;timeout=45")
+	})
+
+	client, err := Dial(context.Background(), "rtsp://"+addr+"/test")
+	require.NoError(t, err)
+	defer client.Close()
+
+	_, err = client.Describe(context.Background())
+	require.NoError(t, err)
+
+	_, err = client.Setup(context.Background(), "rtsp://"+addr+"/test/trackID=0", 0, 1)
+	require.NoError(t, err)
+
+	assert.Equal(t, 45*time.Second, client.SessionTimeout())
+}
+
+func TestClient_SendKeepalive(t *testing.T) {
+	var gotMethod, gotSession string
+	addr := startFakeServer(t, func(rw *bufio.ReadWriter) {
+		// DESCRIBE → 200 + SDP.
+		ReadRequest(rw.Reader)
+		sdp := "v=0\r\nm=video 0 RTP/AVP 96\r\na=rtpmap:96 H264/90000\r\na=control:trackID=0\r\n"
+		fmt.Fprintf(rw, "RTSP/1.0 200 OK\r\nCSeq: 1\r\nContent-Type: application/sdp\r\nContent-Length: %d\r\n\r\n%s",
+			len(sdp), sdp)
+		rw.Flush()
+
+		// SETUP → 200 with Session.
+		ReadRequest(rw.Reader)
+		writeRTSPResponse(rw, 200, "2",
+			"Transport: RTP/AVP/TCP;unicast;interleaved=0-1",
+			"Session: mysess;timeout=60")
+
+		// Read the keepalive request.
+		req, err := ReadRequest(rw.Reader)
+		if err != nil {
+			return
+		}
+		gotMethod = string(req.Method)
+		gotSession = req.Header.Get("Session")
+		writeRTSPResponse(rw, 200, req.Header.Get("CSeq"))
+	})
+
+	client, err := Dial(context.Background(), "rtsp://"+addr+"/test")
+	require.NoError(t, err)
+	defer client.Close()
+
+	_, err = client.Describe(context.Background())
+	require.NoError(t, err)
+
+	_, err = client.Setup(context.Background(), "rtsp://"+addr+"/test/trackID=0", 0, 1)
+	require.NoError(t, err)
+
+	err = client.SendKeepalive()
+	require.NoError(t, err)
+
+	// Give the server goroutine time to process.
+	time.Sleep(50 * time.Millisecond)
+
+	assert.Equal(t, "GET_PARAMETER", gotMethod)
+	assert.Equal(t, "mysess", gotSession)
 }
