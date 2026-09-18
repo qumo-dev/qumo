@@ -324,9 +324,16 @@ func (h *relayHandler) TrackInfo(name moqt.TrackName) (pubInfo moqt.PublishInfo,
 		return val.(moqt.PublishInfo), true
 	}
 
-	if h.session == nil || h.announcement == nil || !h.announcement.IsActive() || h.ctx.Err() != nil {
+	// Capture local snapshots for thread-safety and stable references
+	session := h.session
+	announcement := h.announcement
+	ctx := h.ctx
+
+	if session == nil || announcement == nil || !announcement.IsActive() || ctx.Err() != nil {
 		return moqt.PublishInfo{}, false
 	}
+
+	path := announcement.BroadcastPath()
 
 	defer func() {
 		if r := recover(); r != nil {
@@ -340,7 +347,7 @@ func (h *relayHandler) TrackInfo(name moqt.TrackName) (pubInfo moqt.PublishInfo,
 		if val, found := h.trackInfoCache.Load(name); found {
 			return val.(moqt.PublishInfo), nil
 		}
-		info, err := h.session.TrackInfo(h.ctx, h.announcement.BroadcastPath(), name)
+		info, err := session.TrackInfo(ctx, path, name)
 		if err != nil || info == nil {
 			return nil, errTrackNotFound
 		}
