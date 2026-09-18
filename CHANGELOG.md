@@ -44,15 +44,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Updated `moqt.Dialer.DialQUIC` callers across the relay server and integration
     tests to supply the new `path` parameter.
 
-- **Bumped `github.com/qumo-dev/gomoqt` to v0.19.0.**
+- **Bumped `github.com/qumo-dev/gomoqt` to v0.20.0, and the playground's
+  `@qumo/moq` from 0.17 to 0.20.**
   - Moved relay peer dialing (`maintainPeer`) and the integration tests off
-    `moqt.Dialer.DialQUIC`, deprecated in gomoqt v0.19.0 and scheduled for
-    removal, onto `moqt.Dialer.Dial` with a `moqt://` URL built by a new
+    `moqt.Dialer.DialQUIC`, removed in gomoqt v0.20.0, onto `moqt.Dialer.Dial` with a `moqt://` URL built by a new
     `peerURL` helper. No behavior change: `Dial` with no path dials the same
     `/` endpoint that `DialQUIC(ctx, addr, "", mux)` did, and resolved peers
     reach it via `net.JoinHostPort`, so IPv6 literals are already bracketed as
     URL syntax requires. The IPv6 dual-stack and upstream peer-discovery
     integration tests exercise both.
+  - Bumped the web playground's `@qumo/moq` pin from `^0.17.0` to `^0.20.0`.
+    With #392 alone the playground was cut off from the relay twice over: 0.17
+    speaks moq-lite draft-04 while the relay now speaks draft-05, and its `msf`
+    parser read only inline `initData`, which the msf-01 catalogs from ingest no
+    longer carry, so the player got no AVC decoder configuration or AAC
+    `AudioSpecificConfig`. `@qumo/moq` 0.20 speaks draft-05 and resolves each
+    track's `initRef` back into `initData`, so the player code is unchanged. The
+    publisher side is fixed the same way: `Broadcast` now writes the board's
+    inline `initData` as an `initDataList` entry, which HLS egress
+    (`internal/hls/feed.go`, `initFromTrack`) resolves. `playground/dist` is
+    rebuilt with the CI-pinned deno 2.8.1 and verified reproducible.
 
 - **Use standard library `uuid` package for broadcast session IDs (`internal/relay`).**
   Replaced hand-rolled UUID v4 generation (`crypto/rand` + `encoding/hex`) in
