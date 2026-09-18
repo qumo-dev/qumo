@@ -160,7 +160,7 @@ func chainWaitReachable(tb testing.TB, addr string, pool *x509.CertPool, quicCfg
 	for time.Now().Before(deadline) {
 		probe := &moqt.Dialer{TLSConfig: chainDialerTLS(pool), QUICConfig: quicCfg}
 		ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
-		sess, err := probe.DialQUIC(ctx, addr, "", moqt.NewTrackMux(0))
+		sess, err := probe.Dial(ctx, peerURL(addr), moqt.NewTrackMux(0))
 		cancel()
 		if err == nil {
 			_ = sess.CloseWithError(0, "probe")
@@ -326,7 +326,7 @@ func BenchmarkRelayChain_Series(b *testing.B) {
 				relays[i] = spinRelay(b, fmt.Sprintf("r%d", i), chainFreeAddr(b), cert, pool, quicCfg)
 			}
 			// r[i] dials r[i-1] (upstream toward the publisher). Raw host:port —
-			// maintainPeer dials via DialQUIC, which does not parse a scheme.
+			// maintainPeer adds the moqt:// scheme itself (peerURL).
 			for i := 1; i < depth; i++ {
 				relays[i].Config.Peers = []Peer{{Address: relays[i-1].MOQServer.Addr}}
 			}

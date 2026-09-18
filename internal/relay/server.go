@@ -393,6 +393,14 @@ func (s *Server) markUnconnected(addr string) {
 	// series), so peer-metric cleanup is left to the sampler.
 }
 
+// peerURL returns the native-QUIC ("moqt") URL for a peer given as host:port.
+// Peers dial through Dialer.Dial, the only entry point gomoqt keeps after
+// deprecating Dialer.DialQUIC. Resolved addresses come from net.JoinHostPort,
+// so an IPv6 literal is already bracketed, as url.Parse requires.
+func peerURL(addr string) string {
+	return "moqt://" + addr
+}
+
 func (s *Server) maintainPeer(ctx context.Context, peer Peer) {
 	var backoff = DialBackoff{Base: 1 * time.Second, Max: 30 * time.Second}
 
@@ -401,7 +409,7 @@ func (s *Server) maintainPeer(ctx context.Context, peer Peer) {
 			return
 		}
 
-		sess, err := s.MOQDialer.DialQUIC(ctx, peer.Address, "", s.TrackMux)
+		sess, err := s.MOQDialer.Dial(ctx, peerURL(peer.Address), s.TrackMux)
 		if err != nil {
 			metricPeerDialAttempts.WithLabelValues(peer.Address, "error").Inc()
 			metricDialRetriesTotal.WithLabelValues(peer.Address).Inc()
@@ -431,7 +439,7 @@ func (s *Server) maintainPeer(ctx context.Context, peer Peer) {
 			if !jitterDelay(ctx, 100*time.Millisecond) {
 				return
 			}
-			sess, err = s.MOQDialer.DialQUIC(ctx, peer.Address, "", s.TrackMux)
+			sess, err = s.MOQDialer.Dial(ctx, peerURL(peer.Address), s.TrackMux)
 			if err != nil {
 				metricPeerDialAttempts.WithLabelValues(peer.Address, "error").Inc()
 				metricDialRetriesTotal.WithLabelValues(peer.Address).Inc()
