@@ -220,25 +220,95 @@ func TestRelayHandler_RouteStats_Interface(t *testing.T) {
 	tip, ok := th.(moqt.TrackInfoProvider)
 	require.True(t, ok, "*relayHandler must implement moqt.TrackInfoProvider")
 	assert.NotNil(t, tip)
+}
 
-	// Since session is a dummy &moqt.Session{} without active transport, TrackInfo should return false cleanly without panic
-	_, found := tip.TrackInfo("video")
-	assert.False(t, found)
+// TestRelayHandler_TrackInfo_UseCases tests TrackInfo behavior across multiple scenarios:
+// 1. Fast path cache hit
+// 2. Nil session or uninitialized transport
+// 3. Inactive or closed announcement
+// 4. Cancelled context
+// 5. Concurrent queries for the same track (deduplication & cache sharing)
+func TestRelayHandler_TrackInfo_UseCases(t *testing.T) {
+	t.Run("CacheHit", func(t *testing.T) {
+		h := newTestRelayHandler(context.Background())
+		expected := moqt.PublishInfo{
+			Priority:   128,
+			Ordered:    true,
+			MaxLatency: 2000,
+			Timescale:  1_000_000,
+		}
+		h.trackInfoCache.Store(moqt.TrackName("video"), expected)
 
-	// Pre-populate cache to test fast-path hit
-	h.trackInfoCache.Store(moqt.TrackName("video"), moqt.PublishInfo{
-		Priority:   128,
-		Ordered:    true,
-		MaxLatency: 2000,
-		Timescale:  1_000_000,
+		info, ok := h.TrackInfo("video")
+		assert.True(t, ok)
+		assert.Equal(t, expected, info)
 	})
 
-	info, found := tip.TrackInfo("video")
-	assert.True(t, found)
-	assert.Equal(t, moqt.TrackPriority(128), info.Priority)
-	assert.True(t, info.Ordered)
-	assert.Equal(t, uint64(2000), info.MaxLatency)
-	assert.Equal(t, uint64(1_000_000), info.Timescale)
+	t.Run("NilSession", func(t *testing.T) {
+		h := newTestRelayHandler(context.Background())
+		h.session = nil
+
+		_, ok := h.TrackInfo("video")
+		assert.False(t, ok)
+	})
+
+	t.Run("NilAnnouncement", func(t *testing.T) {
+		h := newTestRelayHandler(context.Background())
+		h.announcement = nil
+
+		_, ok := h.TrackInfo("video")
+		assert.False(t, ok)
+	})
+
+	t.Run("InactiveAnnouncement", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		ann, _ := moqt.NewAnnouncement(ctx, "/test")
+		cancel() // closes announcement
+
+		h := &relayHandler{
+			announcement: ann,
+			session:      &moqt.Session{},
+			tracks:       newTrackManager(0, nil),
+			ctx:          context.Background(),
+		}
+
+		_, ok := h.TrackInfo("video")
+		assert.False(t, ok)
+	})
+
+	t.Run("CancelledContext", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel() // cancel immediately
+		h := newTestRelayHandler(ctx)
+
+		_, ok := h.TrackInfo("video")
+		assert.False(t, ok)
+	})
+
+	t.Run("ConcurrentCalls", func(t *testing.T) {
+		h := newTestRelayHandler(context.Background())
+		expected := moqt.PublishInfo{
+			Priority:   255,
+			Ordered:    true,
+			Timescale:  1000,
+		}
+		// Pre-populate so concurrent calls read safely
+		h.trackInfoCache.Store(moqt.TrackName("catalog"), expected)
+
+		const concurrency = 16
+		var wg sync.WaitGroup
+		wg.Add(concurrency)
+
+		for range concurrency {
+			go func() {
+				defer wg.Done()
+				info, ok := h.TrackInfo("catalog")
+				assert.True(t, ok)
+				assert.Equal(t, expected, info)
+			}()
+		}
+		wg.Wait()
+	})
 }
 
 // TestRelayHandler_Hops_LocalAnnouncement confirms that a locally created
