@@ -91,7 +91,7 @@ func TestPeerDiscovery_EdgeConnectsToHubViaUpstreamAddr(t *testing.T) {
 		probe := &moqt.Dialer{TLSConfig: dialerTLS, QUICConfig: quicCfg}
 		ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 		defer cancel()
-		sess, derr := probe.DialQUIC(ctx, hubAddr, "", moqt.NewTrackMux(0))
+		sess, derr := probe.Dial(ctx, peerURL(hubAddr), moqt.NewTrackMux(0))
 		if derr != nil {
 			return false
 		}

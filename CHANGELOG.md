@@ -33,6 +33,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Updated `moqt.Dialer.DialQUIC` callers across the relay server and integration
     tests to supply the new `path` parameter.
 
+- **Bumped `github.com/qumo-dev/gomoqt` to v0.19.0.**
+  - Moved relay peer dialing (`maintainPeer`) and the integration tests off
+    `moqt.Dialer.DialQUIC`, deprecated in gomoqt v0.19.0 and scheduled for
+    removal, onto `moqt.Dialer.Dial` with a `moqt://` URL built by a new
+    `peerURL` helper. No behavior change: `Dial` with no path dials the same
+    `/` endpoint that `DialQUIC(ctx, addr, "", mux)` did, and resolved peers
+    reach it via `net.JoinHostPort`, so IPv6 literals are already bracketed as
+    URL syntax requires. The IPv6 dual-stack and upstream peer-discovery
+    integration tests exercise both.
+
 - **Use standard library `uuid` package for broadcast session IDs (`internal/relay`).**
   Replaced hand-rolled UUID v4 generation (`crypto/rand` + `encoding/hex`) in
   `newUUIDv4` with Go 1.27's standard library `uuid.NewV4()`.
