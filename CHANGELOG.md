@@ -8,6 +8,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Zero-prerequisite one-line installation scripts (`install.ps1`, `install.sh`).**
+  Added automated one-line installation scripts for Windows (PowerShell) and
+  Linux / macOS (POSIX shell) that auto-detect OS and architecture, verify SHA-256
+  checksums against GitHub Releases, install the binary to user space (`~/.qumo/bin`),
+  and configure `PATH`. Also hosted on the documentation site (`/install.ps1`, `/install.sh`).
+
 - **Per-track relay subscription and upstream request metrics (`internal/relay`).**
   Adds Prometheus gauges for active subscriptions, distributor reuse and
   upstream request counters, errors, and duration, labeled by observed
