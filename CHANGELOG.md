@@ -88,6 +88,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   peer-lifecycle follow-ups tracked in #381.
 
 ### Fixed
+- **RTSP pull sessions now send periodic keepalive requests (internal/rtsp,
+  internal/ingest).** Prevents servers that enforce RTSP Session timeouts
+  from dropping healthy but otherwise idle TCP-interleaved streams.
 - **Docs site: corrected claims that contradicted the code** — verified every
   documented default, metric name, and flag against the source and a running
   binary. `RELAY_PPROF` was listed with a default of `0`, implying `0` disables

@@ -9,17 +9,19 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // Client is an RTSP client connected to a server (e.g. an IP camera). It speaks
 // the client side of DESCRIBE/SETUP/PLAY over a single TCP-interleaved
 // connection, leaving the interleaved-RTP read loop to the caller.
 type Client struct {
-	conn      *Conn
-	url       *url.URL
-	cred      Credentials
-	cseq      int
-	sessionID string // sent on SETUP/PLAY/TEARDOWN after the first SETUP.
+	conn           *Conn
+	url            *url.URL
+	cred           Credentials
+	cseq           int
+	sessionID      string        // sent on SETUP/PLAY/TEARDOWN after the first SETUP.
+	sessionTimeout time.Duration // parsed from Session header; 0 means not specified.
 }
 
 // Dial connects to the RTSP server at rawURL (which may carry user:pass for
@@ -105,10 +107,11 @@ func (c *Client) Setup(ctx context.Context, trackURL string, rtpCh, rtcpCh uint8
 	if resp.StatusCode != StatusOK {
 		return SetupChannel{}, fmt.Errorf("rtsp: SETUP %s for %s", resp.Status, trackURL)
 	}
-	// Capture the session ID for subsequent requests.
+	// Capture the session ID and optional timeout for subsequent requests.
 	if sid := resp.Header.Get("Session"); sid != "" {
 		// Session IDs may carry a timeout suffix: "12345;timeout=60".
 		c.sessionID = strings.Split(sid, ";")[0]
+		c.sessionTimeout = parseSessionTimeout(sid)
 	}
 	// Parse the server-assigned channels from its Transport response.
 	gotRTP, gotRTCP, ok := parseInterleaved(resp.Header.Get("Transport"))
@@ -149,6 +152,28 @@ func (c *Client) ReadInterleaved() (*InterleavedFrame, error) {
 		// A non-interleaved RTSP request arrived on the control channel — RTSP
 		// servers rarely send server-initiated requests; ignore and keep reading.
 	}
+}
+
+// SessionTimeout returns the session timeout advertised by the server in the
+// Session header (e.g. "12345;timeout=60"). Returns 0 if the server did not
+// specify a timeout or SETUP has not been called yet.
+func (c *Client) SessionTimeout() time.Duration {
+	return c.sessionTimeout
+}
+
+// SendKeepalive sends a GET_PARAMETER request to keep the RTSP session alive.
+// The server's 200 OK response is harmlessly consumed by [Client.ReadInterleaved]
+// (parsed as a non-interleaved message and discarded), so it is safe to call
+// from a goroutine concurrent with ReadInterleaved.
+//
+// Callers should send keepalives at an interval shorter than [Client.SessionTimeout]
+// (typically timeout/2) to prevent the server from tearing down the session.
+func (c *Client) SendKeepalive() error {
+	req := c.newRequest(MethodGetParameter, c.url.String())
+	if c.sessionID != "" {
+		req.Header.Set("Session", c.sessionID)
+	}
+	return c.conn.WriteRequest(req)
 }
 
 // --- internal helpers ---
@@ -228,4 +253,20 @@ func mustParseURL(s string) *url.URL {
 		panic(err) // URLs are constructed internally; should never fail.
 	}
 	return u
+}
+
+// parseSessionTimeout extracts the timeout value from an RTSP Session header.
+// The header format is "session-id[;timeout=seconds]" (RFC 2326 §12.37).
+// Returns 0 if no timeout parameter is present.
+func parseSessionTimeout(session string) time.Duration {
+	for _, part := range strings.Split(session, ";") {
+		part = strings.TrimSpace(part)
+		key, val, ok := strings.Cut(part, "=")
+		if ok && strings.TrimSpace(strings.ToLower(key)) == "timeout" {
+			if sec, err := strconv.Atoi(strings.TrimSpace(val)); err == nil && sec > 0 {
+				return time.Duration(sec) * time.Second
+			}
+		}
+	}
+	return 0
 }
