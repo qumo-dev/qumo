@@ -2,6 +2,7 @@ package ingest
 
 import (
 	"fmt"
+	"runtime"
 	"sync"
 	"testing"
 	"time"
@@ -32,6 +33,8 @@ func BenchmarkTrackBufferNotify(b *testing.B) {
 			for range b.N {
 				buf.broadcast()
 			}
+			b.StopTimer()
+			runtime.GC() // don't leak this bench's heap goal into later benches
 		})
 
 		b.Run(fmt.Sprintf("parked/subs=%d", n), func(b *testing.B) {
@@ -64,6 +67,7 @@ func BenchmarkTrackBufferNotify(b *testing.B) {
 			b.StopTimer()
 			close(stop)
 			wg.Wait()
+			runtime.GC() // don't leak this bench's heap goal into later benches
 		})
 	}
 }
@@ -116,6 +120,7 @@ func BenchmarkTrackBufferNotify_Fanout(b *testing.B) {
 
 			close(stop)
 			wg.Wait()
+			runtime.GC() // don't leak this bench's heap goal into later benches
 		})
 	}
 }
