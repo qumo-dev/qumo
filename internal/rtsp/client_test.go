@@ -180,7 +180,11 @@ func TestClient_SetupCapturesSessionTimeout(t *testing.T) {
 }
 
 func TestClient_SendKeepalive(t *testing.T) {
-	var gotMethod, gotSession string
+	type keepaliveRequest struct {
+		method  string
+		session string
+	}
+	keepaliveReceived := make(chan keepaliveRequest, 1)
 	addr := startFakeServer(t, func(rw *bufio.ReadWriter) {
 		// DESCRIBE → 200 + SDP.
 		ReadRequest(rw.Reader)
@@ -200,8 +204,10 @@ func TestClient_SendKeepalive(t *testing.T) {
 		if err != nil {
 			return
 		}
-		gotMethod = string(req.Method)
-		gotSession = req.Header.Get("Session")
+		keepaliveReceived <- keepaliveRequest{
+			method:  string(req.Method),
+			session: req.Header.Get("Session"),
+		}
 		writeRTSPResponse(rw, 200, req.Header.Get("CSeq"))
 	})
 
@@ -218,9 +224,11 @@ func TestClient_SendKeepalive(t *testing.T) {
 	err = client.SendKeepalive()
 	require.NoError(t, err)
 
-	// Give the server goroutine time to process.
-	time.Sleep(50 * time.Millisecond)
-
-	assert.Equal(t, "GET_PARAMETER", gotMethod)
-	assert.Equal(t, "mysess", gotSession)
+	select {
+	case got := <-keepaliveReceived:
+		assert.Equal(t, "GET_PARAMETER", got.method)
+		assert.Equal(t, "mysess", got.session)
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for keepalive request")
+	}
 }
