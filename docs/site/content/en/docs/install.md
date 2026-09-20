@@ -9,6 +9,28 @@ these are alternatives, not sequential steps.
 
 {{< tabs >}}
 
+{{< tab name="Windows (PowerShell)" >}}
+```powershell
+powershell -ExecutionPolicy ByPass -c "irm https://raw.githubusercontent.com/qumo-dev/qumo/main/install.ps1 | iex"
+```
+Or via the documentation site:
+```powershell
+powershell -ExecutionPolicy ByPass -c "irm https://qumo-dev.github.io/qumo/install.ps1 | iex"
+```
+Downloads the Windows binary matching your architecture (x64 / ARM64), verifies the SHA-256 checksum, installs it to `~/.qumo/bin`, and adds it to your user `PATH`.
+{{< /tab >}}
+
+{{< tab name="Linux / macOS (Shell)" >}}
+```bash
+curl -fsSL https://raw.githubusercontent.com/qumo-dev/qumo/main/install.sh | sh
+```
+Or via the documentation site:
+```bash
+curl -fsSL https://qumo-dev.github.io/qumo/install.sh | sh
+```
+Detects your OS and CPU architecture, verifies SHA-256 checksums, installs to `~/.qumo/bin`, and guides you to add it to your `PATH`.
+{{< /tab >}}
+
 {{< tab name="Go install" >}}
 ```bash
 go install github.com/qumo-dev/qumo@latest
