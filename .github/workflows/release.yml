@@ -47,11 +47,9 @@ jobs:
       - name: Verify committed playground/dist is fresh
         run: sh scripts/check-webui-dist.sh
 
-      - name: Run GoReleaser
-        uses: goreleaser/goreleaser-action@v6
+              uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94 # v7.2.3
         with:
-          distribution: goreleaser
-          version: latest
+                    version: "~> v2"
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
