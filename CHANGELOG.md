@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **O(1) ingest fan-out notification (`internal/ingest`).** Replaces
+  `trackBuffer`'s per-subscriber notification channels with the relay's
+  `broadcastNotify` (atomic sequence number + close-and-recreate channel, the
+  mechanism proven in production by #332). Every pushed video/audio frame used
+  to walk one channel per subscriber under an RWMutex — O(N) per frame on the
+  ingest critical path, ~55 µs per frame at 1000 subscribers — and every
+  subscriber cost a channel plus two registry operations on
+  subscribe/unsubscribe. A push now advances a sequence number and closes one
+  channel (~70–130 ns, 2 small allocations, flat in N); egress compares
+  sequences and parks on the current channel, with the timer fallback and
+  cancellation semantics unchanged. Measured (benchstat, n=6, local):
+  notification at 1000 kept-up subscribers 54.9 µs → ~0.8 µs; at 100,
+  3.4 µs → ~0.5 µs; at N ≤ 10 the writer path is ~30–130 ns/frame slower and
+  every frame carries 128 B more garbage — the same trade the relay accepted
+  in #332 (see the optimization ledger, C17). Correctness: no lost wakeup —
+  the seq guard covers a notify that fires between the head check and the
+  park; the intra-group trickle wait keeps its notifyTimeout fallback.
+
 ### Added
 - **Per-track relay subscription and upstream request metrics (`internal/relay`).**
   Adds Prometheus gauges for active subscriptions, distributor reuse and

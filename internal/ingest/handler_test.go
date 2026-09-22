@@ -52,12 +52,13 @@ func TestSourceGroup_IsComplete(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func newTestTrackBuffer() *trackBuffer {
-	return &trackBuffer{
-		name:        "test",
-		ring:        make([]atomic.Pointer[sourceGroup], defaultRingSize),
-		size:        defaultRingSize,
-		subscribers: make(map[chan struct{}]struct{}),
+	b := &trackBuffer{
+		name: "test",
+		ring: make([]atomic.Pointer[sourceGroup], defaultRingSize),
+		size: defaultRingSize,
 	}
+	b.notify.init()
+	return b
 }
 
 func TestTrackBuffer_OpenGroup(t *testing.T) {
@@ -250,116 +251,106 @@ func TestVideoTrack_Close_NoGroup(t *testing.T) {
 	v.close()
 }
 
-func TestTrackBuffer_SubscribeUnsubscribe(t *testing.T) {
-	synctest.Test(t, func(t *testing.T) {
-		b := newTestTrackBuffer()
+func TestTrackBuffer_Notify_AdvancesSeq(t *testing.T) {
+	b := newTestTrackBuffer()
 
-		ch1 := b.subscribe()
-		ch2 := b.subscribe()
+	state := b.notify.listen()
+	assert.Equal(t, uint64(0), state.seq)
 
-		// Both subscribers receive notifications.
-		b.notify()
-		synctest.Wait()
+	b.broadcast()
+	state = b.notify.listen()
+	assert.Equal(t, uint64(1), state.seq, "notify should advance the sequence")
 
-		select {
-		case <-ch1:
-		default:
-			t.Fatal("subscriber 1 did not receive notification")
-		}
-		select {
-		case <-ch2:
-		default:
-			t.Fatal("subscriber 2 did not receive notification")
-		}
-
-		// Unsubscribe ch1; only ch2 should receive further notifications.
-		b.unsubscribe(ch1)
-
-		b.notify()
-		synctest.Wait()
-
-		select {
-		case <-ch1:
-			t.Fatal("unsubscribed channel should not receive notification")
-		default:
-		}
-		select {
-		case <-ch2:
-		default:
-			t.Fatal("subscriber 2 did not receive notification after ch1 unsubscribed")
-		}
-	})
+	b.broadcast()
+	state = b.notify.listen()
+	assert.Equal(t, uint64(2), state.seq, "second notify should advance to 2")
 }
 
-func TestTrackBuffer_Notify(t *testing.T) {
+// TestTrackBuffer_Notify_WakesListener verifies the wake contract egress
+// relies on: a listener holding the pre-notify state, parking on its channel,
+// is woken by the close when notify advances the sequence. Both the seq
+// comparison (before parking) and the channel close (after) must deliver the
+// event.
+func TestTrackBuffer_Notify_WakesListener(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		b := newTestTrackBuffer()
 
-		ch := b.subscribe()
-		defer b.unsubscribe(ch)
+		before := b.notify.listen()
 
-		b.notify()
+		// Listener parks on the pre-notify channel.
+		woken := make(chan struct{})
+		go func() {
+			<-before.ch
+			close(woken)
+		}()
+		synctest.Wait() // let the goroutine reach the receive
 
+		b.broadcast()
 		synctest.Wait()
 
 		select {
-		case <-ch:
-			// Expected: notification received.
+		case <-woken:
+			// Expected: parked listener woken by the close.
 		default:
-			t.Fatal("expected notification on subscriber channel")
+			t.Fatal("listener parked on the pre-notify channel was not woken")
 		}
-	})
-}
 
-func TestTrackBuffer_Notify_NonBlocking(t *testing.T) {
-	synctest.Test(t, func(t *testing.T) {
-		b := newTestTrackBuffer()
-
-		ch := b.subscribe()
-		defer b.unsubscribe(ch)
-
-		// Fill the channel buffer.
-		b.notify()
-		synctest.Wait()
-
-		// Second notify should not block.
-		b.notify()
-		synctest.Wait()
-
-		// Drain one.
-		<-ch
-
-		// Channel should be empty now.
+		// And the fresh state is observable.
+		state := b.notify.listen()
+		assert.Greater(t, state.seq, before.seq, "sequence must advance")
 		select {
-		case <-ch:
-			t.Fatal("expected no more notifications")
+		case <-state.ch:
+			t.Fatal("fresh channel must be open")
 		default:
 		}
 	})
 }
 
-func TestTrackBuffer_MultipleSubscribers(t *testing.T) {
+// TestTrackBuffer_Notify_SeqGuardCoversRace verifies the seq-guard path: a
+// listener that checks the sequence before parking still observes a notify
+// that fired between its check and its park — the listen() snapshot's seq
+// exceeds its last-seen value, so it never waits on a channel that closed in
+// the gap (the lost-wakeup window the per-subscriber-channel design could
+// not have).
+func TestTrackBuffer_Notify_SeqGuardCoversRace(t *testing.T) {
+	b := newTestTrackBuffer()
+
+	lastSeen := b.notify.listen() // seq 0
+	b.broadcast()                 // fires after the listener's snapshot
+
+	state := b.notify.listen()
+	assert.Greater(t, state.seq, lastSeen.seq,
+		"seq guard must reveal the notify that fired after the snapshot")
+}
+
+// TestTrackBuffer_Notify_MultipleListeners verifies the broadcast reaches all
+// parked listeners — with per-subscriber channels this required a walk and a
+// buffered slot per subscriber; the close wakes every waiter at once.
+func TestTrackBuffer_Notify_MultipleListeners(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		b := newTestTrackBuffer()
 
-		ch1 := b.subscribe()
-		ch2 := b.subscribe()
-		defer b.unsubscribe(ch1)
-		defer b.unsubscribe(ch2)
+		const listeners = 8
+		woken := make([]chan struct{}, listeners)
+		for i := range woken {
+			state := b.notify.listen()
+			woken[i] = make(chan struct{})
+			go func(ch chan struct{}, s notifyState) {
+				<-s.ch
+				close(ch)
+			}(woken[i], state)
+		}
+		synctest.Wait() // let every listener park
 
-		b.notify()
+		b.broadcast()
 		synctest.Wait()
 
-		select {
-		case <-ch1:
-		default:
-			t.Fatal("subscriber 1 did not receive notification")
-		}
-
-		select {
-		case <-ch2:
-		default:
-			t.Fatal("subscriber 2 did not receive notification")
+		for i, ch := range woken {
+			select {
+			case <-ch:
+			default:
+				t.Fatalf("listener %d was not woken by the broadcast", i)
+			}
 		}
 	})
 }
