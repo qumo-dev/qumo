@@ -6,6 +6,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+## [v0.7.260922] - 2026-09-22
 
 ### Changed
 
@@ -503,4 +504,4 @@ Deferred validation (estimates/hypotheses, **not yet measured**):
 - **RTMP listener hardened against handshake stalls and bad clients (`internal/rtmp`):** `Listener.Accept` now runs the RTMP handshake under a read deadline (default 10s), so a client that connects and then stalls can no longer hold the accept loop and block every other RTMP connection. Handshake failures (a stalled, half-open, or otherwise-misbehaving client) are closed and skipped instead of returned as an Accept error — previously a single failed handshake took down the whole ingest server, since server accept loops treat any Accept error as fatal. Skipped handshakes are logged at debug level for observability.
 - **Bumped `golang.org/x/crypto` to v0.53.0 (`go.mod`):** Clears a set of `golang.org/x/crypto/ssh` HIGH-severity CVEs (CVE-2026-39829, -39830, -39832, -39835, -42508, -46595, -46597) present in the previously-resolved v0.51.0, which the SHA-pinned Trivy image scan now reports end-to-end — that scan only became functional once `docker.yml` builds are loaded into the local Docker daemon. `govulncheck` confirms the vulnerable `ssh` package is not reached by qumo's code, but bumping the module removes the finding at the source. Also pulls `golang.org/x/sys` → v0.46.0 and `golang.org/x/text` → v0.38.0.
 - **CORS origin check hardened (`internal/ingest`):** `WebTransportHandler.CheckOrigin` no longer accepts every origin for the RTMP and RTSP ingest servers. Origins are validated against a comma-separated `CORS_ALLOWED_ORIGINS` environment variable (supporting a `*` wildcard), with a same-origin fallback, closing a WebTransport cross-site request forgery risk.
-- **TLS configuration hardened (`internal/relay`):** Removed `InsecureSkipVerify` from the relay dial
+- **TLS configuration hardened (`internal/relay`):** Removed `InsecureSkipVerify` from the relay dial
