@@ -20,33 +20,47 @@
 
 ## Installation
 
-#### Option 1: Install via Go
+#### Option 1: One-Line Installer (Recommended)
+
+**Windows (PowerShell):**
+```powershell
+powershell -ExecutionPolicy ByPass -c "irm https://raw.githubusercontent.com/qumo-dev/qumo/main/install.ps1 | iex"
+```
+
+**Linux & macOS:**
+```bash
+curl -fsSL https://raw.githubusercontent.com/qumo-dev/qumo/main/install.sh | sh
+```
+
+*(You can also use `irm https://qumo-dev.github.io/qumo/install.ps1 | iex` or `curl -fsSL https://qumo-dev.github.io/qumo/install.sh | sh`)*
+
+#### Option 2: Install via Go
 
 ```bash
 go install github.com/qumo-dev/qumo@latest
 ```
 
-#### Option 2: Download Binary
+#### Option 3: Download Binary Release
 
 Download the latest archive from [GitHub Releases](https://github.com/qumo-dev/qumo/releases):
 
 ```bash
 # Linux/macOS
-curl -L https://github.com/qumo-dev/qumo/releases/latest/download/qumo_0.4.0_linux_amd64.tar.gz | tar xz
+curl -L https://github.com/qumo-dev/qumo/releases/latest/download/qumo_0.6.260906_linux_amd64.tar.gz | tar xz
 ./qumo playground      # one-command demo: relay + web UI at http://127.0.0.1:8080
 
 # Or for a standalone relay:
 mage cert              # generate a dev cert (mkcert or self-signed)
 ./qumo relay           # start the relay (certs/server.crt + .key)
 
-# Windows: download qumo_0.4.0_windows_amd64.zip from the releases page
+# Windows: download qumo_0.6.260906_windows_amd64.zip from the releases page
 ```
 
-#### Option 3: Docker
+#### Option 4: Docker
 
 See [docker/README.md](docker/README.md) for compose examples, GHCR usage, and deployment options.
 
-#### Option 4: Build from Source
+#### Option 5: Build from Source
 
 ```bash
 git clone https://github.com/qumo-dev/qumo.git
