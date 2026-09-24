@@ -412,12 +412,14 @@ func (b *trackBuffer) serve(ctx context.Context, tw *moqt.TrackWriter) {
 	twCtx := tw.Context()
 
 	metricSubscribersActive.Inc()
-	defer metricSubscribersActive.Dec()
+	defer metricSubscribersActive.Dec() // Register with the broadcast for the lifetime of this egress goroutine:
+	// any notify() from here on sees this listener and closes the channel we
+	// captured, so no wakeup is lost. Each egress goroutine tracks the notify
+	// sequence it has consumed and compares it to the current one; the channel
+	// is only for parking until the next advance.
 
-	// No per-subscriber registration: notification is a broadcast. Each egress
-	// goroutine tracks the notify sequence it has consumed and compares it to
-	// the current one; the channel is only for parking until the next advance.
-	lastState := b.notify.listen()
+	lastState := b.notify.addListener()
+	defer b.notify.removeListener()
 
 	last := b.head()
 	if last > 0 {

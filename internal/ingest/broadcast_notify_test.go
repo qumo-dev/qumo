@@ -3,6 +3,7 @@ package ingest
 import (
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/stretchr/testify/assert"
@@ -41,57 +42,182 @@ func TestBroadcastNotify_NotifyAdvancesSeq(t *testing.T) {
 	assert.Equal(t, uint64(2), state.seq, "second notify should advance seq to 2")
 }
 
-func TestBroadcastNotify_OldChannelClosed(t *testing.T) {
+// TestBroadcastNotify_NoListenerNoSwap pins the C18 fast-path contract: with
+// no registered listener, notify() advances the sequence but must NOT close
+// the current channel (nobody is parked on it) and must not allocate — the
+// swap exists only to wake waiters.
+func TestBroadcastNotify_NoListenerNoSwap(t *testing.T) {
 	var n broadcastNotify
 	n.init()
 
-	// Capture the initial channel
 	before := n.listen()
-	assert.Equal(t, uint64(0), before.seq)
-
-	// Notify should close the old channel
+	n.notify()
 	n.notify()
 
-	// The old channel should be closed - select should return immediately
+	state := n.listen()
+	assert.Equal(t, uint64(2), state.seq, "seq must advance on the fast path")
+	select {
+	case <-state.ch:
+		t.Fatal("current channel must remain open with no listeners")
+	default:
+	}
 	select {
 	case <-before.ch:
-		// Expected: channel is closed
+		t.Fatal("no channel may be closed when nobody is listening")
 	default:
-		t.Error("old channel should be closed after notify")
 	}
 
-	// The new channel should be open (not closed)
-	after := n.listen()
+	// The whole point of the fast path: a listener-less notify allocates
+	// nothing (was 2 objects/128 B per push).
+	assert.Equal(t, 0.0, testing.AllocsPerRun(100, func() {
+		n.notify()
+	}), "zero-listener notify must not allocate")
+}
+
+// TestBroadcastNotify_SwapStillWakesRegisteredListener verifies the slow path
+// is intact: a registered listener parked on the captured channel is woken by
+// the close.
+func TestBroadcastNotify_SwapStillWakesRegisteredListener(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		var n broadcastNotify
+		n.init()
+
+		state := n.addListener()
+		defer n.removeListener()
+
+		woken := make(chan struct{})
+		go func() {
+			<-state.ch
+			close(woken)
+		}()
+		synctest.Wait() // let the goroutine reach the receive
+
+		n.notify()
+		synctest.Wait()
+
+		select {
+		case <-woken:
+			// Expected: registered listener woken by the close.
+		default:
+			t.Fatal("registered listener was not woken")
+		}
+
+		fresh := n.listen()
+		assert.Equal(t, state.seq+1, fresh.seq, "sequence must advance")
+		select {
+		case <-fresh.ch:
+			t.Fatal("fresh channel must be open")
+		default:
+		}
+	})
+}
+
+// TestBroadcastNotify_FastPathNotifyThenAddListener covers one half of the
+// lost-wakeup window: a notify that took the fast path before the listener
+// attached is visible to that listener via the returned sequence — it must
+// never park on a channel that will not be closed for an event already fired.
+func TestBroadcastNotify_FastPathNotifyThenAddListener(t *testing.T) {
+	var n broadcastNotify
+	n.init()
+
+	n.notify() // fast path: seq 1, no swap
+
+	state := n.addListener()
+	defer n.removeListener()
+
+	assert.Equal(t, uint64(1), state.seq,
+		"addListener must observe the sequence already advanced by the fast-path notify")
+}
+
+// TestBroadcastNotify_AddListenerThenNotifyClosesCaptured covers the other
+// half: once a listener is registered, every subsequent notify takes the slow
+// path and closes exactly the channel the listener captured — regardless of
+// how the registration interleaved with prior fast-path notifies.
+func TestBroadcastNotify_AddListenerThenNotifyClosesCaptured(t *testing.T) {
+	var n broadcastNotify
+	n.init()
+
+	n.notify() // fast path fires before anyone listens
+	n.notify()
+
+	state := n.addListener()
+	defer n.removeListener()
+
+	n.notify()
+
 	select {
-	case <-after.ch:
-		t.Error("new channel should not be closed after notify")
+	case <-state.ch:
+		// Expected: the captured channel was closed by the slow path.
 	default:
-		// Expected: channel is open
+		t.Fatal("registered listener's captured channel must be closed by notify")
 	}
 }
 
-func TestBroadcastNotify_NotifyWakesWaiter(t *testing.T) {
+// TestBroadcastNotify_RemoveListenerRestoresFastPath verifies the count is
+// what gates the swap: after the listener leaves, notifies stop closing
+// channels again.
+func TestBroadcastNotify_RemoveListenerRestoresFastPath(t *testing.T) {
 	var n broadcastNotify
 	n.init()
 
-	done := make(chan struct{})
-	go func() {
-		state := n.listen()
-		<-state.ch // wait for close
-		close(done)
-	}()
-
-	// Give the goroutine time to reach the select
-	time.Sleep(10 * time.Millisecond)
+	state := n.addListener()
+	n.removeListener()
 
 	n.notify()
 
+	assert.Equal(t, uint64(1), n.listen().seq, "seq must still advance")
 	select {
-	case <-done:
-		// Waiter was woken up
-	case <-time.After(time.Second):
-		t.Fatal("waiter was not woken up within 1s")
+	case <-state.ch:
+		t.Fatal("channel must not be closed after the last listener left")
+	default:
 	}
+}
+
+// TestBroadcastNotify_ConcurrentRegistrationVsNotify hammers the interleaving
+// the seq/lock design exists for: listeners attaching and detaching
+// concurrently with fast- and slow-path notifies. No double-close may panic,
+// and every attached listener's captured channel must eventually close. The
+// attach-vs-fast-path-notify window itself is closed by construction (notify
+// bumps the sequence before consulting the listener count — see the notify()
+// doc comment); both endpoints of that interleaving are pinned deterministically
+// by TestBroadcastNotify_FastPathNotifyThenAddListener and
+// TestBroadcastNotify_AddListenerThenNotifyClosesCaptured.
+func TestBroadcastNotify_ConcurrentRegistrationVsNotify(t *testing.T) {
+	var n broadcastNotify
+	n.init()
+
+	stop := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Go(func() {
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+				n.notify()
+			}
+		}
+	})
+
+	const rounds = 200
+	for range rounds {
+		state := n.addListener()
+		n.notify()
+		select {
+		case <-state.ch:
+			// The notify's close reached our captured channel, or it closed
+			// before we attached and the seq we read covers it.
+		case <-time.After(time.Second):
+			t.Fatal("attached listener never observed its wakeup")
+		}
+		n.removeListener()
+	}
+
+	close(stop)
+	wg.Wait()
+
+	n.notify()
+	assert.Greater(t, n.listen().seq, uint64(rounds), "sequence must account for every notify")
 }
 
 func TestBroadcastNotify_MultipleNotify(t *testing.T) {
@@ -114,12 +240,12 @@ func TestBroadcastNotify_ListenReturnsConsistentState(t *testing.T) {
 	n.notify()
 	n.notify()
 
-	// listen() should return both seq and ch from the same atomic snapshot
+	// listen() should return both seq and ch from the same coherent view
 	state := n.listen()
 	assert.Equal(t, uint64(2), state.seq, "seq should be 2 after two notifies")
 	assert.NotNil(t, state.ch, "channel should not be nil")
 
-	// Channel should be open (new channel from latest notify)
+	// Channel should be open (fast path never closes it)
 	select {
 	case <-state.ch:
 		t.Error("current channel should be open")
