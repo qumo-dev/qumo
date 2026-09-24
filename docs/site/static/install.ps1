@@ -35,6 +35,7 @@ param(
     [switch]$Force
 )
 
+Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"
 
@@ -52,21 +53,36 @@ try {
 $isInteractive = (-not [Console]::IsOutputRedirected) -and ($host.Name -notmatch "ServerRemoteHost")
 
 $esc = [char]27
-$cBold   = "$esc[1m"
-$cDim    = "$esc[2m"
-$cCyan   = "$esc[36m"
-$cGreen  = "$esc[32m"
-$cYellow = "$esc[33m"
-$cRed    = "$esc[31m"
-$cReset  = "$esc[0m"
+if ($isInteractive) {
+    $cBold   = "$esc[1m"
+    $cDim    = "$esc[2m"
+    $cCyan   = "$esc[36m"
+    $cGreen  = "$esc[32m"
+    $cYellow = "$esc[33m"
+    $cRed    = "$esc[31m"
+    $cReset  = "$esc[0m"
+} else {
+    # Redirected or non-interactive host: emit plain text, no escape sequences.
+    $cBold   = ""
+    $cDim    = ""
+    $cCyan   = ""
+    $cGreen  = ""
+    $cYellow = ""
+    $cRed    = ""
+    $cReset  = ""
+}
 
-# Unicode glyphs safely defined via character codes (codepage independent)
-$gDot     = [char]0x00B7   # ·
-$gDiamond = [char]0x25C7   # ◇
-$gCheck   = [char]0x2714   # ✔
-$gWarn    = [char]0x25B2   # ▲
-$gCross   = [char]0x2716   # ✖
-$gSparkle = [char]0x2728   # ✨
+# Unicode glyphs are built from character codes, and this file is kept pure
+# ASCII -- including these comments. Windows PowerShell 5.1 decodes a BOM-less
+# script using the system ANSI codepage, and on a multi-byte codepage such as
+# 932/936/949/950 a literal glyph here can consume the following newline and
+# swallow the next assignment. Name the glyphs, never paste them.
+$gDot     = [char]0x00B7   # MIDDLE DOT
+$gDiamond = [char]0x25C7   # WHITE DIAMOND
+$gCheck   = [char]0x2714   # HEAVY CHECK MARK
+$gWarn    = [char]0x25B2   # BLACK UP-POINTING TRIANGLE
+$gCross   = [char]0x2716   # HEAVY MULTIPLICATION X
+$gSparkle = [char]0x2728   # SPARKLES
 
 $spinnerFrames = @(
     [char]0x280B, [char]0x2819, [char]0x2839, [char]0x2838,
@@ -94,7 +110,7 @@ function Write-ErrorStep {
     Write-Host "  $($cRed)$($gCross)$($cReset) $Message"
 }
 
-function Download-WithAnimation {
+function Save-RemoteFile {
     param(
         [string]$Url,
         [string]$OutFile,
@@ -247,8 +263,9 @@ Write-Host "  $($cBold)$($cCyan)qumo$($cReset) $($cDim)$($gDot) Media over QUIC 
 Write-Host ""
 
 if ($env:OS -ne "Windows_NT") {
-    Write-ErrorStep "install.ps1 supports Windows only. On Linux/macOS, run install.sh."
-    exit 1
+    # Throw rather than exit: this script is documented to run via `irm ... | iex`,
+    # where `exit` would terminate the caller's whole PowerShell session.
+    throw "install.ps1 supports Windows only. On Linux/macOS, run install.sh."
 }
 
 $platform = Get-PlatformArch
@@ -293,7 +310,7 @@ try {
     $checksumFile = Join-Path $tempDir "checksums.txt"
 
     # Animated archive download
-    Download-WithAnimation -Url $downloadUrl -OutFile $archiveFile `
+    Save-RemoteFile -Url $downloadUrl -OutFile $archiveFile `
         -ActiveMessage "Downloading qumo CLI..." `
         -DoneMessage "Downloaded release archive $($cDim)($assetName)$($cReset)"
 

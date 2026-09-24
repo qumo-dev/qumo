@@ -4,16 +4,19 @@
 
 set -eu
 
-# Terminal capabilities & ANSI styling
+# Terminal capabilities & ANSI styling.
+# The escapes hold a literal ESC byte rather than a "\033" sequence so that they
+# render whether they land in a printf format string or in a "%s" argument.
+ESC=$(printf '\033')
 if [ -t 1 ]; then
     IS_TTY=1
-    BOLD="\033[1m"
-    DIM="\033[2m"
-    CYAN="\033[36m"
-    GREEN="\033[32m"
-    YELLOW="\033[33m"
-    RED="\033[31m"
-    RESET="\033[0m"
+    BOLD="${ESC}[1m"
+    DIM="${ESC}[2m"
+    CYAN="${ESC}[36m"
+    GREEN="${ESC}[32m"
+    YELLOW="${ESC}[33m"
+    RED="${ESC}[31m"
+    RESET="${ESC}[0m"
 else
     IS_TTY=0
     BOLD=""
@@ -23,6 +26,13 @@ else
     YELLOW=""
     RED=""
     RESET=""
+fi
+
+# The spinner needs sub-second sleeps, which POSIX does not guarantee.
+if [ "$IS_TTY" -eq 1 ] && sleep 0.07 2>/dev/null; then
+    CAN_ANIMATE=1
+else
+    CAN_ANIMATE=0
 fi
 
 info() {
@@ -49,7 +59,7 @@ download_animated() {
     MSG="$3"
     DONE_MSG="$4"
 
-    if [ "$IS_TTY" -eq 1 ] && command -v curl >/dev/null 2>&1; then
+    if [ "$CAN_ANIMATE" -eq 1 ] && command -v curl >/dev/null 2>&1; then
         curl -fsSL "$URL" -o "$OUTPUT" &
         PID=$!
         i=0
@@ -62,8 +72,11 @@ download_animated() {
             sleep 0.07
             i=$((i + 1))
         done
-        wait "$PID"
-        printf "\r\033[2K"
+        if ! wait "$PID"; then
+            printf "\r%s[2K" "$ESC"
+            error "Failed to download ${URL}"
+        fi
+        printf "\r%s[2K" "$ESC"
         success "$DONE_MSG"
     else
         printf "  %s\n" "$MSG"
