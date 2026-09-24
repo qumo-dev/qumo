@@ -35,11 +35,11 @@ param(
     [switch]$Force
 )
 
-Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"
 
-# Enable TLS 1.2 and TLS 1.3 where available
+# Configure console encoding and TLS protocols
+try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch {}
 try {
     [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.SecurityProtocolType]::Tls12 -bor [System.Net.SecurityProtocolType]::Tls13
 } catch {
@@ -48,14 +48,101 @@ try {
     } catch {}
 }
 
-function Write-Step {
+# Terminal capabilities & ANSI styling
+$isInteractive = (-not [Console]::IsOutputRedirected) -and ($host.Name -notmatch "ServerRemoteHost")
+
+$esc = [char]27
+$cBold   = "$esc[1m"
+$cDim    = "$esc[2m"
+$cCyan   = "$esc[36m"
+$cGreen  = "$esc[32m"
+$cYellow = "$esc[33m"
+$cRed    = "$esc[31m"
+$cReset  = "$esc[0m"
+
+# Unicode glyphs safely defined via character codes (codepage independent)
+$gDot     = [char]0x00B7   # ·
+$gDiamond = [char]0x25C7   # ◇
+$gCheck   = [char]0x2714   # ✔
+$gWarn    = [char]0x25B2   # ▲
+$gCross   = [char]0x2716   # ✖
+$gSparkle = [char]0x2728   # ✨
+
+$spinnerFrames = @(
+    [char]0x280B, [char]0x2819, [char]0x2839, [char]0x2838,
+    [char]0x283C, [char]0x2834, [char]0x2826, [char]0x2827,
+    [char]0x2807, [char]0x280F
+)
+
+function Write-Info {
     param([string]$Message)
-    Write-Host "==> $Message"
+    Write-Host "  $($cCyan)$($gDiamond)$($cReset) $Message"
+}
+
+function Write-Success {
+    param([string]$Message)
+    Write-Host "  $($cGreen)$($gCheck)$($cReset) $Message"
 }
 
 function Write-WarningStep {
     param([string]$Message)
-    Write-Warning "==> $Message"
+    Write-Host "  $($cYellow)$($gWarn)$($cReset) $Message"
+}
+
+function Write-ErrorStep {
+    param([string]$Message)
+    Write-Host "  $($cRed)$($gCross)$($cReset) $Message"
+}
+
+function Download-WithAnimation {
+    param(
+        [string]$Url,
+        [string]$OutFile,
+        [string]$ActiveMessage,
+        [string]$DoneMessage
+    )
+
+    if (-not $isInteractive) {
+        Write-Host "  ${ActiveMessage}"
+        Invoke-WebRequest -Uri $Url -OutFile $OutFile -UseBasicParsing -TimeoutSec 300
+        Write-Success $DoneMessage
+        return
+    }
+
+    $wc = New-Object System.Net.WebClient
+    $wc.Headers.Add("User-Agent", "qumo-installer")
+    $global:dlDone = $false
+    $global:dlErr = $null
+
+    $sub = Register-ObjectEvent -InputObject $wc -EventName DownloadFileCompleted -Action {
+        $global:dlDone = $true
+        $global:dlErr = $EventArgs.Error
+    }
+
+    try {
+        $wc.DownloadFileAsync((New-Object System.Uri($Url)), $OutFile)
+        $i = 0
+        while (-not $global:dlDone) {
+            $f = $spinnerFrames[$i % $spinnerFrames.Length]
+            Write-Host -NoNewline "`r  $($cCyan)$f$($cReset) ${ActiveMessage}"
+            Start-Sleep -Milliseconds 70
+            $i++
+        }
+
+        if ($global:dlErr) {
+            throw $global:dlErr
+        }
+
+        Write-Host -NoNewline "`r$($esc)[2K"
+        Write-Success $DoneMessage
+    } catch {
+        Invoke-WebRequest -Uri $Url -OutFile $OutFile -UseBasicParsing -TimeoutSec 300
+        Write-Host -NoNewline "`r$($esc)[2K"
+        Write-Success $DoneMessage
+    } finally {
+        Unregister-Event -SourceIdentifier $sub.Name -ErrorAction SilentlyContinue
+        $wc.Dispose()
+    }
 }
 
 function Get-PlatformArch {
@@ -79,7 +166,7 @@ function Get-PlatformArch {
             }
         }
         default {
-            throw "Unsupported Windows architecture: '$rawArch'. qumo currently supports x64 and ARM64 on Windows."
+            throw "Unsupported Windows architecture: '$rawArch'. qumo currently supports x64 and ARM64."
         }
     }
 }
@@ -112,9 +199,7 @@ function Resolve-Version {
                 Version = $ver
             }
         }
-    } catch {
-        # Fallback to redirect resolution if rate-limited or network blocked
-    }
+    } catch {}
 
     # Fallback: inspect 302 redirect of GitHub releases/latest page
     try {
@@ -157,19 +242,22 @@ function Find-Checksum {
 
 # --- Main execution ---
 
-Write-Step "Installing qumo CLI"
+Write-Host ""
+Write-Host "  $($cBold)$($cCyan)qumo$($cReset) $($cDim)$($gDot) Media over QUIC Relay installer$($cReset)"
+Write-Host ""
 
 if ($env:OS -ne "Windows_NT") {
-    throw "install.ps1 supports Windows only. Use install.sh on macOS or Linux."
+    Write-ErrorStep "install.ps1 supports Windows only. On Linux/macOS, run install.sh."
+    exit 1
 }
 
 $platform = Get-PlatformArch
-Write-Step "Detected platform: $($platform.Label)"
+Write-Info "Detected platform: $($cBold)$($platform.Label)$($cReset)"
 
 $resolved = Resolve-Version -RequestedVersion $Version
 $resolvedVersion = $resolved.Version
 $resolvedTag = $resolved.Tag
-Write-Step "Resolved version: $resolvedVersion"
+Write-Success "Resolved version: $($cBold)$resolvedVersion$($cReset)"
 
 # Default install directory: $HOME\.qumo\bin
 if ([string]::IsNullOrWhiteSpace($InstallDir)) {
@@ -185,7 +273,8 @@ if (-not $Force -and (Test-Path -LiteralPath $targetExe)) {
         if ($currentVerOutput -match "qumo\s+v?([0-9A-Za-z.-]+)") {
             $currentVer = $matches[1]
             if ($currentVer -eq $resolvedVersion) {
-                Write-Step "qumo $resolvedVersion is already installed at $targetExe"
+                Write-Info "qumo $($cBold)$resolvedVersion$($cReset) is already installed at $targetExe"
+                Write-Host ""
                 return
             }
         }
@@ -203,20 +292,26 @@ try {
     $archiveFile = Join-Path $tempDir $assetName
     $checksumFile = Join-Path $tempDir "checksums.txt"
 
-    Write-Step "Downloading qumo CLI"
-    Invoke-WebRequest -Uri $downloadUrl -OutFile $archiveFile -UseBasicParsing -TimeoutSec 300
+    # Animated archive download
+    Download-WithAnimation -Url $downloadUrl -OutFile $archiveFile `
+        -ActiveMessage "Downloading qumo CLI..." `
+        -DoneMessage "Downloaded release archive $($cDim)($assetName)$($cReset)"
+
+    # Fetch checksum
     Invoke-WebRequest -Uri $checksumUrl -OutFile $checksumFile -UseBasicParsing -TimeoutSec 60
 
-    Write-Step "Verifying SHA-256 checksum"
+    # Verify SHA-256
     $expectedDigest = Find-Checksum -ChecksumFilePath $checksumFile -TargetFilename $assetName
     $actualDigest = (Get-FileHash -LiteralPath $archiveFile -Algorithm SHA256).Hash.ToLowerInvariant()
     if ($actualDigest -ne $expectedDigest) {
-        throw "Checksum verification failed for $assetName.`nExpected: $expectedDigest`nActual:   $actualDigest"
+        throw "Checksum mismatch for $assetName.`nExpected: $expectedDigest`nActual:   $actualDigest"
     }
+    Write-Success "Verified SHA-256 checksum"
 
-    Write-Step "Extracting binary"
+    # Extract
     $extractDir = Join-Path $tempDir "extracted"
     Expand-Archive -LiteralPath $archiveFile -DestinationPath $extractDir -Force
+    Write-Success "Extracted binary"
 
     $srcExe = Join-Path $extractDir "qumo.exe"
     if (-not (Test-Path -LiteralPath $srcExe)) {
@@ -229,12 +324,10 @@ try {
     }
 
     New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
-    Write-Step "Installing qumo to $targetExe"
 
     try {
         Copy-Item -LiteralPath $srcExe -Destination $targetExe -Force
     } catch {
-        # If destination is locked (e.g. currently executing), rename and replace
         $oldExe = "$targetExe.old"
         if (Test-Path -LiteralPath $oldExe) {
             Remove-Item -LiteralPath $oldExe -Force -ErrorAction SilentlyContinue
@@ -242,6 +335,7 @@ try {
         Move-Item -LiteralPath $targetExe -Destination $oldExe -Force
         Copy-Item -LiteralPath $srcExe -Destination $targetExe -Force
     }
+    Write-Success "Installed qumo to $($cDim)$targetExe$($cReset)"
 
     if (-not $NoModifyPath) {
         $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
@@ -255,16 +349,13 @@ try {
         }
 
         if (-not $alreadyInPath) {
-            Write-Step "Adding $InstallDir to PATH"
             $newUserPath = if ($userPath) { "$InstallDir;$userPath" } else { $InstallDir }
             [Environment]::SetEnvironmentVariable("Path", $newUserPath, "User")
-            Write-Step "PATH updated for future sessions."
-        } else {
-            Write-Step "$InstallDir is already in User PATH."
+            Write-Success "Added $($cDim)$InstallDir$($cReset) to User PATH"
         }
     }
 
-    # Update current session PATH so qumo is immediately usable
+    # Update current session PATH
     $currentSessionSegments = $env:Path.Split(";", [System.StringSplitOptions]::RemoveEmptyEntries)
     $inCurrentSession = $false
     foreach ($segment in $currentSessionSegments) {
@@ -277,11 +368,14 @@ try {
         $env:Path = "$InstallDir;$env:Path"
     }
 
-    Write-Step "Successfully installed qumo CLI $resolvedVersion!"
+    # Clean finish card
     Write-Host ""
-    Write-Host "To get started, restart your terminal or run:"
-    Write-Host "  qumo playground      # launch relay + embedded web UI"
-    Write-Host "  qumo --help          # list available commands"
+    Write-Host "  $($cGreen)$($cBold)$($gSparkle) Successfully installed qumo v${resolvedVersion}!$($cReset)"
+    Write-Host ""
+    Write-Host "  $($cDim)$($cBold)Get started:$($cReset)"
+    Write-Host "    $($cCyan)qumo playground$($cReset)      $($cDim)# launch relay + embedded web demo$($cReset)"
+    Write-Host "    $($cCyan)qumo --help$($cReset)          $($cDim)# explore available commands$($cReset)"
+    Write-Host ""
 } finally {
     Remove-Item -LiteralPath $tempDir -Recurse -Force -ErrorAction SilentlyContinue
 }
