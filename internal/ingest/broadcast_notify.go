@@ -5,20 +5,30 @@ import (
 	"sync/atomic"
 )
 
-// broadcastNotify is an O(1) broadcast notification mechanism that replaces
-// per-subscriber channels with an atomic sequence number and a channel-swap
-// pattern. Each call to notify() atomically increments a sequence number and
-// swaps in a fresh channel while closing the old one, waking all goroutines
-// waiting on the previous channel. Listeners obtain both the current sequence
-// and channel atomically via listen(), so there is no race between reading the
-// sequence and waiting for the next event.
+// broadcastNotify is an O(1) broadcast notification mechanism: an atomic
+// sequence number plus a close-and-recreate channel swap. Listeners obtain
+// both the current sequence and channel atomically via [addListener] (or the
+// read-only [listen]), and egress goroutines park on the captured channel,
+// guarded by the sequence.
+//
+// There are two notify paths:
+//
+//   - Zero listeners (no egress goroutine is attached to the track): the
+//     sequence advances with a single atomic add — no mutex, no allocation,
+//     no channel close. A channel nobody is parked on has nobody to wake.
+//   - One or more listeners: the sequence advances, the previous channel is
+//     closed (waking every goroutine parked on it), and a fresh channel is
+//     installed. The mutex serialises the close-and-recreate swap, which is
+//     required for correctness: concurrent swaps could both close the same
+//     channel.
 //
 // This eliminates the former O(N) per-subscriber channel-send loop in
 // trackBuffer.notify() — which ran on every pushed video/audio frame under an
 // RWMutex — and the per-subscriber channel bookkeeping (subscribe/unsubscribe
 // map). It is the same mechanism the relay's trackDistributor has run since
 // #332, where it measured flat ~82–86 ns across 1–1000 subscribers (was O(N),
-// ~32 µs at 1000).
+// ~32 µs at 1000). The zero-listener fast path is specific to ingest, where
+// most tracks spend most of their life with no attached egress.
 //
 // The wake cost does not vanish: closing a channel makes the runtime wake the
 // parked waiters, and N waiters still cost O(N) to schedule. What changes is
@@ -27,58 +37,117 @@ import (
 // egress goroutines themselves, which is where the relay's fan-out-drain
 // attribution put it (docs/perf/bottleneck-attribution.md).
 //
-// init() must be called before use (typically in newTrackBuffer). As a
-// defensive measure, listen() and notify() lazy-initialise if init() was
-// missed, so the type is safe to zero-value.
+// init() must be called before use (newTrackBuffer does). As a defensive
+// measure, all methods lazy-initialise if init() was missed, so the type is
+// safe to zero-value.
 type broadcastNotify struct {
-	state atomic.Pointer[notifyState]
-	mu    sync.Mutex // serialises the close-and-recreate swap
+	// seq is the authoritative notification sequence. It lives outside the
+	// state snapshot so notify() can advance it without allocating when no
+	// listener needs waking.
+	seq atomic.Uint64
+	// ch is the current open channel. Closed — and replaced — only by the
+	// slow notify path.
+	ch atomic.Pointer[chan struct{}]
+	// listeners counts registered egress waiters (one per live serve() call).
+	listeners atomic.Int64
+
+	mu sync.Mutex // serialises the close-and-recreate swap
 }
 
-// notifyState is the immutable snapshot returned by listen(). Both seq and ch
-// are published atomically via atomic.Pointer so listeners always see a
-// consistent pair — there is no window where a listener reads a stale seq with
-// a new channel or vice versa.
+// notifyState is the consistent {seq, ch} snapshot returned to listeners. Both
+// fields come from the same critical section, so there is no window where a
+// listener reads a stale seq with a new channel or vice versa.
 type notifyState struct {
 	seq uint64
 	ch  chan struct{} // closed when seq advances; listeners select on this
 }
 
-// init initialises the first notifyState. Must be called before any other
-// method, ideally at construction time (newTrackBuffer calls it).
+// init initialises the first notification channel. Must be called before any
+// other method, ideally at construction time (newTrackBuffer calls it).
 func (b *broadcastNotify) init() {
-	b.state.Store(&notifyState{ch: make(chan struct{})})
+	ch := make(chan struct{})
+	b.ch.Store(&ch)
 }
 
-// notify advances the sequence number and wakes all waiters by closing the
-// previous channel and replacing it with a fresh one. The mutex serialises the
-// close-and-recreate swap, which is required for correctness: without it,
-// concurrent notify() calls could both Load() the same old state and both
-// close(old.ch), causing a double-close panic. notify() is single-writer per
-// track (the ingest goroutine) so contention is negligible.
+// notify advances the sequence number. When listeners are registered it also
+// wakes them by closing the previous channel and installing a fresh one; with
+// none, it stops at the sequence bump — there is nobody to wake.
+//
+// The bump happens BEFORE consulting the listener count — that order is what
+// closes the lost-wakeup window: a listener that finished addListener before
+// the bump is seen by the after-bump check (slow path closes the channel that
+// listener captured), and a listener whose addListener lands after the bump
+// reads the already-advanced sequence under the mutex and never parks on the
+// pre-bump channel. Checking first and bumping second would let a listener
+// attach in between, read the old sequence, and park forever (until the next
+// notify or the serve loop's timer fallback).
 func (b *broadcastNotify) notify() {
 	b.lazyInit()
+	b.seq.Add(1) // no waiters have to be woken for the bump itself
+
+	if b.listeners.Load() == 0 {
+		return // fast path: no mutex, no allocation, no close
+	}
+
 	b.mu.Lock()
-	old := b.state.Load()
-	n := &notifyState{seq: old.seq + 1, ch: make(chan struct{})}
-	b.state.Store(n)
-	close(old.ch) // wake all waiters on the previous channel
+	// Re-check under the lock: all listeners may have left since the
+	// unlocked check. Nobody registered can be parked on a pre-bump snapshot
+	// (count is zero), and a listener attaching later reads the bumped seq.
+	if b.listeners.Load() == 0 {
+		b.mu.Unlock()
+		return
+	}
+	old := *b.ch.Load()
+	ch := make(chan struct{})
+	b.ch.Store(&ch)
+	close(old) // wake all waiters on the previous channel
 	b.mu.Unlock()
 }
 
-// listen returns the current notifyState atomically: both seq and ch are from
-// the same state snapshot, so there is no race between reading the sequence
-// and selecting on the channel. If seq > lastSeen, the caller should process
-// new data immediately without waiting on ch.
+// addListener registers an egress waiter for the lifetime of one serve() call
+// and returns the current state atomically with the registration: any notify()
+// that starts after addListener returns either sees the listener (slow path,
+// closes the captured channel) or already happened (the returned seq shows it,
+// so the caller never parks on a channel that will not be closed).
+func (b *broadcastNotify) addListener() notifyState {
+	b.lazyInit()
+	b.mu.Lock()
+	b.listeners.Add(1)
+	seq := b.seq.Load()
+	ch := *b.ch.Load()
+	b.mu.Unlock()
+	return notifyState{seq: seq, ch: ch}
+}
+
+// removeListener unregisters an egress waiter. Must be called exactly once
+// per addListener, when the serve() call ends.
+func (b *broadcastNotify) removeListener() {
+	b.listeners.Add(-1)
+}
+
+// listen returns the current {seq, ch} pair without registering. Egress
+// goroutines call this to re-read state after a wake; it is safe at any
+// frequency. If seq > lastSeen, the caller should process new data
+// immediately without waiting on ch.
+//
+// The channel is read before the sequence — the relay's order. The other
+// order can pair a stale sequence with a fresh channel, making a caller with
+// lastSeen == seq-1 park on the new channel, which will not close until the
+// notify after next. Reading ch first can at worst pair a fresh sequence with
+// a just-closed channel; a seq advance implies the group was already opened,
+// so the caller's head check sees the data and never parks on the stale
+// channel.
 func (b *broadcastNotify) listen() notifyState {
 	b.lazyInit()
-	return *b.state.Load()
+	ch := *b.ch.Load()
+	return notifyState{seq: b.seq.Load(), ch: ch}
 }
 
 // lazyInit initialises the state if it hasn't been set yet. This allows the
 // type to be safely used as a zero value without an explicit init() call.
 func (b *broadcastNotify) lazyInit() {
-	if b.state.Load() == nil {
-		b.init()
+	if b.ch.Load() == nil {
+		ch := make(chan struct{})
+		b.ch.CompareAndSwap(nil, &ch)
 	}
 }

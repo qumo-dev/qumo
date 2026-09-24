@@ -6,6 +6,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+
+### Changed
+
+- **Zero-listener ingest notify fast path (`internal/ingest`).**
+  `broadcastNotify.notify()` used to close and recreate its notification
+  channel on every pushed frame even when no egress goroutine was attached —
+  a mutex round-trip plus two allocations (~128 B) per frame, 37.9 % of
+  alloc-objects in the zero-subscriber publisher profile, spent waking
+  nobody. The sequence number is now authoritative (a plain atomic) and the
+  swap is gated on a listener count registered per `serve()` lifetime: with
+  no listeners a notify is a single atomic add with zero allocations
+  (nolisten 72 ns/2 allocs → 7–11 ns/0); with listeners the wake path is
+  unchanged. Restores the pre-#397 zero-subscriber allocation floor.
+
 ## [v0.7.260922] - 2026-09-22
 
 ### Changed
