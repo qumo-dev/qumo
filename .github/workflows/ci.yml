@@ -225,6 +225,22 @@ jobs:
           go install golang.org/x/vuln/cmd/govulncheck@v1.4.0
           govulncheck ./...
 
+  installers:
+    name: Installer scripts
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        # SHA: actions/checkout@v6
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+
+      # install.sh/install.ps1 are published twice — from the repo root via
+      # raw.githubusercontent.com and from docs/site/static via GitHub Pages —
+      # and both URLs are documented. Nothing generates one copy from the
+      # other, so an unmirrored edit ships a different installer to half of
+      # the users. Also gates install.ps1 on being pure ASCII (#400).
+      - name: Verify installer copies are in sync
+        run: sh scripts/check-installer-sync.sh
+
   workflows:
     name: Workflows (actionlint)
     runs-on: ubuntu-latest
