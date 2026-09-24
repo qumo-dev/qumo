@@ -176,7 +176,12 @@ func TestBroadcastNotify_RemoveListenerRestoresFastPath(t *testing.T) {
 // TestBroadcastNotify_ConcurrentRegistrationVsNotify hammers the interleaving
 // the seq/lock design exists for: listeners attaching and detaching
 // concurrently with fast- and slow-path notifies. No double-close may panic,
-// and every attached listener's captured channel must eventually close.
+// and every attached listener's captured channel must eventually close. The
+// attach-vs-fast-path-notify window itself is closed by construction (notify
+// bumps the sequence before consulting the listener count — see the notify()
+// doc comment); both endpoints of that interleaving are pinned deterministically
+// by TestBroadcastNotify_FastPathNotifyThenAddListener and
+// TestBroadcastNotify_AddListenerThenNotifyClosesCaptured.
 func TestBroadcastNotify_ConcurrentRegistrationVsNotify(t *testing.T) {
 	var n broadcastNotify
 	n.init()

@@ -72,23 +72,31 @@ func (b *broadcastNotify) init() {
 // notify advances the sequence number. When listeners are registered it also
 // wakes them by closing the previous channel and installing a fresh one; with
 // none, it stops at the sequence bump — there is nobody to wake.
+//
+// The bump happens BEFORE consulting the listener count — that order is what
+// closes the lost-wakeup window: a listener that finished addListener before
+// the bump is seen by the after-bump check (slow path closes the channel that
+// listener captured), and a listener whose addListener lands after the bump
+// reads the already-advanced sequence under the mutex and never parks on the
+// pre-bump channel. Checking first and bumping second would let a listener
+// attach in between, read the old sequence, and park forever (until the next
+// notify or the serve loop's timer fallback).
 func (b *broadcastNotify) notify() {
 	b.lazyInit()
+	b.seq.Add(1) // no waiters have to be woken for the bump itself
+
 	if b.listeners.Load() == 0 {
-		b.seq.Add(1) // fast path: no waiters, nothing to close or allocate
-		return
+		return // fast path: no mutex, no allocation, no close
 	}
 
 	b.mu.Lock()
-	// Re-check under the lock: a listener may have attached since the
-	// unlocked check. Registration takes this mutex, so either we see it
-	// here, or it observed the sequence state after our bump.
+	// Re-check under the lock: all listeners may have left since the
+	// unlocked check. Nobody registered can be parked on a pre-bump snapshot
+	// (count is zero), and a listener attaching later reads the bumped seq.
 	if b.listeners.Load() == 0 {
-		b.seq.Add(1)
 		b.mu.Unlock()
 		return
 	}
-	b.seq.Add(1)
 	old := *b.ch.Load()
 	ch := make(chan struct{})
 	b.ch.Store(&ch)
@@ -121,9 +129,18 @@ func (b *broadcastNotify) removeListener() {
 // goroutines call this to re-read state after a wake; it is safe at any
 // frequency. If seq > lastSeen, the caller should process new data
 // immediately without waiting on ch.
+//
+// The channel is read before the sequence — the relay's order. The other
+// order can pair a stale sequence with a fresh channel, making a caller with
+// lastSeen == seq-1 park on the new channel, which will not close until the
+// notify after next. Reading ch first can at worst pair a fresh sequence with
+// a just-closed channel; a seq advance implies the group was already opened,
+// so the caller's head check sees the data and never parks on the stale
+// channel.
 func (b *broadcastNotify) listen() notifyState {
 	b.lazyInit()
-	return notifyState{seq: b.seq.Load(), ch: *b.ch.Load()}
+	ch := *b.ch.Load()
+	return notifyState{seq: b.seq.Load(), ch: ch}
 }
 
 // lazyInit initialises the state if it hasn't been set yet. This allows the
