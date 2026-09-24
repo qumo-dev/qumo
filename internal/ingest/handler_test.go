@@ -275,7 +275,8 @@ func TestTrackBuffer_Notify_WakesListener(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		b := newTestTrackBuffer()
 
-		before := b.notify.listen()
+		before := b.notify.addListener()
+		defer b.notify.removeListener()
 
 		// Listener parks on the pre-notify channel.
 		woken := make(chan struct{})
@@ -333,7 +334,8 @@ func TestTrackBuffer_Notify_MultipleListeners(t *testing.T) {
 		const listeners = 8
 		woken := make([]chan struct{}, listeners)
 		for i := range woken {
-			state := b.notify.listen()
+			state := b.notify.addListener()
+			defer b.notify.removeListener()
 			woken[i] = make(chan struct{})
 			go func(ch chan struct{}, s notifyState) {
 				<-s.ch
