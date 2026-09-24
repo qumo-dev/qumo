@@ -19,9 +19,11 @@ import (
 // per-subscriber channels no longer exist).
 //
 //   - nolisten: notify() in a tight loop with no listeners — the writer-side
-//     floor (seq bump + channel swap), no waiters to wake.
-//   - parked: `subs` goroutines parked waiting on the current channel —
-//     notify must close that channel, making the runtime wake all of them.
+//     floor. With the C18 fast path this is a bare seq bump: no swap, no
+//     channel close, zero allocations.
+//   - parked: `subs` goroutines registered and parked on the captured
+//     channel — notify must take the slow path: advance the seq, close that
+//     channel, install a fresh one, making the runtime wake all of them.
 //     This is the fan-out cost as production pays it: the wake work happens
 //     while the writer holds no lock, but it is still timed here as the upper
 //     bound of the writer's per-call cost.
@@ -43,8 +45,11 @@ func BenchmarkTrackBufferNotify(b *testing.B) {
 			var wg sync.WaitGroup
 			for range n {
 				wg.Go(func() {
+					// Register like a real egress goroutine so notify takes the
+					// slow path; refresh the snapshot after each wake.
+					state := buf.notify.addListener()
+					defer buf.notify.removeListener()
 					for {
-						state := buf.notify.listen()
 						// Select on stop AND the notify channel: after the final
 						// broadcast the current channel never closes, so waiters
 						// parked only on it would deadlock the harness at
@@ -54,6 +59,7 @@ func BenchmarkTrackBufferNotify(b *testing.B) {
 							return
 						case <-state.ch:
 						}
+						state = buf.notify.listen()
 					}
 				})
 			}
@@ -92,15 +98,17 @@ func BenchmarkTrackBufferNotify_Fanout(b *testing.B) {
 			var wg sync.WaitGroup
 			for range n {
 				wg.Go(func() {
+					// Register like a real egress goroutine — see the parked
+					// variant above for why the stop case is required.
+					state := buf.notify.addListener()
+					defer buf.notify.removeListener()
 					for {
-						state := buf.notify.listen()
-						// Select on stop AND the notify channel — see the parked
-						// variant above for why the stop case is required.
 						select {
 						case <-stop:
 							return
 						case <-state.ch:
 						}
+						state = buf.notify.listen()
 					}
 				})
 			}
