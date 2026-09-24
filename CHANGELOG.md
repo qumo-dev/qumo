@@ -17,6 +17,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `install.ps1` is kept pure ASCII so Windows PowerShell 5.1 parses it
   identically under every system codepage.
 
+- **Installer sync gate (`scripts/check-installer-sync.sh`, CI job "Installer
+  scripts").** `install.sh` and `install.ps1` are each published twice — from
+  the repo root via `raw.githubusercontent.com` and from `docs/site/static/`
+  via GitHub Pages — and both URLs are documented, but nothing generated one
+  copy from the other. An unmirrored edit shipped a different installer to
+  whichever half of the docs pointed at the stale URL, and the diff looked
+  complete either way. CI now fails on drift, and separately on any non-ASCII
+  byte in `install.ps1` (the parse hazard behind #400).
+
 ### Changed
 
 - **Zero-listener ingest notify fast path (`internal/ingest`).**
