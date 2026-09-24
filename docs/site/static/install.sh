@@ -4,21 +4,107 @@
 
 set -eu
 
+# Terminal capabilities & ANSI styling.
+# The escapes hold a literal ESC byte rather than a "\033" sequence so that they
+# render whether they land in a printf format string or in a "%s" argument.
+ESC=$(printf '\033')
+if [ -t 1 ]; then
+    IS_TTY=1
+    BOLD="${ESC}[1m"
+    DIM="${ESC}[2m"
+    CYAN="${ESC}[36m"
+    GREEN="${ESC}[32m"
+    YELLOW="${ESC}[33m"
+    RED="${ESC}[31m"
+    RESET="${ESC}[0m"
+else
+    IS_TTY=0
+    BOLD=""
+    DIM=""
+    CYAN=""
+    GREEN=""
+    YELLOW=""
+    RED=""
+    RESET=""
+fi
+
+# The spinner needs sub-second sleeps, which POSIX does not guarantee.
+if [ "$IS_TTY" -eq 1 ] && sleep 0.07 2>/dev/null; then
+    CAN_ANIMATE=1
+else
+    CAN_ANIMATE=0
+fi
+
 info() {
-    printf "==> %s\n" "$*"
+    printf "  ${CYAN}◇${RESET} %s\n" "$*"
+}
+
+success() {
+    printf "  ${GREEN}✔${RESET} %s\n" "$*"
 }
 
 warn() {
-    printf "==> [WARN] %s\n" "$*" >&2
+    printf "  ${YELLOW}▲${RESET} %s\n" "$*" >&2
 }
 
 error() {
-    printf "==> [ERROR] %s\n" "$*" >&2
+    printf "  ${RED}✖${RESET} %s\n" "$*" >&2
     exit 1
 }
 
-# 1. Check OS and Architecture
-info "Installing qumo CLI"
+# Download with animated braille spinner in interactive shells
+download_animated() {
+    URL="$1"
+    OUTPUT="$2"
+    MSG="$3"
+    DONE_MSG="$4"
+
+    if [ "$CAN_ANIMATE" -eq 1 ] && command -v curl >/dev/null 2>&1; then
+        curl -fsSL "$URL" -o "$OUTPUT" &
+        PID=$!
+        i=0
+        while kill -0 "$PID" 2>/dev/null; do
+            case $((i % 10)) in
+                0) f="⠋" ;; 1) f="⠙" ;; 2) f="⠹" ;; 3) f="⠸" ;; 4) f="⠼" ;;
+                5) f="⠴" ;; 6) f="⠦" ;; 7) f="⠧" ;; 8) f="⠇" ;; 9) f="⠏" ;;
+            esac
+            printf "\r  ${CYAN}%s${RESET} %s" "$f" "$MSG"
+            sleep 0.07
+            i=$((i + 1))
+        done
+        if ! wait "$PID"; then
+            printf "\r%s[2K" "$ESC"
+            error "Failed to download ${URL}"
+        fi
+        printf "\r%s[2K" "$ESC"
+        success "$DONE_MSG"
+    else
+        printf "  %s\n" "$MSG"
+        if command -v curl >/dev/null 2>&1; then
+            curl -fsSL "$URL" -o "$OUTPUT"
+        elif command -v wget >/dev/null 2>&1; then
+            wget -qO "$OUTPUT" "$URL"
+        else
+            error "Neither curl nor wget found. Please install curl or wget."
+        fi
+        success "$DONE_MSG"
+    fi
+}
+
+http_get() {
+    URL="$1"
+    OUTPUT="$2"
+    if command -v curl >/dev/null 2>&1; then
+        curl -fsSL "$URL" -o "$OUTPUT"
+    elif command -v wget >/dev/null 2>&1; then
+        wget -qO "$OUTPUT" "$URL"
+    else
+        error "Neither curl nor wget found. Please install curl or wget."
+    fi
+}
+
+# 1. Header & Platform Check
+printf "\n  ${BOLD}${CYAN}qumo${RESET} ${DIM}· Media over QUIC Relay installer${RESET}\n\n"
 
 OS="$(uname -s)"
 ARCH="$(uname -m)"
@@ -51,20 +137,7 @@ case "$ARCH" in
         ;;
 esac
 
-info "Detected platform: ${OS_LABEL} (${ARCH_LABEL})"
-
-# HTTP fetch helper (prefers curl, falls back to wget)
-http_get() {
-    URL="$1"
-    OUTPUT="$2"
-    if command -v curl >/dev/null 2>&1; then
-        curl -fsSL "$URL" -o "$OUTPUT"
-    elif command -v wget >/dev/null 2>&1; then
-        wget -qO "$OUTPUT" "$URL"
-    else
-        error "Neither curl nor wget found. Please install curl or wget."
-    fi
-}
+info "Detected platform: ${BOLD}${OS_LABEL} (${ARCH_LABEL})${RESET}"
 
 # 2. Resolve version
 REQUESTED_VERSION="${QUMO_VERSION:-latest}"
@@ -97,7 +170,7 @@ else
     VERSION="${TAG#v}"
 fi
 
-info "Resolved version: ${VERSION}"
+success "Resolved version: ${BOLD}${VERSION}${RESET}"
 
 INSTALL_DIR="${QUMO_INSTALL_DIR:-$HOME/.qumo/bin}"
 TARGET_BIN="${INSTALL_DIR}/qumo"
@@ -110,11 +183,12 @@ CHECKSUMS_URL="https://github.com/qumo-dev/qumo/releases/download/${TAG}/checksu
 TMP_DIR="$(mktemp -d 2>/dev/null || mktemp -d -t 'qumo-install')"
 trap 'rm -rf "$TMP_DIR"' EXIT INT TERM
 
-info "Downloading qumo CLI"
-http_get "$DOWNLOAD_URL" "${TMP_DIR}/${ASSET_NAME}"
+download_animated "$DOWNLOAD_URL" "${TMP_DIR}/${ASSET_NAME}" \
+    "Downloading qumo CLI..." \
+    "Downloaded release archive ${DIM}(${ASSET_NAME})${RESET}"
+
 http_get "$CHECKSUMS_URL" "${TMP_DIR}/checksums.txt"
 
-info "Verifying SHA-256 checksum"
 EXPECTED_SUM=$(grep " ${ASSET_NAME}\$" "${TMP_DIR}/checksums.txt" | awk '{print $1}' || true)
 if [ -z "$EXPECTED_SUM" ]; then
     error "Could not find checksum for ${ASSET_NAME} in checksums.txt."
@@ -132,24 +206,24 @@ fi
 if [ "$ACTUAL_SUM" != "$EXPECTED_SUM" ]; then
     error "Checksum mismatch! Expected: ${EXPECTED_SUM}, Actual: ${ACTUAL_SUM}"
 fi
+success "Verified SHA-256 checksum"
 
-info "Extracting binary"
 tar -xzf "${TMP_DIR}/${ASSET_NAME}" -C "$TMP_DIR"
+success "Extracted binary"
 
 if [ ! -f "${TMP_DIR}/qumo" ]; then
     error "Release archive did not contain 'qumo' executable."
 fi
 
 mkdir -p "$INSTALL_DIR"
-info "Installing qumo to ${TARGET_BIN}"
 cp -f "${TMP_DIR}/qumo" "$TARGET_BIN"
 chmod +x "$TARGET_BIN"
+success "Installed qumo to ${DIM}${TARGET_BIN}${RESET}"
 
 # Check PATH
 case ":$PATH:" in
     *":$INSTALL_DIR:"*) ;;
     *)
-        info "Adding ${INSTALL_DIR} to PATH instructions:"
         SHELL_NAME="$(basename "${SHELL:-sh}")"
         PROFILE=""
         case "$SHELL_NAME" in
@@ -168,7 +242,7 @@ case ":$PATH:" in
         if [ -n "$PROFILE" ]; then
             if ! grep -q "$INSTALL_DIR" "$PROFILE" 2>/dev/null; then
                 printf '\nexport PATH="%s:$PATH"\n' "$INSTALL_DIR" >> "$PROFILE"
-                info "Added ${INSTALL_DIR} to ${PROFILE}"
+                success "Added ${DIM}${INSTALL_DIR}${RESET} to ${PROFILE}"
             fi
         else
             warn "Please add ${INSTALL_DIR} to your PATH:"
@@ -177,8 +251,8 @@ case ":$PATH:" in
         ;;
 esac
 
-info "Successfully installed qumo CLI ${VERSION}!"
 printf "\n"
-printf "To get started, run:\n"
-printf "  qumo playground      # launch relay + embedded web UI\n"
-printf "  qumo --help          # list available commands\n"
+printf "  ${GREEN}${BOLD}✨ Successfully installed qumo v%s!${RESET}\n\n" "$VERSION"
+printf "  ${DIM}${BOLD}Get started:${RESET}\n"
+printf "    ${CYAN}qumo playground${RESET}      ${DIM}# launch relay + embedded web demo${RESET}\n"
+printf "    ${CYAN}qumo --help${RESET}          ${DIM}# explore available commands${RESET}\n\n"

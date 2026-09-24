@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Interactive console UI for the installer scripts (`install.ps1`, `install.sh`).**
+  A braille spinner animates the release download, milestones report as green
+  check marks, and secondary detail (archive name, install path) is dimmed.
+  Styling is suppressed when output is not an interactive terminal, and the
+  spinner falls back to a plain line where sub-second `sleep` is unavailable.
+  `install.ps1` is kept pure ASCII so Windows PowerShell 5.1 parses it
+  identically under every system codepage.
+
 ### Changed
 
 - **Zero-listener ingest notify fast path (`internal/ingest`).**
