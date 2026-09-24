@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+
+### Fixed
+
+- **`TestMetrics_Initialization` failed under `go test -count=N` (N ≥ 2)
+  (`internal/relay`).** The test asserted absolute values on package-global
+  Prometheus counters, which accumulate across repetitions (every counter read
+  exactly 2× on the second run). Counter assertions are now deltas around a
+  single increment; gauge and histogram assertions were already
+  repetition-stable and are unchanged.
+
 ## [v0.7.260922] - 2026-09-22
 
 ### Changed
