@@ -89,14 +89,20 @@ func NewCredentialClient() *CredentialClient {
 	}
 }
 
-// Introspect validates a publisher JWT against the credential introspection endpoint.
+// Introspect validates a publisher JWT for announcing broadcastPath against the
+// credential introspection endpoint. The relay only forwards the path it saw in
+// the ANNOUNCE; whether the credential covers it is the control plane's
+// decision.
 // Returns (nil, nil) when the token is present but the server reports valid:false.
-// Results are cached until the server-supplied revalidate_after time.
-// Concurrent calls for the same JWT are coalesced into a single HTTP request.
-func (c *CredentialClient) Introspect(ctx context.Context, jwt string) (*IntrospectResult, error) {
+// Results are cached per (JWT, path) until the server-supplied revalidate_after
+// time: a credential valid for one path says nothing about another.
+// Concurrent calls for the same (JWT, path) are coalesced into a single HTTP request.
+func (c *CredentialClient) Introspect(ctx context.Context, jwt, broadcastPath string) (*IntrospectResult, error) {
+	key := introspectCacheKey(jwt, broadcastPath)
+
 	// Fast path: cache hit.
 	c.cacheMu.Lock()
-	if cached, ok := c.cache[jwt]; ok && time.Now().Before(cached.expires) {
+	if cached, ok := c.cache[key]; ok && time.Now().Before(cached.expires) {
 		result := cached.result
 		c.cacheMu.Unlock()
 		return &result, nil
@@ -109,18 +115,18 @@ func (c *CredentialClient) Introspect(ctx context.Context, jwt string) (*Introsp
 	// that context is cancelled (e.g. authCtx times out), all coalesced callers
 	// receive the same cancellation error. This is correct for auth: a timeout
 	// on any one caller should reject all publishers waiting on the same JWT.
-	v, err, _ := c.sfGroup.Do(jwt, func() (any, error) {
+	v, err, _ := c.sfGroup.Do(key, func() (any, error) {
 		// Re-check cache: another goroutine may have populated it while this one
 		// was waiting for the singleflight lock.
 		c.cacheMu.Lock()
-		if cached, ok := c.cache[jwt]; ok && time.Now().Before(cached.expires) {
+		if cached, ok := c.cache[key]; ok && time.Now().Before(cached.expires) {
 			result := cached.result
 			c.cacheMu.Unlock()
 			return &result, nil
 		}
 		c.cacheMu.Unlock()
 
-		body, err := json.Marshal(map[string]string{"token": jwt})
+		body, err := json.Marshal(map[string]string{"token": jwt, "broadcast_path": broadcastPath})
 		if err != nil {
 			return nil, fmt.Errorf("credential: marshal introspect request: %w", err)
 		}
@@ -179,7 +185,7 @@ func (c *CredentialClient) Introspect(ctx context.Context, jwt string) (*Introsp
 		}
 
 		c.cacheMu.Lock()
-		c.cache[jwt] = cachedCredential{result: result, expires: expires}
+		c.cache[key] = cachedCredential{result: result, expires: expires}
 		// Sweep expired entries to prevent unbounded cache growth.
 		now := time.Now()
 		for k, v := range c.cache {
@@ -195,6 +201,12 @@ func (c *CredentialClient) Introspect(ctx context.Context, jwt string) (*Introsp
 		return nil, err
 	}
 	return v.(*IntrospectResult), nil
+}
+
+// introspectCacheKey keys the cache and singleflight group by credential and
+// path together. NUL cannot appear in a JWT or a MoQ broadcast path.
+func introspectCacheKey(jwt, broadcastPath string) string {
+	return jwt + "\x00" + broadcastPath
 }
 
 // ReportUsage POSTs a batch of cumulative usage events to the credential server.

@@ -102,5 +102,5 @@ relay's HTTP port.
 
 | Variable | Default | Description |
 |---|---|---|
-| `QUMO_CREDENTIAL_URL` | (unset) | Base URL of the qumo credential server. When set, the relay authenticates publisher JWTs via `POST /v1/credentials/introspect` and reports cumulative ingress/egress byte totals via `POST /v1/usage/events`. Leave unset for open-relay mode. |
+| `QUMO_CREDENTIAL_URL` | (unset) | Base URL of the qumo credential server. When set, the relay authenticates publisher JWTs via `POST /v1/credentials/introspect` — sending the token together with the announced `broadcast_path`, so the credential server decides whether the credential covers that path — and reports cumulative ingress/egress byte totals via `POST /v1/usage/events`. Leave unset for open-relay mode. |
 | `QUMO_RELAY_TOKEN` | (unset) | Shared bearer token the relay presents to the credential server. Must match the server's configured token. |
