@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Credential introspection includes the announced broadcast path.**
+  `POST /v1/credentials/introspect` now carries `broadcast_path` (the path from
+  the ANNOUNCE) alongside `token`, so a credential server can issue credentials
+  scoped to a path and check them against the actual announcement. The relay
+  still makes no authorization decision itself. Results are cached per
+  (token, path). Credential servers that ignore the field are unaffected.
 - **Interactive console UI for the installer scripts (`install.ps1`, `install.sh`).**
   A braille spinner animates the release download, milestones report as green
   check marks, and secondary detail (archive name, install path) is dimmed.

@@ -839,7 +839,7 @@ func (s *Server) authenticateAnnouncement(ctx context.Context, sess *moqt.Sessio
 	}
 	jwt := jwtBuf.String()
 
-	result, err := s.credentialClient.Introspect(authCtx, jwt)
+	result, err := s.credentialClient.Introspect(authCtx, jwt, ann.BroadcastPath().String())
 	if err != nil {
 		return nil, fmt.Errorf("introspect: %w", err)
 	}
