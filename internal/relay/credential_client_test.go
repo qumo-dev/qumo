@@ -106,14 +106,17 @@ func TestCredentialClient_Introspect_RequestShape(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	_, err := newTestCredentialClient(srv).Introspect(context.Background(), "the-jwt")
+	_, err := newTestCredentialClient(srv).Introspect(context.Background(), "the-jwt", "/tenant/project/live")
 	require.NoError(t, err)
 
 	assert.Equal(t, http.MethodPost, gotMethod)
 	assert.Equal(t, "/v1/credentials/introspect", gotPath)
 	assert.Equal(t, "Bearer test-token", gotAuth)
 	assert.Equal(t, "application/json", gotCT)
-	assert.Contains(t, string(gotBodyBytes), "the-jwt")
+	var body map[string]string
+	require.NoError(t, json.Unmarshal(gotBodyBytes, &body))
+	assert.Equal(t, map[string]string{"token": "the-jwt", "broadcast_path": "/tenant/project/live"}, body,
+		"the relay forwards the announced path; the control plane decides")
 }
 
 func TestCredentialClient_Introspect_NoAuthHeaderWhenTokenEmpty(t *testing.T) {
@@ -128,7 +131,7 @@ func TestCredentialClient_Introspect_NoAuthHeaderWhenTokenEmpty(t *testing.T) {
 
 	c := newTestCredentialClient(srv)
 	c.authToken = ""
-	_, err := c.Introspect(context.Background(), "jwt")
+	_, err := c.Introspect(context.Background(), "jwt", "/tenant/project/live")
 	require.NoError(t, err)
 	assert.Empty(t, gotAuth)
 }
@@ -142,7 +145,7 @@ func TestCredentialClient_Introspect_ValidCredential(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	result, err := newTestCredentialClient(srv).Introspect(context.Background(), "jwt")
+	result, err := newTestCredentialClient(srv).Introspect(context.Background(), "jwt", "/tenant/project/live")
 	require.NoError(t, err)
 	require.NotNil(t, result)
 	assert.Equal(t, "tok-abc", result.TokenID)
@@ -159,7 +162,7 @@ func TestCredentialClient_Introspect_InvalidCredential(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	result, err := newTestCredentialClient(srv).Introspect(context.Background(), "bad-jwt")
+	result, err := newTestCredentialClient(srv).Introspect(context.Background(), "bad-jwt", "/tenant/project/live")
 	require.NoError(t, err)
 	assert.Nil(t, result, "valid:false must return nil result without an error")
 }
@@ -179,11 +182,11 @@ func TestCredentialClient_Introspect_CacheHit(t *testing.T) {
 	c := newTestCredentialClient(srv)
 	ctx := context.Background()
 
-	r1, err := c.Introspect(ctx, "jwt-same")
+	r1, err := c.Introspect(ctx, "jwt-same", "/tenant/project/live")
 	require.NoError(t, err)
 	require.NotNil(t, r1)
 
-	r2, err := c.Introspect(ctx, "jwt-same")
+	r2, err := c.Introspect(ctx, "jwt-same", "/tenant/project/live")
 	require.NoError(t, err)
 	require.NotNil(t, r2)
 
@@ -204,14 +207,51 @@ func TestCredentialClient_Introspect_DifferentJWTsAreCachedIndependently(t *test
 	c := newTestCredentialClient(srv)
 	ctx := context.Background()
 
-	r1, err := c.Introspect(ctx, "jwt-alpha")
+	r1, err := c.Introspect(ctx, "jwt-alpha", "/tenant/project/live")
 	require.NoError(t, err)
 
-	r2, err := c.Introspect(ctx, "jwt-beta")
+	r2, err := c.Introspect(ctx, "jwt-beta", "/tenant/project/live")
 	require.NoError(t, err)
 
 	assert.Equal(t, int32(2), calls.Load(), "distinct JWTs must each make their own HTTP request")
 	assert.NotEqual(t, r1.TokenID, r2.TokenID)
+}
+
+// TestCredentialClient_Introspect_SameJWTDifferentPathsAreNotShared guards the
+// cache key: a result for one broadcast path must never answer for another,
+// or a credential valid for its own path would be accepted on any path once
+// cached.
+func TestCredentialClient_Introspect_SameJWTDifferentPathsAreNotShared(t *testing.T) {
+	var calls atomic.Int32
+	var paths []string
+	var mu sync.Mutex
+	revalidate := time.Now().Add(10 * time.Minute)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		var body map[string]string
+		_ = json.NewDecoder(r.Body).Decode(&body) // not actionable: asserted via paths
+		mu.Lock()
+		paths = append(paths, body["broadcast_path"])
+		mu.Unlock()
+		writeValidIntrospect(w, "tok-1", revalidate)
+	}))
+	defer srv.Close()
+
+	c := newTestCredentialClient(srv)
+	ctx := context.Background()
+
+	_, err := c.Introspect(ctx, "jwt-1", "/tenant-a/project/live")
+	require.NoError(t, err)
+	_, err = c.Introspect(ctx, "jwt-1", "/tenant-b/project/live")
+	require.NoError(t, err)
+	_, err = c.Introspect(ctx, "jwt-1", "/tenant-a/project/live")
+	require.NoError(t, err)
+
+	assert.Equal(t, int32(2), calls.Load(), "one request per (JWT, path); the repeat is a cache hit")
+	mu.Lock()
+	defer mu.Unlock()
+	assert.Equal(t, []string{"/tenant-a/project/live", "/tenant-b/project/live"}, paths)
 }
 
 func TestCredentialClient_Introspect_CacheExpiry(t *testing.T) {
@@ -237,7 +277,7 @@ func TestCredentialClient_Introspect_CacheExpiry(t *testing.T) {
 	}
 	c.cacheMu.Unlock()
 
-	result, err := c.Introspect(context.Background(), "jwt-exp")
+	result, err := c.Introspect(context.Background(), "jwt-exp", "/tenant/project/live")
 	require.NoError(t, err)
 	require.NotNil(t, result)
 
@@ -262,13 +302,13 @@ func TestCredentialClient_Introspect_CacheEviction(t *testing.T) {
 	c.cacheMu.Unlock()
 
 	// A successful introspection triggers the sweep.
-	_, err := c.Introspect(context.Background(), "fresh-jwt")
+	_, err := c.Introspect(context.Background(), "fresh-jwt", "/tenant/project/live")
 	require.NoError(t, err)
 
 	c.cacheMu.Lock()
 	_, stale1 := c.cache["stale-1"]
 	_, stale2 := c.cache["stale-2"]
-	_, fresh := c.cache["fresh-jwt"]
+	_, fresh := c.cache[introspectCacheKey("fresh-jwt", "/tenant/project/live")]
 	c.cacheMu.Unlock()
 
 	assert.False(t, stale1, "expired entry stale-1 must be swept")
@@ -300,7 +340,7 @@ func TestCredentialClient_Introspect_SingleflightCoalescesConcurrentRequests(t *
 	for i := range n {
 		go func(i int) {
 			defer wg.Done()
-			results[i], _ = c.Introspect(ctx, "shared-jwt")
+			results[i], _ = c.Introspect(ctx, "shared-jwt", "/tenant/project/live")
 		}(i)
 	}
 	wg.Wait()
@@ -327,7 +367,7 @@ func TestCredentialClient_Introspect_NonOKStatus(t *testing.T) {
 			}))
 			defer srv.Close()
 
-			_, err := newTestCredentialClient(srv).Introspect(context.Background(), "jwt")
+			_, err := newTestCredentialClient(srv).Introspect(context.Background(), "jwt", "/tenant/project/live")
 			require.Error(t, err)
 			assert.Contains(t, err.Error(), "credential:")
 		})
@@ -341,7 +381,7 @@ func TestCredentialClient_Introspect_MalformedJSON(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	_, err := newTestCredentialClient(srv).Introspect(context.Background(), "jwt")
+	_, err := newTestCredentialClient(srv).Introspect(context.Background(), "jwt", "/tenant/project/live")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "credential:")
 }
@@ -358,7 +398,7 @@ func TestCredentialClient_Introspect_ContextCancelled(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	_, err := newTestCredentialClient(srv).Introspect(ctx, "jwt")
+	_, err := newTestCredentialClient(srv).Introspect(ctx, "jwt", "/tenant/project/live")
 	require.Error(t, err)
 }
 
