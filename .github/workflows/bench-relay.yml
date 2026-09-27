@@ -52,6 +52,14 @@ on:
         description: "paramexp replicates per vector"
         type: string
         default: '3'
+      capacity_rmem_max:
+        description: "UDP buffer sysctl for the capacity sweep (e.g. 4194304 clamped / 16777216 raised; empty = 16 MiB as the workflow always raised)"
+        type: string
+        default: '16777216'
+      capacity_sessions:
+        description: "capacity-sweep session probe list (empty = 500 1000 2000)"
+        type: string
+        default: '500 1000 2000'
 
 permissions:
   contents: read
@@ -268,7 +276,7 @@ jobs:
           cache: true
 
       - name: Raise UDP buffer limits
-        run: sudo sysctl -w net.core.rmem_max=16777216 net.core.wmem_max=16777216
+        run: sudo sysctl -w net.core.rmem_max=${{ github.event.inputs.capacity_rmem_max || '16777216' }} net.core.wmem_max=${{ github.event.inputs.capacity_rmem_max || '16777216' }}
 
       - name: Build qumo + capacity driver
         run: |
@@ -280,7 +288,7 @@ jobs:
           ulimit -n 1048576 2>/dev/null || true
           ./capacity --qumo ./qumo \
             --start-relay --relay-cores 0-1 \
-            --sessions "500 1000 2000" --hold 10s \
+            --sessions "${{ github.event.inputs.capacity_sessions || '500 1000 2000' }}" --hold 10s \
             --results "$RESULTS_DIR"
 
       - name: Set up Deno
