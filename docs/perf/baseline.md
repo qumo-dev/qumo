@@ -83,18 +83,23 @@ it owns: CPU 30 %/core, GC p99 ≤ 6.7 ms, RSS 3.2 GB, and only **11 open file
 descriptors** (one UDP socket). The attrition above ~13 000 is external to the
 relay.
 
-> **Warning:** The leading hypothesis for the ~13 000 attrition is the **UDP
+> **Warning:** The leading hypothesis for the ~13 000 attrition was the **UDP
 > receive buffer**: quic-go requests a 7 MB recv buffer, and a small
 > `rmem_max` clamps it (at ~15 000 connections the aggregate ACK/keepalive
-> traffic could overflow a clamped buffer). Still **unconfirmed** for this
-> regime. Corrections (2026-09-26): current WSL reports `rmem_max` = 4 MiB (not
-> ~212 992), and privilege **is** available here (`wsl -u root` — raised to
-> 16 MiB this cycle). That raise did not change the *chain-harness* K≥2
-> collapse (ledger C21 — different mechanism: in-process saturation), but the
-> decisive test for the HOLD regime (re-run the out-of-process loadgen sweep
-> with 16 MiB buffers and compare the ~13 000 attrition) has **not** been run.
-> Do not treat 13 000 as a recv-buffer finding; treat it as "external to the
-> relay, mechanism pending."
+> traffic could overflow a clamped buffer). Corrections (2026-09-26): current
+> WSL reports `rmem_max` = 4 MiB (not ~212 992), and privilege **is** available
+> here (`wsl -u root`). That raise did not change the *chain-harness* K≥2
+> collapse (ledger C21 — different mechanism: in-process saturation). The
+> decisive test for the HOLD regime **has now been run** on CI (n=2, ledger
+> [C22](optimization-ledger.md)): raising `rmem_max` 4 → 16 MiB during the
+> out-of-process loadgen sweep was **not shown to move the ~13 000-session
+> attrition**. Round 1 showed a large effect (S=13000 connected 72.0 % clamped →
+> 90.1 % raised, plus a verdict flip at S=6000), but round 2 did not reproduce
+> it (91.7 % → 89.4 %, sign flipped; S=6000 no flip) — the round-1 delta was a
+> clamped-arm outlier, not a reproducible buffer effect. Do not treat 13 000 as
+> a recv-buffer finding; keep treating it as "external to the relay, mechanism
+> pending." Operational caveat from C22: single-host A/B probes at S≥6000 carry
+> ~20 pp round-to-run spread — single repeats are unreliable in this regime.
 
 ## CI Linux baseline (bench-relay, 2026-09-26)
 
