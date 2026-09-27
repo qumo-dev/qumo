@@ -56,6 +56,7 @@ for a worked example of giving relays stable addresses on Nomad.
 | Variable | Default | Description |
 |---|---|---|
 | `CA_FILE` | (empty) | PEM CA certificate. When set, mutual TLS is enabled between peers. |
+| `PEER_CIDRS` | (empty) | Comma-separated networks whose native-QUIC sessions are trusted as relay peers, e.g. a private mesh overlay (`100.64.0.0/10`). When credential auth is on (`QUMO_CREDENTIAL_URL`), a native-QUIC session is a peer only if it comes from one of these networks or presents a client certificate verified against `CA_FILE`; any other native-QUIC session authenticates its announcements like a WebTransport client. Set this (or mTLS) for relay-to-relay and ingress connections. |
 | `MTLS_REQUIRED` | `true` | Whether every connection must present a client cert signed by `CA_FILE`. Set to `false` to accept connections without one (verified if presented), e.g. when the relay also serves browser/WebTransport traffic directly. Only applies when `CA_FILE` is set. |
 
 See [Deployment → TLS & mTLS]({{< relref "deployment/tls" >}}).

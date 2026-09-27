@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/pprof"
+	"net/netip"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -53,6 +54,12 @@ func sanitizeLog(s string) string {
 //	PEERS                        - comma-separated list of static peer addresses
 //	UPSTREAM_ADDR                - comma-separated list of upstream relay addresses
 //	                               (e.g. "role-hub.qumo-relay.service.consul:4433" or direct IP:port)
+//	PEER_CIDRS                   - comma-separated networks whose native-QUIC
+//	                               sessions are trusted relay peers (e.g. a mesh
+//	                               overlay like "100.64.0.0/10"). With credential
+//	                               auth on, any other native-QUIC session must
+//	                               authenticate unless it presents a client cert
+//	                               verified against CA_FILE.
 //	CORS_ALLOWED_ORIGINS     - comma-separated WebTransport origins allowed to
 //	                           connect (default: same-origin only; "*" allows any;
 //	                           "same-host" allows any port on the request's host).
@@ -143,6 +150,15 @@ func Run(args []string) error {
 		meter = newMeter(credentialClient)
 	}
 
+	peerCIDRs, err := parsePeerCIDRs(os.Getenv("PEER_CIDRS"))
+	if err != nil {
+		return err
+	}
+	if credentialClient != nil && caPool == nil && len(peerCIDRs) == 0 {
+		slog.Warn("relay: credential auth is on but neither CA_FILE nor PEER_CIDRS is set; " +
+			"native-QUIC relay peers will be authenticated like clients")
+	}
+
 	relayCfg := Config{
 		NodeID:         nodeID,
 		Role:           flags.Role,
@@ -151,6 +167,7 @@ func Run(args []string) error {
 		Peers:          peers,
 		UpstreamAddr:   upstreamAddr,
 		NextSessionURI: os.Getenv("GOAWAY_REDIRECT_URI"),
+		PeerCIDRs:      peerCIDRs,
 	}
 
 	// Setup signal handling for graceful shutdown
@@ -477,4 +494,21 @@ func parseRelayArgs(args []string) (relayFlags, error) {
 		return relayFlags{}, fmt.Errorf("unexpected argument: %s", fs.Arg(0))
 	}
 	return f, nil
+}
+
+// parsePeerCIDRs parses PEER_CIDRS (comma-separated CIDR prefixes).
+func parsePeerCIDRs(raw string) ([]netip.Prefix, error) {
+	var out []netip.Prefix
+	for _, entry := range strings.Split(raw, ",") {
+		entry = strings.TrimSpace(entry)
+		if entry == "" {
+			continue
+		}
+		p, err := netip.ParsePrefix(entry)
+		if err != nil {
+			return nil, fmt.Errorf("PEER_CIDRS entry %q: %w", entry, err)
+		}
+		out = append(out, p.Masked())
+	}
+	return out, nil
 }

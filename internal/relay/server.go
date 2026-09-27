@@ -3,10 +3,12 @@ package relay
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
+	"net/netip"
 	"strings"
 	"sync"
 	"time"
@@ -464,11 +466,45 @@ func (s *Server) Relay(sess *moqt.Session) {
 	s.serveSession(sess, true)
 }
 
-// relayPeer handles native QUIC sessions from trusted relay peers.
-// These sessions are authenticated at the transport layer (mTLS) and bypass
-// the per-announcement JWT credential check.
+// relayPeer handles native QUIC sessions. Only a trusted relay peer — one
+// that presented a client certificate verified against CA_FILE, or that
+// connects from a configured PEER_CIDRS network — bypasses the
+// per-announcement credential check. Any other native-QUIC session is
+// authenticated exactly like a WebTransport client: speaking the native
+// protocol is not itself proof of being a peer.
 func (s *Server) relayPeer(sess *moqt.Session) {
-	s.serveSession(sess, false)
+	s.serveSession(sess, !s.trustedPeer(sess))
+}
+
+func (s *Server) trustedPeer(sess *moqt.Session) bool {
+	var cidrs []netip.Prefix
+	if s.Config != nil {
+		cidrs = s.Config.PeerCIDRs
+	}
+	return isTrustedPeer(sess.ConnectionState().TLS, sess.RemoteAddr(), cidrs)
+}
+
+// isTrustedPeer reports whether a native-QUIC session is a relay peer: its TLS
+// handshake verified a client certificate chain (mTLS against CA_FILE), or its
+// remote address lies in one of peerCIDRs.
+func isTrustedPeer(state *tls.ConnectionState, remote net.Addr, peerCIDRs []netip.Prefix) bool {
+	if state != nil && len(state.VerifiedChains) > 0 {
+		return true
+	}
+	if remote == nil || len(peerCIDRs) == 0 {
+		return false
+	}
+	ap, err := netip.ParseAddrPort(remote.String())
+	if err != nil {
+		return false
+	}
+	ip := ap.Addr().Unmap()
+	for _, p := range peerCIDRs {
+		if p.Contains(ip) {
+			return true
+		}
+	}
+	return false
 }
 
 // serveSession is the shared core for Relay and relayPeer.

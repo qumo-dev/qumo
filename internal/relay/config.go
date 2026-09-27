@@ -1,6 +1,9 @@
 package relay
 
-import "strings"
+import (
+	"net/netip"
+	"strings"
+)
 
 // splitAddrList splits a comma-separated address list, trimming whitespace and
 // dropping empty entries. Used for both PEERS and UPSTREAM_ADDR so the two
@@ -53,6 +56,14 @@ type Config struct {
 	// means no redirect is advertised. GOAWAY is an escape-hatch primitive;
 	// route/subscription migration is the primary mobility mechanism (#280).
 	NextSessionURI string
+
+	// PeerCIDRs are networks whose native-QUIC sessions are trusted as relay
+	// peers (e.g. a private mesh overlay such as 100.64.0.0/10). A native-QUIC
+	// session is a peer only if it comes from one of these networks or
+	// presented a client certificate verified against CA_FILE; any other
+	// session is authenticated like a client when credential auth is
+	// configured.
+	PeerCIDRs []netip.Prefix
 }
 
 // Peer represents a remote relay to connect to for announce discovery.

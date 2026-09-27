@@ -18,6 +18,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"sync"
 	"testing"
 	"time"
@@ -97,6 +98,14 @@ func (s *stubCredentialBackend) usageCount() int {
 // fast-ticking meter. Returns the relay's loopback address.
 func startAuthRelay(t *testing.T, stub *stubCredentialBackend) (addr string, shutdown func()) {
 	t.Helper()
+	addr, _, shutdown = startAuthRelayWithPeers(t, stub, nil)
+	return addr, shutdown
+}
+
+// startAuthRelayWithPeers is startAuthRelay with PEER_CIDRS set, returning the
+// server so a test can inspect its routes.
+func startAuthRelayWithPeers(t *testing.T, stub *stubCredentialBackend, peerCIDRs []netip.Prefix) (addr string, srv *Server, shutdown func()) {
+	t.Helper()
 	certFile, keyFile := createTempCert(t)
 	cert, err := tls.LoadX509KeyPair(certFile, keyFile)
 	require.NoError(t, err)
@@ -134,7 +143,7 @@ func startAuthRelay(t *testing.T, stub *stubCredentialBackend) (addr string, shu
 	// does. Without this the moqt.Server falls back to its default WT handler,
 	// which dispatches to MOQServer.Handler (relayPeer, no auth).
 	httpMux := http.NewServeMux()
-	srv := &Server{
+	srv = &Server{
 		MOQServer: &moqt.Server{
 			Addr:               addr,
 			TLSConfig:          serverTLS,
@@ -143,8 +152,9 @@ func startAuthRelay(t *testing.T, stub *stubCredentialBackend) (addr string, shu
 		},
 		MOQDialer: &moqt.Dialer{TLSConfig: dialerTLS, QUICConfig: quicCfg},
 		Config: &Config{
-			NodeID: "relay-auth-test",
-			Role:   "relay",
+			NodeID:    "relay-auth-test",
+			Role:      "relay",
+			PeerCIDRs: peerCIDRs,
 		},
 		credentialClient: client,
 		meter:            meter,
@@ -173,7 +183,7 @@ func startAuthRelay(t *testing.T, stub *stubCredentialBackend) (addr string, shu
 		return true
 	}, 5*time.Second, 50*time.Millisecond, "auth relay never became reachable")
 
-	return addr, func() {
+	return addr, srv, func() {
 		meterCancel()
 		shutCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		defer cancel()
@@ -188,15 +198,28 @@ func startAuthRelay(t *testing.T, stub *stubCredentialBackend) (addr string, shu
 // is served but empty (exercising the empty-JWT rejection path).
 func publishWithAuthTrack(t *testing.T, addr string, broadcastPath moqt.BroadcastPath, jwt string, serveAuthTrack bool) *moqt.Session {
 	t.Helper()
+	return publishWithAuthTrackOver(t, "https://"+addr, nil, broadcastPath, jwt, serveAuthTrack)
+}
+
+// publishNativeWithAuthTrack is publishWithAuthTrack over native QUIC (ALPN
+// moqt) — the transport the relay used to treat as an unconditional peer.
+func publishNativeWithAuthTrack(t *testing.T, addr string, broadcastPath moqt.BroadcastPath, jwt string, serveAuthTrack bool) *moqt.Session {
+	t.Helper()
+	return publishWithAuthTrackOver(t, peerURL(addr), []string{moqt.NextProtoMOQ}, broadcastPath, jwt, serveAuthTrack)
+}
+
+func publishWithAuthTrackOver(t *testing.T, url string, nextProtos []string, broadcastPath moqt.BroadcastPath, jwt string, serveAuthTrack bool) *moqt.Session {
+	t.Helper()
 	dialerTLS := &tls.Config{
 		InsecureSkipVerify: true, //nolint:gosec // test-only self-signed cert
 		MinVersion:         tls.VersionTLS13,
+		NextProtos:         nextProtos,
 	}
 	quicCfg := &quic.Config{EnableDatagrams: true, KeepAlivePeriod: 5 * time.Second, MaxIdleTimeout: 30 * time.Second}
 
 	ctx := context.Background()
 	mux := moqt.NewTrackMux(0)
-	sess, err := (&moqt.Dialer{TLSConfig: dialerTLS, QUICConfig: quicCfg}).Dial(ctx, "https://"+addr, mux)
+	sess, err := (&moqt.Dialer{TLSConfig: dialerTLS, QUICConfig: quicCfg}).Dial(ctx, url, mux)
 	require.NoError(t, err)
 
 	ann, endAnn := moqt.NewAnnouncement(ctx, broadcastPath)
@@ -282,6 +305,55 @@ func TestServer_AuthenticateAnnouncement(t *testing.T) {
 				assert.Never(t, func() bool { return stub.usageCount() > 0 },
 					1500*time.Millisecond, 25*time.Millisecond,
 					"no usage events should be reported for a rejected announcement")
+			}
+		})
+	}
+}
+
+// TestServer_NativeQUICPeerTrust covers native-QUIC (ALPN moqt) publishers on a
+// relay with credential auth on. Speaking the native protocol must not make a
+// session a relay peer: unless it comes from a PEER_CIDRS network (or presents
+// a verified mTLS client certificate), its announcements are authenticated
+// exactly like a WebTransport client's.
+func TestServer_NativeQUICPeerTrust(t *testing.T) {
+	const jwt = "header.payload.signature"
+	loopback := []netip.Prefix{netip.MustParsePrefix("127.0.0.0/8")}
+	cases := map[string]struct {
+		peerCIDRs       []netip.Prefix
+		jwt             string
+		serveAuthTrack  bool
+		introspectValid bool
+		wantRoute       bool
+		wantIntrospect  bool
+	}{
+		"untrusted, no credential":      {serveAuthTrack: false, introspectValid: true, wantRoute: false, wantIntrospect: false},
+		"untrusted, invalid credential": {jwt: jwt, serveAuthTrack: true, introspectValid: false, wantRoute: false, wantIntrospect: true},
+		"untrusted, valid credential":   {jwt: jwt, serveAuthTrack: true, introspectValid: true, wantRoute: true, wantIntrospect: true},
+		"trusted peer network":          {peerCIDRs: loopback, serveAuthTrack: false, introspectValid: false, wantRoute: true, wantIntrospect: false},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			stub := newStubCredentialBackend(tc.introspectValid)
+			t.Cleanup(stub.Close)
+
+			addr, srv, shutdown := startAuthRelayWithPeers(t, stub, tc.peerCIDRs)
+			t.Cleanup(shutdown)
+
+			const path = moqt.BroadcastPath("/other-tenant/victim/live")
+			_ = publishNativeWithAuthTrack(t, addr, path, tc.jwt, tc.serveAuthTrack)
+
+			// TrackHandler returns NotFoundTrackHandler (non-nil) for an unknown
+			// path; the announcement is nil unless the route was installed.
+			routed := func() bool { ann, _ := srv.TrackMux.TrackHandler(path); return ann != nil }
+			if tc.wantRoute {
+				require.Eventually(t, routed, 3*time.Second, 25*time.Millisecond, "announcement should be routed")
+			} else {
+				assert.Never(t, routed, 1500*time.Millisecond, 25*time.Millisecond, "announcement must not be routed")
+			}
+			if tc.wantIntrospect {
+				assert.Positive(t, stub.introspectCount(), "an untrusted native session must be authenticated")
+			} else {
+				assert.Zero(t, stub.introspectCount(), "no credential check expected")
 			}
 		})
 	}
