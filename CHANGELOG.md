@@ -6,6 +6,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+
+### Changed
+
+- **Native-QUIC sessions are trusted as relay peers only when identified.**
+  With credential auth on (`QUMO_CREDENTIAL_URL`), a native-QUIC session now
+  bypasses per-announcement authentication only if it presents a client
+  certificate verified against `CA_FILE` (mTLS) or connects from a network in
+  the new `PEER_CIDRS` setting (e.g. a mesh overlay such as `100.64.0.0/10`).
+  Any other native-QUIC session authenticates its announcements exactly like a
+  WebTransport client. **Operators running with credential auth must set
+  `PEER_CIDRS` or configure mTLS for their relay-to-relay and ingress links**;
+  the relay logs a warning at startup when neither is set. Relays without
+  credential auth are unaffected.
+
 ## [v0.7.260927] - 2026-09-27
 
 ### Added
