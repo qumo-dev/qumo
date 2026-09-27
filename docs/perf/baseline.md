@@ -101,7 +101,8 @@ relay.
 Reference numbers for current code (gomoqt v0.20.0, quic-go v0.62.0) from the
 on-demand `bench-relay` run
 [36226116466](https://github.com/qumo-dev/qumo/actions/runs/36226116466)
-(2-core `ubuntu-latest` runners, UDP buffers raised to 16 MiB; artifacts
+(GitHub-hosted `ubuntu-latest` runners — the `bench-relay` workflow sizes the
+sweep for 2 cores — UDP buffers raised to 16 MiB; artifacts
 `relay-bench-30m` + `relay-loadgen-capacity`). The prior baseline tables above
 were measured on the WSL2 dev host; this section anchors the envelope to
 GitHub-hosted Linux.
@@ -120,8 +121,8 @@ depth 3 onward (depth 1: +0.37 ms, one-hop tail) — no per-hop tail
 accumulation across a relay chain.
 
 **30-minute soak**: flat sub-millisecond end-to-end latency across the whole
-window (median 0.31 ms, p99 ≤ 0.42 ms, max 3.3 ms across time slices) — no
-drift and no leak signature.
+window (slice medians 0.31–0.32 ms, p99 ≤ 0.42 ms, max 3.3 ms across time
+slices) — no drift and no leak signature.
 
 **Out-of-process capacity sweep** (`qumo loadgen`, relay isolated from the
 load generator): S = 500/1000/2000 sessions all **HOLDS** — 100 % receiving at
@@ -133,9 +134,9 @@ every step, latency p50 11.7 → 23.1 → 46.2 ms, heap 90 → 174 → 333 MB,
 C21](optimization-ledger.md) this is the single-process harness artifact
 (publisher + origin + K leaf relays + K subscribers in one test process),
 **not** a relay property — the out-of-process sweep above is the
-decision-grade fanout instrument. Even K=1 saturates at high rates on the
-2-core runners (~240–260 fps against 600–900 fps targets); the 4-core WSL dev
-host held 900 fps/K=1 clean.
+decision-grade fanout instrument. Even K=1 saturates at high rates on these
+runners (~240–260 fps against 600–900 fps targets — consistent with the
+workflow's 2-core sizing); the 4-core WSL dev host held 900 fps/K=1 clean.
 
 ## Per-session cost
 
