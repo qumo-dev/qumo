@@ -101,6 +101,15 @@ relay.
 > pending." Operational caveat from C22: single-host A/B probes at S≥6000 carry
 > ~20 pp round-to-run spread — single repeats are unreliable in this regime.
 
+A partial distributed check (2026-09-28, ledger [C23](optimization-ledger.md))
+ran the relay alone inside the WSL2 VM with the load generator on the Windows
+side (two processes, no shared cores). It confirms the relay is not the holding
+bottleneck — ~5400 established sessions cost 0.66–0.73 core at steady state,
+with `receiving == connected` in every probe — but the **establishment burst**
+saturates a single laptop (relay 250–320 % CPU + ~40 % softirq, Windows
+subscribers ~5 cores of handshake crypto) well below CI's reach, so the true
+ceiling (~25 K hypothesis, #342) remains unmeasured pending dedicated hosts.
+
 ## CI Linux baseline (bench-relay, 2026-09-26)
 
 Reference numbers for current code (gomoqt v0.20.0, quic-go v0.62.0) from the
