@@ -12,6 +12,7 @@ package relay
 
 import (
 	"context"
+	"crypto/ed25519"
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
@@ -106,6 +107,30 @@ func startAuthRelay(t *testing.T, stub *stubCredentialBackend) (addr string, shu
 // server so a test can inspect its routes.
 func startAuthRelayWithPeers(t *testing.T, stub *stubCredentialBackend, peerCIDRs []netip.Prefix) (addr string, srv *Server, shutdown func()) {
 	t.Helper()
+	client := &CredentialClient{
+		baseURL:    stub.srv.URL,
+		authToken:  "relay-shared-secret",
+		httpClient: stub.srv.Client(),
+		cache:      map[string]cachedCredential{},
+	}
+	meter := newMeter(client)
+	meter.interval = 100 * time.Millisecond
+	return startRelay(t, relayAuth{client: client, meter: meter, peerCIDRs: peerCIDRs})
+}
+
+// relayAuth is how a test relay authenticates publishers: an introspection
+// client with its meter, or a local verifier (no meter).
+type relayAuth struct {
+	client    *CredentialClient
+	meter     *Meter
+	verifier  *localVerifier
+	peerCIDRs []netip.Prefix
+}
+
+// startRelay stands up a real QUIC/MOQT relay whose WebTransport (publisher)
+// path requires per-announcement credential auth as configured by auth.
+func startRelay(t *testing.T, auth relayAuth) (addr string, srv *Server, shutdown func()) {
+	t.Helper()
 	certFile, keyFile := createTempCert(t)
 	cert, err := tls.LoadX509KeyPair(certFile, keyFile)
 	require.NoError(t, err)
@@ -128,15 +153,6 @@ func startAuthRelayWithPeers(t *testing.T, stub *stubCredentialBackend, peerCIDR
 		MinVersion:         tls.VersionTLS13,
 	}
 
-	client := &CredentialClient{
-		baseURL:    stub.srv.URL,
-		authToken:  "relay-shared-secret",
-		httpClient: stub.srv.Client(),
-		cache:      map[string]cachedCredential{},
-	}
-	meter := newMeter(client)
-	meter.interval = 100 * time.Millisecond
-
 	addr = fmt.Sprintf("127.0.0.1:%d", freeUDPPort(t))
 	// Wire the WebTransport path through the relay's HandleWebTransport (which
 	// dispatches to s.Relay → requireAuth=true), exactly as the relay command
@@ -154,10 +170,11 @@ func startAuthRelayWithPeers(t *testing.T, stub *stubCredentialBackend, peerCIDR
 		Config: &Config{
 			NodeID:    "relay-auth-test",
 			Role:      "relay",
-			PeerCIDRs: peerCIDRs,
+			PeerCIDRs: auth.peerCIDRs,
 		},
-		credentialClient: client,
-		meter:            meter,
+		credentialClient: auth.client,
+		meter:            auth.meter,
+		verifier:         auth.verifier,
 	}
 	// Register the WebTransport route after construction (httpMux is a pointer,
 	// so this reaches the WebTransportServer wired above). Same shape as the
@@ -167,7 +184,9 @@ func startAuthRelayWithPeers(t *testing.T, stub *stubCredentialBackend, peerCIDR
 	go func() { _ = srv.ListenAndServe() }()
 
 	meterCtx, meterCancel := context.WithCancel(context.Background())
-	go meter.Run(meterCtx)
+	if auth.meter != nil {
+		go auth.meter.Run(meterCtx)
+	}
 
 	// Wait until the relay is accepting QUIC/MOQT sessions before returning, so
 	// the publisher's first dial lands on a live listener.
@@ -354,6 +373,57 @@ func TestServer_NativeQUICPeerTrust(t *testing.T) {
 				assert.Positive(t, stub.introspectCount(), "an untrusted native session must be authenticated")
 			} else {
 				assert.Zero(t, stub.introspectCount(), "no credential check expected")
+			}
+		})
+	}
+}
+
+// TestServer_AuthenticateAnnouncement_Local is the end-to-end coverage of local
+// verification (QUMO_RELAY_AUDIENCE set): a relay configured for a dev project
+// admits a dev credential without calling the control plane, and refuses a
+// managed-audience credential, a path outside the grant, and a forgery.
+func TestServer_AuthenticateAnnouncement_Local(t *testing.T) {
+	signer := newTestSigner(t, testKID)
+	forger := newTestSigner(t, testKID)
+	header := map[string]any{"alg": "EdDSA", "kid": testKID}
+	claims := func(aud string) map[string]any {
+		now := time.Now()
+		return map[string]any{
+			"jti": "jti-local", "iss": testIssuer, "aud": aud,
+			"iat": now.Unix(), "nbf": now.Unix(), "exp": now.Add(10 * time.Minute).Unix(),
+			"path_auth": map[string]any{"root": "tenant/project", "pub": "live"},
+		}
+	}
+	const granted = moqt.BroadcastPath("/tenant/project/live")
+
+	cases := map[string]struct {
+		jwt       string
+		path      moqt.BroadcastPath
+		wantRoute bool
+	}{
+		"dev credential":              {jwt: signer.sign(t, header, claims(testDevAudience)), path: granted, wantRoute: true},
+		"managed credential":          {jwt: signer.sign(t, header, claims(managedAudience)), path: granted},
+		"path outside the grant":      {jwt: signer.sign(t, header, claims(testDevAudience)), path: "/tenant/other/live"},
+		"signed by a key not in JWKS": {jwt: forger.sign(t, header, claims(testDevAudience)), path: granted},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			verifier := &localVerifier{
+				keys:     &fakeSigningKeys{keys: map[string]ed25519.PublicKey{testKID: signer.pub}},
+				issuer:   testIssuer,
+				audience: testDevAudience,
+				now:      time.Now,
+			}
+			addr, srv, shutdown := startRelay(t, relayAuth{verifier: verifier})
+			t.Cleanup(shutdown)
+
+			_ = publishWithAuthTrack(t, addr, tc.path, tc.jwt, true)
+
+			routed := func() bool { ann, _ := srv.TrackMux.TrackHandler(tc.path); return ann != nil }
+			if tc.wantRoute {
+				require.Eventually(t, routed, 3*time.Second, 25*time.Millisecond, "announcement should be routed")
+			} else {
+				assert.Never(t, routed, 1500*time.Millisecond, 25*time.Millisecond, "announcement must not be routed")
 			}
 		})
 	}
