@@ -6,6 +6,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+
+### Added
+
+- **Ramped session admission for capacity probes (`internal/loadgen`, `tools/capacity`).**
+  `qumo loadgen subscribe` gains `--ramp R` (sessions/second; the `tools/capacity`
+  driver passes it through as `--ramp`). The burst remains the default (ramp 0) and
+  `dialWithRetry`'s reactive backoff is unchanged — the new pacing spaces the *first*
+  dials, which is what a steady-state holding measurement needs: a synchronized burst
+  caps on simultaneous QUIC handshakes (relay 250–320 % CPU + 32–45 % softirq; ledger
+  C23/C24) long before the relay's holding ceiling, so burst probes at S≥6000 measure
+  admission capacity, not holding capacity. Ramped runs extend the settle deadline by
+  the pacing window, record `ramp_per_sec` and `launched` in the JSONL row, and
+  compute the verdict over launched sessions so a mid-ramp abort (Ctrl-C) stays
+  well-defined.
+
 ## [v0.8.260927] - 2026-09-27
 
 ### Changed

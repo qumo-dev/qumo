@@ -49,6 +49,7 @@ type config struct {
 	insecure                                  bool
 	relayCores                                string
 	gogc                                      int
+	ramp                                      float64
 }
 
 func run(args []string) error {
@@ -63,6 +64,7 @@ func run(args []string) error {
 	size := fs.Int("size", 64, "frame size in bytes")
 	results := fs.String("results", "capacity-results", "dir for results.jsonl (dashboard input)")
 	startRelay := fs.Bool("start-relay", false, "spawn a local relay (self-signed cert generated in-process)")
+	ramp := fs.Float64("ramp", 0, "session admission pacing in sessions/second passed to loadgen subscribe (0 = burst)")
 	insecure := fs.Bool("insecure", false, "skip relay TLS verification, passed to loadgen (dev; self-signed relay)")
 	relayCores := fs.String("relay-cores", "", "taskset CPU list for the relay (Linux; --start-relay)")
 	gogc := fs.Int("gogc", 800, "GOGC for the relay (--start-relay)")
@@ -99,7 +101,7 @@ func run(args []string) error {
 	cfg := config{
 		qumo: *qumo, relay: *relay, caFile: *caFile, path: *bpath, track: *track, results: *results,
 		hold: *hold, gps: *gps, size: *size,
-		startRelay: *startRelay, insecure: *insecure, relayCores: *relayCores, gogc: *gogc,
+		startRelay: *startRelay, insecure: *insecure, relayCores: *relayCores, gogc: *gogc, ramp: *ramp,
 	}
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -265,6 +267,9 @@ func startPublisher(ctx context.Context, cfg config) (func(), error) {
 func runSubscribe(ctx context.Context, cfg config, n int) error {
 	args := []string{"loadgen", "subscribe", "--relay", cfg.relay}
 	args = append(args, loadgenTLSArgs(cfg)...)
+	if cfg.ramp > 0 {
+		args = append(args, "--ramp", strconv.FormatFloat(cfg.ramp, 'f', -1, 64))
+	}
 	args = append(args, "--path", cfg.path, "--track", cfg.track,
 		"--hold", cfg.hold.String(), "--results", cfg.results,
 		strconv.Itoa(n)) // positional N (after flags)
