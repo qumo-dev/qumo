@@ -109,6 +109,11 @@ with `receiving == connected` in every probe — but the **establishment burst**
 saturates a single laptop (relay 250–320 % CPU + ~40 % softirq, Windows
 subscribers ~5 cores of handshake crypto) well below CI's reach, so the true
 ceiling (~25 K hypothesis, #342) remains unmeasured pending dedicated hosts.
+A burst-phase CPU profile (ledger [C24](optimization-ledger.md)) found no
+gomoqt-owned region ≥ 5 % of relay burst CPU (gomoqt ≈ 6.75 %, diffuse; quic-go
+≈ 38 %, crypto ≈ 28 %, runtime/syscalls ≈ 39 %) — the establishment ceiling is
+external to gomoqt and to qumo (kernel softirq, handshake crypto, client-side
+crypto).
 
 ## CI Linux baseline (bench-relay, 2026-09-26)
 
