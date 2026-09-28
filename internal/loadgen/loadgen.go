@@ -217,6 +217,7 @@ func runSubscribe(args []string) error {
 	fs := flag.NewFlagSet("loadgen subscribe", flag.ContinueOnError)
 	finalize := bindCommon(fs)
 	hold := fs.Duration("hold", 30*time.Second, "how long to hold sessions after establishment")
+	ramp := fs.Float64("ramp", 0, "admission pacing in sessions/second (0 = launch all at once)")
 	resultsDir := fs.String("results", "", "dir to append a capacity JSONL record (optional)")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -224,6 +225,9 @@ func runSubscribe(args []string) error {
 	// N is a positional arg (flags precede it): `loadgen subscribe <flags> N`.
 	if fs.NArg() != 1 {
 		return errors.New("usage: loadgen subscribe [flags] <N>  (N = number of subscriber sessions)")
+	}
+	if *ramp < 0 {
+		return fmt.Errorf("--ramp must be >= 0 (sessions/second admission pacing), got %v", *ramp)
 	}
 	sessions, err := strconv.Atoi(fs.Arg(0))
 	if err != nil || sessions < 1 {
@@ -237,7 +241,7 @@ func runSubscribe(args []string) error {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
-	res, err := runCarry(ctx, target, sessions, *hold)
+	res, err := runCarry(ctx, target, sessions, *hold, *ramp)
 	if err != nil {
 		return err
 	}
@@ -265,9 +269,11 @@ type carryResult struct {
 	latP50          time.Duration
 	latP95          time.Duration
 	latP99          time.Duration
+	rampPerSec      float64 // admission pacing used (0 = burst), reported for provenance
+	launched        int     // sessions actually launched (ramp aborts mid-way launch fewer)
 }
 
-func runCarry(ctx context.Context, target dialTarget, sessions int, hold time.Duration) (carryResult, error) {
+func runCarry(ctx context.Context, target dialTarget, sessions int, hold time.Duration, rampPerSec float64) (carryResult, error) {
 	client := &http.Client{Timeout: 5 * time.Second}
 
 	// Let the relay's RSS settle before taking the baseline snapshot. Without
@@ -305,20 +311,30 @@ func runCarry(ctx context.Context, target dialTarget, sessions int, hold time.Du
 	var wg sync.WaitGroup
 	hist := &latencyHist{}
 
-	// Launch all sessions at once (burst). The exponential backoff in
-	// dialWithRetry spreads out the QUIC handshake load so the relay is not
-	// overwhelmed by synchronized re-dials.
-	for range sessions {
-		wg.Go(func() {
-			if subscribeOne(subCtx, target, safety, &connCount, hist) > 0 {
-				receivingCount.Add(1)
-			}
-		})
+	// Launch the sessions. With ramp 0 (the default) they go out as one burst:
+	// dialWithRetry's exponential backoff then spreads only the *re*dials so a
+	// failed wave does not re-dial in lockstep. With --ramp R the FIRST dials are
+	// paced at R sessions/second, trading a longer admission window for not
+	// measuring handshake-burst capacity when the probe targets the steady-state
+	// holding regime (a burst caps on simultaneous handshakes long before the
+	// relay's holding ceiling — see ledger C23/C24).
+	launched := launchSubscribers(subCtx, &wg, sessions, rampPerSec, func() {
+		if subscribeOne(subCtx, target, safety, &connCount, hist) > 0 {
+			receivingCount.Add(1)
+		}
+	})
+	if launched < sessions {
+		slog.Warn("admission cancelled mid-ramp; verdict computed over launched sessions only", "launched", launched, "offered", sessions)
 	}
 
 	// Hold: wait for sessions to connect (backoff handles retries), then hold
-	// at steady state before the second scrape.
-	settleFor(ctx, &connCount, sessions, 30*time.Second)
+	// at steady state before the second scrape. A ramped admission needs its
+	// full pacing window before the 30 s settle deadline starts to bite.
+	admitFor := time.Duration(0)
+	if rampPerSec > 0 {
+		admitFor = time.Duration(float64(sessions) / rampPerSec * float64(time.Second))
+	}
+	settleFor(ctx, &connCount, launched, 30*time.Second+admitFor)
 	// Discard ramp-phase latency samples so the reported percentiles + frame
 	// count reflect only the steady-state hold window (frames/hold = true fps).
 	hist.reset()
@@ -340,6 +356,8 @@ func runCarry(ctx context.Context, target dialTarget, sessions int, hold time.Du
 		latP50:     hist.percentile(50),
 		latP95:     hist.percentile(95),
 		latP99:     hist.percentile(99),
+		rampPerSec: rampPerSec,
+		launched:   launched,
 	}
 	if baseErr == nil && steadyErr == nil {
 		res.metricsScraped = true
@@ -360,6 +378,31 @@ func runCarry(ctx context.Context, target dialTarget, sessions int, hold time.Du
 	}
 
 	return res, nil
+}
+
+// launchSubscribers launches all n sessions, pacing the first dials at
+// rampPerSec sessions/second when ramp > 0 (0 = all at once, the historical
+// burst). Each session runs fn in its own goroutine tracked by wg. Returns the
+// number of sessions actually launched; launches stop early if ctx is
+// cancelled, so a mid-ramp abort never leaves the wait un-bounded.
+func launchSubscribers(ctx context.Context, wg *sync.WaitGroup, n int, rampPerSec float64, fn func()) int {
+	start := time.Now()
+	launched := 0
+	for i := range n {
+		if rampPerSec > 0 && i > 0 {
+			next := start.Add(time.Duration(float64(i) / rampPerSec * float64(time.Second)))
+			timer := time.NewTimer(time.Until(next))
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return launched
+			case <-timer.C:
+			}
+		}
+		launched++
+		wg.Go(fn)
+	}
+	return launched
 }
 
 // subscribeOne dials one session, subscribes, and counts received frames until
@@ -536,9 +579,16 @@ func verdictFor(receiving, sessions int) string {
 }
 
 func report(target dialTarget, sessions int, r carryResult) {
-	verdict := verdictFor(r.receiving, sessions)
+	verdict := verdictFor(r.receiving, r.launched)
 	fmt.Printf("loadgen subscribe → relay %s (path %s)\n", target.relay, target.path)
-	fmt.Printf("  offered sessions : %d\n", sessions)
+	fmt.Printf("  offered sessions : %d", sessions)
+	if r.rampPerSec > 0 {
+		fmt.Printf(" @ %.0f/s ramp", r.rampPerSec)
+	}
+	fmt.Println()
+	if r.launched != sessions {
+		fmt.Printf("  launched sessions: %d (admission aborted mid-ramp)\n", r.launched)
+	}
 	fmt.Printf("  connected        : %d\n", r.connected)
 	fmt.Printf("  receiving        : %d\n", r.receiving)
 	if r.metricsScraped {
@@ -564,6 +614,8 @@ type jsonlRecord struct {
 	Group        string  `json:"group"`
 	Config       string  `json:"config"`
 	Sessions     int     `json:"sessions"`
+	Launched     int     `json:"launched,omitempty"`     // sessions actually launched (< sessions only on mid-ramp abort)
+	RampPerSec   float64 `json:"ramp_per_sec,omitempty"` // admission pacing (0 = burst)
 	Connected    int     `json:"connected"`
 	Receiving    int     `json:"receiving"`
 	HeapMB       float64 `json:"heap_mb,omitempty"`
@@ -580,12 +632,14 @@ func emitJSONL(dir string, sessions int, r carryResult) error {
 	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return fmt.Errorf("mkdir %q: %w", dir, err)
 	}
-	verdict := verdictFor(r.receiving, sessions)
+	verdict := verdictFor(r.receiving, r.launched)
 	rec := jsonlRecord{
 		Bench: "loadgen", Group: "capacity",
-		Config:    "out-of-process/S=" + strconv.Itoa(sessions),
-		Sessions:  sessions,
-		Connected: r.connected, Receiving: r.receiving,
+		Config:     "out-of-process/S=" + strconv.Itoa(sessions),
+		Sessions:   sessions,
+		Launched:   r.launched,
+		RampPerSec: r.rampPerSec,
+		Connected:  r.connected, Receiving: r.receiving,
 		HeapMB: r.relayRSSMB, Goros: r.relayGoros,
 		PerSessionKB: r.perSessionKB, Verdict: verdict,
 		LatP50Ms:   r.latP50.Seconds() * 1000,
