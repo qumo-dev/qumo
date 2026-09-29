@@ -143,18 +143,18 @@ func Run(args []string) error {
 		}
 	}
 
-	// Credential client: credential introspection + usage metering (optional).
-	credentialClient := NewCredentialClient()
-	var meter *Meter
-	if credentialClient != nil {
-		meter = newMeter(credentialClient)
+	// Credential auth (optional): introspection + usage metering, or local
+	// verification against the JWKS when QUMO_RELAY_AUDIENCE is set.
+	credAuth, err := newCredentialAuth()
+	if err != nil {
+		return err
 	}
 
 	peerCIDRs, err := parsePeerCIDRs(os.Getenv("PEER_CIDRS"))
 	if err != nil {
 		return err
 	}
-	if credentialClient != nil && caPool == nil && len(peerCIDRs) == 0 {
+	if credAuth.enabled() && caPool == nil && len(peerCIDRs) == 0 {
 		slog.Warn("relay: credential auth is on but neither CA_FILE nor PEER_CIDRS is set; " +
 			"native-QUIC relay peers will be authenticated like clients")
 	}
@@ -233,8 +233,9 @@ func Run(args []string) error {
 		Config:           &relayCfg,
 		TrackMux:         trackMux,
 		AllowedOrigins:   cors.LoadAllowed(),
-		credentialClient: credentialClient,
-		meter:            meter,
+		credentialClient: credAuth.client,
+		meter:            credAuth.meter,
+		verifier:         credAuth.verifier,
 	}
 
 	httpMux.HandleFunc("/", relayServer.HandleWebTransport)
@@ -281,16 +282,25 @@ func Run(args []string) error {
 	if relayCfg.UpstreamAddr != "" {
 		log.Printf("\t%-8s: %s\n", "Upstream", sanitizeLog(relayCfg.UpstreamAddr))
 	}
-	if credentialClient != nil {
-		log.Printf("\t%-8s: %s (metering every 30s)\n", "Credentials", sanitizeLog(credentialClient.baseURL))
+	if credAuth.client != nil {
+		log.Printf("\t%-8s: %s (metering every 30s)\n", "Credentials", sanitizeLog(credAuth.client.baseURL))
+	}
+	if credAuth.jwks != nil {
+		log.Printf("\t%-8s: %s (local verification, audience %s)\n", "Credentials",
+			sanitizeLog(credAuth.jwks.URL()), sanitizeLog(credAuth.audience))
 	}
 
 	// Start peer connections in background
 	go relayServer.ConnectPeers(ctx)
 
 	// Start usage meter if credential features are active.
-	if meter != nil {
-		go meter.Run(ctx)
+	if credAuth.meter != nil {
+		go credAuth.meter.Run(ctx)
+	}
+	// Keep the JWKS fresh in local mode; no credential is admitted until the
+	// first fetch succeeds.
+	if credAuth.jwks != nil {
+		go credAuth.jwks.Run(ctx)
 	}
 
 	// Delegate to testable helper that runs servers until ctx is cancelled

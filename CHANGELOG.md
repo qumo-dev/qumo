@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Local credential verification for self-hosted relays (`internal/credential`, `internal/relay`).**
+  - **What it does:** with `QUMO_RELAY_AUDIENCE` set, the relay verifies publisher credentials itself against the control plane's JWKS instead of calling `POST /v1/credentials/introspect`. It checks the EdDSA signature by `kid`, `exp`/`nbf`/`iat` with 60 s leeway, `iss`, `aud`, and that `path_auth` covers the announced path, matching qumo-deploy's rule.
+  - **Key set:** fetched at start (nothing is admitted until it succeeds), refreshed every 5 minutes, and refetched on an unknown `kid` at most every 30 s. It stays fail-static for up to 6 hours if refreshes fail.
+  - **Intended use:** a relay a customer runs for a qumo-deploy dev project (`QUMO_RELAY_AUDIENCE=qumo-relay-dev`). No relay token needed, no revocation feed (a revoked credential stops working at its expiry), no usage reporting.
+  - **Managed relays are unchanged.** `qumo-relay` is refused until they consume the revocation feed (#419). qumo-deploy ADR 0034.
+
 - **Ramped session admission for capacity probes (`internal/loadgen`, `tools/capacity`).**
   `qumo loadgen subscribe` gains `--ramp R` (sessions/second; the `tools/capacity`
   driver passes it through as `--ramp`). The burst remains the default (ramp 0) and

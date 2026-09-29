@@ -15,6 +15,7 @@ import (
 
 	"github.com/qumo-dev/gomoqt/moqt"
 	"github.com/qumo-dev/qumo/internal/cors"
+	"github.com/qumo-dev/qumo/internal/credential"
 )
 
 // authTrackName is the well-known MoQ track name on which publishers send
@@ -45,6 +46,11 @@ type Server struct {
 	// meter drives periodic and final usage reporting for metered sessions.
 	// It is non-nil exactly when credentialClient is non-nil.
 	meter *Meter
+	// verifier checks publisher credentials locally against the control
+	// plane's JWKS instead of introspecting them (QUMO_RELAY_AUDIENCE set).
+	// When set it takes precedence over credentialClient for admission, and
+	// admitted sessions are not metered.
+	verifier *credential.Verifier
 
 	// framePool recycles frame buffers for track distributors and the auth
 	// track read; sized from Config.FrameCapacity in init() (falling back to
@@ -548,7 +554,7 @@ func (s *Server) serveSession(sess *moqt.Session, requireAuth bool) {
 
 		// Authenticate publisher announcements when the credential client is configured.
 		var broadSess *broadcastSession
-		if requireAuth && s.credentialClient != nil {
+		if requireAuth && (s.credentialClient != nil || s.verifier != nil) {
 			broadSess, err = s.authenticateAnnouncement(sess.Context(), sess, ann)
 			if err != nil {
 				// MoQ has no per-announcement error response, so the publisher
@@ -839,7 +845,8 @@ func handlePeerGoaway(newSessionURI string) {
 }
 
 // authenticateAnnouncement subscribes to the "auth" track on the announced
-// broadcast path, reads the JWT from the first frame, and introspects it
+// broadcast path, reads the JWT from the first frame, and checks it: locally
+// against the control plane's JWKS when a verifier is configured, otherwise
 // against the credential introspection endpoint.
 //
 // Publisher-side contract: the publisher must serve a single-group track named
@@ -848,7 +855,8 @@ func handlePeerGoaway(newSessionURI string) {
 // complete JWT to arrive within the 5-second authCtx deadline.
 //
 // Returns the minted broadcastSession on success, or an error if authentication
-// fails (missing track, empty JWT, or invalid/expired credential).
+// fails (missing track, empty JWT, or invalid/expired credential). In local
+// mode a success returns a nil session: nothing is metered.
 func (s *Server) authenticateAnnouncement(ctx context.Context, sess *moqt.Session, ann *moqt.Announcement) (*broadcastSession, error) {
 	authCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
@@ -874,6 +882,13 @@ func (s *Server) authenticateAnnouncement(ctx context.Context, sess *moqt.Sessio
 		return nil, fmt.Errorf("auth track: empty JWT")
 	}
 	jwt := jwtBuf.String()
+
+	if s.verifier != nil {
+		if _, err := s.verifier.VerifyPublish(authCtx, jwt, ann.BroadcastPath().String()); err != nil {
+			return nil, fmt.Errorf("verify credential: %w", err)
+		}
+		return nil, nil
+	}
 
 	result, err := s.credentialClient.Introspect(authCtx, jwt, ann.BroadcastPath().String())
 	if err != nil {
