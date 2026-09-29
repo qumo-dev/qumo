@@ -15,6 +15,7 @@ import (
 
 	"github.com/qumo-dev/gomoqt/moqt"
 	"github.com/qumo-dev/qumo/internal/cors"
+	"github.com/qumo-dev/qumo/internal/credential"
 )
 
 // authTrackName is the well-known MoQ track name on which publishers send
@@ -49,7 +50,7 @@ type Server struct {
 	// plane's JWKS instead of introspecting them (QUMO_RELAY_AUDIENCE set).
 	// When set it takes precedence over credentialClient for admission, and
 	// admitted sessions are not metered.
-	verifier *localVerifier
+	verifier *credential.Verifier
 
 	// framePool recycles frame buffers for track distributors and the auth
 	// track read; sized from Config.FrameCapacity in init() (falling back to
@@ -883,7 +884,7 @@ func (s *Server) authenticateAnnouncement(ctx context.Context, sess *moqt.Sessio
 	jwt := jwtBuf.String()
 
 	if s.verifier != nil {
-		if _, err := s.verifier.verify(authCtx, jwt, ann.BroadcastPath().String()); err != nil {
+		if _, err := s.verifier.VerifyPublish(authCtx, jwt, ann.BroadcastPath().String()); err != nil {
 			return nil, fmt.Errorf("verify credential: %w", err)
 		}
 		return nil, nil

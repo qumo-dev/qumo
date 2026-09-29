@@ -287,7 +287,7 @@ func Run(args []string) error {
 	}
 	if credAuth.jwks != nil {
 		log.Printf("\t%-8s: %s (local verification, audience %s)\n", "Credentials",
-			sanitizeLog(credAuth.jwks.url), sanitizeLog(credAuth.verifier.audience))
+			sanitizeLog(credAuth.jwks.URL()), sanitizeLog(credAuth.audience))
 	}
 
 	// Start peer connections in background
@@ -300,7 +300,7 @@ func Run(args []string) error {
 	// Keep the JWKS fresh in local mode; no credential is admitted until the
 	// first fetch succeeds.
 	if credAuth.jwks != nil {
-		go credAuth.jwks.run(ctx)
+		go credAuth.jwks.Run(ctx)
 	}
 
 	// Delegate to testable helper that runs servers until ctx is cancelled

@@ -1,20 +1,20 @@
-package relay
+package credential
 
 import (
 	"context"
 	"crypto/ed25519"
 )
 
-var _ signingKeys = (*fakeSigningKeys)(nil)
+var _ Keys = (*fakeKeys)(nil)
 
-// fakeSigningKeys resolves kids from a fixed map. A zero value knows no keys;
+// fakeKeys resolves kids from a fixed map. A zero value knows no keys;
 // err, when set, is returned for every lookup (e.g. errKeysStale).
-type fakeSigningKeys struct {
+type fakeKeys struct {
 	keys map[string]ed25519.PublicKey
 	err  error
 }
 
-func (f *fakeSigningKeys) key(_ context.Context, kid string) (ed25519.PublicKey, error) {
+func (f *fakeKeys) Key(_ context.Context, kid string) (ed25519.PublicKey, error) {
 	if f.err != nil {
 		return nil, f.err
 	}

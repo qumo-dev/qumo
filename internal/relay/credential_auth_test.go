@@ -3,6 +3,7 @@ package relay
 import (
 	"testing"
 
+	"github.com/qumo-dev/qumo/internal/credential"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -47,7 +48,7 @@ func TestNewCredentialAuth(t *testing.T) {
 			wantErrText: "QUMO_CREDENTIAL_URL",
 		},
 		"managed audience refused until the revocation feed": {
-			env:     map[string]string{"QUMO_CREDENTIAL_URL": "https://cp.example.com", "QUMO_RELAY_AUDIENCE": managedAudience, "QUMO_RELAY_TOKEN": "t"}, //nolint:gosec // env var names, not credentials
+			env:     map[string]string{"QUMO_CREDENTIAL_URL": "https://cp.example.com", "QUMO_RELAY_AUDIENCE": credential.ManagedAudience, "QUMO_RELAY_TOKEN": "t"}, //nolint:gosec // env var names, not credentials
 			wantErr: errManagedLocalVerification,
 		},
 	}
@@ -78,9 +79,9 @@ func TestNewCredentialAuth(t *testing.T) {
 			}
 			require.NotNil(t, auth.verifier)
 			require.NotNil(t, auth.jwks)
-			assert.Equal(t, tt.wantIssuer, auth.verifier.issuer)
-			assert.Equal(t, "qumo-relay-dev", auth.verifier.audience)
-			assert.Equal(t, tt.wantJWKSURL, auth.jwks.url)
+			assert.Equal(t, tt.wantIssuer, auth.issuer)
+			assert.Equal(t, "qumo-relay-dev", auth.audience)
+			assert.Equal(t, tt.wantJWKSURL, auth.jwks.URL())
 			assert.Nil(t, auth.client, "local mode neither introspects nor reports usage")
 		})
 	}

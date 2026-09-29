@@ -14,6 +14,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/tls"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -26,6 +27,7 @@ import (
 
 	"github.com/quic-go/quic-go"
 	"github.com/qumo-dev/gomoqt/moqt"
+	"github.com/qumo-dev/qumo/internal/credential"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -123,7 +125,7 @@ func startAuthRelayWithPeers(t *testing.T, stub *stubCredentialBackend, peerCIDR
 type relayAuth struct {
 	client    *CredentialClient
 	meter     *Meter
-	verifier  *localVerifier
+	verifier  *credential.Verifier
 	peerCIDRs []netip.Prefix
 }
 
@@ -383,37 +385,47 @@ func TestServer_NativeQUICPeerTrust(t *testing.T) {
 // admits a dev credential without calling the control plane, and refuses a
 // managed-audience credential, a path outside the grant, and a forgery.
 func TestServer_AuthenticateAnnouncement_Local(t *testing.T) {
-	signer := newTestSigner(t, testKID)
-	forger := newTestSigner(t, testKID)
-	header := map[string]any{"alg": "EdDSA", "kid": testKID}
-	claims := func(aud string) map[string]any {
+	const (
+		kid         = "kid-1"
+		issuer      = "https://api.example.com"
+		devAudience = "qumo-relay-dev"
+		granted     = moqt.BroadcastPath("/tenant/project/live")
+	)
+	pub, priv, err := ed25519.GenerateKey(nil)
+	require.NoError(t, err)
+	_, forgerPriv, err := ed25519.GenerateKey(nil)
+	require.NoError(t, err)
+
+	// sign mints a credential for aud the way the control plane does.
+	sign := func(key ed25519.PrivateKey, aud string) string {
 		now := time.Now()
-		return map[string]any{
-			"jti": "jti-local", "iss": testIssuer, "aud": aud,
+		header, err := json.Marshal(map[string]any{"alg": "EdDSA", "kid": kid})
+		require.NoError(t, err)
+		claims, err := json.Marshal(map[string]any{
+			"jti": "jti-local", "iss": issuer, "aud": aud,
 			"iat": now.Unix(), "nbf": now.Unix(), "exp": now.Add(10 * time.Minute).Unix(),
 			"path_auth": map[string]any{"root": "tenant/project", "pub": "live"},
-		}
+		})
+		require.NoError(t, err)
+		enc := base64.RawURLEncoding.EncodeToString
+		input := enc(header) + "." + enc(claims)
+		return input + "." + enc(ed25519.Sign(key, []byte(input)))
 	}
-	const granted = moqt.BroadcastPath("/tenant/project/live")
 
 	cases := map[string]struct {
 		jwt       string
 		path      moqt.BroadcastPath
 		wantRoute bool
 	}{
-		"dev credential":              {jwt: signer.sign(t, header, claims(testDevAudience)), path: granted, wantRoute: true},
-		"managed credential":          {jwt: signer.sign(t, header, claims(managedAudience)), path: granted},
-		"path outside the grant":      {jwt: signer.sign(t, header, claims(testDevAudience)), path: "/tenant/other/live"},
-		"signed by a key not in JWKS": {jwt: forger.sign(t, header, claims(testDevAudience)), path: granted},
+		"dev credential":              {jwt: sign(priv, devAudience), path: granted, wantRoute: true},
+		"managed credential":          {jwt: sign(priv, credential.ManagedAudience), path: granted},
+		"path outside the grant":      {jwt: sign(priv, devAudience), path: "/tenant/other/live"},
+		"signed by a key not in JWKS": {jwt: sign(forgerPriv, devAudience), path: granted},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			verifier := &localVerifier{
-				keys:     &fakeSigningKeys{keys: map[string]ed25519.PublicKey{testKID: signer.pub}},
-				issuer:   testIssuer,
-				audience: testDevAudience,
-				now:      time.Now,
-			}
+			keys := &fakeCredentialKeys{keys: map[string]ed25519.PublicKey{kid: pub}}
+			verifier := credential.NewVerifier(keys, issuer, devAudience)
 			addr, srv, shutdown := startRelay(t, relayAuth{verifier: verifier})
 			t.Cleanup(shutdown)
 

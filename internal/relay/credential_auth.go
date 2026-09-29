@@ -8,19 +8,16 @@ import (
 	"os"
 	"strings"
 	"time"
-)
 
-// managedAudience is the credential audience of the managed relay network.
-// qumo-deploy issues it to prod-project keys; dev-project keys get a
-// different one, which only a customer's own relay accepts.
-const managedAudience = "qumo-relay"
+	"github.com/qumo-dev/qumo/internal/credential"
+)
 
 // errManagedLocalVerification refuses QUMO_RELAY_AUDIENCE=qumo-relay: a
 // managed relay verifying locally without the revocation feed would silently
 // stop honoring revocation, so managed relays keep introspection until the
 // feed consumer lands (qumo-dev/qumo#419).
 var errManagedLocalVerification = errors.New(
-	"QUMO_RELAY_AUDIENCE=" + managedAudience + " is not supported yet: managed relays verify through " +
+	"QUMO_RELAY_AUDIENCE=" + credential.ManagedAudience + " is not supported yet: managed relays verify through " +
 		"introspection until they consume the revocation feed (qumo-dev/qumo#419); leave QUMO_RELAY_AUDIENCE unset")
 
 // credentialAuth is how the relay authenticates publishers and reports usage.
@@ -29,9 +26,12 @@ type credentialAuth struct {
 	// client introspects credentials and reports usage (introspection mode).
 	client *CredentialClient
 	meter  *Meter
-	// verifier checks credentials locally (local mode); jwks feeds it.
-	verifier *localVerifier
-	jwks     *jwksCache
+	// verifier checks credentials locally (local mode); jwks feeds it. issuer
+	// and audience are what it holds a credential to.
+	verifier *credential.Verifier
+	jwks     *credential.JWKS
+	issuer   string
+	audience string
 }
 
 // newCredentialAuth selects the mode from the environment:
@@ -55,7 +55,7 @@ func newCredentialAuth() (credentialAuth, error) {
 		}
 		return credentialAuth{client: client, meter: newMeter(client)}, nil
 	}
-	if audience == managedAudience {
+	if audience == credential.ManagedAudience {
 		return credentialAuth{}, errManagedLocalVerification
 	}
 
@@ -69,13 +69,15 @@ func newCredentialAuth() (credentialAuth, error) {
 		issuer = baseURL
 	}
 
-	jwks := newJWKSCache(baseURL, &http.Client{Timeout: 10 * time.Second})
+	jwks := credential.NewJWKS(baseURL, &http.Client{Timeout: 10 * time.Second})
 	slog.Info("relay: verifying credentials locally; no revocation feed, so a revoked credential "+
 		"stops working at its expiry, and no usage is reported",
-		"jwks", jwks.url, "issuer", issuer, "audience", audience)
+		"jwks", jwks.URL(), "issuer", issuer, "audience", audience)
 	return credentialAuth{
-		verifier: &localVerifier{keys: jwks, issuer: issuer, audience: audience, now: time.Now},
+		verifier: credential.NewVerifier(jwks, issuer, audience),
 		jwks:     jwks,
+		issuer:   issuer,
+		audience: audience,
 	}, nil
 }
 
