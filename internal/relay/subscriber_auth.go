@@ -33,6 +33,9 @@ type subscriberGate struct {
 	ready chan struct{} // closed when the first session credential is accepted
 	once  sync.Once
 	ad    atomic.Pointer[admission]
+	// reading is held while a session credential is being read, so a second
+	// announcement cannot admit a second credential alongside it.
+	reading atomic.Bool
 }
 
 func newSubscriberGate() *subscriberGate {
@@ -69,12 +72,14 @@ func (s *Server) handleSessionCredential(sess *moqt.Session, ann *moqt.Announcem
 		return
 	}
 	g := v.(*subscriberGate)
-	if g.ad.Load() != nil {
+	if g.ad.Load() != nil || !g.reading.CompareAndSwap(false, true) {
 		slog.Warn("relay: ignoring a second session credential announcement", "remote", sess.RemoteAddr())
 		return
 	}
 	cred, reader, err := s.readAuthTrack(sess.Context(), sess, ann, s.verifier.Verify)
 	if err != nil {
+		// Released so the client can present a credential again.
+		g.reading.Store(false)
 		slog.Warn("relay: session credential rejected", "remote", sess.RemoteAddr(), "error", err)
 		return
 	}

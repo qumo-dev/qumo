@@ -25,6 +25,9 @@ const (
 // Reasons the relay ends a session or refuses a refresh.
 const (
 	reasonExpired = "credential_expired"
+	// reasonRetracted ends a session whose client withdrew its session
+	// credential announcement while staying connected.
+	reasonRetracted = "credential_retracted"
 
 	refreshAccepted      = "accepted"
 	refreshChecks        = "checks"
@@ -166,7 +169,15 @@ func (s *Server) track(ad *admission, ann *moqt.Announcement, auth *authTrack) {
 	s.admitted.add(ad)
 
 	ctx, cancel := context.WithCancel(sess.Context())
-	ann.AfterFunc(cancel)
+	ann.AfterFunc(func() {
+		cancel()
+		// A subscriber's session credential authorizes the whole session. If
+		// the client withdraws it but stays connected, the credential is no
+		// longer tracked for expiry or revocation, so the session must end.
+		if ad.subscriber && sess.Context().Err() == nil {
+			endSession(sess, reasonRetracted)
+		}
+	})
 	context.AfterFunc(ctx, func() {
 		s.admitted.remove(ad)
 		ad.mu.Lock()

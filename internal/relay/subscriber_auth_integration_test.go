@@ -231,3 +231,27 @@ func TestServer_ReservedPathsAreNotRouted(t *testing.T) {
 	assert.Error(t, err)
 	_ = viewer
 }
+
+// Withdrawing the session credential announcement while staying connected
+// must not leave the session authorized: the relay ends it.
+func TestServer_SubscriberCredential_RetractionEndsSession(t *testing.T) {
+	const cam = moqt.BroadcastPath("/tenant/project/live/cam1")
+	signer := newAppSigner(t)
+	relay := startRefreshTestRelay(t, trust.Snapshot{Keys: []trust.SnapshotKey{signer.snapshotKey("p1", "active")}})
+	relay.publishMedia(t, cam, signer.signPublish(t, "live", time.Minute))
+
+	mux := moqt.NewTrackMux(0)
+	next := make(chan string, 1)
+	next <- signer.signSubscribe(t, "live", time.Minute)
+	broadcast := moqt.NewBroadcast()
+	require.NoError(t, broadcast.Register(authTrackName, credentialTrack(next)))
+	ann, retract := moqt.NewAnnouncement(context.Background(), sessionAuthPath)
+	mux.Announce(ann, broadcast)
+	sub := &subscriber{sess: relay.dial(t, mux)}
+	require.NoError(t, sub.watch(t, cam))
+
+	retract()
+
+	require.Eventually(t, sub.ended, 3*time.Second, 20*time.Millisecond,
+		"a session that withdraws its credential is ended")
+}
