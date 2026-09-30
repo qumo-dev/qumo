@@ -1,12 +1,11 @@
-// Package credential verifies qumo-deploy relay credentials locally.
+// Package credential verifies relay credentials locally.
 //
-// A relay credential is an EdDSA (Ed25519) JWT the control plane signs. The
-// control plane publishes its public keys as a JWKS, so a relay can check a
-// credential itself instead of asking the control plane per announcement: the
-// control plane signs; relays verify (qumo-deploy ADR 0034).
+// A relay credential is an EdDSA (Ed25519) JWT the app signs with a key it
+// registered with qumo; the relay checks it against the public keys it trusts,
+// with no call to the control plane (qumo-deploy ADR 0035).
 //
-// Verifier checks one credential. JWKS keeps the key set it verifies against:
-// fetched at start, refreshed on a timer, and kept when a refresh fails.
+// Verifier checks one credential. StaticKeys is the key set a relay loads from
+// its own configuration.
 //
 // The package knows nothing about relays, sessions or metering: it takes a
 // token and a broadcast path, and answers whether the token may publish there.
@@ -23,54 +22,41 @@ import (
 	"time"
 )
 
-// ManagedAudience is the credential audience of the managed relay network.
-// qumo-deploy issues it to prod-project keys; dev-project keys get a
-// different one, which only a customer's own relay accepts.
-const ManagedAudience = "qumo-relay"
-
-// leeway absorbs clock skew between the control plane and the relay when
-// checking exp, nbf and iat.
-const leeway = 60 * time.Second
+const (
+	// leeway absorbs clock skew between the app and the relay when checking
+	// exp, nbf and iat.
+	leeway = 60 * time.Second
+	// maxLifetime caps exp - iat, so a leaked credential is bounded by it.
+	maxLifetime = time.Hour
+)
 
 var (
 	errMalformed       = errors.New("credential: malformed")
 	errUnsupportedAlg  = errors.New("credential: algorithm is not EdDSA")
-	errUnknownKey      = errors.New("credential: signing key not in the JWKS")
+	errUnknownKey      = errors.New("credential: signing key not trusted")
 	errBadSignature    = errors.New("credential: signature does not verify")
 	errExpired         = errors.New("credential: expired")
 	errNotYetValid     = errors.New("credential: not yet valid")
-	errWrongIssuer     = errors.New("credential: issuer does not match")
-	errWrongAudience   = errors.New("credential: audience does not match")
+	errLifetimeTooLong = errors.New("credential: lifetime exceeds the cap")
 	errPathNotCovered  = errors.New("credential: path not covered by the credential")
-	errNoKeys          = errors.New("credential: JWKS not fetched yet")
-	errKeysStale       = errors.New("credential: JWKS too stale to admit")
-	errNoUsableJWKSKey = errors.New("jwks: no usable Ed25519 keys")
 )
 
-// Keys resolves a JWKS key id to its Ed25519 public key. JWKS is the
-// implementation a relay uses; tests supply a fixed set.
+// Keys resolves a key id to its Ed25519 public key.
 type Keys interface {
 	Key(ctx context.Context, kid string) (ed25519.PublicKey, error)
 }
 
 // Verifier checks relay credentials locally: signature by kid, time claims
-// with leeway, issuer, audience and the announced path.
+// with leeway and the lifetime cap, and the announced path.
 type Verifier struct {
-	keys     Keys
-	issuer   string
-	audience string
-	now      func() time.Time
+	keys Keys
+	now  func() time.Time
 }
 
 // NewVerifier returns a Verifier that accepts credentials signed by a key in
-// keys, issued by issuer (the control plane's public URL) for audience.
-func NewVerifier(keys Keys, issuer, audience string) *Verifier {
-	return &Verifier{
-		keys:     keys,
-		issuer:   strings.TrimRight(issuer, "/"),
-		audience: audience,
-		now:      time.Now,
-	}
+// keys.
+func NewVerifier(keys Keys) *Verifier {
+	return &Verifier{keys: keys, now: time.Now}
 }
 
 // header is the JWS protected header.
@@ -87,47 +73,17 @@ type pathAuth struct {
 	Sub  *string `json:"sub"`
 }
 
-// claims holds the claims a relay checks. Numeric dates are float64 because
-// JSON numbers may carry a fraction.
+// claims holds the claims a relay checks; any other claim is ignored. Numeric
+// dates are float64 because JSON numbers may carry a fraction.
 type claims struct {
-	ID        string    `json:"jti"`
-	Issuer    string    `json:"iss"`
-	Audience  audiences `json:"aud"`
 	ExpiresAt *float64  `json:"exp"`
 	NotBefore *float64  `json:"nbf"`
 	IssuedAt  *float64  `json:"iat"`
 	PathAuth  *pathAuth `json:"path_auth"`
 }
 
-// audiences accepts aud as a single string or an array of strings, the two
-// forms RFC 7519 allows.
-type audiences []string
-
-func (a *audiences) UnmarshalJSON(b []byte) error {
-	var one string
-	if err := json.Unmarshal(b, &one); err == nil {
-		*a = audiences{one}
-		return nil
-	}
-	var many []string
-	if err := json.Unmarshal(b, &many); err != nil {
-		return fmt.Errorf("aud: %w", err)
-	}
-	*a = many
-	return nil
-}
-
-func (a audiences) contains(want string) bool {
-	for _, v := range a {
-		if v == want {
-			return true
-		}
-	}
-	return false
-}
-
 // VerifyPublish checks that token may announce broadcastPath and returns the
-// credential's id (jti).
+// kid of the key that signed it.
 func (v *Verifier) VerifyPublish(ctx context.Context, token, broadcastPath string) (string, error) {
 	parts := strings.Split(token, ".")
 	if len(parts) != 3 {
@@ -167,28 +123,26 @@ func (v *Verifier) VerifyPublish(ctx context.Context, token, broadcastPath strin
 	if !c.PathAuth.coversPublish(broadcastPath) {
 		return "", errPathNotCovered
 	}
-	return c.ID, nil
+	return h.Kid, nil
 }
 
 func (v *Verifier) checkClaims(c *claims) error {
-	if c.ID == "" || c.ExpiresAt == nil {
-		return fmt.Errorf("%w: jti and exp are required", errMalformed)
+	if c.ExpiresAt == nil || c.IssuedAt == nil {
+		return fmt.Errorf("%w: exp and iat are required", errMalformed)
+	}
+	exp, iat := numericDate(*c.ExpiresAt), numericDate(*c.IssuedAt)
+	if exp.Sub(iat) > maxLifetime {
+		return errLifetimeTooLong
 	}
 	now := v.now()
-	if now.After(numericDate(*c.ExpiresAt).Add(leeway)) {
+	if now.After(exp.Add(leeway)) {
 		return errExpired
 	}
 	if c.NotBefore != nil && now.Add(leeway).Before(numericDate(*c.NotBefore)) {
 		return errNotYetValid
 	}
-	if c.IssuedAt != nil && now.Add(leeway).Before(numericDate(*c.IssuedAt)) {
+	if now.Add(leeway).Before(iat) {
 		return errNotYetValid
-	}
-	if strings.TrimRight(c.Issuer, "/") != v.issuer {
-		return errWrongIssuer
-	}
-	if !c.Audience.contains(v.audience) {
-		return errWrongAudience
 	}
 	return nil
 }
@@ -196,7 +150,7 @@ func (v *Verifier) checkClaims(c *claims) error {
 // coversPublish reports whether the grant may announce broadcastPath: the
 // path must equal root+pub or lie beneath it at a segment boundary. It
 // matches qumo-deploy's CredentialClaims.coversPublish exactly, so the relay
-// and the control plane never disagree on a path.
+// and the SDK signing helpers never disagree on a path.
 func (p *pathAuth) coversPublish(broadcastPath string) bool {
 	if p == nil || p.Pub == nil {
 		return false

@@ -18,10 +18,9 @@ import (
 
 // newTestMeter returns a Meter backed by srv with a configurable tick interval.
 func newTestMeter(srv *httptest.Server, interval time.Duration) *Meter {
-	client := &CredentialClient{
+	client := &usageClient{
 		baseURL:    srv.URL,
 		httpClient: srv.Client(),
-		cache:      make(map[string]cachedCredential),
 	}
 	m := newMeter(client)
 	m.interval = interval
@@ -70,7 +69,7 @@ func TestBroadcastSession_ID_Uniqueness(t *testing.T) {
 func TestNewBroadcastSession(t *testing.T) {
 	s := newBroadcastSession("owner-tok")
 	require.NotNil(t, s)
-	assert.Equal(t, "owner-tok", s.ownerTokenID)
+	assert.Equal(t, "owner-tok", s.keyID)
 	assert.Regexp(t, uuidV4Re, s.id.String(), "session ID must be a valid UUID v4")
 	assert.Zero(t, s.ingressBytes.Load(), "ingress counter must start at zero")
 	assert.Zero(t, s.egressBytes.Load(), "egress counter must start at zero")
@@ -113,7 +112,7 @@ func TestBroadcastSession_ToEvent(t *testing.T) {
 	after := time.Now()
 
 	assert.Equal(t, s.id.String(), event.BroadcastSessionID)
-	assert.Equal(t, "owner-x", event.OwnerTokenID)
+	assert.Equal(t, "owner-x", event.KeyID)
 	assert.Equal(t, int64(128), event.Metrics["gateway.ingress_bytes"])
 	assert.Equal(t, int64(512), event.Metrics["gateway.egress_bytes"])
 
@@ -186,7 +185,7 @@ func TestMeter_Deregister_RemovesFromActiveSetAndSendsFinalReport(t *testing.T) 
 	mu.Unlock()
 	require.Len(t, events, 1, "Deregister must POST exactly one final usage event")
 	assert.Equal(t, sess.id.String(), events[0].BroadcastSessionID)
-	assert.Equal(t, "tok-final", events[0].OwnerTokenID)
+	assert.Equal(t, "tok-final", events[0].KeyID)
 	assert.Equal(t, int64(1000), events[0].Metrics["gateway.ingress_bytes"])
 	assert.Equal(t, int64(4000), events[0].Metrics["gateway.egress_bytes"])
 }

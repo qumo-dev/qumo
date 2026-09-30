@@ -143,8 +143,9 @@ func Run(args []string) error {
 		}
 	}
 
-	// Credential auth (optional): introspection + usage metering, or local
-	// verification against the JWKS when QUMO_RELAY_AUDIENCE is set.
+	// Credential auth (optional): verify app-signed publisher credentials
+	// against QUMO_SIGNING_KEYS_FILE, and report usage when QUMO_CREDENTIAL_URL
+	// is set.
 	credAuth, err := newCredentialAuth()
 	if err != nil {
 		return err
@@ -230,12 +231,11 @@ func Run(args []string) error {
 			QUICConfig: quicConfig,
 			OnGoaway:   handlePeerGoaway,
 		},
-		Config:           &relayCfg,
-		TrackMux:         trackMux,
-		AllowedOrigins:   cors.LoadAllowed(),
-		credentialClient: credAuth.client,
-		meter:            credAuth.meter,
-		verifier:         credAuth.verifier,
+		Config:         &relayCfg,
+		TrackMux:       trackMux,
+		AllowedOrigins: cors.LoadAllowed(),
+		verifier:       credAuth.verifier,
+		meter:          credAuth.meter,
 	}
 
 	httpMux.HandleFunc("/", relayServer.HandleWebTransport)
@@ -282,25 +282,19 @@ func Run(args []string) error {
 	if relayCfg.UpstreamAddr != "" {
 		log.Printf("\t%-8s: %s\n", "Upstream", sanitizeLog(relayCfg.UpstreamAddr))
 	}
-	if credAuth.client != nil {
-		log.Printf("\t%-8s: %s (metering every 30s)\n", "Credentials", sanitizeLog(credAuth.client.baseURL))
+	if credAuth.enabled() {
+		log.Printf("\t%-8s: %s (signing keys: %d)\n", "Credentials", sanitizeLog(credAuth.keysFile), len(credAuth.keys))
 	}
-	if credAuth.jwks != nil {
-		log.Printf("\t%-8s: %s (local verification, audience %s)\n", "Credentials",
-			sanitizeLog(credAuth.jwks.URL()), sanitizeLog(credAuth.audience))
+	if credAuth.usage != nil {
+		log.Printf("\t%-8s: %s (every 30s)\n", "Usage", sanitizeLog(credAuth.usage.baseURL))
 	}
 
 	// Start peer connections in background
 	go relayServer.ConnectPeers(ctx)
 
-	// Start usage meter if credential features are active.
+	// Start usage meter if usage is reported.
 	if credAuth.meter != nil {
 		go credAuth.meter.Run(ctx)
-	}
-	// Keep the JWKS fresh in local mode; no credential is admitted until the
-	// first fetch succeeds.
-	if credAuth.jwks != nil {
-		go credAuth.jwks.Run(ctx)
 	}
 
 	// Delegate to testable helper that runs servers until ctx is cancelled

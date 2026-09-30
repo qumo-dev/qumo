@@ -4,10 +4,11 @@
 // (Server.authenticateAnnouncement). Tagged `integration` because it stands up
 // a real QUIC/MOQT relay; run with `go test -tags=integration ./internal/relay/...`.
 //
-// This is the only coverage of the server-side ANNOUNCE gating: the credential
-// client and meter are unit-tested separately, but the wiring that subscribes to
-// a publisher's "auth" track, reads the JWT, introspects it, and registers the
-// session with the meter only on success is exercised here end-to-end.
+// This is the only coverage of the server-side ANNOUNCE gating: the verifier
+// and meter are unit-tested separately, but the wiring that subscribes to a
+// publisher's "auth" track, reads the JWT, verifies it against the trusted
+// signing keys, and registers the session with the meter only on success is
+// exercised here end-to-end.
 package relay
 
 import (
@@ -32,100 +33,95 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// stubCredentialBackend impersonates the qumo control plane for the credential
-// auth + metering path: it answers /v1/credentials/introspect with a configured
-// validity and records every /v1/usage/events batch. It is the in-process peer
-// of CredentialClient, scoped to the two endpoints the relay calls.
-type stubCredentialBackend struct {
+// testKID is the kid of the app signing key the test relays trust.
+const testKID = "kid-app"
+
+// stubUsageBackend impersonates the qumo control plane's usage endpoint and
+// counts every /v1/usage/events record.
+type stubUsageBackend struct {
 	srv *httptest.Server
 
-	mu             sync.Mutex
-	valid          bool
-	introspectJWTs []string
-	usageEventN    int
+	mu     sync.Mutex
+	events []UsageEvent
 }
 
-func newStubCredentialBackend(valid bool) *stubCredentialBackend {
-	s := &stubCredentialBackend{valid: valid}
+func newStubUsageBackend() *stubUsageBackend {
+	s := &stubUsageBackend{}
 	s.srv = httptest.NewServer(http.HandlerFunc(s.handle))
 	return s
 }
 
-func (s *stubCredentialBackend) handle(w http.ResponseWriter, r *http.Request) {
-	switch r.URL.Path {
-	case "/v1/credentials/introspect":
-		body, _ := io.ReadAll(io.LimitReader(r.Body, 1<<20))
-		var req struct {
-			Token string `json:"token"`
-		}
-		_ = json.Unmarshal(body, &req)
-		s.mu.Lock()
-		s.introspectJWTs = append(s.introspectJWTs, req.Token)
-		valid := s.valid
-		s.mu.Unlock()
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"valid":            valid,
-			"token_id":         "tok-test",
-			"project_id":       "proj-test",
-			"revalidate_after": time.Now().Add(time.Hour).UTC().Format(time.RFC3339),
-		})
-	case "/v1/usage/events":
-		var batch []UsageEvent
-		_ = json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&batch)
-		s.mu.Lock()
-		s.usageEventN += len(batch)
-		s.mu.Unlock()
-		w.WriteHeader(http.StatusAccepted)
-	default:
+func (s *stubUsageBackend) handle(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path != "/v1/usage/events" {
 		w.WriteHeader(http.StatusNotFound)
+		return
 	}
+	var batch []UsageEvent
+	_ = json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&batch)
+	s.mu.Lock()
+	s.events = append(s.events, batch...)
+	s.mu.Unlock()
+	w.WriteHeader(http.StatusAccepted)
 }
 
-func (s *stubCredentialBackend) Close() { s.srv.Close() }
+func (s *stubUsageBackend) Close() { s.srv.Close() }
 
-func (s *stubCredentialBackend) introspectCount() int {
+func (s *stubUsageBackend) usage() []UsageEvent {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return len(s.introspectJWTs)
+	return append([]UsageEvent(nil), s.events...)
 }
 
-func (s *stubCredentialBackend) usageCount() int {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.usageEventN
+// appSigner is an app's Ed25519 signing key.
+type appSigner struct {
+	pub  ed25519.PublicKey
+	priv ed25519.PrivateKey
 }
 
-// startAuthRelay stands up a real QUIC/MOQT relay whose WebTransport (publisher)
-// path requires per-announcement credential auth, backed by stub and a
-// fast-ticking meter. Returns the relay's loopback address.
-func startAuthRelay(t *testing.T, stub *stubCredentialBackend) (addr string, shutdown func()) {
+func newAppSigner(t *testing.T) appSigner {
 	t.Helper()
-	addr, _, shutdown = startAuthRelayWithPeers(t, stub, nil)
-	return addr, shutdown
+	pub, priv, err := ed25519.GenerateKey(nil)
+	require.NoError(t, err)
+	return appSigner{pub: pub, priv: priv}
 }
 
-// startAuthRelayWithPeers is startAuthRelay with PEER_CIDRS set, returning the
-// server so a test can inspect its routes.
-func startAuthRelayWithPeers(t *testing.T, stub *stubCredentialBackend, peerCIDRs []netip.Prefix) (addr string, srv *Server, shutdown func()) {
+// sign mints a publish credential for tenant/project/live the way an app does.
+func (a appSigner) sign(t *testing.T) string {
 	t.Helper()
-	client := &CredentialClient{
-		baseURL:    stub.srv.URL,
+	now := time.Now()
+	header, err := json.Marshal(map[string]any{"alg": "EdDSA", "kid": testKID})
+	require.NoError(t, err)
+	claims, err := json.Marshal(map[string]any{
+		"iat": now.Unix(), "nbf": now.Unix(), "exp": now.Add(10 * time.Minute).Unix(),
+		"path_auth": map[string]any{"root": "tenant/project", "pub": "live"},
+	})
+	require.NoError(t, err)
+	enc := base64.RawURLEncoding.EncodeToString
+	input := enc(header) + "." + enc(claims)
+	return input + "." + enc(ed25519.Sign(a.priv, []byte(input)))
+}
+
+// startAuthRelay stands up a relay that trusts signer's key and reports usage
+// to usage with a fast-ticking meter.
+func startAuthRelay(t *testing.T, signer appSigner, usage *stubUsageBackend, peerCIDRs []netip.Prefix) (addr string, srv *Server, shutdown func()) {
+	t.Helper()
+	meter := newMeter(&usageClient{
+		baseURL:    usage.srv.URL,
 		authToken:  "relay-shared-secret",
-		httpClient: stub.srv.Client(),
-		cache:      map[string]cachedCredential{},
-	}
-	meter := newMeter(client)
+		httpClient: usage.srv.Client(),
+	})
 	meter.interval = 100 * time.Millisecond
-	return startRelay(t, relayAuth{client: client, meter: meter, peerCIDRs: peerCIDRs})
+	return startRelay(t, relayAuth{
+		verifier:  credential.NewVerifier(credential.StaticKeys{testKID: signer.pub}),
+		meter:     meter,
+		peerCIDRs: peerCIDRs,
+	})
 }
 
-// relayAuth is how a test relay authenticates publishers: an introspection
-// client with its meter, or a local verifier (no meter).
+// relayAuth is how a test relay authenticates publishers.
 type relayAuth struct {
-	client    *CredentialClient
-	meter     *Meter
 	verifier  *credential.Verifier
+	meter     *Meter
 	peerCIDRs []netip.Prefix
 }
 
@@ -174,9 +170,8 @@ func startRelay(t *testing.T, auth relayAuth) (addr string, srv *Server, shutdow
 			Role:      "relay",
 			PeerCIDRs: auth.peerCIDRs,
 		},
-		credentialClient: auth.client,
-		meter:            auth.meter,
-		verifier:         auth.verifier,
+		verifier: auth.verifier,
+		meter:    auth.meter,
 	}
 	// Register the WebTransport route after construction (httpMux is a pointer,
 	// so this reaches the WebTransportServer wired above). Same shape as the
@@ -270,63 +265,49 @@ func publishWithAuthTrackOver(t *testing.T, url string, nextProtos []string, bro
 }
 
 // TestServer_AuthenticateAnnouncement is the end-to-end coverage of the relay's
-// per-announcement credential gating. A valid credential must result in the
-// session being registered with the meter (usage events flow); any failure
-// (invalid credential, empty JWT, missing auth track) must reject the
-// announcement with no usage events. Introspect is reached only when the relay
-// actually reads a non-empty JWT from the auth track.
+// per-announcement credential gating. An app-signed credential from a trusted
+// key must route the announcement and register the session with the meter
+// under its kid; any failure (path outside the grant, untrusted key, empty JWT,
+// missing auth track) must leave it unrouted with no usage events.
 func TestServer_AuthenticateAnnouncement(t *testing.T) {
-	const jwt = "header.payload.signature"
-	cases := map[string]struct {
-		jwt             string
-		serveAuthTrack  bool
-		introspectValid bool
-		wantAccepted    bool
-		wantIntrospect  bool
-	}{
-		"valid credential":   {jwt: jwt, serveAuthTrack: true, introspectValid: true, wantAccepted: true, wantIntrospect: true},
-		"invalid credential": {jwt: jwt, serveAuthTrack: true, introspectValid: false, wantAccepted: false, wantIntrospect: true},
-		"empty JWT":          {jwt: "", serveAuthTrack: true, introspectValid: true, wantAccepted: false, wantIntrospect: false},
-		"missing auth track": {jwt: jwt, serveAuthTrack: false, introspectValid: true, wantAccepted: false, wantIntrospect: false},
-	}
+	const granted = moqt.BroadcastPath("/tenant/project/live")
+	signer := newAppSigner(t)
+	forger := newAppSigner(t)
 
+	cases := map[string]struct {
+		jwt            string
+		path           moqt.BroadcastPath
+		serveAuthTrack bool
+		wantAccepted   bool
+	}{
+		"trusted key":            {jwt: signer.sign(t), path: granted, serveAuthTrack: true, wantAccepted: true},
+		"path outside the grant": {jwt: signer.sign(t), path: "/tenant/other/live", serveAuthTrack: true},
+		"untrusted key":          {jwt: forger.sign(t), path: granted, serveAuthTrack: true},
+		"empty JWT":              {jwt: "", path: granted, serveAuthTrack: true},
+		"missing auth track":     {jwt: signer.sign(t), path: granted},
+	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			stub := newStubCredentialBackend(tc.introspectValid)
-			t.Cleanup(stub.Close)
-
-			addr, shutdown := startAuthRelay(t, stub)
+			usage := newStubUsageBackend()
+			t.Cleanup(usage.Close)
+			addr, srv, shutdown := startAuthRelay(t, signer, usage, nil)
 			t.Cleanup(shutdown)
 
-			_ = publishWithAuthTrack(t, addr, "/test-auth", tc.jwt, tc.serveAuthTrack)
+			_ = publishWithAuthTrack(t, addr, tc.path, tc.jwt, tc.serveAuthTrack)
 
-			// Introspect is reached only when a non-empty JWT was read from the
-			// auth track; missing-track and empty-JWT reject before it.
-			if tc.wantIntrospect {
-				require.Eventually(t, func() bool { return stub.introspectCount() > 0 },
-					3*time.Second, 25*time.Millisecond,
-					"introspect endpoint was not called")
-			} else {
-				// authenticateAnnouncement resolves within the 5s authCtx; with a
-				// missing track or empty JWT it returns immediately. assert.Never
-				// confirms it does not fire over a window long enough that a
-				// delayed introspect would have — without a bare time.Sleep.
-				assert.Never(t, func() bool { return stub.introspectCount() > 0 },
+			routed := func() bool { ann, _ := srv.TrackMux.TrackHandler(tc.path); return ann != nil }
+			if !tc.wantAccepted {
+				// assert.Never covers a window long enough that a delayed
+				// admission would have shown, without a bare time.Sleep.
+				assert.Never(t, func() bool { return routed() || len(usage.usage()) > 0 },
 					1500*time.Millisecond, 25*time.Millisecond,
-					"introspect must not be called when the auth track is absent or empty")
+					"a rejected announcement must be neither routed nor metered")
+				return
 			}
-
-			// meter.Register runs only on a successful authentication, so usage
-			// events are the clean accept/reject signal: present iff accepted.
-			if tc.wantAccepted {
-				require.Eventually(t, func() bool { return stub.usageCount() > 0 },
-					3*time.Second, 25*time.Millisecond,
-					"no usage events reported for an accepted announcement")
-			} else {
-				assert.Never(t, func() bool { return stub.usageCount() > 0 },
-					1500*time.Millisecond, 25*time.Millisecond,
-					"no usage events should be reported for a rejected announcement")
-			}
+			require.Eventually(t, routed, 3*time.Second, 25*time.Millisecond, "announcement should be routed")
+			require.Eventually(t, func() bool { return len(usage.usage()) > 0 },
+				3*time.Second, 25*time.Millisecond, "no usage events reported for an accepted announcement")
+			assert.Equal(t, testKID, usage.usage()[0].KeyID)
 		})
 	}
 }
@@ -337,105 +318,46 @@ func TestServer_AuthenticateAnnouncement(t *testing.T) {
 // a verified mTLS client certificate), its announcements are authenticated
 // exactly like a WebTransport client's.
 func TestServer_NativeQUICPeerTrust(t *testing.T) {
-	const jwt = "header.payload.signature"
+	const path = moqt.BroadcastPath("/tenant/project/live")
+	signer := newAppSigner(t)
+	forger := newAppSigner(t)
 	loopback := []netip.Prefix{netip.MustParsePrefix("127.0.0.0/8")}
+
 	cases := map[string]struct {
-		peerCIDRs       []netip.Prefix
-		jwt             string
-		serveAuthTrack  bool
-		introspectValid bool
-		wantRoute       bool
-		wantIntrospect  bool
+		peerCIDRs      []netip.Prefix
+		jwt            string
+		serveAuthTrack bool
+		wantRoute      bool
+		wantMetered    bool
 	}{
-		"untrusted, no credential":      {serveAuthTrack: false, introspectValid: true, wantRoute: false, wantIntrospect: false},
-		"untrusted, invalid credential": {jwt: jwt, serveAuthTrack: true, introspectValid: false, wantRoute: false, wantIntrospect: true},
-		"untrusted, valid credential":   {jwt: jwt, serveAuthTrack: true, introspectValid: true, wantRoute: true, wantIntrospect: true},
-		"trusted peer network":          {peerCIDRs: loopback, serveAuthTrack: false, introspectValid: false, wantRoute: true, wantIntrospect: false},
+		"untrusted, no credential":      {serveAuthTrack: false},
+		"untrusted, invalid credential": {jwt: forger.sign(t), serveAuthTrack: true},
+		"untrusted, valid credential":   {jwt: signer.sign(t), serveAuthTrack: true, wantRoute: true, wantMetered: true},
+		"trusted peer network":          {peerCIDRs: loopback, serveAuthTrack: false, wantRoute: true},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			stub := newStubCredentialBackend(tc.introspectValid)
-			t.Cleanup(stub.Close)
-
-			addr, srv, shutdown := startAuthRelayWithPeers(t, stub, tc.peerCIDRs)
+			usage := newStubUsageBackend()
+			t.Cleanup(usage.Close)
+			addr, srv, shutdown := startAuthRelay(t, signer, usage, tc.peerCIDRs)
 			t.Cleanup(shutdown)
 
-			const path = moqt.BroadcastPath("/other-tenant/victim/live")
 			_ = publishNativeWithAuthTrack(t, addr, path, tc.jwt, tc.serveAuthTrack)
 
 			// TrackHandler returns NotFoundTrackHandler (non-nil) for an unknown
 			// path; the announcement is nil unless the route was installed.
 			routed := func() bool { ann, _ := srv.TrackMux.TrackHandler(path); return ann != nil }
-			if tc.wantRoute {
-				require.Eventually(t, routed, 3*time.Second, 25*time.Millisecond, "announcement should be routed")
-			} else {
+			if !tc.wantRoute {
 				assert.Never(t, routed, 1500*time.Millisecond, 25*time.Millisecond, "announcement must not be routed")
+				return
 			}
-			if tc.wantIntrospect {
-				assert.Positive(t, stub.introspectCount(), "an untrusted native session must be authenticated")
+			require.Eventually(t, routed, 3*time.Second, 25*time.Millisecond, "announcement should be routed")
+			if tc.wantMetered {
+				require.Eventually(t, func() bool { return len(usage.usage()) > 0 },
+					3*time.Second, 25*time.Millisecond, "an authenticated native session must be metered")
 			} else {
-				assert.Zero(t, stub.introspectCount(), "no credential check expected")
-			}
-		})
-	}
-}
-
-// TestServer_AuthenticateAnnouncement_Local is the end-to-end coverage of local
-// verification (QUMO_RELAY_AUDIENCE set): a relay configured for a dev project
-// admits a dev credential without calling the control plane, and refuses a
-// managed-audience credential, a path outside the grant, and a forgery.
-func TestServer_AuthenticateAnnouncement_Local(t *testing.T) {
-	const (
-		kid         = "kid-1"
-		issuer      = "https://api.example.com"
-		devAudience = "qumo-relay-dev"
-		granted     = moqt.BroadcastPath("/tenant/project/live")
-	)
-	pub, priv, err := ed25519.GenerateKey(nil)
-	require.NoError(t, err)
-	_, forgerPriv, err := ed25519.GenerateKey(nil)
-	require.NoError(t, err)
-
-	// sign mints a credential for aud the way the control plane does.
-	sign := func(key ed25519.PrivateKey, aud string) string {
-		now := time.Now()
-		header, err := json.Marshal(map[string]any{"alg": "EdDSA", "kid": kid})
-		require.NoError(t, err)
-		claims, err := json.Marshal(map[string]any{
-			"jti": "jti-local", "iss": issuer, "aud": aud,
-			"iat": now.Unix(), "nbf": now.Unix(), "exp": now.Add(10 * time.Minute).Unix(),
-			"path_auth": map[string]any{"root": "tenant/project", "pub": "live"},
-		})
-		require.NoError(t, err)
-		enc := base64.RawURLEncoding.EncodeToString
-		input := enc(header) + "." + enc(claims)
-		return input + "." + enc(ed25519.Sign(key, []byte(input)))
-	}
-
-	cases := map[string]struct {
-		jwt       string
-		path      moqt.BroadcastPath
-		wantRoute bool
-	}{
-		"dev credential":              {jwt: sign(priv, devAudience), path: granted, wantRoute: true},
-		"managed credential":          {jwt: sign(priv, credential.ManagedAudience), path: granted},
-		"path outside the grant":      {jwt: sign(priv, devAudience), path: "/tenant/other/live"},
-		"signed by a key not in JWKS": {jwt: sign(forgerPriv, devAudience), path: granted},
-	}
-	for name, tc := range cases {
-		t.Run(name, func(t *testing.T) {
-			keys := &fakeCredentialKeys{keys: map[string]ed25519.PublicKey{kid: pub}}
-			verifier := credential.NewVerifier(keys, issuer, devAudience)
-			addr, srv, shutdown := startRelay(t, relayAuth{verifier: verifier})
-			t.Cleanup(shutdown)
-
-			_ = publishWithAuthTrack(t, addr, tc.path, tc.jwt, true)
-
-			routed := func() bool { ann, _ := srv.TrackMux.TrackHandler(tc.path); return ann != nil }
-			if tc.wantRoute {
-				require.Eventually(t, routed, 3*time.Second, 25*time.Millisecond, "announcement should be routed")
-			} else {
-				assert.Never(t, routed, 1500*time.Millisecond, 25*time.Millisecond, "announcement must not be routed")
+				assert.Never(t, func() bool { return len(usage.usage()) > 0 },
+					500*time.Millisecond, 25*time.Millisecond, "a trusted peer is not authenticated, so not metered")
 			}
 		})
 	}

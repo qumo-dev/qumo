@@ -40,17 +40,12 @@ type Server struct {
 	// relay command. See internal/cors.
 	AllowedOrigins []string
 
-	// credentialClient is non-nil when QUMO_CREDENTIAL_URL is configured.
-	// It handles credential introspection and usage reporting.
-	credentialClient *CredentialClient
-	// meter drives periodic and final usage reporting for metered sessions.
-	// It is non-nil exactly when credentialClient is non-nil.
-	meter *Meter
-	// verifier checks publisher credentials locally against the control
-	// plane's JWKS instead of introspecting them (QUMO_RELAY_AUDIENCE set).
-	// When set it takes precedence over credentialClient for admission, and
-	// admitted sessions are not metered.
+	// verifier checks publisher credentials against the trusted signing keys.
+	// nil leaves publishers unauthenticated.
 	verifier *credential.Verifier
+	// meter drives periodic and final usage reporting for admitted
+	// publishers. nil when usage is not reported.
+	meter *Meter
 
 	// framePool recycles frame buffers for track distributors and the auth
 	// track read; sized from Config.FrameCapacity in init() (falling back to
@@ -168,13 +163,6 @@ func (s *Server) init() {
 				context.AfterFunc(conn.Context(), func() { s.sampler.removeConn(addr) })
 			}
 			return ctx
-		}
-
-		// Invariant: meter must be set whenever credentialClient is set.
-		// A manually-constructed Server that sets credentialClient without meter
-		// would panic later when the first metered announcement is accepted.
-		if s.credentialClient != nil && s.meter == nil {
-			panic("relay.Server: meter must be non-nil when credentialClient is set")
 		}
 
 		// Resolve the per-node frame pool from Config.FrameCapacity. A caller
@@ -554,7 +542,7 @@ func (s *Server) serveSession(sess *moqt.Session, requireAuth bool) {
 
 		// Authenticate publisher announcements when the credential client is configured.
 		var broadSess *broadcastSession
-		if requireAuth && (s.credentialClient != nil || s.verifier != nil) {
+		if requireAuth && s.verifier != nil {
 			broadSess, err = s.authenticateAnnouncement(sess.Context(), sess, ann)
 			if err != nil {
 				// MoQ has no per-announcement error response, so the publisher
@@ -845,9 +833,8 @@ func handlePeerGoaway(newSessionURI string) {
 }
 
 // authenticateAnnouncement subscribes to the "auth" track on the announced
-// broadcast path, reads the JWT from the first frame, and checks it: locally
-// against the control plane's JWKS when a verifier is configured, otherwise
-// against the credential introspection endpoint.
+// broadcast path, reads the JWT from the first frame, and verifies it against
+// the trusted signing keys.
 //
 // Publisher-side contract: the publisher must serve a single-group track named
 // "auth" on the announced broadcast path. The group must contain at least one
@@ -855,8 +842,8 @@ func handlePeerGoaway(newSessionURI string) {
 // complete JWT to arrive within the 5-second authCtx deadline.
 //
 // Returns the minted broadcastSession on success, or an error if authentication
-// fails (missing track, empty JWT, or invalid/expired credential). In local
-// mode a success returns a nil session: nothing is metered.
+// fails (missing track, empty JWT, or invalid/expired credential). When usage
+// is not reported, a success returns a nil session: nothing is metered.
 func (s *Server) authenticateAnnouncement(ctx context.Context, sess *moqt.Session, ann *moqt.Announcement) (*broadcastSession, error) {
 	authCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
@@ -883,20 +870,13 @@ func (s *Server) authenticateAnnouncement(ctx context.Context, sess *moqt.Sessio
 	}
 	jwt := jwtBuf.String()
 
-	if s.verifier != nil {
-		if _, err := s.verifier.VerifyPublish(authCtx, jwt, ann.BroadcastPath().String()); err != nil {
-			return nil, fmt.Errorf("verify credential: %w", err)
-		}
+	kid, err := s.verifier.VerifyPublish(authCtx, jwt, ann.BroadcastPath().String())
+	if err != nil {
+		return nil, fmt.Errorf("verify credential: %w", err)
+	}
+	if s.meter == nil {
 		return nil, nil
 	}
 
-	result, err := s.credentialClient.Introspect(authCtx, jwt, ann.BroadcastPath().String())
-	if err != nil {
-		return nil, fmt.Errorf("introspect: %w", err)
-	}
-	if result == nil {
-		return nil, fmt.Errorf("credential rejected by backend")
-	}
-
-	return newBroadcastSession(result.TokenID), nil
+	return newBroadcastSession(kid), nil
 }
