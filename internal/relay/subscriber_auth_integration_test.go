@@ -206,12 +206,19 @@ func TestServer_SubscriberCredential_Revocation(t *testing.T) {
 	sub := relay.newSubscriber(t, viewer.signSubscribe(t, "live", time.Minute))
 	require.NoError(t, sub.watch(t, cam))
 
+	retracted := func() float64 { return testutil.ToFloat64(metricSessionsEnded.WithLabelValues(reasonRetracted)) }
+	retractedBefore := retracted()
+
 	relay.setSnapshot(trust.Snapshot{Keys: []trust.SnapshotKey{
 		publisher.snapshotKey("p1", "active"),
 		viewer.snapshotKey("p1", "revoked"),
 	}})
 
 	require.Eventually(t, sub.ended, 2*time.Second, 20*time.Millisecond, "revoking the viewer's key ends its session")
+	// The relay's own close also ends the session credential announcement;
+	// that must not be counted as a retraction.
+	assert.Never(t, func() bool { return retracted() != retractedBefore }, 500*time.Millisecond, 20*time.Millisecond,
+		"a revoked session is not also ended as retracted")
 }
 
 // Announcements under /.qumo/ are relay control: never routed, even from an
