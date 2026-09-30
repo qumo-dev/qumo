@@ -5,6 +5,8 @@
 package relay
 
 import (
+	"context"
+
 	"testing"
 	"time"
 
@@ -92,4 +94,38 @@ func TestServer_UsageEvents_Subscriber(t *testing.T) {
 		return ev.Type == eventSessionClose && ev.SessionID == open.SessionID
 	})
 	require.Equal(t, trust.ReasonKeyRevoked, closed.Reason)
+}
+
+// A credential admitted inside the verifier's leeway past exp expires at
+// once; its session's open must still be reported before its close.
+func TestServer_UsageEvents_OpenBeforeClose(t *testing.T) {
+	signer := newAppSigner(t)
+	relay := startRefreshTestRelay(t, trust.Snapshot{Keys: []trust.SnapshotKey{signer.snapshotKey("p1", "active")}})
+	mux := moqt.NewTrackMux(0)
+	next := make(chan string, 1)
+	next <- signer.signPublish(t, "live", -30*time.Second)
+	broadcast := moqt.NewBroadcast()
+	require.NoError(t, broadcast.Register(authTrackName, credentialTrack(next)))
+	ann, endAnn := moqt.NewAnnouncement(context.Background(), refreshPath)
+	t.Cleanup(endAnn)
+	mux.Announce(ann, broadcast)
+	_ = relay.dial(t, mux)
+
+	closed := eventFrom(t, relay.cp, "close", func(ev UsageEvent) bool { return ev.Type == eventSessionClose })
+
+	events := relay.cp.usage()
+	openAt, closeAt := -1, -1
+	for i, ev := range events {
+		if ev.SessionID != closed.SessionID {
+			continue
+		}
+		switch ev.Type {
+		case eventSessionOpen:
+			openAt = i
+		case eventSessionClose:
+			closeAt = i
+		}
+	}
+	require.NotEqual(t, -1, openAt, "the open was reported")
+	require.Less(t, openAt, closeAt, "the open is reported before the close")
 }

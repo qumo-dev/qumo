@@ -211,11 +211,13 @@ func (s *Server) track(ad *admission, ann *moqt.Announcement, auth *authTrack) {
 		ad.id = uuid.NewV4()
 	}
 	ad.deadline = cred.ExpiresAt.Add(s.expiryLeeway())
+	// Report the open before arming anything that can end the session (the
+	// expiry timer, trust enforcement), so its close is never reported first.
+	s.sessionEvent(ad, eventSessionOpen)
 	ad.mu.Lock()
 	ad.timer = time.AfterFunc(time.Until(ad.deadline), func() { s.expire(ad) })
 	ad.mu.Unlock()
 	s.admitted.add(ad)
-	s.sessionEvent(ad, eventSessionOpen)
 
 	ctx, cancel := context.WithCancel(sess.Context())
 	ann.AfterFunc(func() {
