@@ -145,6 +145,6 @@ Credentials are app-signed (qumo-deploy ADR 0035) and verified entirely on the r
 - The `/.qumo/session` announcement must stay up for the session's life. Withdrawing it while connected ends the session, with reason `credential_retracted`. A second session credential announcement is ignored.
 - Broadcasts under `/.qumo/` are relay control and are never routed.
 - Trusted peers (`PEER_CIDRS` / mTLS) are not gated. Clients such as the HLS egress, `qumo loadgen` and `qumo smoketest` must run as trusted peers against a relay with credential auth on.
-- Metric: `qumo_relay_subscribe_authorizations_total{result}`, where `result` is `admitted`, `not_covered`, `no_credential` or `no_session`.
+- Metric: `qumo_relay_subscribe_authorizations_total{result}`, where `result` is `admitted`, `not_covered`, `no_credential` or `unidentified`.
 
 `QUMO_RELAY_AUDIENCE` and `QUMO_CREDENTIAL_ISSUER` are no longer supported, and the relay refuses to start when either is set. Introspection (`POST /v1/credentials/introspect`) and fetching the control plane's key set are removed.

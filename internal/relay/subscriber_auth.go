@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net/netip"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -50,11 +51,43 @@ func (g *subscriberGate) accept(ad *admission) {
 	})
 }
 
-// gateSession starts subscription authorization for an untrusted session and
-// returns a function that ends it with the session.
-func (s *Server) gateSession(sess *moqt.Session) func() {
-	s.gates.Store(sess, newSubscriberGate())
-	return func() { s.gates.Delete(sess) }
+// connAuthKey is the context key under which the relay's ConnContext hook
+// stores each connection's *connAuth.
+type connAuthKey struct{}
+
+// connAuth is a connection's subscription authorization. gate is nil for a
+// connection the relay does not gate: a trusted relay peer, or any connection
+// when credential auth is off.
+type connAuth struct {
+	gate *subscriberGate
+}
+
+// newConnAuth decides, when a connection is accepted, whether its
+// subscriptions need a session credential: with credential auth on, every
+// WebTransport connection, and every native-QUIC one that is not a trusted
+// peer (mTLS or PEER_CIDRS).
+func (s *Server) newConnAuth(conn moqt.StreamConn) *connAuth {
+	if s.verifier == nil {
+		return &connAuth{}
+	}
+	state := conn.TLS()
+	if state != nil && state.NegotiatedProtocol == moqt.NextProtoMOQ {
+		var cidrs []netip.Prefix
+		if s.Config != nil {
+			cidrs = s.Config.PeerCIDRs
+		}
+		if isTrustedPeer(state, conn.RemoteAddr(), cidrs) {
+			return &connAuth{}
+		}
+	}
+	return &connAuth{gate: newSubscriberGate()}
+}
+
+// connAuthFrom returns the connection authorization in ctx: a session's
+// context or a TrackWriter's, both of which carry the ConnContext values.
+func connAuthFrom(ctx context.Context) (*connAuth, bool) {
+	ca, ok := ctx.Value(connAuthKey{}).(*connAuth)
+	return ca, ok
 }
 
 // isReservedPath reports whether an announcement is relay control, never
@@ -67,11 +100,11 @@ func isReservedPath(path moqt.BroadcastPath) bool {
 // credential from ann, then tracks it for refresh and expiry. A session that
 // never presents one has every SUBSCRIBE refused.
 func (s *Server) handleSessionCredential(sess *moqt.Session, ann *moqt.Announcement) {
-	v, ok := s.gates.Load(sess)
-	if !ok || ann.BroadcastPath() != sessionAuthPath {
+	ca, ok := connAuthFrom(sess.Context())
+	if !ok || ca.gate == nil || ann.BroadcastPath() != sessionAuthPath {
 		return
 	}
-	g := v.(*subscriberGate)
+	g := ca.gate
 	if g.ad.Load() != nil || !g.reading.CompareAndSwap(false, true) {
 		slog.Warn("relay: ignoring a second session credential announcement", "remote", sess.RemoteAddr())
 		return
@@ -86,21 +119,22 @@ func (s *Server) handleSessionCredential(sess *moqt.Session, ann *moqt.Announcem
 	g.accept(s.admitSubscriber(sess, ann, cred, reader))
 }
 
-// authorizeSubscribe admits a SUBSCRIBE served by a relayHandler. Sessions
+// authorizeSubscribe admits a SUBSCRIBE served by a relayHandler. Connections
 // the relay does not gate (trusted peers) are admitted. A gated session's
 // SUBSCRIBE waits up to credentialWait for its session credential, and is
 // admitted only if that credential's subscribe grant covers the path.
 func (s *Server) authorizeSubscribe(tw *moqt.TrackWriter) bool {
-	sess, ok := moqt.SessionFromContext(tw.Context())
+	ca, ok := connAuthFrom(tw.Context())
 	if !ok {
-		metricSubscribeAuthz.WithLabelValues("no_session").Inc()
+		// Every connection the relay accepts passes through its ConnContext
+		// hook; a SUBSCRIBE without that state is refused, not trusted.
+		metricSubscribeAuthz.WithLabelValues("unidentified").Inc()
 		return false
 	}
-	v, gated := s.gates.Load(sess)
-	if !gated {
+	if ca.gate == nil {
 		return true
 	}
-	g := v.(*subscriberGate)
+	g := ca.gate
 	select {
 	case <-g.ready:
 	case <-tw.Context().Done():
