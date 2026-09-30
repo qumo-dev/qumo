@@ -96,6 +96,11 @@ func (st *sessionState) ended(reason string) {
 	st.endReason.CompareAndSwap(nil, &reason)
 }
 
+// endedByRelay reports whether the relay has ended the session.
+func (st *sessionState) endedByRelay() bool {
+	return st.endReason.Load() != nil
+}
+
 // reason is why the session closed: the reason the relay ended it for, or
 // reasonClosed.
 func (st *sessionState) reason() string {
@@ -258,7 +263,9 @@ func (s *Server) track(ad *admission, ann *moqt.Announcement, auth *authTrack) {
 		// A subscriber's session credential authorizes the whole session. If
 		// the client withdraws it but stays connected, the credential is no
 		// longer tracked for expiry or revocation, so the session must end.
-		if ad.subscriber && sess.Context().Err() == nil {
+		// When the relay itself closes the session, the announcement ends too,
+		// before the session's context does; that is not a retraction.
+		if ad.subscriber && sess.Context().Err() == nil && !ad.state.endedByRelay() {
 			s.endSession(ad, reasonRetracted)
 		}
 	})
