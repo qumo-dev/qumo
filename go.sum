@@ -42,6 +42,8 @@ github.com/qumo-dev/gomoqt v0.20.1-0.20260930200605-9a54bf61c2ba h1:oveLhStiMMyC
 github.com/qumo-dev/gomoqt v0.20.1-0.20260930200605-9a54bf61c2ba/go.mod h1:ukS/MkkZuoqqr/b3gjt6HgRIGbNLkh7D0f4xKOkfcKo=
 github.com/qumo-dev/gomoqt v0.20.1-0.20260930215544-3366be5595e1 h1:rYO5lzVos7ULkYblMEsr+xx/yR3usI/EhofOGFPXx0A=
 github.com/qumo-dev/gomoqt v0.20.1-0.20260930215544-3366be5595e1/go.mod h1:ukS/MkkZuoqqr/b3gjt6HgRIGbNLkh7D0f4xKOkfcKo=
+github.com/qumo-dev/gomoqt v0.20.1-0.20260930223702-6ff2c023dde0 h1:udQYoahqwDM1UPlQDgMePadstz3vngz1lgJExQB9zLw=
+github.com/qumo-dev/gomoqt v0.20.1-0.20260930223702-6ff2c023dde0/go.mod h1:ukS/MkkZuoqqr/b3gjt6HgRIGbNLkh7D0f4xKOkfcKo=
 github.com/stretchr/testify v1.12.1 h1:EuwCh5fleGS7H32xRwO3wRGT7DxrDhLAT6FF8MpWDWE=
 github.com/stretchr/testify v1.12.1/go.mod h1:MDEgiDPPsNp5cuIrHPPCyornHKgEVbtFUmoNlxoYthg=
 go.uber.org/goleak v1.3.0 h1:2K3zAYmnTNqV73imy9J1T3WC+gmCePx2hEGkimedGto=
