@@ -101,21 +101,19 @@ relay's HTTP port.
 
 ## Credential auth & metering (optional)
 
-| Variable | Default | Description |
-|---|---|---|
 A relay trusts signing keys from exactly one source, or runs open:
 
 | Variable | Default | Description |
 |---|---|---|
 | `QUMO_SIGNING_KEYS_FILE` | (unset) | **Self-hosted relay.** Path to a JWK Set of the Ed25519 public keys whose credentials the relay admits: the app signing keys registered with qumo. Every publisher announcement must carry a credential signed by one of them. A key's `kid` may be omitted; the relay derives it as the key's RFC 7638 thumbprint, the same `kid` qumo assigns, and refuses a file whose `kid` differs. The file is read once at start; the relay never calls qumo. |
-| `QUMO_CREDENTIAL_URL` | (unset) | **Managed relay.** Base URL of the qumo control plane. The relay polls the trust snapshot (`GET /v1/relays/trust`) every 30 s and reports cumulative ingress/egress byte totals per admitted publisher via `POST /v1/usage/events`, keyed by the signing key's `kid`. Cannot be combined with `QUMO_SIGNING_KEYS_FILE`. |
+| `QUMO_CREDENTIAL_URL` | (unset) | **Managed relay.** Base URL of the qumo control plane. The relay polls the trust snapshot (`GET /v1/relays/trust`) every 30 s and reports usage and session events via `POST /v1/usage/events`, keyed by `kid` and project. Cannot be combined with `QUMO_SIGNING_KEYS_FILE`. |
 | `QUMO_RELAY_TOKEN` | (unset) | Bearer token the relay presents to the control plane. Required with `QUMO_CREDENTIAL_URL`. |
 
 Setting neither leaves the relay open.
 
 On a managed relay:
 - **No session is admitted until the first snapshot loads.** Only `active` keys admit new sessions, and only while their project isn't suspended.
-- **Snapshot changes apply to live sessions within one poll.** A publisher whose key is revoked or removed, or whose project is suspended, has its session closed with MoQ error code `0x2` (Unauthorized) and the reason `key_revoked` or `project_suspended`. A `retired` key admits no new sessions, but its live sessions continue.
+- **Snapshot changes apply to live sessions within one poll.** A session (publisher or subscriber) whose current key is revoked or removed, or whose project is suspended, is closed with MoQ error code `0x2` (Unauthorized) and the reason `key_revoked` or `project_suspended`. A `retired` key admits no new sessions, but its live sessions continue.
 - **Fail-static:** if polls fail, the last snapshot keeps answering. After 6 h without a successful poll, new sessions are refused; live sessions continue.
 - **Service quotas:** a project's policy may carry `quotas.broadcasts` and `quotas.subscriber_sessions`; an absent quota is unlimited. Each relay enforces them against its own sessions:
   - **Publishers:** an announcement past the broadcast quota is not routed, and the session's other broadcasts continue.
@@ -125,7 +123,7 @@ On a managed relay:
 - **Usage and session events** go to `POST /v1/usage/events` every 30 s, as a JSON array of `{type, session_id, role, kid, project_id, metrics?, reason?, ts}`:
   - **`usage`:** a publisher broadcast's cumulative `gateway.ingress_bytes` and `gateway.egress_bytes`. Egress to subscribers is counted on the publisher's broadcast; prefix confinement makes a subscriber's project the path's project.
   - **`session_open` / `session_close`:** one pair per admitted publisher broadcast and per subscriber session credential. The control plane counts live sessions per project from these.
-  - **`reason`** (on close): `closed`, `credential_expired`, `key_revoked` or `project_suspended`.
+  - **`reason`** (on close): `closed`, `credential_expired`, `credential_retracted`, `key_revoked` or `project_suspended`.
   - **`kid`** is the session's current key, which can change at a refresh. **`project_id`** can't.
   - Session events that fail to send are retried with the next report; at most 10,000 are queued.
 - **Metrics:** `qumo_relay_trust_last_success_seconds` (Unix time of the last successful poll), `qumo_relay_trust_poll_failures_total`, `qumo_relay_trust_keys`, `qumo_relay_sessions_ended_total{reason}`.
@@ -152,4 +150,3 @@ Credentials are app-signed (qumo-deploy ADR 0035) and verified entirely on the r
 - Trusted peers (`PEER_CIDRS` / mTLS) are not gated. Clients such as the HLS egress, `qumo loadgen` and `qumo smoketest` must run as trusted peers against a relay with credential auth on.
 - Metric: `qumo_relay_subscribe_authorizations_total{result}`, where `result` is `admitted`, `not_covered`, `no_credential` or `no_session`.
 
-`QUMO_RELAY_AUDIENCE` and `QUMO_CREDENTIAL_ISSUER` are no longer supported, and the relay refuses to start when either is set. Introspection (`POST /v1/credentials/introspect`) and fetching the control plane's key set are removed.

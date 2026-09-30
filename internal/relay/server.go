@@ -42,8 +42,8 @@ type Server struct {
 	// verifier checks publisher credentials against the trusted signing keys.
 	// nil leaves publishers unauthenticated.
 	verifier *credential.Verifier
-	// meter drives periodic and final usage reporting for admitted
-	// publishers. nil when usage is not reported.
+	// meter reports usage and session events to the control plane. nil when
+	// usage is not reported (every relay but a managed one).
 	meter *Meter
 	// trust is the managed relay's trust snapshot; nil on a relay with static
 	// keys. When set, admitted sessions are ended once the snapshot no longer

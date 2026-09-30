@@ -415,8 +415,8 @@ func (s *Server) enforceTrust() {
 }
 
 // endSession closes ad's session with the Unauthorized code and reason as the
-// phrase, which clients read to tell why (credential_expired, key_revoked,
-// project_suspended). The reason is also reported with each of the session's
+// phrase, which clients read to tell why (credential_expired,
+// credential_retracted, key_revoked, project_suspended). The reason is also reported with each of the session's
 // close events.
 func (s *Server) endSession(ad *admission, reason string) {
 	ad.state.ended(reason)
