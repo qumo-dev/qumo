@@ -65,6 +65,11 @@ func startContractServer(t *testing.T, serverMux *moqt.TrackMux) (addr string, r
 		WebTransportServer: moqt.NewWebTransportServer(httpMux),
 		Handler:            handler,
 		TrackMux:           serverMux,
+		// Stamp each connection with a unique token, as an application stores
+		// per-connection state (see TestContract_ConnContextReachesHandlers).
+		ConnContext: func(ctx context.Context, _ moqt.StreamConn) context.Context {
+			return context.WithValue(ctx, connTag{}, new(int))
+		},
 	}
 	wt := &moqt.WebTransportHandler{TrackMux: serverMux, Handler: handler}
 	httpMux.Handle("/", wt)
@@ -257,18 +262,23 @@ func TestContract_ReservedSessionAuthPath(t *testing.T) {
 	}
 }
 
-// Q3: can the server tell which session a SUBSCRIBE came from? The relay
+// connTag is the ConnContext key the contract server stamps each connection
+// with.
+type connTag struct{}
+
+// Q3: can the server tell which connection a SUBSCRIBE came from? The relay
 // serves every session from one TrackMux, so authorizing a subscriber needs
-// the session reachable from the TrackWriter: moqt.SessionFromContext
-// (qumo-dev/gomoqt#431; gomoqt v0.20 had no way to).
-func TestContract_SubscriberIdentityInServePath(t *testing.T) {
+// per-connection state reachable from the TrackWriter. As with net/http's
+// Server.ConnContext, a value the hook stores must reach both the session's
+// context and the handler's (qumo-dev/gomoqt#431; on gomoqt v0.20 it reached
+// neither).
+func TestContract_ConnContextReachesHandlers(t *testing.T) {
 	for _, tc := range contractTransports {
 		t.Run(tc.name, func(t *testing.T) {
 			serverMux := moqt.NewTrackMux(0)
-			seen := make(chan *moqt.Session, 1)
+			seen := make(chan any, 1)
 			serverMux.PublishFunc(context.Background(), "/content", func(tw *moqt.TrackWriter) {
-				sess, _ := moqt.SessionFromContext(tw.Context())
-				seen <- sess
+				seen <- tw.Context().Value(connTag{})
 				// Open a group so the SUBSCRIBE is answered.
 				if g, err := tw.OpenGroup(tw.Context()); err == nil {
 					_ = g.Close()
@@ -284,9 +294,11 @@ func TestContract_SubscriberIdentityInServePath(t *testing.T) {
 			_, err := client.Subscribe(ctx, "/content", "video", nil)
 			require.NoError(t, err)
 
+			sessionTag := server.Context().Value(connTag{})
+			require.NotNil(t, sessionTag, "the session's context carries the ConnContext value")
 			select {
 			case got := <-seen:
-				assert.Same(t, server, got, "the TrackWriter identifies the subscribing session")
+				assert.Same(t, sessionTag, got, "the TrackWriter's context carries its own connection's value")
 			case <-ctx.Done():
 				t.Fatal("SUBSCRIBE never reached the server handler")
 			}

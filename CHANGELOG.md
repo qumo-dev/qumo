@@ -16,7 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     - The two sources are mutually exclusive; setting neither leaves the relay open.
   - **Checks:** a known `kid`, the EdDSA signature, `exp` and `iat` (required) and `nbf` with 60 s leeway, a lifetime of at most one hour, and **prefix confinement**. Every granted path must lie within the key's prefix, so a key can't sign for another tenant; `.` and `..` segments are refused. `iss`, `aud`, `jti` and any unknown claims are ignored. On a managed relay, only `active` keys of unsuspended projects admit new sessions.
   - **Publishers** present their credential as the first group on an `auth` track on each announced path.
-  - **Subscribers need a credential (#418).** An untrusted client announces `/.qumo/session` with an `auth` track carrying its session credential. Each SUBSCRIBE is admitted only if that credential's subscribe grant covers the path; otherwise it's refused Unauthorized. `/.qumo/` broadcasts are never routed. Withdrawing the announcement while connected ends the session. Trusted peers aren't gated; the HLS egress, `loadgen` and `smoketest` must connect as trusted peers (#432).
+  - **Subscribers need a credential (#418).** An untrusted client announces `/.qumo/session` with an `auth` track carrying its session credential. Each SUBSCRIBE is admitted only if that credential's subscribe grant covers the path; otherwise it's refused Unauthorized. `/.qumo/` broadcasts are never routed. Withdrawing the announcement while connected ends the session. Whether a connection is gated is decided when it is accepted. Trusted peers aren't gated; the HLS egress, `loadgen` and `smoketest` must connect as trusted peers (#432).
   - **Hard expiry and in-session refresh (#423).**
     - A session ends at its current credential's `exp` + 60 s.
     - Clients refresh by writing a new credential as a new group on the same `auth` track. A refresh is accepted only if it passes every check, its key is active and belongs to the same project (the `kid` may change, so rotation needs no reconnect), it grants nothing more, and it still covers everything the session is using.
@@ -36,7 +36,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     - `qumo_relay_trust_last_success_seconds`, `qumo_relay_trust_poll_failures_total`, `qumo_relay_trust_keys`
     - `qumo_relay_sessions_ended_total{reason}`, `qumo_relay_credential_refreshes_total{result}`
     - `qumo_relay_subscribe_authorizations_total{result}`, `qumo_relay_quota_refusals_total{role}`
-  - **Requires** gomoqt `SessionFromContext` (qumo-dev/gomoqt#433), pinned to a pseudo-version until it's released.
+  - **Requires** gomoqt's `Server.ConnContext` values to reach handlers, as in net/http (qumo-dev/gomoqt#433), pinned to a pseudo-version until it's released.
 
 ## [v0.8.260929] - 2026-09-29
 
