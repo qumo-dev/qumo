@@ -157,3 +157,13 @@ func TestStore_OnChange(t *testing.T) {
 
 	assert.Equal(t, 2, calls)
 }
+
+func TestStore_Quotas(t *testing.T) {
+	two := 2
+	s, _ := newLoadedStore(Snapshot{Policies: []Policy{{ProjectID: "p1", Quotas: Quotas{Broadcasts: &two}}}})
+
+	assert.Equal(t, &two, s.Quotas("p1").Broadcasts)
+	assert.Nil(t, s.Quotas("p1").SubscriberSessions, "an absent quota is unlimited")
+	assert.Equal(t, Quotas{}, s.Quotas("unknown"))
+	assert.Equal(t, Quotas{}, NewStore().Quotas("p1"), "no snapshot: unlimited")
+}

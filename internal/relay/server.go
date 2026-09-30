@@ -591,6 +591,12 @@ func (s *Server) serveSession(sess *moqt.Session, requireAuth bool) {
 					"error", err)
 				continue
 			}
+			if !s.withinQuota(cred.Key, false) {
+				// Soft per-relay ceiling on the project's live broadcasts: the
+				// announcement is not routed, like any refused one.
+				_ = reader.reader.Close()
+				continue
+			}
 			broadSess = s.admit(sess, ann, cred, reader)
 		}
 

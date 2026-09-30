@@ -352,4 +352,17 @@ var (
 		},
 		[]string{"result"},
 	)
+
+	// metricQuotaRefusals counts sessions refused by a project's service
+	// quota, by role. The project is logged, not labelled, to bound
+	// cardinality.
+	metricQuotaRefusals = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Namespace: "qumo",
+			Subsystem: "relay",
+			Name:      "quota_refusals_total",
+			Help:      "Total number of sessions refused by a per-project service quota, by role.",
+		},
+		[]string{"role"},
+	)
 )

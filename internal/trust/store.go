@@ -146,6 +146,16 @@ func (s *Store) Live(kid, projectID string) (reason string, ok bool) {
 	return "", true
 }
 
+// Quotas returns projectID's service quotas from the current snapshot; a nil
+// quota, or no snapshot, means unlimited.
+func (s *Store) Quotas(projectID string) Quotas {
+	st := s.current.Load()
+	if st == nil {
+		return Quotas{}
+	}
+	return st.policies[projectID].Quotas
+}
+
 // OnChange registers fn to run after every snapshot swap.
 func (s *Store) OnChange(fn func()) {
 	s.mu.Lock()

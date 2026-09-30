@@ -78,6 +78,11 @@ func (s *Server) handleSessionCredential(sess *moqt.Session, ann *moqt.Announcem
 		slog.Warn("relay: session credential rejected", "remote", sess.RemoteAddr(), "error", err)
 		return
 	}
+	if !s.withinQuota(cred.Key, true) {
+		_ = reader.reader.Close()
+		refuseSubscriberQuota(sess)
+		return
+	}
 	g.accept(s.admitSubscriber(sess, ann, cred, reader))
 }
 

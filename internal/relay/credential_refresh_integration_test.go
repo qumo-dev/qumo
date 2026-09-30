@@ -6,14 +6,12 @@ package relay
 
 import (
 	"context"
-	"crypto/tls"
 	"crypto/x509"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus/testutil"
-	"github.com/quic-go/quic-go"
 	"github.com/qumo-dev/gomoqt/moqt"
 	"github.com/qumo-dev/qumo/internal/credential"
 	"github.com/qumo-dev/qumo/internal/trust"
@@ -83,23 +81,23 @@ func (r *refreshTestRelay) setSnapshot(snapshot trust.Snapshot) {
 // the relay has admitted it.
 func (r *refreshTestRelay) publish(t *testing.T, first string) *refreshingPublisher {
 	t.Helper()
-	dialerTLS := &tls.Config{RootCAs: r.roots, MinVersion: tls.VersionTLS13}
-	quicCfg := &quic.Config{EnableDatagrams: true, KeepAlivePeriod: 5 * time.Second, MaxIdleTimeout: 30 * time.Second}
-	mux := moqt.NewTrackMux(0)
-	sess, err := (&moqt.Dialer{TLSConfig: dialerTLS, QUICConfig: quicCfg}).Dial(context.Background(), "https://"+r.addr, mux)
-	require.NoError(t, err)
+	p := r.newPublisherAt(t, refreshPath, first)
+	assert.Never(t, p.ended, 300*time.Millisecond, 20*time.Millisecond, "the publisher should be admitted")
+	return p
+}
 
-	p := &refreshingPublisher{sess: sess, next: make(chan string, 4)}
+// newPublisherAt announces path with first as its credential.
+func (r *refreshTestRelay) newPublisherAt(t *testing.T, path moqt.BroadcastPath, first string) *refreshingPublisher {
+	t.Helper()
+	mux := moqt.NewTrackMux(0)
+	p := &refreshingPublisher{next: make(chan string, 4)}
 	p.next <- first
 	broadcast := moqt.NewBroadcast()
 	require.NoError(t, broadcast.Register(authTrackName, credentialTrack(p.next)))
-	ann, endAnn := moqt.NewAnnouncement(context.Background(), refreshPath)
+	ann, endAnn := moqt.NewAnnouncement(context.Background(), path)
+	t.Cleanup(endAnn)
 	mux.Announce(ann, broadcast)
-	t.Cleanup(func() {
-		endAnn()
-		_ = sess.CloseWithError(moqt.NoError, "test done")
-	})
-	assert.Never(t, p.ended, 300*time.Millisecond, 20*time.Millisecond, "the publisher should be admitted")
+	p.sess = r.dial(t, mux)
 	return p
 }
 

@@ -147,6 +147,8 @@ func (ad *admission) key() credential.Key {
 type admissions struct {
 	mu  sync.Mutex
 	set map[*admission]struct{}
+	// counts holds live admissions per quota group (see quotaKey).
+	counts map[quotaKey]int
 }
 
 func (a *admissions) add(ad *admission) {
@@ -154,14 +156,45 @@ func (a *admissions) add(ad *admission) {
 	defer a.mu.Unlock()
 	if a.set == nil {
 		a.set = make(map[*admission]struct{})
+		a.counts = make(map[quotaKey]int)
 	}
 	a.set[ad] = struct{}{}
+	a.counts[ad.quotaKey()]++
 }
 
 func (a *admissions) remove(ad *admission) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	if _, ok := a.set[ad]; !ok {
+		return
+	}
 	delete(a.set, ad)
+	if k := ad.quotaKey(); a.counts[k] <= 1 {
+		delete(a.counts, k)
+	} else {
+		a.counts[k]--
+	}
+}
+
+// count returns the live admissions of project in the given role on this
+// relay.
+func (a *admissions) count(project string, subscriber bool) int {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.counts[quotaKey{project: project, subscriber: subscriber}]
+}
+
+// quotaKey groups admissions for service quotas: a project's live
+// broadcasts, and its subscriber sessions.
+type quotaKey struct {
+	project    string
+	subscriber bool
+}
+
+// quotaKey is ad's quota group. A session's project cannot change, since a
+// refresh must be signed for the same project.
+func (ad *admission) quotaKey() quotaKey {
+	return quotaKey{project: ad.key().ProjectID, subscriber: ad.subscriber}
 }
 
 // list returns the current admissions.

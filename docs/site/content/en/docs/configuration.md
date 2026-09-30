@@ -117,6 +117,11 @@ On a managed relay:
 - **No session is admitted until the first snapshot loads.** Only `active` keys admit new sessions, and only while their project isn't suspended.
 - **Snapshot changes apply to live sessions within one poll.** A publisher whose key is revoked or removed, or whose project is suspended, has its session closed with MoQ error code `0x2` (Unauthorized) and the reason `key_revoked` or `project_suspended`. A `retired` key admits no new sessions, but its live sessions continue.
 - **Fail-static:** if polls fail, the last snapshot keeps answering. After 6 h without a successful poll, new sessions are refused; live sessions continue.
+- **Service quotas:** a project's policy may carry `quotas.broadcasts` and `quotas.subscriber_sessions`; an absent quota is unlimited. Each relay enforces them against its own sessions:
+  - **Publishers:** an announcement past the broadcast quota is not routed, and the session's other broadcasts continue.
+  - **Subscribers:** a session past the subscriber quota is closed with MoQ `0x2` (Unauthorized) and reason `quota`.
+  - **Soft:** concurrent admissions may overshoot by the few that pass together. Global enforcement is the control plane's, from session events.
+  - **Metric:** `qumo_relay_quota_refusals_total{role}`. The project is logged, not labelled.
 - **Usage and session events** go to `POST /v1/usage/events` every 30 s, as a JSON array of `{type, session_id, role, kid, project_id, metrics?, reason?, ts}`:
   - **`usage`:** a publisher broadcast's cumulative `gateway.ingress_bytes` and `gateway.egress_bytes`. Egress to subscribers is counted on the publisher's broadcast; prefix confinement makes a subscriber's project the path's project.
   - **`session_open` / `session_close`:** one pair per admitted publisher broadcast and per subscriber session credential. The control plane counts live sessions per project from these.
