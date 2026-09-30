@@ -328,4 +328,16 @@ var (
 		},
 		[]string{"reason"},
 	)
+
+	// metricRefreshes counts credential refreshes on the auth track, by
+	// result (accepted, or why it was refused).
+	metricRefreshes = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Namespace: "qumo",
+			Subsystem: "relay",
+			Name:      "credential_refreshes_total",
+			Help:      "Total number of credential refreshes received on auth tracks, by result.",
+		},
+		[]string{"result"},
+	)
 )

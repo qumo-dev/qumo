@@ -109,12 +109,20 @@ func (a appSigner) snapshotKey(project, state string) trust.SnapshotKey {
 // sign mints a publish credential for tenant/project/live the way an app does.
 func (a appSigner) sign(t *testing.T) string {
 	t.Helper()
+	return a.signPublish(t, "live", 10*time.Minute)
+}
+
+// signPublish mints a credential granting publish at tenant/project/pub,
+// valid for ttl.
+func (a appSigner) signPublish(t *testing.T, pub string, ttl time.Duration) string {
+	t.Helper()
 	now := time.Now()
 	header, err := json.Marshal(map[string]any{"alg": "EdDSA", "kid": a.kid})
 	require.NoError(t, err)
+	// exp is carried with sub-second precision so short test lifetimes hold.
 	claims, err := json.Marshal(map[string]any{
-		"iat": now.Unix(), "nbf": now.Unix(), "exp": now.Add(10 * time.Minute).Unix(),
-		"path_auth": map[string]any{"root": "tenant/project", "pub": "live"},
+		"iat": now.Unix(), "nbf": now.Unix(), "exp": float64(now.Add(ttl).UnixMilli()) / 1000,
+		"path_auth": map[string]any{"root": "tenant/project", "pub": pub},
 	})
 	require.NoError(t, err)
 	enc := base64.RawURLEncoding.EncodeToString
@@ -166,6 +174,9 @@ type relayAuth struct {
 	meter     *Meter
 	trust     *trust.Store
 	peerCIDRs []netip.Prefix
+	// expiryLeeway and refreshInterval shorten the relay's defaults.
+	expiryLeeway    time.Duration
+	refreshInterval time.Duration
 }
 
 // startRelay stands up a real QUIC/MOQT relay whose WebTransport (publisher)
@@ -213,9 +224,11 @@ func startRelay(t *testing.T, auth relayAuth) (addr string, srv *Server, shutdow
 			Role:      "relay",
 			PeerCIDRs: auth.peerCIDRs,
 		},
-		verifier: auth.verifier,
-		trust:    auth.trust,
-		meter:    auth.meter,
+		verifier:                  auth.verifier,
+		trust:                     auth.trust,
+		meter:                     auth.meter,
+		credentialExpiryLeeway:    auth.expiryLeeway,
+		credentialRefreshInterval: auth.refreshInterval,
 	}
 	// Register the WebTransport route after construction (httpMux is a pointer,
 	// so this reaches the WebTransportServer wired above). Same shape as the

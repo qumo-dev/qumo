@@ -83,51 +83,96 @@ type claims struct {
 	PathAuth  *pathAuth `json:"path_auth"`
 }
 
-// VerifyPublish checks that token may announce broadcastPath and returns the
-// key that signed it.
-func (v *Verifier) VerifyPublish(ctx context.Context, token, broadcastPath string) (Key, error) {
+// Credential is a verified credential: the key that signed it, when it
+// expires, and what it grants.
+type Credential struct {
+	Key       Key
+	ExpiresAt time.Time
+	grants    pathAuth
+}
+
+// CoversPublish reports whether the credential may announce broadcastPath.
+func (c Credential) CoversPublish(broadcastPath string) bool {
+	return c.grants.coversPublish(broadcastPath)
+}
+
+// Within reports whether c grants nothing prev does not: every publish grant
+// of c lies at or beneath prev's publish grant, and likewise for subscribe.
+// A refreshed credential must satisfy it, so a refresh can narrow what a
+// session may do but never widen it.
+func (c Credential) Within(prev Credential) bool {
+	for _, g := range []struct{ next, prev *string }{
+		{c.grants.Pub, prev.grants.Pub},
+		{c.grants.Sub, prev.grants.Sub},
+	} {
+		if g.next == nil {
+			continue
+		}
+		if g.prev == nil || !beneath(c.grants.scope(*g.next), prev.grants.scope(*g.prev)) {
+			return false
+		}
+	}
+	return true
+}
+
+// Verify runs the checks every credential must pass: a trusted kid, the EdDSA
+// signature, the time claims and lifetime cap, and prefix confinement.
+func (v *Verifier) Verify(ctx context.Context, token string) (Credential, error) {
 	parts := strings.Split(token, ".")
 	if len(parts) != 3 {
-		return Key{}, errMalformed
+		return Credential{}, errMalformed
 	}
 
 	var h header
 	if err := decodeSegment(parts[0], &h); err != nil {
-		return Key{}, fmt.Errorf("%w: header: %w", errMalformed, err)
+		return Credential{}, fmt.Errorf("%w: header: %w", errMalformed, err)
 	}
 	if h.Alg != "EdDSA" {
-		return Key{}, errUnsupportedAlg
+		return Credential{}, errUnsupportedAlg
 	}
 	if h.Kid == "" {
-		return Key{}, fmt.Errorf("%w: no kid", errMalformed)
+		return Credential{}, fmt.Errorf("%w: no kid", errMalformed)
 	}
 
 	sig, err := base64.RawURLEncoding.DecodeString(parts[2])
 	if err != nil || len(sig) != ed25519.SignatureSize {
-		return Key{}, fmt.Errorf("%w: signature encoding", errMalformed)
+		return Credential{}, fmt.Errorf("%w: signature encoding", errMalformed)
 	}
 	key, err := v.keys.Key(ctx, h.Kid)
 	if err != nil {
-		return Key{}, err
+		return Credential{}, err
 	}
 	if !ed25519.Verify(key.Public, []byte(parts[0]+"."+parts[1]), sig) {
-		return Key{}, errBadSignature
+		return Credential{}, errBadSignature
 	}
 
 	var c claims
 	if err := decodeSegment(parts[1], &c); err != nil {
-		return Key{}, fmt.Errorf("%w: claims: %w", errMalformed, err)
+		return Credential{}, fmt.Errorf("%w: claims: %w", errMalformed, err)
 	}
 	if err := v.checkClaims(&c); err != nil {
-		return Key{}, err
+		return Credential{}, err
 	}
 	if err := c.PathAuth.within(key.Prefix); err != nil {
-		return Key{}, err
+		return Credential{}, err
 	}
-	if !c.PathAuth.coversPublish(broadcastPath) {
-		return Key{}, errPathNotCovered
+	cred := Credential{Key: key, ExpiresAt: numericDate(*c.ExpiresAt)}
+	if c.PathAuth != nil {
+		cred.grants = *c.PathAuth
 	}
-	return key, nil
+	return cred, nil
+}
+
+// VerifyPublish checks that token may announce broadcastPath.
+func (v *Verifier) VerifyPublish(ctx context.Context, token, broadcastPath string) (Credential, error) {
+	cred, err := v.Verify(ctx, token)
+	if err != nil {
+		return Credential{}, err
+	}
+	if !cred.CoversPublish(broadcastPath) {
+		return Credential{}, errPathNotCovered
+	}
+	return cred, nil
 }
 
 func (v *Verifier) checkClaims(c *claims) error {

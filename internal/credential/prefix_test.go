@@ -79,14 +79,14 @@ func TestVerifier_PrefixConfinement(t *testing.T) {
 	}
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
-			key, err := verifier.VerifyPublish(t.Context(), signer.sign(t, header, tt.claims), tt.path)
+			cred, err := verifier.VerifyPublish(t.Context(), signer.sign(t, header, tt.claims), tt.path)
 
 			if tt.wantErr != nil {
 				assert.ErrorIs(t, err, tt.wantErr)
 				return
 			}
 			require.NoError(t, err)
-			assert.Equal(t, "p1", key.ProjectID)
+			assert.Equal(t, "p1", cred.Key.ProjectID)
 		})
 	}
 }

@@ -121,4 +121,16 @@ On a managed relay:
 
 Credentials are app-signed (qumo-deploy ADR 0035) and verified entirely on the relay: an unknown `kid` is refused, then the `EdDSA` signature, `exp` and `iat` (required) and `nbf` (60 s leeway), a lifetime (`exp` − `iat`) of at most one hour, **prefix confinement** (every path `path_auth` grants, `root`+`pub` and `root`+`sub`, lies within the signing key's prefix at a `/` boundary; `.` and `..` segments are refused), and that `path_auth` covers the announced path. Other claims are ignored. On a managed relay every key carries its project's prefix, so a key can never sign for another tenant; the trust snapshot's keys without a prefix are ignored. Statically configured keys have no prefix.
 
+**Publisher contract and credential lifetime.** A publisher serves a track named `auth` on each broadcast path it announces. Each group on that track carries one credential as raw JWT bytes, at most 8 KiB.
+- The first group must arrive within 5 s of the announcement.
+- **Hard expiry:** the relay ends the session at the current credential's `exp` + 60 s, with MoQ error code `0x2` (Unauthorized) and the reason `credential_expired`.
+- **In-session refresh:** before `exp`, the publisher writes a fresh credential as a new group on the same `auth` track (recommended at 80% of the lifetime). The relay accepts it only if all of these hold:
+  - it passes every check above;
+  - its key is active and belongs to the same project (the `kid` may change, so key rotation needs no reconnect);
+  - it grants nothing the current credential doesn't;
+  - it still covers the announced path.
+- An accepted refresh replaces the session's credential and deadline. A refused one leaves both unchanged.
+- At most one refresh per 10 s is verified per `auth` track.
+- Metric: `qumo_relay_credential_refreshes_total{result}`, where `result` is `accepted`, `checks`, `other_project`, `widens`, `uncovered_path`, `rate` or `size`.
+
 `QUMO_RELAY_AUDIENCE` and `QUMO_CREDENTIAL_ISSUER` are no longer supported, and the relay refuses to start when either is set. Introspection (`POST /v1/credentials/introspect`) and fetching the control plane's key set are removed.
