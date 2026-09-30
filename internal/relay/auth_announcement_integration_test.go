@@ -29,51 +29,64 @@ import (
 	"github.com/quic-go/quic-go"
 	"github.com/qumo-dev/gomoqt/moqt"
 	"github.com/qumo-dev/qumo/internal/credential"
+	"github.com/qumo-dev/qumo/internal/trust"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-// testKID is the kid of the app signing key the test relays trust.
-const testKID = "kid-app"
-
-// stubUsageBackend impersonates the qumo control plane's usage endpoint and
-// counts every /v1/usage/events record.
-type stubUsageBackend struct {
+// stubControlPlane impersonates the qumo control plane: it serves a settable
+// trust snapshot at /v1/relays/trust and records every /v1/usage/events record.
+type stubControlPlane struct {
 	srv *httptest.Server
 
-	mu     sync.Mutex
-	events []UsageEvent
+	mu       sync.Mutex
+	events   []UsageEvent
+	snapshot trust.Snapshot
 }
 
-func newStubUsageBackend() *stubUsageBackend {
-	s := &stubUsageBackend{}
+func newStubControlPlane() *stubControlPlane {
+	s := &stubControlPlane{}
 	s.srv = httptest.NewServer(http.HandlerFunc(s.handle))
 	return s
 }
 
-func (s *stubUsageBackend) handle(w http.ResponseWriter, r *http.Request) {
-	if r.URL.Path != "/v1/usage/events" {
+func (s *stubControlPlane) handle(w http.ResponseWriter, r *http.Request) {
+	switch r.URL.Path {
+	case "/v1/usage/events":
+		var batch []UsageEvent
+		_ = json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&batch)
+		s.mu.Lock()
+		s.events = append(s.events, batch...)
+		s.mu.Unlock()
+		w.WriteHeader(http.StatusAccepted)
+	case "/v1/relays/trust":
+		s.mu.Lock()
+		snap := s.snapshot
+		s.mu.Unlock()
+		_ = json.NewEncoder(w).Encode(snap)
+	default:
 		w.WriteHeader(http.StatusNotFound)
-		return
 	}
-	var batch []UsageEvent
-	_ = json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&batch)
-	s.mu.Lock()
-	s.events = append(s.events, batch...)
-	s.mu.Unlock()
-	w.WriteHeader(http.StatusAccepted)
 }
 
-func (s *stubUsageBackend) Close() { s.srv.Close() }
+func (s *stubControlPlane) Close() { s.srv.Close() }
 
-func (s *stubUsageBackend) usage() []UsageEvent {
+func (s *stubControlPlane) usage() []UsageEvent {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return append([]UsageEvent(nil), s.events...)
 }
 
-// appSigner is an app's Ed25519 signing key.
+func (s *stubControlPlane) setSnapshot(snap trust.Snapshot) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.snapshot = snap
+}
+
+// appSigner is an app's Ed25519 signing key, with the kid qumo assigns it.
 type appSigner struct {
+	kid  string
+	x    string
 	pub  ed25519.PublicKey
 	priv ed25519.PrivateKey
 }
@@ -82,14 +95,22 @@ func newAppSigner(t *testing.T) appSigner {
 	t.Helper()
 	pub, priv, err := ed25519.GenerateKey(nil)
 	require.NoError(t, err)
-	return appSigner{pub: pub, priv: priv}
+	x := base64.RawURLEncoding.EncodeToString(pub)
+	key, err := credential.NewKey("", x)
+	require.NoError(t, err)
+	return appSigner{kid: key.ID, x: x, pub: pub, priv: priv}
+}
+
+// snapshotKey is the signer's key as the trust snapshot lists it.
+func (a appSigner) snapshotKey(project, state string) trust.SnapshotKey {
+	return trust.SnapshotKey{ID: a.kid, X: a.x, ProjectID: project, Prefix: "tenant/project", State: state}
 }
 
 // sign mints a publish credential for tenant/project/live the way an app does.
 func (a appSigner) sign(t *testing.T) string {
 	t.Helper()
 	now := time.Now()
-	header, err := json.Marshal(map[string]any{"alg": "EdDSA", "kid": testKID})
+	header, err := json.Marshal(map[string]any{"alg": "EdDSA", "kid": a.kid})
 	require.NoError(t, err)
 	claims, err := json.Marshal(map[string]any{
 		"iat": now.Unix(), "nbf": now.Unix(), "exp": now.Add(10 * time.Minute).Unix(),
@@ -101,27 +122,49 @@ func (a appSigner) sign(t *testing.T) string {
 	return input + "." + enc(ed25519.Sign(a.priv, []byte(input)))
 }
 
-// startAuthRelay stands up a relay that trusts signer's key and reports usage
-// to usage with a fast-ticking meter.
-func startAuthRelay(t *testing.T, signer appSigner, usage *stubUsageBackend, peerCIDRs []netip.Prefix) (addr string, srv *Server, shutdown func()) {
-	t.Helper()
+// newFastMeter reports usage to cp with a fast tick.
+func newFastMeter(cp *stubControlPlane) *Meter {
 	meter := newMeter(&usageClient{
-		baseURL:    usage.srv.URL,
+		baseURL:    cp.srv.URL,
 		authToken:  "relay-shared-secret",
-		httpClient: usage.srv.Client(),
+		httpClient: cp.srv.Client(),
 	})
 	meter.interval = 100 * time.Millisecond
+	return meter
+}
+
+// startAuthRelay stands up a relay that trusts signer's key statically and
+// reports usage to cp with a fast-ticking meter.
+func startAuthRelay(t *testing.T, signer appSigner, cp *stubControlPlane, peerCIDRs []netip.Prefix) (addr string, srv *Server, shutdown func()) {
+	t.Helper()
 	return startRelay(t, relayAuth{
-		verifier:  credential.NewVerifier(credential.StaticKeys{testKID: signer.pub}),
-		meter:     meter,
+		verifier:  credential.NewVerifier(credential.StaticKeys{signer.kid: signer.pub}),
+		meter:     newFastMeter(cp),
 		peerCIDRs: peerCIDRs,
 	})
+}
+
+// startManagedRelay stands up a relay that trusts cp's trust snapshot, loaded
+// once before returning. The returned poll re-fetches it on demand.
+func startManagedRelay(t *testing.T, cp *stubControlPlane) (addr string, srv *Server, poll func(), shutdown func()) {
+	t.Helper()
+	store := trust.NewStore()
+	poller := trust.NewPoller(cp.srv.URL, "relay-shared-secret", cp.srv.Client(), store)
+	poll = func() { require.NoError(t, poller.Poll(context.Background())) }
+	poll()
+	addr, srv, shutdown = startRelay(t, relayAuth{
+		verifier: credential.NewVerifier(store),
+		meter:    newFastMeter(cp),
+		trust:    store,
+	})
+	return addr, srv, poll, shutdown
 }
 
 // relayAuth is how a test relay authenticates publishers.
 type relayAuth struct {
 	verifier  *credential.Verifier
 	meter     *Meter
+	trust     *trust.Store
 	peerCIDRs []netip.Prefix
 }
 
@@ -171,6 +214,7 @@ func startRelay(t *testing.T, auth relayAuth) (addr string, srv *Server, shutdow
 			PeerCIDRs: auth.peerCIDRs,
 		},
 		verifier: auth.verifier,
+		trust:    auth.trust,
 		meter:    auth.meter,
 	}
 	// Register the WebTransport route after construction (httpMux is a pointer,
@@ -288,9 +332,9 @@ func TestServer_AuthenticateAnnouncement(t *testing.T) {
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			usage := newStubUsageBackend()
-			t.Cleanup(usage.Close)
-			addr, srv, shutdown := startAuthRelay(t, signer, usage, nil)
+			cp := newStubControlPlane()
+			t.Cleanup(cp.Close)
+			addr, srv, shutdown := startAuthRelay(t, signer, cp, nil)
 			t.Cleanup(shutdown)
 
 			_ = publishWithAuthTrack(t, addr, tc.path, tc.jwt, tc.serveAuthTrack)
@@ -299,15 +343,15 @@ func TestServer_AuthenticateAnnouncement(t *testing.T) {
 			if !tc.wantAccepted {
 				// assert.Never covers a window long enough that a delayed
 				// admission would have shown, without a bare time.Sleep.
-				assert.Never(t, func() bool { return routed() || len(usage.usage()) > 0 },
+				assert.Never(t, func() bool { return routed() || len(cp.usage()) > 0 },
 					1500*time.Millisecond, 25*time.Millisecond,
 					"a rejected announcement must be neither routed nor metered")
 				return
 			}
 			require.Eventually(t, routed, 3*time.Second, 25*time.Millisecond, "announcement should be routed")
-			require.Eventually(t, func() bool { return len(usage.usage()) > 0 },
+			require.Eventually(t, func() bool { return len(cp.usage()) > 0 },
 				3*time.Second, 25*time.Millisecond, "no usage events reported for an accepted announcement")
-			assert.Equal(t, testKID, usage.usage()[0].KeyID)
+			assert.Equal(t, signer.kid, cp.usage()[0].KeyID)
 		})
 	}
 }
@@ -337,9 +381,9 @@ func TestServer_NativeQUICPeerTrust(t *testing.T) {
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			usage := newStubUsageBackend()
-			t.Cleanup(usage.Close)
-			addr, srv, shutdown := startAuthRelay(t, signer, usage, tc.peerCIDRs)
+			cp := newStubControlPlane()
+			t.Cleanup(cp.Close)
+			addr, srv, shutdown := startAuthRelay(t, signer, cp, tc.peerCIDRs)
 			t.Cleanup(shutdown)
 
 			_ = publishNativeWithAuthTrack(t, addr, path, tc.jwt, tc.serveAuthTrack)
@@ -353,12 +397,110 @@ func TestServer_NativeQUICPeerTrust(t *testing.T) {
 			}
 			require.Eventually(t, routed, 3*time.Second, 25*time.Millisecond, "announcement should be routed")
 			if tc.wantMetered {
-				require.Eventually(t, func() bool { return len(usage.usage()) > 0 },
+				require.Eventually(t, func() bool { return len(cp.usage()) > 0 },
 					3*time.Second, 25*time.Millisecond, "an authenticated native session must be metered")
 			} else {
-				assert.Never(t, func() bool { return len(usage.usage()) > 0 },
+				assert.Never(t, func() bool { return len(cp.usage()) > 0 },
 					500*time.Millisecond, 25*time.Millisecond, "a trusted peer is not authenticated, so not metered")
 			}
+		})
+	}
+}
+
+// TestServer_TrustSnapshot covers a managed relay: a publisher is admitted
+// under an active key from the trust snapshot, and a later snapshot that
+// revokes or removes the key, or suspends the project, ends its session. A
+// retired key refuses new sessions but keeps the live one.
+func TestServer_TrustSnapshot(t *testing.T) {
+	const path = moqt.BroadcastPath("/tenant/project/live")
+	signer := newAppSigner(t)
+	admitted := trust.Snapshot{Keys: []trust.SnapshotKey{signer.snapshotKey("p1", "active")}}
+
+	cases := map[string]struct {
+		next      trust.Snapshot
+		wantEnded bool
+	}{
+		"key revoked": {
+			next:      trust.Snapshot{Keys: []trust.SnapshotKey{signer.snapshotKey("p1", "revoked")}},
+			wantEnded: true,
+		},
+		"key removed": {
+			next:      trust.Snapshot{},
+			wantEnded: true,
+		},
+		"project suspended": {
+			next: trust.Snapshot{
+				Keys:     []trust.SnapshotKey{signer.snapshotKey("p1", "active")},
+				Policies: []trust.Policy{{ProjectID: "p1", Suspended: true}},
+			},
+			wantEnded: true,
+		},
+		"key retired": {
+			next: trust.Snapshot{Keys: []trust.SnapshotKey{signer.snapshotKey("p1", "retired")}},
+		},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			cp := newStubControlPlane()
+			t.Cleanup(cp.Close)
+			cp.setSnapshot(admitted)
+			addr, srv, poll, shutdown := startManagedRelay(t, cp)
+			t.Cleanup(shutdown)
+
+			pub := publishWithAuthTrack(t, addr, path, signer.sign(t), true)
+			routed := func() bool { ann, _ := srv.TrackMux.TrackHandler(path); return ann != nil }
+			require.Eventually(t, routed, 3*time.Second, 25*time.Millisecond, "announcement should be admitted")
+
+			cp.setSnapshot(tc.next)
+			poll()
+
+			ended := func() bool { return pub.Context().Err() != nil }
+			if tc.wantEnded {
+				require.Eventually(t, ended, 3*time.Second, 25*time.Millisecond, "the publisher's session should be closed")
+				require.Eventually(t, func() bool { return !routed() }, 3*time.Second, 25*time.Millisecond,
+					"the route should be withdrawn")
+				return
+			}
+			assert.Never(t, ended, 1500*time.Millisecond, 25*time.Millisecond, "a retired key keeps its live session")
+			assert.True(t, routed())
+		})
+	}
+}
+
+// TestServer_TrustSnapshot_Admission covers what a managed relay refuses to
+// admit: a retired key, a suspended project, and a key not in the snapshot.
+func TestServer_TrustSnapshot_Admission(t *testing.T) {
+	const path = moqt.BroadcastPath("/tenant/project/live")
+	signer := newAppSigner(t)
+
+	cases := map[string]struct {
+		snapshot  trust.Snapshot
+		wantRoute bool
+	}{
+		"active key":  {snapshot: trust.Snapshot{Keys: []trust.SnapshotKey{signer.snapshotKey("p1", "active")}}, wantRoute: true},
+		"retired key": {snapshot: trust.Snapshot{Keys: []trust.SnapshotKey{signer.snapshotKey("p1", "retired")}}},
+		"unknown key": {snapshot: trust.Snapshot{}},
+		"suspended project": {snapshot: trust.Snapshot{
+			Keys:     []trust.SnapshotKey{signer.snapshotKey("p1", "active")},
+			Policies: []trust.Policy{{ProjectID: "p1", Suspended: true}},
+		}},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			cp := newStubControlPlane()
+			t.Cleanup(cp.Close)
+			cp.setSnapshot(tc.snapshot)
+			addr, srv, _, shutdown := startManagedRelay(t, cp)
+			t.Cleanup(shutdown)
+
+			_ = publishWithAuthTrack(t, addr, path, signer.sign(t), true)
+
+			routed := func() bool { ann, _ := srv.TrackMux.TrackHandler(path); return ann != nil }
+			if tc.wantRoute {
+				require.Eventually(t, routed, 3*time.Second, 25*time.Millisecond, "announcement should be admitted")
+				return
+			}
+			assert.Never(t, routed, 1500*time.Millisecond, 25*time.Millisecond, "announcement must not be admitted")
 		})
 	}
 }

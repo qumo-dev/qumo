@@ -236,6 +236,7 @@ func Run(args []string) error {
 		AllowedOrigins: cors.LoadAllowed(),
 		verifier:       credAuth.verifier,
 		meter:          credAuth.meter,
+		trust:          credAuth.trust,
 	}
 
 	httpMux.HandleFunc("/", relayServer.HandleWebTransport)
@@ -282,18 +283,21 @@ func Run(args []string) error {
 	if relayCfg.UpstreamAddr != "" {
 		log.Printf("\t%-8s: %s\n", "Upstream", sanitizeLog(relayCfg.UpstreamAddr))
 	}
-	if credAuth.enabled() {
-		log.Printf("\t%-8s: %s (signing keys: %d)\n", "Credentials", sanitizeLog(credAuth.keysFile), len(credAuth.keys))
+	if credAuth.keys != nil {
+		log.Printf("\t%-8s: %s (static signing keys: %d)\n", "Credentials", sanitizeLog(credAuth.keysFile), len(credAuth.keys))
 	}
-	if credAuth.usage != nil {
+	if credAuth.poller != nil {
+		log.Printf("\t%-8s: %s (trust snapshot every 30s)\n", "Credentials", sanitizeLog(credAuth.poller.URL()))
 		log.Printf("\t%-8s: %s (every 30s)\n", "Usage", sanitizeLog(credAuth.usage.baseURL))
 	}
 
 	// Start peer connections in background
 	go relayServer.ConnectPeers(ctx)
 
-	// Start usage meter if usage is reported.
-	if credAuth.meter != nil {
+	// Managed relay: keep the trust snapshot current (no session is admitted
+	// until the first one loads) and report usage.
+	if credAuth.poller != nil {
+		go credAuth.poller.Run(ctx)
 		go credAuth.meter.Run(ctx)
 	}
 

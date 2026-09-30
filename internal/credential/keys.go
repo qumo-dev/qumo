@@ -14,20 +14,47 @@ import (
 
 var errNoKeys = errors.New("keys: the key set lists no keys")
 
+// Key is a signing key a relay trusts.
+type Key struct {
+	// ID is the kid: the key's RFC 7638 thumbprint.
+	ID     string
+	Public ed25519.PublicKey
+	// ProjectID is the qumo project the key belongs to; empty for a key
+	// configured statically on the relay.
+	ProjectID string
+	// Prefix is the broadcast-path prefix the key may sign for; empty leaves
+	// it unconstrained.
+	Prefix string
+}
+
+// NewKey builds a Key from its base64url Ed25519 public key x. A non-empty kid
+// must equal the key's RFC 7638 thumbprint; an empty one is derived.
+func NewKey(kid, x string) (Key, error) {
+	pub, err := base64.RawURLEncoding.DecodeString(x)
+	if err != nil || len(pub) != ed25519.PublicKeySize {
+		return Key{}, errors.New("x is not a base64url Ed25519 public key")
+	}
+	want := thumbprint(x)
+	if kid != "" && kid != want {
+		return Key{}, fmt.Errorf("kid %q is not the key's RFC 7638 thumbprint %q", kid, want)
+	}
+	return Key{ID: want, Public: ed25519.PublicKey(pub)}, nil
+}
+
 // StaticKeys is a fixed key set by kid: the public keys a relay operator lists
 // in the relay's own configuration. It never changes while the relay runs.
 type StaticKeys map[string]ed25519.PublicKey
 
 var _ Keys = StaticKeys(nil)
 
-// Key returns the public key for kid. An unknown kid is refused, with no
-// lookup elsewhere.
-func (k StaticKeys) Key(_ context.Context, kid string) (ed25519.PublicKey, error) {
+// Key returns the key for kid. An unknown kid is refused, with no lookup
+// elsewhere.
+func (k StaticKeys) Key(_ context.Context, kid string) (Key, error) {
 	pub, ok := k[kid]
 	if !ok {
-		return nil, errUnknownKey
+		return Key{}, errUnknownKey
 	}
-	return pub, nil
+	return Key{ID: kid, Public: pub}, nil
 }
 
 // jwk is one Ed25519 public key in JWK form (RFC 8037).
@@ -70,15 +97,11 @@ func parseKeys(raw []byte) (StaticKeys, error) {
 		if k.Kty != "OKP" || k.Crv != "Ed25519" {
 			return nil, fmt.Errorf("keys: key %d: want kty OKP and crv Ed25519, got %q/%q", i, k.Kty, k.Crv)
 		}
-		x, err := base64.RawURLEncoding.DecodeString(k.X)
-		if err != nil || len(x) != ed25519.PublicKeySize {
-			return nil, fmt.Errorf("keys: key %d: x is not a base64url Ed25519 public key", i)
+		key, err := NewKey(k.Kid, k.X)
+		if err != nil {
+			return nil, fmt.Errorf("keys: key %d: %w", i, err)
 		}
-		kid := thumbprint(k.X)
-		if k.Kid != "" && k.Kid != kid {
-			return nil, fmt.Errorf("keys: key %d: kid %q is not the key's RFC 7638 thumbprint %q", i, k.Kid, kid)
-		}
-		keys[kid] = ed25519.PublicKey(x)
+		keys[key.ID] = key.Public
 	}
 	return keys, nil
 }

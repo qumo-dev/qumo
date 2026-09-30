@@ -41,9 +41,9 @@ var (
 	errPathNotCovered  = errors.New("credential: path not covered by the credential")
 )
 
-// Keys resolves a key id to its Ed25519 public key.
+// Keys resolves a key id to the trusted key.
 type Keys interface {
-	Key(ctx context.Context, kid string) (ed25519.PublicKey, error)
+	Key(ctx context.Context, kid string) (Key, error)
 }
 
 // Verifier checks relay credentials locally: signature by kid, time claims
@@ -83,47 +83,47 @@ type claims struct {
 }
 
 // VerifyPublish checks that token may announce broadcastPath and returns the
-// kid of the key that signed it.
-func (v *Verifier) VerifyPublish(ctx context.Context, token, broadcastPath string) (string, error) {
+// key that signed it.
+func (v *Verifier) VerifyPublish(ctx context.Context, token, broadcastPath string) (Key, error) {
 	parts := strings.Split(token, ".")
 	if len(parts) != 3 {
-		return "", errMalformed
+		return Key{}, errMalformed
 	}
 
 	var h header
 	if err := decodeSegment(parts[0], &h); err != nil {
-		return "", fmt.Errorf("%w: header: %w", errMalformed, err)
+		return Key{}, fmt.Errorf("%w: header: %w", errMalformed, err)
 	}
 	if h.Alg != "EdDSA" {
-		return "", errUnsupportedAlg
+		return Key{}, errUnsupportedAlg
 	}
 	if h.Kid == "" {
-		return "", fmt.Errorf("%w: no kid", errMalformed)
+		return Key{}, fmt.Errorf("%w: no kid", errMalformed)
 	}
 
 	sig, err := base64.RawURLEncoding.DecodeString(parts[2])
 	if err != nil || len(sig) != ed25519.SignatureSize {
-		return "", fmt.Errorf("%w: signature encoding", errMalformed)
+		return Key{}, fmt.Errorf("%w: signature encoding", errMalformed)
 	}
-	pub, err := v.keys.Key(ctx, h.Kid)
+	key, err := v.keys.Key(ctx, h.Kid)
 	if err != nil {
-		return "", err
+		return Key{}, err
 	}
-	if !ed25519.Verify(pub, []byte(parts[0]+"."+parts[1]), sig) {
-		return "", errBadSignature
+	if !ed25519.Verify(key.Public, []byte(parts[0]+"."+parts[1]), sig) {
+		return Key{}, errBadSignature
 	}
 
 	var c claims
 	if err := decodeSegment(parts[1], &c); err != nil {
-		return "", fmt.Errorf("%w: claims: %w", errMalformed, err)
+		return Key{}, fmt.Errorf("%w: claims: %w", errMalformed, err)
 	}
 	if err := v.checkClaims(&c); err != nil {
-		return "", err
+		return Key{}, err
 	}
 	if !c.PathAuth.coversPublish(broadcastPath) {
-		return "", errPathNotCovered
+		return Key{}, errPathNotCovered
 	}
-	return h.Kid, nil
+	return key, nil
 }
 
 func (v *Verifier) checkClaims(c *claims) error {

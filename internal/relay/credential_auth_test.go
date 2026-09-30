@@ -31,27 +31,33 @@ func TestNewCredentialAuth(t *testing.T) {
 	tests := map[string]struct {
 		keysFile     string // QUMO_SIGNING_KEYS_FILE
 		controlPlane string // QUMO_CREDENTIAL_URL
+		relayToken   bool   // QUMO_RELAY_TOKEN set
 		audience     string // QUMO_RELAY_AUDIENCE (removed)
 		issuer       string // QUMO_CREDENTIAL_ISSUER (removed)
 		wantErr      error
 		wantErrText  string
-		wantEnabled  bool
-		wantMeter    bool
+		wantStatic   bool
+		wantManaged  bool
 	}{
 		"nothing configured (open relay)": {},
-		"signing keys": {
-			keysFile:    keysFile,
-			wantEnabled: true,
+		"static keys (self-hosted)": {
+			keysFile:   keysFile,
+			wantStatic: true,
 		},
-		"signing keys and usage reporting": {
+		"control plane (managed)": {
+			controlPlane: controlPlane,
+			relayToken:   true,
+			wantManaged:  true,
+		},
+		"managed without the relay token": {
+			controlPlane: controlPlane,
+			wantErr:      errNoRelayToken,
+		},
+		"both trust sources": {
 			keysFile:     keysFile,
 			controlPlane: controlPlane,
-			wantEnabled:  true,
-			wantMeter:    true,
-		},
-		"usage reporting without keys would run open": {
-			controlPlane: controlPlane,
-			wantErr:      errUsageWithoutKeys,
+			relayToken:   true,
+			wantErr:      errBothTrustSources,
 		},
 		"unreadable keys file": {
 			keysFile:    filepath.Join(t.TempDir(), "absent.json"),
@@ -73,6 +79,10 @@ func TestNewCredentialAuth(t *testing.T) {
 			t.Setenv("QUMO_CREDENTIAL_URL", tt.controlPlane)
 			t.Setenv("QUMO_RELAY_AUDIENCE", tt.audience)
 			t.Setenv("QUMO_CREDENTIAL_ISSUER", tt.issuer)
+			t.Setenv("QUMO_RELAY_TOKEN", "")
+			if tt.relayToken {
+				t.Setenv("QUMO_RELAY_TOKEN", "x")
+			}
 
 			auth, err := newCredentialAuth()
 
@@ -85,9 +95,10 @@ func TestNewCredentialAuth(t *testing.T) {
 				return
 			}
 			require.NoError(t, err)
-			assert.Equal(t, tt.wantEnabled, auth.enabled())
-			assert.Equal(t, tt.wantMeter, auth.meter != nil)
-			assert.Equal(t, tt.wantMeter, auth.usage != nil)
+			assert.Equal(t, tt.wantStatic || tt.wantManaged, auth.enabled())
+			assert.Equal(t, tt.wantStatic, auth.keys != nil, "static keys")
+			assert.Equal(t, tt.wantManaged, auth.trust != nil && auth.poller != nil, "trust snapshot")
+			assert.Equal(t, tt.wantManaged, auth.meter != nil && auth.usage != nil, "usage reporting")
 		})
 	}
 }

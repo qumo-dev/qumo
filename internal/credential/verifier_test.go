@@ -101,14 +101,14 @@ func TestVerifier_VerifyPublish(t *testing.T) {
 	}
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
-			kid, err := newTestVerifier(signer).VerifyPublish(t.Context(), tt.token, tt.path)
+			key, err := newTestVerifier(signer).VerifyPublish(t.Context(), tt.token, tt.path)
 			if tt.wantErr != nil {
 				assert.ErrorIs(t, err, tt.wantErr)
-				assert.Empty(t, kid)
+				assert.Empty(t, key.ID)
 				return
 			}
 			require.NoError(t, err)
-			assert.Equal(t, testKID, kid)
+			assert.Equal(t, testKID, key.ID)
 		})
 	}
 }

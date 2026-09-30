@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log/slog"
 	"net/http"
 	"os"
 	"strings"
@@ -43,15 +42,9 @@ func newUsageClient() *usageClient {
 		return nil
 	}
 
-	authToken := os.Getenv("QUMO_RELAY_TOKEN")
-	if authToken == "" {
-		slog.Warn("QUMO_CREDENTIAL_URL is set but QUMO_RELAY_TOKEN is empty")
-	}
-
-	slog.Info("usage client configured", "url", baseURL)
 	return &usageClient{
 		baseURL:   baseURL,
-		authToken: authToken,
+		authToken: os.Getenv("QUMO_RELAY_TOKEN"),
 		// Uses http.DefaultTransport which trusts the system CA pool.
 		httpClient: &http.Client{
 			Timeout: 10 * time.Second,

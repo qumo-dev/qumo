@@ -103,9 +103,21 @@ relay's HTTP port.
 
 | Variable | Default | Description |
 |---|---|---|
-| `QUMO_SIGNING_KEYS_FILE` | (unset) | Path to a JWK Set of the Ed25519 public keys whose credentials the relay admits: the app signing keys registered with qumo. When set, every publisher announcement must carry a credential signed by one of them. A key's `kid` may be omitted; the relay derives it as the key's RFC 7638 thumbprint, the same `kid` qumo assigns, and refuses a file whose `kid` differs. The file is read once at start. Leave unset for open-relay mode. |
-| `QUMO_CREDENTIAL_URL` | (unset) | Base URL of the qumo control plane. When set, the relay reports cumulative ingress/egress byte totals per admitted publisher via `POST /v1/usage/events`, keyed by the signing key's `kid`. Requires `QUMO_SIGNING_KEYS_FILE`. |
-| `QUMO_RELAY_TOKEN` | (unset) | Shared bearer token the relay presents to the control plane with usage reports. Must match the server's configured token. |
+A relay trusts signing keys from exactly one source, or runs open:
+
+| Variable | Default | Description |
+|---|---|---|
+| `QUMO_SIGNING_KEYS_FILE` | (unset) | **Self-hosted relay.** Path to a JWK Set of the Ed25519 public keys whose credentials the relay admits: the app signing keys registered with qumo. Every publisher announcement must carry a credential signed by one of them. A key's `kid` may be omitted; the relay derives it as the key's RFC 7638 thumbprint, the same `kid` qumo assigns, and refuses a file whose `kid` differs. The file is read once at start; the relay never calls qumo. |
+| `QUMO_CREDENTIAL_URL` | (unset) | **Managed relay.** Base URL of the qumo control plane. The relay polls the trust snapshot (`GET /v1/relays/trust`) every 30 s and reports cumulative ingress/egress byte totals per admitted publisher via `POST /v1/usage/events`, keyed by the signing key's `kid`. Cannot be combined with `QUMO_SIGNING_KEYS_FILE`. |
+| `QUMO_RELAY_TOKEN` | (unset) | Bearer token the relay presents to the control plane. Required with `QUMO_CREDENTIAL_URL`. |
+
+Setting neither leaves the relay open.
+
+On a managed relay:
+- **No session is admitted until the first snapshot loads.** Only `active` keys admit new sessions, and only while their project isn't suspended.
+- **Snapshot changes apply to live sessions within one poll.** A publisher whose key is revoked or removed, or whose project is suspended, has its session closed with MoQ error code `0x2` (Unauthorized) and the reason `key_revoked` or `project_suspended`. A `retired` key admits no new sessions, but its live sessions continue.
+- **Fail-static:** if polls fail, the last snapshot keeps answering. After 6 h without a successful poll, new sessions are refused; live sessions continue.
+- **Metrics:** `qumo_relay_trust_last_success_seconds` (Unix time of the last successful poll), `qumo_relay_trust_poll_failures_total`, `qumo_relay_trust_keys`, `qumo_relay_sessions_ended_total{reason}`.
 
 Credentials are app-signed (qumo-deploy ADR 0035) and verified entirely on the relay: an unknown `kid` is refused, then the `EdDSA` signature, `exp` and `iat` (required) and `nbf` (60 s leeway), a lifetime (`exp` − `iat`) of at most one hour, and that `path_auth` covers the announced path. Other claims are ignored.
 

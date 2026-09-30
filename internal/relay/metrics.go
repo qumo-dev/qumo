@@ -316,4 +316,16 @@ var (
 		},
 		[]string{"code"},
 	)
+
+	// metricSessionsEnded counts sessions the relay ended for a credential
+	// reason (key_revoked, project_suspended).
+	metricSessionsEnded = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Namespace: "qumo",
+			Subsystem: "relay",
+			Name:      "sessions_ended_total",
+			Help:      "Total number of client sessions the relay ended for a credential reason, by reason.",
+		},
+		[]string{"reason"},
+	)
 )

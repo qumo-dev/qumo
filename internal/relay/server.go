@@ -16,6 +16,7 @@ import (
 	"github.com/qumo-dev/gomoqt/moqt"
 	"github.com/qumo-dev/qumo/internal/cors"
 	"github.com/qumo-dev/qumo/internal/credential"
+	"github.com/qumo-dev/qumo/internal/trust"
 )
 
 // authTrackName is the well-known MoQ track name on which publishers send
@@ -46,6 +47,11 @@ type Server struct {
 	// meter drives periodic and final usage reporting for admitted
 	// publishers. nil when usage is not reported.
 	meter *Meter
+	// trust is the managed relay's trust snapshot; nil on a relay with static
+	// keys. When set, admitted sessions are ended once the snapshot no longer
+	// allows them (see enforceTrust).
+	trust    *trust.Store
+	admitted admissions
 
 	// framePool recycles frame buffers for track distributors and the auth
 	// track read; sized from Config.FrameCapacity in init() (falling back to
@@ -128,6 +134,9 @@ func (s *Server) init() {
 		s.statusHandler.server = s
 		if s.pathStatus == nil {
 			s.pathStatus = make(map[moqt.BroadcastPath]overlayPathStatus)
+		}
+		if s.trust != nil {
+			s.trust.OnChange(s.enforceTrust)
 		}
 
 		// Wire relay-specific fields into the caller-provided MoQServer.
@@ -543,7 +552,7 @@ func (s *Server) serveSession(sess *moqt.Session, requireAuth bool) {
 		// Authenticate publisher announcements when the credential client is configured.
 		var broadSess *broadcastSession
 		if requireAuth && s.verifier != nil {
-			broadSess, err = s.authenticateAnnouncement(sess.Context(), sess, ann)
+			key, err := s.authenticateAnnouncement(sess.Context(), sess, ann)
 			if err != nil {
 				// MoQ has no per-announcement error response, so the publisher
 				// receives no explicit rejection — the ANNOUNCE is simply not
@@ -552,6 +561,12 @@ func (s *Server) serveSession(sess *moqt.Session, requireAuth bool) {
 					"broadcast_path", ann.BroadcastPath(),
 					"error", err)
 				continue
+			}
+			if s.meter != nil {
+				broadSess = newBroadcastSession(key.ID)
+			}
+			if s.trust != nil {
+				s.admitted.add(&admission{sess: sess, key: key}, ann)
 			}
 		}
 
@@ -841,21 +856,20 @@ func handlePeerGoaway(newSessionURI string) {
 // frame whose payload is the raw JWT bytes (no framing). The relay expects the
 // complete JWT to arrive within the 5-second authCtx deadline.
 //
-// Returns the minted broadcastSession on success, or an error if authentication
-// fails (missing track, empty JWT, or invalid/expired credential). When usage
-// is not reported, a success returns a nil session: nothing is metered.
-func (s *Server) authenticateAnnouncement(ctx context.Context, sess *moqt.Session, ann *moqt.Announcement) (*broadcastSession, error) {
+// Returns the key that signed the credential, or an error if authentication
+// fails (missing track, empty JWT, or invalid/expired credential).
+func (s *Server) authenticateAnnouncement(ctx context.Context, sess *moqt.Session, ann *moqt.Announcement) (credential.Key, error) {
 	authCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
 	reader, err := sess.Subscribe(authCtx, ann.BroadcastPath(), authTrackName, nil)
 	if err != nil {
-		return nil, fmt.Errorf("subscribe auth track: %w", err)
+		return credential.Key{}, fmt.Errorf("subscribe auth track: %w", err)
 	}
 
 	gr, err := reader.AcceptGroup(authCtx)
 	if err != nil {
-		return nil, fmt.Errorf("accept auth group: %w", err)
+		return credential.Key{}, fmt.Errorf("accept auth group: %w", err)
 	}
 
 	buf := s.framePool.Get()
@@ -866,17 +880,13 @@ func (s *Server) authenticateAnnouncement(ctx context.Context, sess *moqt.Sessio
 		jwtBuf.Write(frame.Body())
 	}
 	if jwtBuf.Len() == 0 {
-		return nil, fmt.Errorf("auth track: empty JWT")
+		return credential.Key{}, fmt.Errorf("auth track: empty JWT")
 	}
 	jwt := jwtBuf.String()
 
-	kid, err := s.verifier.VerifyPublish(authCtx, jwt, ann.BroadcastPath().String())
+	key, err := s.verifier.VerifyPublish(authCtx, jwt, ann.BroadcastPath().String())
 	if err != nil {
-		return nil, fmt.Errorf("verify credential: %w", err)
+		return credential.Key{}, fmt.Errorf("verify credential: %w", err)
 	}
-	if s.meter == nil {
-		return nil, nil
-	}
-
-	return newBroadcastSession(kid), nil
+	return key, nil
 }
