@@ -52,8 +52,6 @@ type Server struct {
 	// admitted holds every session admitted under a credential, publishers
 	// and subscribers, for expiry, refresh and trust enforcement (see admit).
 	admitted admissions
-	// sessionStates maps each served session to its *sessionState.
-	sessionStates sync.Map
 	// credentialExpiryLeeway and credentialRefreshInterval override the
 	// defaults (60 s past exp; one refresh per 10 s) when positive; tests
 	// shorten them.
@@ -180,7 +178,7 @@ func (s *Server) init() {
 			}
 			// Decided per connection, before any stream is served: a
 			// SUBSCRIBE can arrive before the session handler runs.
-			return context.WithValue(ctx, connAuthKey{}, s.newConnAuth(conn))
+			return context.WithValue(ctx, connStateKey{}, s.newConnState(conn))
 		}
 
 		// Resolve the per-node frame pool from Config.FrameCapacity. A caller
@@ -527,8 +525,6 @@ func (s *Server) serveSession(sess *moqt.Session, requireAuth bool) {
 
 	metricSessionsActive.Inc()
 	defer metricSessionsActive.Dec()
-	s.stateOf(sess)
-	defer s.sessionStates.Delete(sess)
 
 	addr := sess.RemoteAddr().String()
 	s.sampler.addSession(addr, sess)

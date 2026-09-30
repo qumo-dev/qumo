@@ -398,10 +398,14 @@ func (s *Server) endSession(ad *admission, reason string) {
 	_ = ad.sess.CloseWithError(moqt.UnauthorizedSessionErrorCode, reason)
 }
 
-// stateOf returns the relay's state for sess.
+// stateOf returns the relay's state for sess, kept with its connection. A
+// session that did not come through the relay's ConnContext hook gets a state
+// of its own.
 func (s *Server) stateOf(sess *moqt.Session) *sessionState {
-	v, _ := s.sessionStates.LoadOrStore(sess, &sessionState{})
-	return v.(*sessionState)
+	if cs, ok := connStateFrom(sess.Context()); ok {
+		return &cs.session
+	}
+	return &sessionState{}
 }
 
 // sessionEvent reports ad's session opening or closing, when usage is
