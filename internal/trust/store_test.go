@@ -136,7 +136,9 @@ func TestStore_ReplaceSkipsUnusableKeys(t *testing.T) {
 		good.entry("p1", stateActive),
 		{ID: other.kid, X: "not-a-key", ProjectID: "p1", State: stateActive},
 		{ID: "not-the-thumbprint", X: other.x, ProjectID: "p1", State: stateActive},
-		{ID: other.kid, X: other.x, ProjectID: "p1", State: "paused"},
+		{ID: other.kid, X: other.x, ProjectID: "p1", Prefix: "p1/live", State: "paused"},
+		{ID: other.kid, X: other.x, ProjectID: "p1", Prefix: "", State: stateActive},
+		{ID: other.kid, X: other.x, ProjectID: "p1", Prefix: "/", State: stateActive},
 	}})
 
 	_, err := s.Key(t.Context(), good.kid)

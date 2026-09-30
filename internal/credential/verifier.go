@@ -39,6 +39,7 @@ var (
 	errNotYetValid     = errors.New("credential: not yet valid")
 	errLifetimeTooLong = errors.New("credential: lifetime exceeds the cap")
 	errPathNotCovered  = errors.New("credential: path not covered by the credential")
+	errOutsidePrefix   = errors.New("credential: grant outside the signing key's prefix")
 )
 
 // Keys resolves a key id to the trusted key.
@@ -120,6 +121,9 @@ func (v *Verifier) VerifyPublish(ctx context.Context, token, broadcastPath strin
 	if err := v.checkClaims(&c); err != nil {
 		return Key{}, err
 	}
+	if err := c.PathAuth.within(key.Prefix); err != nil {
+		return Key{}, err
+	}
 	if !c.PathAuth.coversPublish(broadcastPath) {
 		return Key{}, errPathNotCovered
 	}
@@ -147,26 +151,64 @@ func (v *Verifier) checkClaims(c *claims) error {
 	return nil
 }
 
+// within checks the credential's grants against its key's prefix (ADR 0035,
+// check 4): every granted path, root+pub and root+sub, must equal the prefix
+// or lie beneath it at a segment boundary. This is what stops a registered key
+// from signing for another tenant's paths. An empty prefix leaves the key
+// unconstrained (a statically configured key). A grant with a "." or ".."
+// segment is refused outright rather than interpreted.
+func (p *pathAuth) within(prefix string) error {
+	if p == nil {
+		return nil
+	}
+	for _, grant := range []*string{p.Pub, p.Sub} {
+		if grant == nil {
+			continue
+		}
+		if hasDotSegment(p.Root) || hasDotSegment(*grant) {
+			return fmt.Errorf("%w: dot segment in path_auth", errMalformed)
+		}
+		if prefix == "" {
+			continue
+		}
+		if !beneath(p.scope(*grant), normalizePath(prefix)) {
+			return errOutsidePrefix
+		}
+	}
+	return nil
+}
+
 // coversPublish reports whether the grant may announce broadcastPath: the
-// path must equal root+pub or lie beneath it at a segment boundary. It
-// matches qumo-deploy's CredentialClaims.coversPublish exactly, so the relay
-// and the SDK signing helpers never disagree on a path.
+// path must equal root+pub or lie beneath it at a segment boundary.
 func (p *pathAuth) coversPublish(broadcastPath string) bool {
 	if p == nil || p.Pub == nil {
 		return false
 	}
-	path := normalizePath(broadcastPath)
-	if path == "" {
-		return false
-	}
-	scope := normalizePath(p.Root)
-	if pub := normalizePath(*p.Pub); pub != "" {
-		scope += "/" + pub
-	}
-	if scope == "" {
+	return beneath(normalizePath(broadcastPath), p.scope(*p.Pub))
+}
+
+// scope is the path a grant covers: root joined with the grant, normalized.
+func (p *pathAuth) scope(grant string) string {
+	return normalizePath(p.Root + "/" + grant)
+}
+
+// beneath reports whether path equals scope or lies beneath it at a segment
+// boundary. An empty path or scope never matches.
+func beneath(path, scope string) bool {
+	if path == "" || scope == "" {
 		return false
 	}
 	return path == scope || strings.HasPrefix(path, scope+"/")
+}
+
+// hasDotSegment reports whether p has a "." or ".." segment.
+func hasDotSegment(p string) bool {
+	for _, seg := range strings.Split(p, "/") {
+		if seg == "." || seg == ".." {
+			return true
+		}
+	}
+	return false
 }
 
 // normalizePath trims surrounding slashes and collapses repeated ones, so

@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -153,8 +154,8 @@ func (s *Store) OnChange(fn func()) {
 }
 
 // replace swaps in snap atomically and notifies listeners. A key that cannot
-// be used (bad x, kid not its thumbprint, unknown state) is skipped and
-// logged: one bad entry must not take down admission for every project.
+// be used (bad x, kid not its thumbprint, unknown state, no prefix) is skipped
+// and logged: one bad entry must not take down admission for every project.
 func (s *Store) replace(snap Snapshot) {
 	st := &state{
 		keys:     make(map[string]entry, len(snap.Keys)),
@@ -165,6 +166,12 @@ func (s *Store) replace(snap Snapshot) {
 		case stateActive, stateRetired, stateRevoked:
 		default:
 			slog.Warn("trust: skipping key with unknown state", "kid", k.ID, "state", k.State)
+			continue
+		}
+		// An empty prefix would leave the key unconstrained, able to sign for
+		// every tenant. A managed key is always confined to its project.
+		if strings.Trim(k.Prefix, "/") == "" {
+			slog.Warn("trust: skipping key without a prefix", "kid", k.ID, "project_id", k.ProjectID)
 			continue
 		}
 		key, err := credential.NewKey(k.ID, k.X)

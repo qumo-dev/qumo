@@ -484,6 +484,11 @@ func TestServer_TrustSnapshot_Admission(t *testing.T) {
 			Keys:     []trust.SnapshotKey{signer.snapshotKey("p1", "active")},
 			Policies: []trust.Policy{{ProjectID: "p1", Suspended: true}},
 		}},
+		// The credential grants tenant/project/live, but the key is registered
+		// for another project: prefix confinement refuses it.
+		"key confined to another project": {snapshot: trust.Snapshot{Keys: []trust.SnapshotKey{
+			{ID: signer.kid, X: signer.x, ProjectID: "p2", Prefix: "attacker/project", State: "active"},
+		}}},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
