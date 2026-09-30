@@ -12,14 +12,26 @@ import (
 	"time"
 )
 
-// UsageEvent is a single cumulative usage record for a broadcast session.
-// All byte values are totals since session start; the server diffs consecutive reports.
+// UsageEvent is one record reported to the control plane: a cumulative usage
+// snapshot of a publisher's broadcast (type "usage"), or a session opening or
+// closing (types "session_open", "session_close"). Byte values are totals
+// since the session started; the server diffs consecutive reports. The
+// control plane counts live sessions per project from the open and close
+// events.
 type UsageEvent struct {
-	BroadcastSessionID string `json:"broadcast_session_id"`
-	// KeyID is the kid of the signing key that admitted the session.
-	KeyID   string           `json:"kid"`
-	Metrics map[string]int64 `json:"metrics"`
-	Ts      string           `json:"ts"` // RFC3339
+	Type      string `json:"type"`
+	SessionID string `json:"session_id"`
+	// Role is "publisher" or "subscriber".
+	Role string `json:"role"`
+	// KeyID is the kid of the session's current credential; it can change at
+	// a refresh. ProjectID is the key's project, which cannot.
+	KeyID     string           `json:"kid"`
+	ProjectID string           `json:"project_id,omitempty"`
+	Metrics   map[string]int64 `json:"metrics,omitempty"`
+	// Reason is why a session closed: closed, credential_expired,
+	// key_revoked or project_suspended.
+	Reason string `json:"reason,omitempty"`
+	Ts     string `json:"ts"` // RFC3339
 }
 
 // usageClient reports session usage to the qumo control plane.

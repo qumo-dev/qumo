@@ -81,8 +81,8 @@ func TestUsageClient_ReportUsage_SendsCorrectPayload(t *testing.T) {
 
 	events := []UsageEvent{
 		{
-			BroadcastSessionID: "sess-abc",
-			KeyID:              "kid-1",
+			SessionID: "sess-abc",
+			KeyID:     "kid-1",
 			Metrics: map[string]int64{
 				"gateway.ingress_bytes": 1024,
 				"gateway.egress_bytes":  4096,
@@ -99,7 +99,7 @@ func TestUsageClient_ReportUsage_SendsCorrectPayload(t *testing.T) {
 	assert.Equal(t, "Bearer test-token", gotAuth)
 	assert.Equal(t, "application/json", gotCT)
 	require.Len(t, gotEvents, 1)
-	assert.Equal(t, "sess-abc", gotEvents[0].BroadcastSessionID)
+	assert.Equal(t, "sess-abc", gotEvents[0].SessionID)
 	assert.Equal(t, "kid-1", gotEvents[0].KeyID)
 	assert.Equal(t, int64(1024), gotEvents[0].Metrics["gateway.ingress_bytes"])
 	assert.Equal(t, int64(4096), gotEvents[0].Metrics["gateway.egress_bytes"])
@@ -129,7 +129,7 @@ func TestUsageClient_ReportUsage_NonOKStatus(t *testing.T) {
 			}))
 			defer srv.Close()
 
-			err := newTestUsageClient(srv).ReportUsage(context.Background(), []UsageEvent{{BroadcastSessionID: "x"}})
+			err := newTestUsageClient(srv).ReportUsage(context.Background(), []UsageEvent{{SessionID: "x"}})
 			require.Error(t, err)
 			assert.Contains(t, err.Error(), "usage:")
 		})
@@ -145,6 +145,6 @@ func TestUsageClient_ReportUsage_ContextCancelled(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	err := newTestUsageClient(srv).ReportUsage(ctx, []UsageEvent{{BroadcastSessionID: "x"}})
+	err := newTestUsageClient(srv).ReportUsage(ctx, []UsageEvent{{SessionID: "x"}})
 	require.Error(t, err)
 }

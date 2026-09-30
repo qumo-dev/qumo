@@ -55,6 +55,8 @@ type Server struct {
 	// gates maps each untrusted session to its subscription authorization
 	// (*subscriberGate); trusted peers have none. See authorizeSubscribe.
 	gates sync.Map
+	// sessionStates maps each served session to its *sessionState.
+	sessionStates sync.Map
 	// credentialExpiryLeeway and credentialRefreshInterval override the
 	// defaults (60 s past exp; one refresh per 10 s) when positive; tests
 	// shorten them.
@@ -526,6 +528,8 @@ func (s *Server) serveSession(sess *moqt.Session, requireAuth bool) {
 
 	metricSessionsActive.Inc()
 	defer metricSessionsActive.Dec()
+	s.stateOf(sess)
+	defer s.sessionStates.Delete(sess)
 
 	// An untrusted session's subscriptions need a session credential.
 	if requireAuth && s.verifier != nil {
@@ -587,10 +591,7 @@ func (s *Server) serveSession(sess *moqt.Session, requireAuth bool) {
 					"error", err)
 				continue
 			}
-			if s.meter != nil {
-				broadSess = newBroadcastSession(cred.Key.ID)
-			}
-			s.admit(sess, ann, cred, reader)
+			broadSess = s.admit(sess, ann, cred, reader)
 		}
 
 		handler := newRelayHandler(ann, sess, s.Config.NodeID, broadSess,

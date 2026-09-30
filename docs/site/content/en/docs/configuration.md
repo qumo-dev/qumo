@@ -117,6 +117,12 @@ On a managed relay:
 - **No session is admitted until the first snapshot loads.** Only `active` keys admit new sessions, and only while their project isn't suspended.
 - **Snapshot changes apply to live sessions within one poll.** A publisher whose key is revoked or removed, or whose project is suspended, has its session closed with MoQ error code `0x2` (Unauthorized) and the reason `key_revoked` or `project_suspended`. A `retired` key admits no new sessions, but its live sessions continue.
 - **Fail-static:** if polls fail, the last snapshot keeps answering. After 6 h without a successful poll, new sessions are refused; live sessions continue.
+- **Usage and session events** go to `POST /v1/usage/events` every 30 s, as a JSON array of `{type, session_id, role, kid, project_id, metrics?, reason?, ts}`:
+  - **`usage`:** a publisher broadcast's cumulative `gateway.ingress_bytes` and `gateway.egress_bytes`. Egress to subscribers is counted on the publisher's broadcast; prefix confinement makes a subscriber's project the path's project.
+  - **`session_open` / `session_close`:** one pair per admitted publisher broadcast and per subscriber session credential. The control plane counts live sessions per project from these.
+  - **`reason`** (on close): `closed`, `credential_expired`, `key_revoked` or `project_suspended`.
+  - **`kid`** is the session's current key, which can change at a refresh. **`project_id`** can't.
+  - Session events that fail to send are retried with the next report; at most 10,000 are queued.
 - **Metrics:** `qumo_relay_trust_last_success_seconds` (Unix time of the last successful poll), `qumo_relay_trust_poll_failures_total`, `qumo_relay_trust_keys`, `qumo_relay_sessions_ended_total{reason}`.
 
 Credentials are app-signed (qumo-deploy ADR 0035) and verified entirely on the relay: an unknown `kid` is refused, then the `EdDSA` signature, `exp` and `iat` (required) and `nbf` (60 s leeway), a lifetime (`exp` − `iat`) of at most one hour, **prefix confinement** (every path `path_auth` grants, `root`+`pub` and `root`+`sub`, lies within the signing key's prefix at a `/` boundary; `.` and `..` segments are refused), and that `path_auth` covers the announced path. Other claims are ignored. On a managed relay every key carries its project's prefix, so a key can never sign for another tenant; the trust snapshot's keys without a prefix are ignored. Statically configured keys have no prefix.

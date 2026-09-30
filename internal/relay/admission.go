@@ -5,7 +5,9 @@ import (
 	"errors"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"time"
+	"uuid"
 
 	"github.com/qumo-dev/gomoqt/moqt"
 	"github.com/qumo-dev/qumo/internal/credential"
@@ -51,11 +53,16 @@ type authTrack struct {
 // credential's expiry unless a refresh on the auth track moves that; on a
 // managed relay the trust snapshot can end it sooner.
 type admission struct {
-	sess *moqt.Session
+	id    uuid.UUID
+	sess  *moqt.Session
+	state *sessionState
 	// path is the announced broadcast path for a publisher, and the session
 	// auth path for a subscriber.
 	path       string
 	subscriber bool
+	// usage meters a publisher's broadcast; nil for a subscriber, and when
+	// usage is not reported.
+	usage *broadcastSession
 
 	mu       sync.Mutex
 	cred     credential.Credential
@@ -65,6 +72,34 @@ type admission struct {
 	// shares mu with cred, so a narrowing refresh and a new SUBSCRIBE cannot
 	// pass each other.
 	open map[string]int
+}
+
+// role is the session role reported with its events.
+func (ad *admission) role() string {
+	if ad.subscriber {
+		return roleSubscriber
+	}
+	return rolePublisher
+}
+
+// sessionState is what the relay records per served session, shared by all
+// of the session's admissions.
+type sessionState struct {
+	endReason atomic.Pointer[string]
+}
+
+// ended records why the relay ended the session; the first reason wins.
+func (st *sessionState) ended(reason string) {
+	st.endReason.CompareAndSwap(nil, &reason)
+}
+
+// reason is why the session closed: the reason the relay ended it for, or
+// reasonClosed.
+func (st *sessionState) reason() string {
+	if p := st.endReason.Load(); p != nil {
+		return *p
+	}
+	return reasonClosed
 }
 
 // coversLocked reports whether c covers everything the session is live on:
@@ -142,9 +177,16 @@ func (a *admissions) list() []*admission {
 
 // admit registers a publisher admitted under cred, arms its expiry, and
 // reads refreshed credentials from reader, the announcement's auth track,
-// until the announcement or the session ends.
-func (s *Server) admit(sess *moqt.Session, ann *moqt.Announcement, cred credential.Credential, auth *authTrack) {
-	s.track(&admission{sess: sess, path: ann.BroadcastPath().String(), cred: cred}, ann, auth)
+// until the announcement or the session ends. It returns the broadcast's
+// usage session, nil when usage is not reported.
+func (s *Server) admit(sess *moqt.Session, ann *moqt.Announcement, cred credential.Credential, auth *authTrack) *broadcastSession {
+	ad := &admission{sess: sess, path: ann.BroadcastPath().String(), cred: cred}
+	if s.meter != nil {
+		ad.usage = newBroadcastSession(cred.Key.ID)
+		ad.usage.projectID = cred.Key.ProjectID
+	}
+	s.track(ad, ann, auth)
+	return ad.usage
 }
 
 // admitSubscriber registers a session credential for sess's subscriptions,
@@ -159,11 +201,18 @@ func (s *Server) admitSubscriber(sess *moqt.Session, ann *moqt.Announcement, cre
 // refreshed credentials from reader until ann or the session ends.
 func (s *Server) track(ad *admission, ann *moqt.Announcement, auth *authTrack) {
 	sess, cred := ad.sess, ad.cred
+	ad.state = s.stateOf(sess)
+	if ad.usage != nil {
+		ad.id = ad.usage.id
+	} else {
+		ad.id = uuid.NewV4()
+	}
 	ad.deadline = cred.ExpiresAt.Add(s.expiryLeeway())
 	ad.mu.Lock()
 	ad.timer = time.AfterFunc(time.Until(ad.deadline), func() { s.expire(ad) })
 	ad.mu.Unlock()
 	s.admitted.add(ad)
+	s.sessionEvent(ad, eventSessionOpen)
 
 	ctx, cancel := context.WithCancel(sess.Context())
 	ann.AfterFunc(cancel)
@@ -172,6 +221,7 @@ func (s *Server) track(ad *admission, ann *moqt.Announcement, auth *authTrack) {
 		ad.mu.Lock()
 		ad.timer.Stop()
 		ad.mu.Unlock()
+		s.sessionEvent(ad, eventSessionClose)
 	})
 	go s.readRefreshes(ctx, ad, auth)
 }
@@ -187,7 +237,7 @@ func (s *Server) expire(ad *admission) {
 	}
 	kid := ad.cred.Key.ID
 	ad.mu.Unlock()
-	endSession(ad.sess, reasonExpired)
+	s.endSession(ad, reasonExpired)
 	slog.Info("relay: ended session at credential expiry", "kid", kid, "broadcast_path", ad.path, "remote", ad.sess.RemoteAddr())
 }
 
@@ -253,6 +303,9 @@ func (s *Server) refresh(ctx context.Context, ad *admission, token string) {
 		s.refreshedLocked(ad, refreshUncoveredPath, nil)
 	default:
 		ad.cred = next
+		if ad.usage != nil {
+			ad.usage.setKey(next.Key.ID)
+		}
 		ad.deadline = next.ExpiresAt.Add(s.expiryLeeway())
 		ad.timer.Reset(time.Until(ad.deadline))
 		s.refreshedLocked(ad, refreshAccepted, nil)
@@ -309,18 +362,47 @@ func (s *Server) enforceTrust() {
 			continue
 		}
 		ended[ad.sess] = struct{}{}
-		endSession(ad.sess, reason)
+		s.endSession(ad, reason)
 		slog.Info("relay: ended session by trust snapshot",
 			"reason", reason, "kid", key.ID, "project_id", key.ProjectID, "remote", ad.sess.RemoteAddr())
 	}
 }
 
-// endSession closes sess with the Unauthorized code and reason as the phrase,
-// which clients read to tell why (credential_expired, key_revoked,
-// project_suspended).
-func endSession(sess *moqt.Session, reason string) {
+// endSession closes ad's session with the Unauthorized code and reason as the
+// phrase, which clients read to tell why (credential_expired, key_revoked,
+// project_suspended). The reason is also reported with each of the session's
+// close events.
+func (s *Server) endSession(ad *admission, reason string) {
+	ad.state.ended(reason)
 	metricSessionsEnded.WithLabelValues(reason).Inc()
-	_ = sess.CloseWithError(moqt.UnauthorizedSessionErrorCode, reason)
+	_ = ad.sess.CloseWithError(moqt.UnauthorizedSessionErrorCode, reason)
+}
+
+// stateOf returns the relay's state for sess.
+func (s *Server) stateOf(sess *moqt.Session) *sessionState {
+	v, _ := s.sessionStates.LoadOrStore(sess, &sessionState{})
+	return v.(*sessionState)
+}
+
+// sessionEvent reports ad's session opening or closing, when usage is
+// reported.
+func (s *Server) sessionEvent(ad *admission, eventType string) {
+	if s.meter == nil {
+		return
+	}
+	key := ad.key()
+	ev := UsageEvent{
+		Type:      eventType,
+		SessionID: ad.id.String(),
+		Role:      ad.role(),
+		KeyID:     key.ID,
+		ProjectID: key.ProjectID,
+		Ts:        time.Now().UTC().Format(time.RFC3339),
+	}
+	if eventType == eventSessionClose {
+		ev.Reason = ad.state.reason()
+	}
+	s.meter.enqueue(ev)
 }
 
 func (s *Server) expiryLeeway() time.Duration {

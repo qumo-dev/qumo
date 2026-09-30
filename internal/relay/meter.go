@@ -9,12 +9,33 @@ import (
 	"uuid"
 )
 
+// Session roles and event types reported to the control plane
+// (POST /v1/usage/events; qumo-deploy ADR 0035).
+const (
+	rolePublisher  = "publisher"
+	roleSubscriber = "subscriber"
+
+	eventUsage        = "usage"
+	eventSessionOpen  = "session_open"
+	eventSessionClose = "session_close"
+
+	// reasonClosed is the close reason of a session nothing forced to end.
+	reasonClosed = "closed"
+
+	// maxPendingEvents bounds session events queued between reports; the
+	// oldest are dropped past it.
+	maxPendingEvents = 10_000
+)
+
 // broadcastSession tracks cumulative ingress and egress bytes for a single
 // announced broadcast path. It is minted at ANNOUNCE time and lives until
 // the publisher session ends.
 type broadcastSession struct {
-	id    uuid.UUID // UUID v4, minted at ANNOUNCE
-	keyID string    // kid of the signing key that admitted the publisher
+	id        uuid.UUID // UUID v4, minted at ANNOUNCE
+	projectID string    // the admitting key's project; empty for a static key
+
+	mu    sync.Mutex
+	keyID string // kid of the publisher's current credential
 
 	ingressBytes atomic.Int64
 	egressBytes  atomic.Int64
@@ -27,13 +48,26 @@ func newBroadcastSession(keyID string) *broadcastSession {
 	}
 }
 
+// setKey records the kid of a refreshed credential.
+func (s *broadcastSession) setKey(keyID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.keyID = keyID
+}
+
 func (s *broadcastSession) addIngress(n int64) { s.ingressBytes.Add(n) }
 func (s *broadcastSession) addEgress(n int64)  { s.egressBytes.Add(n) }
 
 func (s *broadcastSession) toEvent() UsageEvent {
+	s.mu.Lock()
+	keyID := s.keyID
+	s.mu.Unlock()
 	return UsageEvent{
-		BroadcastSessionID: s.id.String(),
-		KeyID:              s.keyID,
+		Type:      eventUsage,
+		SessionID: s.id.String(),
+		Role:      rolePublisher,
+		KeyID:     keyID,
+		ProjectID: s.projectID,
 		Metrics: map[string]int64{
 			"gateway.ingress_bytes": s.ingressBytes.Load(),
 			"gateway.egress_bytes":  s.egressBytes.Load(),
@@ -43,14 +77,27 @@ func (s *broadcastSession) toEvent() UsageEvent {
 }
 
 // Meter manages active broadcast sessions and periodically reports cumulative
-// usage to the backend. A single Meter is shared across all publisher sessions
-// on a relay node.
+// usage, and session open and close events, to the backend. A single Meter is
+// shared across all sessions on a relay node.
 type Meter struct {
 	client   *usageClient
 	interval time.Duration
 
 	mu       sync.Mutex
 	sessions map[*broadcastSession]struct{}
+	pending  []UsageEvent // session events not yet reported
+}
+
+// enqueue queues a session event for the next report, dropping the oldest
+// past maxPendingEvents.
+func (m *Meter) enqueue(events ...UsageEvent) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.pending = append(m.pending, events...)
+	if over := len(m.pending) - maxPendingEvents; over > 0 {
+		slog.Warn("meter: dropping the oldest queued session events", "dropped", over)
+		m.pending = m.pending[over:]
+	}
 }
 
 func newMeter(client *usageClient) *Meter {
@@ -99,9 +146,15 @@ func (m *Meter) Run(ctx context.Context) {
 	}
 }
 
+// report sends queued session events and a usage snapshot of every active
+// broadcast. Session events that fail to send are queued again; usage is
+// cumulative, so the next snapshot supersedes a lost one.
 func (m *Meter) report(ctx context.Context) {
 	m.mu.Lock()
-	events := make([]UsageEvent, 0, len(m.sessions))
+	pending := m.pending
+	m.pending = nil
+	events := make([]UsageEvent, 0, len(pending)+len(m.sessions))
+	events = append(events, pending...)
 	for sess := range m.sessions {
 		events = append(events, sess.toEvent())
 	}
@@ -112,5 +165,8 @@ func (m *Meter) report(ctx context.Context) {
 	}
 	if err := m.client.ReportUsage(ctx, events); err != nil {
 		slog.Warn("meter: periodic usage report failed", "error", err)
+		m.mu.Lock()
+		m.pending = append(pending, m.pending...)
+		m.mu.Unlock()
 	}
 }

@@ -61,6 +61,7 @@ func startRefreshTestRelayWith(t *testing.T, snapshot trust.Snapshot, refreshInt
 	addr, srv, shutdown := startRelay(t, relayAuth{
 		verifier:        credential.NewVerifier(store),
 		trust:           store,
+		meter:           newFastMeter(cp),
 		expiryLeeway:    10 * time.Millisecond,
 		refreshInterval: refreshInterval,
 	})

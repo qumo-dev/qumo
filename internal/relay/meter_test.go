@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"regexp"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -111,7 +112,9 @@ func TestBroadcastSession_ToEvent(t *testing.T) {
 	event := s.toEvent()
 	after := time.Now()
 
-	assert.Equal(t, s.id.String(), event.BroadcastSessionID)
+	assert.Equal(t, eventUsage, event.Type)
+	assert.Equal(t, rolePublisher, event.Role)
+	assert.Equal(t, s.id.String(), event.SessionID)
 	assert.Equal(t, "owner-x", event.KeyID)
 	assert.Equal(t, int64(128), event.Metrics["gateway.ingress_bytes"])
 	assert.Equal(t, int64(512), event.Metrics["gateway.egress_bytes"])
@@ -184,7 +187,7 @@ func TestMeter_Deregister_RemovesFromActiveSetAndSendsFinalReport(t *testing.T) 
 	events := received
 	mu.Unlock()
 	require.Len(t, events, 1, "Deregister must POST exactly one final usage event")
-	assert.Equal(t, sess.id.String(), events[0].BroadcastSessionID)
+	assert.Equal(t, sess.id.String(), events[0].SessionID)
 	assert.Equal(t, "tok-final", events[0].KeyID)
 	assert.Equal(t, int64(1000), events[0].Metrics["gateway.ingress_bytes"])
 	assert.Equal(t, int64(4000), events[0].Metrics["gateway.egress_bytes"])
@@ -217,7 +220,7 @@ func TestMeter_Report_AggregatesAllActiveSessions(t *testing.T) {
 	require.Len(t, events, 2)
 	byID := make(map[string]UsageEvent, 2)
 	for _, e := range events {
-		byID[e.BroadcastSessionID] = e
+		byID[e.SessionID] = e
 	}
 	require.Contains(t, byID, s1.id.String())
 	require.Contains(t, byID, s2.id.String())
@@ -310,4 +313,73 @@ func TestMeter_Run_FiresPeriodicReports(t *testing.T) {
 
 	assert.GreaterOrEqual(t, reportCount.Load(), int32(2),
 		"Run must fire at least 2 periodic reports within the test window")
+}
+
+func TestBroadcastSession_SetKeyFollowsRefresh(t *testing.T) {
+	s := newBroadcastSession("kid-old")
+	s.projectID = "p1"
+
+	s.setKey("kid-new")
+
+	event := s.toEvent()
+	assert.Equal(t, "kid-new", event.KeyID)
+	assert.Equal(t, "p1", event.ProjectID)
+}
+
+func TestMeter_Report_SendsQueuedSessionEvents(t *testing.T) {
+	var mu sync.Mutex
+	var got []UsageEvent
+	srv := httptest.NewServer(collectUsageEvents(&mu, &got))
+	defer srv.Close()
+	m := newTestMeter(srv, time.Hour)
+	m.enqueue(
+		UsageEvent{Type: eventSessionOpen, SessionID: "s1", Role: roleSubscriber},
+		UsageEvent{Type: eventSessionClose, SessionID: "s1", Role: roleSubscriber, Reason: "key_revoked"},
+	)
+
+	m.report(context.Background())
+	m.report(context.Background())
+
+	mu.Lock()
+	defer mu.Unlock()
+	require.Len(t, got, 2, "queued events are sent once")
+	assert.Equal(t, eventSessionOpen, got[0].Type)
+	assert.Equal(t, "key_revoked", got[1].Reason)
+}
+
+func TestMeter_Report_RequeuesSessionEventsOnFailure(t *testing.T) {
+	var fail atomic.Bool
+	fail.Store(true)
+	var mu sync.Mutex
+	var got []UsageEvent
+	collect := collectUsageEvents(&mu, &got)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if fail.Load() {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		collect(w, r)
+	}))
+	defer srv.Close()
+	m := newTestMeter(srv, time.Hour)
+	m.enqueue(UsageEvent{Type: eventSessionOpen, SessionID: "s1"})
+
+	m.report(context.Background())
+	fail.Store(false)
+	m.report(context.Background())
+
+	mu.Lock()
+	defer mu.Unlock()
+	require.Len(t, got, 1, "the event is sent once the control plane is back")
+	assert.Equal(t, "s1", got[0].SessionID)
+}
+
+func TestMeter_Enqueue_DropsOldestPastTheCap(t *testing.T) {
+	m := newMeter(&usageClient{})
+	for i := range maxPendingEvents + 3 {
+		m.enqueue(UsageEvent{SessionID: strconv.Itoa(i)})
+	}
+
+	require.Len(t, m.pending, maxPendingEvents)
+	assert.Equal(t, "3", m.pending[0].SessionID)
 }
