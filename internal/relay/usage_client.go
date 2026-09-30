@@ -29,7 +29,7 @@ type UsageEvent struct {
 	ProjectID string           `json:"project_id,omitempty"`
 	Metrics   map[string]int64 `json:"metrics,omitempty"`
 	// Reason is why a session closed: closed, credential_expired,
-	// key_revoked or project_suspended.
+	// credential_retracted, key_revoked or project_suspended.
 	Reason string `json:"reason,omitempty"`
 	Ts     string `json:"ts"` // RFC3339
 }
