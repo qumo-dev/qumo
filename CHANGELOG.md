@@ -9,16 +9,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed (breaking)
 
-- **Relays verify app-signed credentials against configured keys; introspection is removed (`internal/credential`, `internal/relay`).** First step of qumo-deploy ADR 0035 (epic #426).
-  - **One verification path.** `QUMO_SIGNING_KEYS_FILE` names a JWK Set of Ed25519 public keys; a publisher's credential must be signed by one of them. A key without a `kid` gets its RFC 7638 thumbprint, and a mismatching `kid` is refused at start.
-  - **Claims:** `iss`, `aud` and `jti` are no longer checked; `iat` is now required, and `exp` − `iat` may not exceed one hour. Other claims are ignored.
-  - **Removed:** introspection (`POST /v1/credentials/introspect`, its cache and request coalescing), fetching the control plane's key set, `QUMO_RELAY_AUDIENCE` and `QUMO_CREDENTIAL_ISSUER`.
-  - **Per-project service quotas (#425).** A managed relay enforces `quotas.broadcasts` and `quotas.subscriber_sessions` from the trust snapshot against its own sessions. An announcement past the broadcast quota isn't routed; a subscriber session past its quota is closed Unauthorized with reason `quota`. Quotas are soft. New metric `qumo_relay_quota_refusals_total{role}`.
-  - **Usage and session events by key and project (#424).** `POST /v1/usage/events` records are now `{type, session_id, role, kid, project_id, metrics?, reason?, ts}`: `usage` snapshots for publisher broadcasts, plus `session_open` and `session_close` for every admitted publisher broadcast and subscriber session, with the close reason (`closed`, `credential_expired`, `key_revoked`, `project_suspended`). `kid` follows refreshes. `broadcast_session_id` is renamed `session_id`. Session events that fail to send are retried with the next report.
-  - **Subscribers need a credential (#418).** On a relay with credential auth on, an untrusted client announces `/.qumo/session` with an `auth` track carrying its session credential. Each SUBSCRIBE is admitted only if the credential's subscribe grant covers the path; a refused one is closed Unauthorized. Session credentials follow the same expiry, refresh (which must still cover every open subscription), revocation and suspension rules as publishers. `/.qumo/` broadcasts are never routed. Trusted peers are unchanged; the HLS egress, `loadgen` and `smoketest` must connect as trusted peers to such a relay. Requires gomoqt `SessionFromContext` (qumo-dev/gomoqt#433; pinned to a pseudo-version until it is released). New metric `qumo_relay_subscribe_authorizations_total{result}`. A refresh older than the newest one seen on its `auth` track is now ignored (`stale`), since groups can arrive out of order.
-  - **Hard expiry and in-session refresh (#423).** The relay ends a publisher's session at its current credential's `exp` + 60 s (Unauthorized, reason `credential_expired`). Publishers refresh by writing a new credential as a new group on the same `auth` track. It's accepted only if it passes every check, its key is active and of the same project (the `kid` may change), it grants nothing more, and it still covers the announced path. At most one refresh per 10 s, credentials at most 8 KiB. Revocation now applies to the key of the session's current credential. New metric `qumo_relay_credential_refreshes_total{result}`.
-  - **Prefix confinement (#417).** Every path a credential grants (`root`+`pub`, `root`+`sub`) must lie within the signing key's prefix at a `/` boundary, so a registered key can't sign for another tenant. `.` and `..` segments in `path_auth` are refused. Snapshot keys without a prefix are ignored; static keys are unconstrained.
-  - **Managed relays poll the trust snapshot (#419).** With `QUMO_CREDENTIAL_URL` and `QUMO_RELAY_TOKEN` set, the relay polls `GET /v1/relays/trust` every 30 s with `If-None-Match`, admits only `active` keys of unsuspended projects, and closes a live publisher's session (Unauthorized, reason `key_revoked` or `project_suspended`) within one poll of its key being revoked or removed or its project suspended. `retired` keys keep their live sessions. Nothing is admitted before the first snapshot loads, and new sessions are refused after 6 h without a successful poll (fail-static). `QUMO_SIGNING_KEYS_FILE` and `QUMO_CREDENTIAL_URL` are mutually exclusive; the relay token is now required.
+- **App-signed relay credentials (`internal/credential`, `internal/trust`, `internal/relay`).** qumo-deploy ADR 0035, epic #426. Apps sign relay credentials with Ed25519 keys they register with qumo, and relays verify them locally. The control plane is no longer in the admission path.
+  - **Trust sources:**
+    - **Self-hosted relays** list their trusted public keys in `QUMO_SIGNING_KEYS_FILE`, a JWK Set read once at start. A key without a `kid` gets its RFC 7638 thumbprint, and a mismatching `kid` is refused.
+    - **Managed relays** (`QUMO_CREDENTIAL_URL` and `QUMO_RELAY_TOKEN`, both required) poll the trust snapshot `GET /v1/relays/trust` every 30 s with `If-None-Match`. It lists keys with their project, prefix and state, plus project policies. Nothing is admitted before the first snapshot loads, and new sessions are refused after 6 h without a successful poll (fail-static).
+    - The two sources are mutually exclusive; setting neither leaves the relay open.
+  - **Checks:** a known `kid`, the EdDSA signature, `exp` and `iat` (required) and `nbf` with 60 s leeway, a lifetime of at most one hour, and **prefix confinement**. Every granted path must lie within the key's prefix, so a key can't sign for another tenant; `.` and `..` segments are refused. `iss`, `aud`, `jti` and any unknown claims are ignored. On a managed relay, only `active` keys of unsuspended projects admit new sessions.
+  - **Publishers** present their credential as the first group on an `auth` track on each announced path.
+  - **Subscribers need a credential (#418).** An untrusted client announces `/.qumo/session` with an `auth` track carrying its session credential. Each SUBSCRIBE is admitted only if that credential's subscribe grant covers the path; otherwise it's refused Unauthorized. `/.qumo/` broadcasts are never routed. Withdrawing the announcement while connected ends the session. Trusted peers aren't gated; the HLS egress, `loadgen` and `smoketest` must connect as trusted peers (#432).
+  - **Hard expiry and in-session refresh (#423).**
+    - A session ends at its current credential's `exp` + 60 s.
+    - Clients refresh by writing a new credential as a new group on the same `auth` track. A refresh is accepted only if it passes every check, its key is active and belongs to the same project (the `kid` may change, so rotation needs no reconnect), it grants nothing more, and it still covers everything the session is using.
+    - Bounds: at most one refresh per 10 s, credentials of at most 8 KiB, and groups older than the newest one seen are ignored.
+  - **Live enforcement (#419, #425):**
+    - A session ends within one poll when the key of its current credential is revoked or removed, or its project is suspended.
+    - `retired` keys keep their live sessions.
+    - Per-project service quotas (`quotas.broadcasts`, `quotas.subscriber_sessions`) are enforced per relay and are soft.
+    - A session the relay ends closes with MoQ `0x2` (Unauthorized) and a reason: `credential_expired`, `credential_retracted`, `key_revoked`, `project_suspended` or `quota`.
+  - **Usage and session events (#424)** go to `POST /v1/usage/events` as `{type, session_id, role, kid, project_id, metrics?, reason?, ts}`:
+    - `usage` snapshots for publisher broadcasts;
+    - `session_open` and `session_close` for every admitted publisher broadcast and subscriber session, with the close reason;
+    - `kid` follows refreshes;
+    - session events that fail to send are retried.
+  - **Removed:** introspection (`POST /v1/credentials/introspect`), fetching the control plane's key set, `QUMO_RELAY_AUDIENCE`, `QUMO_CREDENTIAL_ISSUER`, and the `owner_token_id` and `broadcast_session_id` event fields.
+  - **New metrics:**
+    - `qumo_relay_trust_last_success_seconds`, `qumo_relay_trust_poll_failures_total`, `qumo_relay_trust_keys`
+    - `qumo_relay_sessions_ended_total{reason}`, `qumo_relay_credential_refreshes_total{result}`
+    - `qumo_relay_subscribe_authorizations_total{result}`, `qumo_relay_quota_refusals_total{role}`
+  - **Requires** gomoqt `SessionFromContext` (qumo-dev/gomoqt#433), pinned to a pseudo-version until it's released.
 
 ## [v0.8.260929] - 2026-09-29
 
