@@ -21,10 +21,6 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// connTag is the ConnContext key the contract server stamps each connection
-// with, to see whether per-connection state reaches a TrackWriter.
-type connTag struct{}
-
 // transportCase is one client transport: WebTransport (h3) or native QUIC.
 type transportCase struct {
 	name       string
@@ -69,9 +65,6 @@ func startContractServer(t *testing.T, serverMux *moqt.TrackMux) (addr string, r
 		WebTransportServer: moqt.NewWebTransportServer(httpMux),
 		Handler:            handler,
 		TrackMux:           serverMux,
-		ConnContext: func(ctx context.Context, conn moqt.StreamConn) context.Context {
-			return context.WithValue(ctx, connTag{}, conn.RemoteAddr().String())
-		},
 	}
 	wt := &moqt.WebTransportHandler{TrackMux: serverMux, Handler: handler}
 	httpMux.Handle("/", wt)
@@ -266,25 +259,25 @@ func TestContract_ReservedSessionAuthPath(t *testing.T) {
 
 // Q3: can the server tell which session a SUBSCRIBE came from? The relay
 // serves every session from one TrackMux, so authorizing a subscriber needs
-// per-connection state reachable from the TrackWriter. On gomoqt v0.20 it is
-// not: a Server.ConnContext value reaches neither TrackWriter.Context() nor
-// Session.Context(), on either transport.
+// the session reachable from the TrackWriter: moqt.SessionFromContext
+// (qumo-dev/gomoqt#431; gomoqt v0.20 had no way to).
 func TestContract_SubscriberIdentityInServePath(t *testing.T) {
-	t.Skip("gomoqt v0.20 does not expose the subscribing session to a TrackHandler; qumo-dev/gomoqt#431")
 	for _, tc := range contractTransports {
 		t.Run(tc.name, func(t *testing.T) {
 			serverMux := moqt.NewTrackMux(0)
-			seen := make(chan any, 1)
+			seen := make(chan *moqt.Session, 1)
 			serverMux.PublishFunc(context.Background(), "/content", func(tw *moqt.TrackWriter) {
-				seen <- tw.Context().Value(connTag{})
+				sess, _ := moqt.SessionFromContext(tw.Context())
+				seen <- sess
 				// Open a group so the SUBSCRIBE is answered.
 				if g, err := tw.OpenGroup(tw.Context()); err == nil {
 					_ = g.Close()
 				}
 				<-tw.Context().Done()
 			})
-			addr, roots, _ := startContractServer(t, serverMux)
+			addr, roots, sessions := startContractServer(t, serverMux)
 			client := dialContract(t, tc, addr, roots, moqt.NewTrackMux(0))
+			server := acceptServerSession(t, sessions)
 
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
@@ -292,10 +285,8 @@ func TestContract_SubscriberIdentityInServePath(t *testing.T) {
 			require.NoError(t, err)
 
 			select {
-			case tag := <-seen:
-				t.Logf("%s: ConnContext value in TrackWriter.Context(): %v", tc.name, tag)
-				assert.Equal(t, client.LocalAddr().String(), tag,
-					"per-connection state must reach the serve path to authorize a SUBSCRIBE")
+			case got := <-seen:
+				assert.Same(t, server, got, "the TrackWriter identifies the subscribing session")
 			case <-ctx.Done():
 				t.Fatal("SUBSCRIBE never reached the server handler")
 			}

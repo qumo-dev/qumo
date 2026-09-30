@@ -52,3 +52,14 @@ func TestVerifier_Verify_ExpiresAt(t *testing.T) {
 	assert.Equal(t, testNow.Add(10*time.Minute), cred.ExpiresAt)
 	assert.True(t, cred.CoversPublish("/tenant/project/live"))
 }
+
+func TestCredential_CoversSubscribe(t *testing.T) {
+	str := func(s string) *string { return &s }
+	sub := Credential{grants: pathAuth{Root: "t/p", Sub: str("live")}}
+	pubOnly := Credential{grants: pathAuth{Root: "t/p", Pub: str("live")}}
+
+	assert.True(t, sub.CoversSubscribe("/t/p/live/cam1"))
+	assert.False(t, sub.CoversSubscribe("/t/p/other"))
+	assert.False(t, sub.CoversPublish("/t/p/live"), "a subscribe grant does not publish")
+	assert.False(t, pubOnly.CoversSubscribe("/t/p/live"), "a publish grant does not subscribe")
+}

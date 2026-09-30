@@ -131,6 +131,13 @@ Credentials are app-signed (qumo-deploy ADR 0035) and verified entirely on the r
   - it still covers the announced path.
 - An accepted refresh replaces the session's credential and deadline. A refused one leaves both unchanged.
 - At most one refresh per 10 s is verified per `auth` track.
-- Metric: `qumo_relay_credential_refreshes_total{result}`, where `result` is `accepted`, `checks`, `other_project`, `widens`, `uncovered_path`, `rate` or `size`.
+- Metric: `qumo_relay_credential_refreshes_total{result}`, where `result` is `accepted`, `checks`, `other_project`, `widens`, `uncovered_path`, `rate`, `size` or `stale`.
+
+**Subscriber contract.** With credential auth on, there's no anonymous subscribe. A client that subscribes (over WebTransport, or over native QUIC from outside the trusted peers) announces the reserved broadcast `/.qumo/session` with an `auth` track carrying its **session credential**.
+- A SUBSCRIBE is admitted only if that credential's `path_auth` subscribe grant (`root`+`sub`) covers the requested path. A SUBSCRIBE sent before the credential is accepted waits up to 5 s for it. A refused SUBSCRIBE is closed with subscribe error `0x4` (Unauthorized).
+- The session credential follows the publisher lifecycle: hard expiry and in-session refresh. A refresh must still cover every open subscription.
+- Broadcasts under `/.qumo/` are relay control and are never routed.
+- Trusted peers (`PEER_CIDRS` / mTLS) are not gated. Clients such as the HLS egress, `qumo loadgen` and `qumo smoketest` must run as trusted peers against a relay with credential auth on.
+- Metric: `qumo_relay_subscribe_authorizations_total{result}`, where `result` is `admitted`, `not_covered`, `no_credential` or `no_session`.
 
 `QUMO_RELAY_AUDIENCE` and `QUMO_CREDENTIAL_ISSUER` are no longer supported, and the relay refuses to start when either is set. Introspection (`POST /v1/credentials/introspect`) and fetching the control plane's key set are removed.

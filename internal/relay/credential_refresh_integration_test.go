@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/quic-go/quic-go"
 	"github.com/qumo-dev/gomoqt/moqt"
 	"github.com/qumo-dev/qumo/internal/credential"
@@ -40,6 +41,7 @@ type refreshTestRelay struct {
 	roots *x509.CertPool
 	cp    *stubControlPlane
 	poll  func()
+	srv   *Server
 }
 
 func startRefreshTestRelay(t *testing.T, snapshot trust.Snapshot) *refreshTestRelay {
@@ -67,7 +69,7 @@ func startRefreshTestRelayWith(t *testing.T, snapshot trust.Snapshot, refreshInt
 	require.NotNil(t, leaf)
 	roots := x509.NewCertPool()
 	roots.AddCert(leaf)
-	return &refreshTestRelay{addr: addr, roots: roots, cp: cp, poll: poll}
+	return &refreshTestRelay{addr: addr, roots: roots, cp: cp, poll: poll, srv: srv}
 }
 
 // setSnapshot publishes snapshot and has the relay poll it.
@@ -186,10 +188,15 @@ func TestServer_CredentialRefresh_RateLimited(t *testing.T) {
 	signer := newAppSigner(t)
 	relay := startRefreshTestRelayWith(t, trust.Snapshot{Keys: []trust.SnapshotKey{signer.snapshotKey("p1", "active")}}, time.Hour)
 	p := relay.publish(t, signer.signPublish(t, "live", 1500*time.Millisecond))
+	accepted := func() float64 { return testutil.ToFloat64(metricRefreshes.WithLabelValues(refreshAccepted)) }
+	before := accepted()
 
 	p.refresh(signer.signPublish(t, "live", 2500*time.Millisecond))
+	require.Eventually(t, func() bool { return accepted() == before+1 }, 2*time.Second, 10*time.Millisecond,
+		"the first refresh is accepted")
 	p.refresh(signer.signPublish(t, "live", 30*time.Second))
 
-	assert.Never(t, p.ended, 1500*time.Millisecond, 20*time.Millisecond, "the first refresh was accepted")
-	require.Eventually(t, p.ended, 2*time.Second, 20*time.Millisecond, "the second refresh, inside the interval, was dropped")
+	require.Eventually(t, p.ended, 4*time.Second, 20*time.Millisecond,
+		"the second refresh, inside the interval, was dropped: the session ends at the first refresh's expiry")
+	assert.Equal(t, before+1, accepted())
 }

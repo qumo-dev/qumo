@@ -3,7 +3,6 @@ package relay
 import (
 	"context"
 	"crypto/tls"
-	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
@@ -50,9 +49,12 @@ type Server struct {
 	// keys. When set, admitted sessions are ended once the snapshot no longer
 	// allows them (see enforceTrust).
 	trust *trust.Store
-	// admitted holds every publisher session admitted under a credential, for
-	// expiry, refresh and trust enforcement (see admit).
+	// admitted holds every session admitted under a credential, publishers
+	// and subscribers, for expiry, refresh and trust enforcement (see admit).
 	admitted admissions
+	// gates maps each untrusted session to its subscription authorization
+	// (*subscriberGate); trusted peers have none. See authorizeSubscribe.
+	gates sync.Map
 	// credentialExpiryLeeway and credentialRefreshInterval override the
 	// defaults (60 s past exp; one refresh per 10 s) when positive; tests
 	// shorten them.
@@ -525,6 +527,11 @@ func (s *Server) serveSession(sess *moqt.Session, requireAuth bool) {
 	metricSessionsActive.Inc()
 	defer metricSessionsActive.Dec()
 
+	// An untrusted session's subscriptions need a session credential.
+	if requireAuth && s.verifier != nil {
+		defer s.gateSession(sess)()
+	}
+
 	addr := sess.RemoteAddr().String()
 	s.sampler.addSession(addr, sess)
 	sampleSessionStats(sess, addr) // immediate first sample
@@ -555,10 +562,22 @@ func (s *Server) serveSession(sess *moqt.Session, requireAuth bool) {
 			"remote", sess.RemoteAddr(),
 		)
 
+		// Relay control announcements are never routed. On a gated session,
+		// /.qumo/session carries the credential its subscriptions use.
+		if isReservedPath(ann.BroadcastPath()) {
+			if requireAuth && s.verifier != nil {
+				go s.handleSessionCredential(sess, ann)
+			}
+			continue
+		}
+
 		// Authenticate publisher announcements when the credential client is configured.
 		var broadSess *broadcastSession
 		if requireAuth && s.verifier != nil {
-			cred, reader, err := s.authenticateAnnouncement(sess.Context(), sess, ann)
+			verify := func(ctx context.Context, token string) (credential.Credential, error) {
+				return s.verifier.VerifyPublish(ctx, token, ann.BroadcastPath().String())
+			}
+			cred, reader, err := s.readAuthTrack(sess.Context(), sess, ann, verify)
 			if err != nil {
 				// MoQ has no per-announcement error response, so the publisher
 				// receives no explicit rejection — the ANNOUNCE is simply not
@@ -576,6 +595,9 @@ func (s *Server) serveSession(sess *moqt.Session, requireAuth bool) {
 
 		handler := newRelayHandler(ann, sess, s.Config.NodeID, broadSess,
 			s.Config.GroupCacheSize, s.framePool, s.sampler)
+		if s.verifier != nil {
+			handler.authorize = s.authorizeSubscribe
+		}
 
 		slog.Debug("relay: created relayHandler",
 			"node", s.Config.NodeID,
@@ -849,49 +871,4 @@ func handlePeerGoaway(newSessionURI string) {
 	}
 	metricPeerGoawayReceived.WithLabelValues(redirect).Inc()
 	slog.Info("relay: upstream peer sent GOAWAY", "new_session_uri", newSessionURI)
-}
-
-// authenticateAnnouncement subscribes to the "auth" track on the announced
-// broadcast path, reads the credential from its first group, and verifies it.
-// On success it returns the credential and the still-open auth track, on
-// which the publisher sends refreshed credentials (see admit).
-//
-// Publisher-side contract: the publisher serves a track named "auth" on the
-// announced broadcast path. Each group carries one credential as raw JWT
-// bytes (no framing), at most 8 KiB. The first group must arrive within 5
-// seconds; later groups refresh the credential before it expires.
-func (s *Server) authenticateAnnouncement(ctx context.Context, sess *moqt.Session, ann *moqt.Announcement) (credential.Credential, *moqt.TrackReader, error) {
-	authCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
-
-	// The context only bounds opening the subscription; the returned reader
-	// stays open until closed.
-	reader, err := sess.Subscribe(authCtx, ann.BroadcastPath(), authTrackName, nil)
-	if err != nil {
-		return credential.Credential{}, nil, fmt.Errorf("subscribe auth track: %w", err)
-	}
-	cred, err := s.readFirstCredential(authCtx, reader, ann.BroadcastPath().String())
-	if err != nil {
-		_ = reader.Close()
-		return credential.Credential{}, nil, err
-	}
-	return cred, reader, nil
-}
-
-func (s *Server) readFirstCredential(ctx context.Context, reader *moqt.TrackReader, broadcastPath string) (credential.Credential, error) {
-	gr, err := reader.AcceptGroup(ctx)
-	if err != nil {
-		return credential.Credential{}, fmt.Errorf("accept auth group: %w", err)
-	}
-	buf := s.framePool.Get()
-	defer s.framePool.Put(buf)
-	token, err := readCredential(gr, buf)
-	if err != nil {
-		return credential.Credential{}, err
-	}
-	cred, err := s.verifier.VerifyPublish(ctx, token, broadcastPath)
-	if err != nil {
-		return credential.Credential{}, fmt.Errorf("verify credential: %w", err)
-	}
-	return cred, nil
 }

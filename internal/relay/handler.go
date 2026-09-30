@@ -115,6 +115,10 @@ type relayHandler struct {
 	// methods) for a handler built without a Server.
 	sampler *statsSampler
 
+	// authorize admits a SUBSCRIBE before it is served; nil admits all. The
+	// server sets it when credentials are enforced (see authorizeSubscribe).
+	authorize func(tw *moqt.TrackWriter) bool
+
 	ctx       context.Context
 	cancel    context.CancelFunc
 	drainOnce sync.Once
@@ -361,6 +365,10 @@ func (h *relayHandler) TrackInfo(name moqt.TrackName) (pubInfo moqt.PublishInfo,
 }
 
 func (h *relayHandler) ServeTrack(tw *moqt.TrackWriter) {
+	if h.authorize != nil && !h.authorize(tw) {
+		tw.CloseWithError(moqt.SubscribeErrorCodeUnauthorized)
+		return
+	}
 	logger := slog.With(
 		"node", h.nodeID,
 		"broadcast_path", tw.BroadcastPath,

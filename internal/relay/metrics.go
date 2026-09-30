@@ -340,4 +340,16 @@ var (
 		},
 		[]string{"result"},
 	)
+
+	// metricSubscribeAuthz counts SUBSCRIBE authorization decisions on gated
+	// (untrusted) sessions, by result.
+	metricSubscribeAuthz = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Namespace: "qumo",
+			Subsystem: "relay",
+			Name:      "subscribe_authorizations_total",
+			Help:      "Total number of SUBSCRIBE authorization decisions on credential-gated sessions, by result.",
+		},
+		[]string{"result"},
+	)
 )

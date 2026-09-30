@@ -96,6 +96,12 @@ func (c Credential) CoversPublish(broadcastPath string) bool {
 	return c.grants.coversPublish(broadcastPath)
 }
 
+// CoversSubscribe reports whether the credential may subscribe to
+// broadcastPath.
+func (c Credential) CoversSubscribe(broadcastPath string) bool {
+	return c.grants.coversSubscribe(broadcastPath)
+}
+
 // Within reports whether c grants nothing prev does not: every publish grant
 // of c lies at or beneath prev's publish grant, and likewise for subscribe.
 // A refreshed credential must satisfy it, so a refresh can narrow what a
@@ -230,6 +236,15 @@ func (p *pathAuth) coversPublish(broadcastPath string) bool {
 		return false
 	}
 	return beneath(normalizePath(broadcastPath), p.scope(*p.Pub))
+}
+
+// coversSubscribe reports whether the grant may subscribe to broadcastPath:
+// the path must equal root+sub or lie beneath it at a segment boundary.
+func (p *pathAuth) coversSubscribe(broadcastPath string) bool {
+	if p == nil || p.Sub == nil {
+		return false
+	}
+	return beneath(normalizePath(broadcastPath), p.scope(*p.Sub))
 }
 
 // scope is the path a grant covers: root joined with the grant, normalized.

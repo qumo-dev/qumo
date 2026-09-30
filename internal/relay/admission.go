@@ -33,21 +33,72 @@ const (
 	refreshUncoveredPath = "uncovered_path"
 	refreshRate          = "rate"
 	refreshSize          = "size"
+	refreshStale         = "stale"
 )
 
 var errCredentialTooLarge = errors.New("auth track: credential exceeds the size limit")
 
-// admission is a live publisher session admitted under a credential. It
-// ends at its current credential's expiry unless a refresh on the auth track
-// moves that; on a managed relay the trust snapshot can end it sooner.
+// authTrack is a client's open auth track and the sequence of the newest
+// credential group read from it. Each group travels on its own stream, so
+// groups can arrive out of order; one older than the newest seen is stale.
+type authTrack struct {
+	reader *moqt.TrackReader
+	last   moqt.GroupSequence
+}
+
+// admission is a live session admitted under a credential: a publisher's
+// announcement, or a subscriber's session credential. It ends at its current
+// credential's expiry unless a refresh on the auth track moves that; on a
+// managed relay the trust snapshot can end it sooner.
 type admission struct {
 	sess *moqt.Session
-	path string // the announced broadcast path
+	// path is the announced broadcast path for a publisher, and the session
+	// auth path for a subscriber.
+	path       string
+	subscriber bool
 
 	mu       sync.Mutex
 	cred     credential.Credential
 	deadline time.Time
 	timer    *time.Timer
+	// open counts a subscriber's open subscriptions by broadcast path. It
+	// shares mu with cred, so a narrowing refresh and a new SUBSCRIBE cannot
+	// pass each other.
+	open map[string]int
+}
+
+// coversLocked reports whether c covers everything the session is live on:
+// a publisher's broadcast, or each of a subscriber's open subscriptions.
+// Caller holds ad.mu.
+func (ad *admission) coversLocked(c credential.Credential) bool {
+	if !ad.subscriber {
+		return c.CoversPublish(ad.path)
+	}
+	for path := range ad.open {
+		if !c.CoversSubscribe(path) {
+			return false
+		}
+	}
+	return true
+}
+
+// subscribe admits a subscription to path if the current credential covers
+// it, and counts it open until done.
+func (ad *admission) subscribe(path string, done context.Context) bool {
+	ad.mu.Lock()
+	defer ad.mu.Unlock()
+	if !ad.cred.CoversSubscribe(path) {
+		return false
+	}
+	ad.open[path]++
+	context.AfterFunc(done, func() {
+		ad.mu.Lock()
+		defer ad.mu.Unlock()
+		if ad.open[path]--; ad.open[path] <= 0 {
+			delete(ad.open, path)
+		}
+	})
+	return true
 }
 
 // key returns the key of the session's current credential.
@@ -92,8 +143,22 @@ func (a *admissions) list() []*admission {
 // admit registers a publisher admitted under cred, arms its expiry, and
 // reads refreshed credentials from reader, the announcement's auth track,
 // until the announcement or the session ends.
-func (s *Server) admit(sess *moqt.Session, ann *moqt.Announcement, cred credential.Credential, reader *moqt.TrackReader) {
-	ad := &admission{sess: sess, path: ann.BroadcastPath().String(), cred: cred}
+func (s *Server) admit(sess *moqt.Session, ann *moqt.Announcement, cred credential.Credential, auth *authTrack) {
+	s.track(&admission{sess: sess, path: ann.BroadcastPath().String(), cred: cred}, ann, auth)
+}
+
+// admitSubscriber registers a session credential for sess's subscriptions,
+// read from ann, the session auth announcement.
+func (s *Server) admitSubscriber(sess *moqt.Session, ann *moqt.Announcement, cred credential.Credential, auth *authTrack) *admission {
+	ad := &admission{sess: sess, path: ann.BroadcastPath().String(), subscriber: true, cred: cred, open: make(map[string]int)}
+	s.track(ad, ann, auth)
+	return ad
+}
+
+// track arms ad's expiry, registers it for trust enforcement, and reads
+// refreshed credentials from reader until ann or the session ends.
+func (s *Server) track(ad *admission, ann *moqt.Announcement, auth *authTrack) {
+	sess, cred := ad.sess, ad.cred
 	ad.deadline = cred.ExpiresAt.Add(s.expiryLeeway())
 	ad.mu.Lock()
 	ad.timer = time.AfterFunc(time.Until(ad.deadline), func() { s.expire(ad) })
@@ -108,7 +173,7 @@ func (s *Server) admit(sess *moqt.Session, ann *moqt.Announcement, cred credenti
 		ad.timer.Stop()
 		ad.mu.Unlock()
 	})
-	go s.readRefreshes(ctx, ad, reader)
+	go s.readRefreshes(ctx, ad, auth)
 }
 
 // expire ends the session once its deadline has passed. A refresh may have
@@ -127,19 +192,27 @@ func (s *Server) expire(ad *admission) {
 }
 
 // readRefreshes verifies each later group on the auth track as a refreshed
-// credential, at most once per minimum refresh interval, until ctx ends. It
-// owns reader and closes it on return: gomoqt's TrackReader.Close is not safe
-// to call while another goroutine is in AcceptGroup (qumo-dev/gomoqt#432).
-func (s *Server) readRefreshes(ctx context.Context, ad *admission, reader *moqt.TrackReader) {
-	defer func() { _ = reader.Close() }()
+// credential, newest only and at most once per minimum refresh interval,
+// until ctx ends. It owns the reader and closes it on return: gomoqt's
+// TrackReader.Close is not safe to call while another goroutine is in
+// AcceptGroup (qumo-dev/gomoqt#432).
+func (s *Server) readRefreshes(ctx context.Context, ad *admission, auth *authTrack) {
+	defer func() { _ = auth.reader.Close() }()
 	buf := s.framePool.Get()
 	defer s.framePool.Put(buf)
 	var last time.Time
 	for {
-		gr, err := reader.AcceptGroup(ctx)
+		gr, err := auth.reader.AcceptGroup(ctx)
 		if err != nil {
 			return
 		}
+		seq := gr.GroupSequence()
+		if seq <= auth.last {
+			gr.CancelRead(moqt.InternalGroupErrorCode)
+			s.refreshed(ad, refreshStale, nil)
+			continue
+		}
+		auth.last = seq
 		token, err := readCredential(gr, buf)
 		switch {
 		case errors.Is(err, errCredentialTooLarge):
@@ -161,7 +234,7 @@ func (s *Server) readRefreshes(ctx context.Context, ad *admission, reader *moqt.
 // refresh replaces ad's credential with token if it is a valid refresh:
 // it passes every check, its key is active and of the same project (the kid
 // may change), it grants nothing the current credential does not, and it
-// still covers the announced path. Otherwise the current credential and
+// still covers everything the session is live on. Otherwise the credential and
 // deadline stay.
 func (s *Server) refresh(ctx context.Context, ad *admission, token string) {
 	next, err := s.verifier.Verify(ctx, token)
@@ -176,7 +249,7 @@ func (s *Server) refresh(ctx context.Context, ad *admission, token string) {
 		s.refreshedLocked(ad, refreshOtherProject, nil)
 	case !next.Within(ad.cred):
 		s.refreshedLocked(ad, refreshWidens, nil)
-	case !next.CoversPublish(ad.path):
+	case !ad.coversLocked(next):
 		s.refreshedLocked(ad, refreshUncoveredPath, nil)
 	default:
 		ad.cred = next

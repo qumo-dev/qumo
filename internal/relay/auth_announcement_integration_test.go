@@ -116,13 +116,26 @@ func (a appSigner) sign(t *testing.T) string {
 // valid for ttl.
 func (a appSigner) signPublish(t *testing.T, pub string, ttl time.Duration) string {
 	t.Helper()
+	return a.signGrant(t, map[string]any{"root": "tenant/project", "pub": pub}, ttl)
+}
+
+// signSubscribe mints a credential granting subscribe at tenant/project/sub,
+// valid for ttl.
+func (a appSigner) signSubscribe(t *testing.T, sub string, ttl time.Duration) string {
+	t.Helper()
+	return a.signGrant(t, map[string]any{"root": "tenant/project", "sub": sub}, ttl)
+}
+
+// signGrant mints a credential with pathAuth as its path_auth, valid for ttl.
+func (a appSigner) signGrant(t *testing.T, pathAuth map[string]any, ttl time.Duration) string {
+	t.Helper()
 	now := time.Now()
 	header, err := json.Marshal(map[string]any{"alg": "EdDSA", "kid": a.kid})
 	require.NoError(t, err)
 	// exp is carried with sub-second precision so short test lifetimes hold.
 	claims, err := json.Marshal(map[string]any{
 		"iat": now.Unix(), "nbf": now.Unix(), "exp": float64(now.Add(ttl).UnixMilli()) / 1000,
-		"path_auth": map[string]any{"root": "tenant/project", "pub": pub},
+		"path_auth": pathAuth,
 	})
 	require.NoError(t, err)
 	enc := base64.RawURLEncoding.EncodeToString
