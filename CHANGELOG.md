@@ -36,7 +36,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     - `qumo_relay_trust_last_success_seconds`, `qumo_relay_trust_poll_failures_total`, `qumo_relay_trust_keys`
     - `qumo_relay_sessions_ended_total{reason}`, `qumo_relay_credential_refreshes_total{result}`
     - `qumo_relay_subscribe_authorizations_total{result}`, `qumo_relay_quota_refusals_total{role}`
-  - **Requires** gomoqt's `Server.ConnContext` values to reach handlers, as in net/http (qumo-dev/gomoqt#433), pinned to a pseudo-version until it's released.
+  - **Requires** gomoqt's `Server.ConnContext` values to reach handlers, as in net/http (qumo-dev/gomoqt#433), released in gomoqt v0.20.1, which this pins.
 
 ## [v0.8.260929] - 2026-09-29
 
