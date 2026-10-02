@@ -5,17 +5,11 @@ import (
 	"fmt"
 	"net/http"
 	"os"
-	"strings"
 	"time"
 
 	"github.com/qumo-dev/qumo/internal/credential"
 	"github.com/qumo-dev/qumo/internal/trust"
 )
-
-// removedCredentialEnv are settings of the control-plane-signed credential
-// model that ADR 0035 removed. A relay that still sets them is refused at
-// startup rather than silently running with a different trust model.
-var removedCredentialEnv = []string{"QUMO_RELAY_AUDIENCE", "QUMO_CREDENTIAL_ISSUER"}
 
 var (
 	errBothTrustSources = errors.New("QUMO_SIGNING_KEYS_FILE and QUMO_CREDENTIAL_URL are both set: " +
@@ -56,18 +50,6 @@ type credentialAuth struct {
 //
 // Neither set leaves the relay open.
 func newCredentialAuth() (credentialAuth, error) {
-	var removed []string
-	for _, name := range removedCredentialEnv {
-		if os.Getenv(name) != "" {
-			removed = append(removed, name)
-		}
-	}
-	if len(removed) > 0 {
-		return credentialAuth{}, fmt.Errorf("%s no longer supported: credentials are app-signed and verified "+
-			"against QUMO_SIGNING_KEYS_FILE or the trust snapshot (qumo-deploy ADR 0035); unset them",
-			strings.Join(removed, ", "))
-	}
-
 	keysFile := os.Getenv("QUMO_SIGNING_KEYS_FILE")
 	usage := newUsageClient()
 	switch {
