@@ -57,20 +57,12 @@ type SnapshotKey struct {
 	ProjectID string `json:"project_id"`
 	Prefix    string `json:"prefix"`
 	State     string `json:"state"`
-	Managed   bool   `json:"managed"`
 }
 
 // Policy is one project's admission policy.
 type Policy struct {
 	ProjectID string `json:"project_id"`
 	Suspended bool   `json:"suspended"`
-	Quotas    Quotas `json:"quotas"`
-}
-
-// Quotas are a project's service quotas; nil means unlimited.
-type Quotas struct {
-	Broadcasts         *int `json:"broadcasts"`
-	SubscriberSessions *int `json:"subscriber_sessions"`
 }
 
 // entry is a parsed snapshot key.
