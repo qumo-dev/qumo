@@ -1,10 +1,8 @@
 package relay
 
 import (
-	"bytes"
 	"context"
 	"crypto/tls"
-	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
@@ -15,12 +13,7 @@ import (
 
 	"github.com/qumo-dev/gomoqt/moqt"
 	"github.com/qumo-dev/qumo/internal/cors"
-	"github.com/qumo-dev/qumo/internal/credential"
 )
-
-// authTrackName is the well-known MoQ track name on which publishers send
-// their JWT credential. The relay subscribes to this track at ANNOUNCE time.
-const authTrackName moqt.TrackName = "auth"
 
 type Server struct {
 	// MOQServer is the underlying MoQT server. The caller is responsible for
@@ -40,20 +33,12 @@ type Server struct {
 	// relay command. See internal/cors.
 	AllowedOrigins []string
 
-	// credentialClient is non-nil when QUMO_CREDENTIAL_URL is configured.
-	// It handles credential introspection and usage reporting.
-	credentialClient *CredentialClient
-	// meter drives periodic and final usage reporting for metered sessions.
-	// It is non-nil exactly when credentialClient is non-nil.
-	meter *Meter
-	// verifier checks publisher credentials locally against the control
-	// plane's JWKS instead of introspecting them (QUMO_RELAY_AUDIENCE set).
-	// When set it takes precedence over credentialClient for admission, and
-	// admitted sessions are not metered.
-	verifier *credential.Verifier
+	// auth admits client sessions (auth.go). nil admits every session with no
+	// check, for a Server embedded in tests; the relay command always sets it.
+	// Trusted peers are never asked.
+	auth *sessionAuth
 
-	// framePool recycles frame buffers for track distributors and the auth
-	// track read; sized from Config.FrameCapacity in init() (falling back to
+	// framePool recycles frame buffers for track distributors; sized from Config.FrameCapacity in init() (falling back to
 	// DefaultFramePool when unset, so a minimally-constructed Server still works).
 	framePool *FramePool
 
@@ -103,11 +88,23 @@ func (s *Server) ServeStatus(w http.ResponseWriter, r *http.Request) {
 	s.statusHandler.ServeStatus(w, r)
 }
 
+// HandleWebTransport admits a WebTransport upgrade before it happens: a
+// refused client gets the HTTP status (401 or 403, or 503 when the auth
+// server can't answer), and an admitted one carries its grant into the
+// session through the request context.
 func (s *Server) HandleWebTransport(w http.ResponseWriter, r *http.Request) {
 	s.init()
 	if s.webtransportHandler == nil {
 		w.WriteHeader(http.StatusServiceUnavailable)
 		return
+	}
+	if s.auth != nil {
+		g, err := s.admit(r.Context(), s.webTransportRequest(r))
+		if err != nil {
+			w.WriteHeader(refusalStatus(err))
+			return
+		}
+		r = r.WithContext(context.WithValue(r.Context(), grantKey{}, g))
 	}
 	s.webtransportHandler.ServeHTTP(w, r)
 }
@@ -139,9 +136,9 @@ func (s *Server) init() {
 		if s.MOQServer.Handler != nil {
 			slog.Warn("relay.Server: overriding MOQServer.Handler set by caller")
 		}
-		// Native QUIC connections are always relay peers (ALPN "moqt").
-		// WebTransport connections (ALPN "h3") are publisher/browser sessions
-		// that require credential auth when the credential client is configured.
+		// Native QUIC sessions (ALPN "moqt") are relay peers when trusted, and
+		// admitted like clients otherwise. WebTransport sessions (ALPN "h3") are
+		// clients, admitted at the upgrade (HandleWebTransport).
 		s.MOQServer.Handler = moqt.HandleFunc(s.relayPeer)
 		if s.MOQServer.TrackMux != nil {
 			slog.Warn("relay.Server: overriding MOQServer.TrackMux set by caller")
@@ -168,13 +165,6 @@ func (s *Server) init() {
 				context.AfterFunc(conn.Context(), func() { s.sampler.removeConn(addr) })
 			}
 			return ctx
-		}
-
-		// Invariant: meter must be set whenever credentialClient is set.
-		// A manually-constructed Server that sets credentialClient without meter
-		// would panic later when the first metered announcement is accepted.
-		if s.credentialClient != nil && s.meter == nil {
-			panic("relay.Server: meter must be non-nil when credentialClient is set")
 		}
 
 		// Resolve the per-node frame pool from Config.FrameCapacity. A caller
@@ -435,7 +425,8 @@ func (s *Server) maintainPeer(ctx context.Context, peer Peer) {
 		// reconnect with jitter. On success, loop back to serve the new session;
 		// on failure, break to the outer retry loop with exponential backoff.
 		for {
-			s.relayPeer(sess)
+			// A peer this relay dialed from its own configuration is trusted.
+			s.serveSession(sess, nil)
 
 			<-sess.Context().Done()
 
@@ -465,21 +456,34 @@ func (s *Server) maintainPeer(ctx context.Context, peer Peer) {
 	}
 }
 
-// Relay handles inbound WebTransport sessions (publishers and browser clients).
-// When a backend client is configured, each announced broadcast path is
-// authenticated via a JWT read from the "auth" MoQ track before being accepted.
+// Relay handles inbound WebTransport sessions (publishers and browser
+// clients), already admitted at the upgrade (HandleWebTransport).
 func (s *Server) Relay(sess *moqt.Session) {
-	s.serveSession(sess, true)
+	g, _ := sess.Context().Value(grantKey{}).(*grant)
+	if s.auth != nil && g == nil {
+		// Unreachable through HandleWebTransport; refuse rather than run open.
+		_ = sess.CloseWithError(moqt.UnauthorizedSessionErrorCode, "no grant")
+		return
+	}
+	s.serveSession(sess, g)
 }
 
-// relayPeer handles native QUIC sessions. Only a trusted relay peer — one
-// that presented a client certificate verified against CA_FILE, or that
-// connects from a configured PEER_CIDRS network — bypasses the
-// per-announcement credential check. Any other native-QUIC session is
-// authenticated exactly like a WebTransport client: speaking the native
-// protocol is not itself proof of being a peer.
+// relayPeer handles inbound native QUIC sessions. A trusted relay peer, one
+// that presented a client certificate verified against CA_FILE or connects
+// from a configured PEER_CIDRS network, is served without asking. Any other
+// native-QUIC session is admitted exactly like a WebTransport client:
+// speaking the native protocol is not itself proof of being a peer.
 func (s *Server) relayPeer(sess *moqt.Session) {
-	s.serveSession(sess, !s.trustedPeer(sess))
+	if s.trustedPeer(sess) || s.auth == nil {
+		s.serveSession(sess, nil)
+		return
+	}
+	g, err := s.admit(sess.Context(), s.nativeRequest(sess))
+	if err != nil {
+		_ = sess.CloseWithError(moqt.UnauthorizedSessionErrorCode, "refused")
+		return
+	}
+	s.serveSession(sess, g)
 }
 
 func (s *Server) trustedPeer(sess *moqt.Session) bool {
@@ -513,9 +517,9 @@ func isTrustedPeer(state *tls.ConnectionState, remote net.Addr, peerCIDRs []neti
 	return false
 }
 
-// serveSession is the shared core for Relay and relayPeer.
-// requireAuth=true enables per-announcement JWT authentication (publisher path).
-func (s *Server) serveSession(sess *moqt.Session, requireAuth bool) {
+// serveSession is the shared core for Relay and relayPeer. g is the session's
+// grant; nil serves a trusted peer (or a Server with no auth) unchecked.
+func (s *Server) serveSession(sess *moqt.Session, g *grant) {
 	s.init()
 	defer sess.CloseWithError(moqt.NoError, moqt.NoError.String())
 
@@ -527,7 +531,7 @@ func (s *Server) serveSession(sess *moqt.Session, requireAuth bool) {
 	sampleSessionStats(sess, addr) // immediate first sample
 	defer s.sampler.removeSession(addr)
 
-	slog.Info("relay: new session", "remote", addr, "peer", !requireAuth)
+	slog.Info("relay: new session", "remote", addr, "checked", g != nil)
 
 	announced, err := sess.AcceptAnnounce("/")
 	if err != nil {
@@ -552,22 +556,19 @@ func (s *Server) serveSession(sess *moqt.Session, requireAuth bool) {
 			"remote", sess.RemoteAddr(),
 		)
 
-		// Authenticate publisher announcements when the credential client is configured.
-		var broadSess *broadcastSession
-		if requireAuth && (s.credentialClient != nil || s.verifier != nil) {
-			broadSess, err = s.authenticateAnnouncement(sess.Context(), sess, ann)
-			if err != nil {
-				// MoQ has no per-announcement error response, so the publisher
-				// receives no explicit rejection — the ANNOUNCE is simply not
-				// mirrored into the TrackMux.
-				slog.Warn("relay: announcement rejected: credential check failed",
-					"broadcast_path", ann.BroadcastPath(),
-					"error", err)
-				continue
-			}
+		if g != nil && !g.mayPublish(ann.BroadcastPath()) {
+			// MoQ has no per-announcement error response, so the publisher
+			// receives no explicit rejection: the ANNOUNCE is simply not
+			// mirrored into the TrackMux, and the session's other broadcasts
+			// continue.
+			metricAnnouncementsRefused.Inc()
+			slog.Warn("relay: announcement refused: not covered by the session's grant",
+				"broadcast_path", ann.BroadcastPath(),
+				"remote", addr)
+			continue
 		}
 
-		handler := newRelayHandler(ann, sess, s.Config.NodeID, broadSess,
+		handler := newRelayHandler(ann, sess, s.Config.NodeID,
 			s.Config.GroupCacheSize, s.framePool, s.sampler)
 
 		slog.Debug("relay: created relayHandler",
@@ -646,8 +647,8 @@ func (s *Server) serveSession(sess *moqt.Session, requireAuth bool) {
 }
 
 // installRoute wires a winning relayHandler as the active route for its
-// broadcast path: metric accounting, session-end cancellation, optional meter
-// registration, and registration in the TrackMux. It also schedules recovery —
+// broadcast path: metric accounting, session-end cancellation, and
+// registration in the TrackMux. It also schedules recovery —
 // when this route's announcement ends, any retained alternate is promoted.
 func (s *Server) installRoute(h *relayHandler) {
 	slog.Debug("relay: installing route",
@@ -668,17 +669,6 @@ func (s *Server) installRoute(h *relayHandler) {
 		source = h.session.RemoteAddr().String()
 	}
 	s.setPathStatus(h.announcement.BroadcastPath(), h.RouteStats(), source, h)
-
-	// Register the broadcast session with the meter so usage is reported
-	// periodically and on session close.
-	if h.broadSession != nil {
-		s.meter.Register(h.broadSession)
-		context.AfterFunc(h.ctx, func() {
-			shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
-			s.meter.Deregister(shutdownCtx, h.broadSession)
-		})
-	}
 
 	// Recovery on incumbent-end: promote a retained alternate for this path
 	// when this route's announcement ends, so the path is not left stranded.
@@ -842,61 +832,4 @@ func handlePeerGoaway(newSessionURI string) {
 	}
 	metricPeerGoawayReceived.WithLabelValues(redirect).Inc()
 	slog.Info("relay: upstream peer sent GOAWAY", "new_session_uri", newSessionURI)
-}
-
-// authenticateAnnouncement subscribes to the "auth" track on the announced
-// broadcast path, reads the JWT from the first frame, and checks it: locally
-// against the control plane's JWKS when a verifier is configured, otherwise
-// against the credential introspection endpoint.
-//
-// Publisher-side contract: the publisher must serve a single-group track named
-// "auth" on the announced broadcast path. The group must contain at least one
-// frame whose payload is the raw JWT bytes (no framing). The relay expects the
-// complete JWT to arrive within the 5-second authCtx deadline.
-//
-// Returns the minted broadcastSession on success, or an error if authentication
-// fails (missing track, empty JWT, or invalid/expired credential). In local
-// mode a success returns a nil session: nothing is metered.
-func (s *Server) authenticateAnnouncement(ctx context.Context, sess *moqt.Session, ann *moqt.Announcement) (*broadcastSession, error) {
-	authCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
-
-	reader, err := sess.Subscribe(authCtx, ann.BroadcastPath(), authTrackName, nil)
-	if err != nil {
-		return nil, fmt.Errorf("subscribe auth track: %w", err)
-	}
-
-	gr, err := reader.AcceptGroup(authCtx)
-	if err != nil {
-		return nil, fmt.Errorf("accept auth group: %w", err)
-	}
-
-	buf := s.framePool.Get()
-	defer s.framePool.Put(buf)
-
-	var jwtBuf bytes.Buffer
-	for frame := range gr.Frames(buf) {
-		jwtBuf.Write(frame.Body())
-	}
-	if jwtBuf.Len() == 0 {
-		return nil, fmt.Errorf("auth track: empty JWT")
-	}
-	jwt := jwtBuf.String()
-
-	if s.verifier != nil {
-		if _, err := s.verifier.VerifyPublish(authCtx, jwt, ann.BroadcastPath().String()); err != nil {
-			return nil, fmt.Errorf("verify credential: %w", err)
-		}
-		return nil, nil
-	}
-
-	result, err := s.credentialClient.Introspect(authCtx, jwt, ann.BroadcastPath().String())
-	if err != nil {
-		return nil, fmt.Errorf("introspect: %w", err)
-	}
-	if result == nil {
-		return nil, fmt.Errorf("credential rejected by backend")
-	}
-
-	return newBroadcastSession(result.TokenID), nil
 }

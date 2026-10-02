@@ -16,6 +16,29 @@ var (
 		Help:      "Current number of active MoQT relay sessions.",
 	})
 
+	// metricAuthRequests counts requests to the auth server (or checks against
+	// the public grant) by event and result: admitted, refused (401/403, an
+	// empty grant, or a credential on a public relay), invalid (a grant the
+	// relay can't enforce) or error (no answer).
+	metricAuthRequests = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Namespace: "qumo",
+			Subsystem: "relay",
+			Name:      "auth_requests_total",
+			Help:      "Session admission checks, by event and result.",
+		},
+		[]string{"event", "result"},
+	)
+
+	// metricAnnouncementsRefused counts announcements not routed because the
+	// session's grant doesn't cover their path.
+	metricAnnouncementsRefused = promauto.NewCounter(prometheus.CounterOpts{
+		Namespace: "qumo",
+		Subsystem: "relay",
+		Name:      "announcements_refused_total",
+		Help:      "Announcements not routed because the session's grant doesn't cover the path.",
+	})
+
 	// metricPeersConnected tracks the number of active outbound relay peer
 	// connections managed by maintainPeer.
 	metricPeersConnected = promauto.NewGauge(prometheus.GaugeOpts{

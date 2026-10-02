@@ -20,7 +20,6 @@ var fanoutSizes = []int{1, 2, 4, 16, 64, 100}
 //	frame := cache.next(i)
 //	n := frame.Len()
 //	d.egressCounter.Add(float64(n))   // ONE prometheus.Counter per track, shared
-//	d.session.addEgress(int64(n))     // ONE atomic.Int64 per session, shared
 //
 // withCounters=false drops the shared-counter Add calls, yielding the
 // contention-free baseline (next + Len only). Comparing the two across the
@@ -29,8 +28,7 @@ var fanoutSizes = []int{1, 2, 4, 16, 64, 100}
 // batched=true models the deliverGroup optimization (#333): instead of one
 // egressCounter.Add per frame, bytes are accumulated locally and flushed once
 // per group (every nFrames frames), cutting shared-counter CAS operations from
-// O(frames) to O(groups). addEgress stays per-frame in both modes — it is
-// per-session, not a shared counter. The per-frame (batched=false) and
+// O(frames) to O(groups). The per-frame (batched=false) and
 // per-group (batched=true) sweeps together let benchstat show the batching win
 // directly under fan-out contention.
 //
@@ -43,7 +41,7 @@ func runEgressFanout(b *testing.B, nSubs int, withCounters, batched bool) {
 	b.Helper()
 
 	trackID := fmt.Sprintf("bench-egress-%d-%d", nSubs, time.Now().UnixNano())
-	dist := newTrackDistributor(newTrackManager(0, nil), trackID, newBroadcastSession(""), nil)
+	dist := newTrackDistributor(newTrackManager(0, nil), trackID, nil)
 	defer close(dist.done)
 
 	// Pre-fill one complete group so cache.next(i) is always a hit. Frame size
@@ -81,7 +79,6 @@ func runEgressFanout(b *testing.B, nSubs int, withCounters, batched bool) {
 					} else {
 						dist.egressCounter.Add(float64(nn))
 					}
-					dist.session.addEgress(nn) // per-frame: per-session, not shared
 				}
 			}
 			if batched && acc > 0 {
@@ -93,9 +90,8 @@ func runEgressFanout(b *testing.B, nSubs int, withCounters, batched bool) {
 }
 
 // BenchmarkEgressAccounting_Fanout measures the per-frame egress accounting
-// (next + egressCounter.Add + addEgress) under increasing fan-out. Hypothesis:
-// the shared per-track prometheus.Counter and per-session atomic.Int64 ping-pong
-// under contention, so ns/op grows super-linearly with subscriber count.
+// (next + egressCounter.Add) under increasing fan-out. Hypothesis: the shared
+// per-track prometheus.Counter ping-pongs under contention, so ns/op grows super-linearly with subscriber count.
 func BenchmarkEgressAccounting_Fanout(b *testing.B) {
 	for _, n := range fanoutSizes {
 		b.Run(fmt.Sprintf("subs=%d", n), func(b *testing.B) {

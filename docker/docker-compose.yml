@@ -14,6 +14,7 @@ services:
     environment:
       RELAY_ADDR: "0.0.0.0:4433"
       RELAY_NAME: "relay-1"
+      QUMO_AUTH_PUBLIC: "**"  # open for local testing; production sets QUMO_AUTH_URL
     volumes:
       # Generate certs first: mkcert -cert-file certs/server.crt -key-file certs/server.key localhost
       - ../certs:/app/certs:ro

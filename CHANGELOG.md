@@ -6,6 +6,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+
+### Changed (breaking)
+
+- **Relays ask an auth server when a session connects; introspection is removed (`internal/relay`).** First step of the relay side of qumo-deploy ADR 0035, as revised on 2026-10-02 (#417, epic #426).
+  - **One required setting:** `QUMO_AUTH_URL` (an auth server) or `QUMO_AUTH_PUBLIC` (static subtree patterns, `**` for development). Setting both, or neither, stops the relay at startup.
+  - **The contract** is a subset of `moq-auth`. The relay POSTs a `connect` request with the session's path and raw `query`, and enforces the grant's `publish` patterns on announcements. The relay never parses the credential, which clients put in the connect URL (`?jwt=`).
+  - **Refusal:** a WebTransport client gets 401, 403 or 503 before the upgrade; a native-QUIC session is closed with `0x2`.
+  - **Peers:** trusted peers (`PEER_CIDRS`, mTLS) are never asked. Peers this relay dials (`PEERS`, `UPSTREAM_ADDR`) are now trusted too.
+  - **Removed:**
+    - introspection (`POST /v1/credentials/introspect`) and the `auth` track;
+    - local verification against the control plane's JWKS (`internal/credential`);
+    - `QUMO_CREDENTIAL_URL`, `QUMO_RELAY_TOKEN`, `QUMO_RELAY_AUDIENCE`, `QUMO_CREDENTIAL_ISSUER`;
+    - usage reporting to `POST /v1/usage/events`. Session bytes return through the auth contract in #424.
+  - **Dev launchers** (`mage run`, the compose files, the demo Nomad job, `bench-multiproc`, `tools/capacity`) set `QUMO_AUTH_PUBLIC=**`.
+  - **New metrics:** `qumo_relay_auth_requests_total{event,result}`, `qumo_relay_announcements_refused_total`.
+  - **Requires** gomoqt v0.20.1, which carries the WebTransport upgrade request's context into the session.
 ## [v0.8.260929] - 2026-09-29
 
 ### Added

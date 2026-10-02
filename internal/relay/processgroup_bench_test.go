@@ -12,7 +12,7 @@ import (
 // cost is visible. fakeFrameSource makes fill synchronous and fast, isolating
 // the per-group dispatch overhead from the frame work.
 func BenchmarkProcessGroup(b *testing.B) {
-	dist := newTrackDistributor(newTrackManager(0, nil), "bench/processgroup", nil, nil)
+	dist := newTrackDistributor(newTrackManager(0, nil), "bench/processgroup", nil)
 
 	src := &fakeFrameSource{frames: [][]byte{make([]byte, 1024)}}
 	ctx := context.Background()
