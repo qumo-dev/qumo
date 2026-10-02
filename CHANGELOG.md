@@ -21,13 +21,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     - usage reporting to `POST /v1/usage/events`. Session bytes return through the auth contract in #424.
   - **Dev launchers** (`mage run`, the compose files, the demo Nomad job, `bench-multiproc`, `tools/capacity`) set `QUMO_AUTH_PUBLIC=**`.
   - **New metrics:** `qumo_relay_auth_requests_total{event,result}`, `qumo_relay_announcements_refused_total`.
-  - **Requires** gomoqt v0.20.1, which carries the WebTransport upgrade request's context into the session.
+  - **Requires** gomoqt v0.21.0: the WebTransport upgrade request's context reaches the session, and a native-QUIC client's `?jwt=` reaches the relay in the SETUP path (`Session.RequestURI`).
 - **Peers are identified by certificate; peer settings are reduced to `CA_FILE` and `PEERS` (`internal/relay`).**
   - **Trusted peer:** a session whose client certificate is verified against `CA_FILE`. A client certificate is optional for everyone else, so browsers connect without one. Without `CA_FILE`, no session is a peer.
   - **Dialing:** relays in `PEERS` are verified against the system roots plus `CA_FILE` (before, `CA_FILE` replaced the system roots). This relay presents its `CERT_FILE` as its client certificate.
   - **`PEERS`** resolves each host to all its addresses and dials every one, which `UPSTREAM_ADDR` used to do. A `moqt://` prefix is accepted; before, it produced `moqt://moqt://…`.
   - **Removed:** `PEER_CIDRS` (network-based trust), `MTLS_REQUIRED` (a client certificate is now always optional, verified when given), `UPSTREAM_ADDR` (use `PEERS`).
-  - **Migration:** a relay that relied on `PEER_CIDRS` needs a private CA, with a client certificate for each peer and native-QUIC tool, before upgrading.
+  - **Migration:** a relay that relied on `PEER_CIDRS` needs a private CA, with a client certificate for each relay, before upgrading. Native-QUIC tools (ingest, HLS egress) don't: they connect with `?jwt=` and are admitted by the auth server.
 
 ## [v0.8.260929] - 2026-09-29
 

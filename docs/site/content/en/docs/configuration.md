@@ -116,7 +116,7 @@ A subset of [`moq-auth`](https://github.com/kixelated/moq/blob/main/doc/bin/rela
  "path": "/as/dialed", "query": "jwt=<credential>"}
 ```
 
-**The relay never parses the credential;** the client puts it in the connect URL (`https://relay.example.com/…?jwt=…`) and the relay forwards `query` as is.
+**The relay never parses the credential;** the client puts it in the connect URL (`https://relay.example.com/…?jwt=…`, or `moqt://relay.example.com/…?jwt=…` over native QUIC) and the relay forwards `query` as is.
 
 The server answers with a grant:
 
