@@ -196,7 +196,7 @@ func TestServer_SessionAuth_NativeQUIC(t *testing.T) {
 
 			// A refused native session still completes SETUP; the relay closes it
 			// right after, so the dial itself may succeed either way.
-			_ = announceOver(t, peerURL(addr)+"/acme", []string{moqt.NextProtoMOQ}, path)
+			_ = announceOver(t, peerURL(addr)+"/acme?jwt=header.payload.signature", []string{moqt.NextProtoMOQ}, path)
 
 			if tt.wantRoute {
 				require.Eventually(t, routed(srv, path), 3*time.Second, 25*time.Millisecond)
@@ -211,6 +211,7 @@ func TestServer_SessionAuth_NativeQUIC(t *testing.T) {
 			require.NotEmpty(t, reqs)
 			assert.Equal(t, transportQUIC, reqs[len(reqs)-1].Transport)
 			assert.Equal(t, "/acme", reqs[len(reqs)-1].Path)
+			assert.Equal(t, "jwt=header.payload.signature", reqs[len(reqs)-1].Query, "native QUIC carries the credential too")
 		})
 	}
 }

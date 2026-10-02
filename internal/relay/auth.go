@@ -352,17 +352,18 @@ func (s *Server) webTransportRequest(r *http.Request) authRequest {
 }
 
 // nativeRequest describes a native-QUIC session for the auth server. Its path
-// comes from the SETUP Path parameter; a client that put a query there gets
-// it forwarded as the query.
+// and query come from the SETUP Path parameter (gomoqt's Session.RequestURI),
+// decoded the same way a WebTransport request's are.
 func (s *Server) nativeRequest(sess *moqt.Session) authRequest {
-	path, query, _ := strings.Cut(sess.RequestPath(), "?")
 	req := authRequest{
 		ID:        newSessionID(),
 		Event:     eventConnect,
 		Node:      s.nodeID(),
 		Transport: transportQUIC,
-		Path:      path,
-		Query:     query,
+		Path:      sess.RequestURI(),
+	}
+	if u, err := url.ParseRequestURI(sess.RequestURI()); err == nil {
+		req.Path, req.Query = u.Path, u.RawQuery
 	}
 	if addr := sess.RemoteAddr(); addr != nil {
 		req.Remote = addr.String()
