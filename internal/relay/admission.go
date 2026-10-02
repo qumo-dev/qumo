@@ -22,6 +22,11 @@ const (
 	defaultMinRefreshInterval = 10 * time.Second
 	// maxCredentialBytes bounds one credential on the auth track.
 	maxCredentialBytes = 8 << 10
+	// retractionGrace is how long a subscriber session must stay connected
+	// after its session credential announcement ends for that to count as a
+	// retraction. A client that disconnects ends the announcement too, often
+	// just before the session itself ends; that is an ordinary close.
+	retractionGrace = time.Second
 )
 
 // Reasons the relay ends a session or refuses a refresh.
@@ -263,10 +268,8 @@ func (s *Server) track(ad *admission, ann *moqt.Announcement, auth *authTrack) {
 		// A subscriber's session credential authorizes the whole session. If
 		// the client withdraws it but stays connected, the credential is no
 		// longer tracked for expiry or revocation, so the session must end.
-		// When the relay itself closes the session, the announcement ends too,
-		// before the session's context does; that is not a retraction.
-		if ad.subscriber && sess.Context().Err() == nil && !ad.state.endedByRelay() {
-			s.endSession(ad, reasonRetracted)
+		if ad.subscriber {
+			go s.endIfRetracted(ad)
 		}
 	})
 	context.AfterFunc(ctx, func() {
@@ -423,8 +426,8 @@ func (s *Server) enforceTrust() {
 
 // endSession closes ad's session with the Unauthorized code and reason as the
 // phrase, which clients read to tell why (credential_expired,
-// credential_retracted, key_revoked, project_suspended). The reason is also reported with each of the session's
-// close events.
+// credential_retracted, key_revoked, project_suspended). The reason is also
+// reported with each of the session's close events.
 func (s *Server) endSession(ad *admission, reason string) {
 	ad.state.ended(reason)
 	metricSessionsEnded.WithLabelValues(reason).Inc()
@@ -460,6 +463,22 @@ func (s *Server) sessionEvent(ad *admission, eventType string) {
 		ev.Reason = ad.state.reason()
 	}
 	s.meter.enqueue(ev)
+}
+
+// endIfRetracted ends ad's session as credential_retracted once its session
+// credential announcement has ended, unless the session itself ends within
+// retractionGrace: then the client disconnected, or the relay closed it (the
+// announcement ends then too), and nothing was retracted.
+func (s *Server) endIfRetracted(ad *admission) {
+	t := time.NewTimer(retractionGrace)
+	defer t.Stop()
+	select {
+	case <-ad.sess.Context().Done():
+	case <-t.C:
+		if !ad.state.endedByRelay() {
+			s.endSession(ad, reasonRetracted)
+		}
+	}
 }
 
 func (s *Server) expiryLeeway() time.Duration {

@@ -58,7 +58,6 @@ type SnapshotKey struct {
 	ProjectID string `json:"project_id"`
 	Prefix    string `json:"prefix"`
 	State     string `json:"state"`
-	Managed   bool   `json:"managed"`
 }
 
 // Policy is one project's admission policy.

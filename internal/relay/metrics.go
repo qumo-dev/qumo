@@ -318,7 +318,8 @@ var (
 	)
 
 	// metricSessionsEnded counts sessions the relay ended for a credential
-	// reason (credential_expired, credential_retracted, key_revoked, project_suspended, quota).
+	// reason (credential_expired, credential_retracted, key_revoked,
+	// project_suspended, quota).
 	metricSessionsEnded = promauto.NewCounterVec(
 		prometheus.CounterOpts{
 			Namespace: "qumo",
