@@ -83,6 +83,15 @@ func (s *Server) newConnAuth(conn moqt.StreamConn) *connAuth {
 	return &connAuth{gate: newSubscriberGate()}
 }
 
+// peerDialContext returns the context to dial a configured peer with. The
+// dialed session is a trusted relay peer that subscribes back over it, but it
+// does not pass through the ConnContext hook, which only sees accepted
+// connections. A client connection's context keeps the dial context's values,
+// so this marks the session, and the SUBSCRIBEs it carries, as not gated.
+func peerDialContext(ctx context.Context) context.Context {
+	return context.WithValue(ctx, connAuthKey{}, &connAuth{})
+}
+
 // connAuthFrom returns the connection authorization in ctx: a session's
 // context or a TrackWriter's, both of which carry the ConnContext values.
 func connAuthFrom(ctx context.Context) (*connAuth, bool) {
@@ -127,7 +136,8 @@ func (s *Server) authorizeSubscribe(tw *moqt.TrackWriter) bool {
 	ca, ok := connAuthFrom(tw.Context())
 	if !ok {
 		// Every connection the relay accepts passes through its ConnContext
-		// hook; a SUBSCRIBE without that state is refused, not trusted.
+		// hook, and every peer it dials carries peerDialContext's state; a
+		// SUBSCRIBE without that state is refused, not trusted.
 		metricSubscribeAuthz.WithLabelValues("unidentified").Inc()
 		return false
 	}

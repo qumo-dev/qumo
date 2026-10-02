@@ -51,6 +51,13 @@ func startRefreshTestRelay(t *testing.T, snapshot trust.Snapshot) *refreshTestRe
 
 func startRefreshTestRelayWith(t *testing.T, snapshot trust.Snapshot, refreshInterval time.Duration) *refreshTestRelay {
 	t.Helper()
+	return startManagedTestRelay(t, snapshot, relayAuth{expiryLeeway: 10 * time.Millisecond, refreshInterval: refreshInterval})
+}
+
+// startManagedTestRelay starts a managed relay trusting snapshot, with auth's
+// other settings (its verifier and trust store are set here).
+func startManagedTestRelay(t *testing.T, snapshot trust.Snapshot, auth relayAuth) *refreshTestRelay {
+	t.Helper()
 	cp := newStubControlPlane()
 	t.Cleanup(cp.Close)
 	cp.setSnapshot(snapshot)
@@ -58,12 +65,8 @@ func startRefreshTestRelayWith(t *testing.T, snapshot trust.Snapshot, refreshInt
 	poller := trust.NewPoller(cp.srv.URL, "relay-shared-secret", cp.srv.Client(), store)
 	poll := func() { require.NoError(t, poller.Poll(context.Background())) }
 	poll()
-	addr, srv, shutdown := startRelay(t, relayAuth{
-		verifier:        credential.NewVerifier(store),
-		trust:           store,
-		expiryLeeway:    10 * time.Millisecond,
-		refreshInterval: refreshInterval,
-	})
+	auth.verifier, auth.trust = credential.NewVerifier(store), store
+	addr, srv, shutdown := startRelay(t, auth)
 	t.Cleanup(shutdown)
 	leaf := srv.MOQServer.TLSConfig.Certificates[0].Leaf
 	require.NotNil(t, leaf)
