@@ -12,7 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Relays verify app-signed credentials against configured keys; introspection is removed (`internal/credential`, `internal/relay`).** First step of qumo-deploy ADR 0035 (epic #426).
   - **One verification path.** `QUMO_SIGNING_KEYS_FILE` names a JWK Set of Ed25519 public keys; a publisher's credential must be signed by one of them. A key without a `kid` gets its RFC 7638 thumbprint, and a mismatching `kid` is refused at start.
   - **Claims:** `iss`, `aud` and `jti` are no longer checked; `iat` is now required, and `exp` − `iat` may not exceed one hour. Other claims are ignored.
-  - **Removed:** introspection (`POST /v1/credentials/introspect`, its cache and request coalescing), fetching the control plane's key set, `QUMO_RELAY_AUDIENCE` and `QUMO_CREDENTIAL_ISSUER`. The relay refuses to start when either removed variable is set, or when `QUMO_CREDENTIAL_URL` is set without `QUMO_SIGNING_KEYS_FILE` (it would otherwise run open).
+  - **Removed:** introspection (`POST /v1/credentials/introspect`, its cache and request coalescing), fetching the control plane's key set, `QUMO_RELAY_AUDIENCE` and `QUMO_CREDENTIAL_ISSUER`. The relay refuses to start when `QUMO_CREDENTIAL_URL` is set without `QUMO_SIGNING_KEYS_FILE` (it would otherwise run open).
   - **Usage events** carry `kid` instead of `owner_token_id`.
   - **Managed relays** need the trust snapshot (#419) before they can run this version; until then they stay on v0.8.260929.
 

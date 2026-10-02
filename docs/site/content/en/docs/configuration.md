@@ -109,4 +109,4 @@ relay's HTTP port.
 
 Credentials are app-signed (qumo-deploy ADR 0035) and verified entirely on the relay: an unknown `kid` is refused, then the `EdDSA` signature, `exp` and `iat` (required) and `nbf` (60 s leeway), a lifetime (`exp` − `iat`) of at most one hour, and that `path_auth` covers the announced path. Other claims are ignored.
 
-`QUMO_RELAY_AUDIENCE` and `QUMO_CREDENTIAL_ISSUER` are no longer supported, and the relay refuses to start when either is set. Introspection (`POST /v1/credentials/introspect`) and fetching the control plane's key set are removed.
+`QUMO_RELAY_AUDIENCE` and `QUMO_CREDENTIAL_ISSUER` are no longer read. Introspection (`POST /v1/credentials/introspect`) and fetching the control plane's key set are removed.
