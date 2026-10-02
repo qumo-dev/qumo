@@ -129,3 +129,44 @@ func TestServer_UsageEvents_OpenBeforeClose(t *testing.T) {
 	require.NotEqual(t, -1, openAt, "the open was reported")
 	require.Less(t, openAt, closeAt, "the open is reported before the close")
 }
+
+// A subscriber's close reports why it closed: credential_retracted when the
+// client withdrew its session credential and stayed connected, closed when it
+// disconnected.
+func TestServer_UsageEvents_SubscriberCloseReason(t *testing.T) {
+	const cam = moqt.BroadcastPath("/tenant/project/live/cam1")
+	tests := map[string]struct {
+		end  func(sess *moqt.Session, retract func())
+		want string
+	}{
+		"retracted":    {end: func(_ *moqt.Session, retract func()) { retract() }, want: reasonRetracted},
+		"disconnected": {end: func(sess *moqt.Session, _ func()) { _ = sess.CloseWithError(moqt.NoError, "bye") }, want: reasonClosed},
+	}
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			signer := newAppSigner(t)
+			relay := startRefreshTestRelay(t, trust.Snapshot{Keys: []trust.SnapshotKey{signer.snapshotKey("p1", "active")}})
+			relay.publishMedia(t, cam, signer.signPublish(t, "live", time.Minute))
+			mux := moqt.NewTrackMux(0)
+			next := make(chan string, 1)
+			next <- signer.signSubscribe(t, "live", time.Minute)
+			broadcast := moqt.NewBroadcast()
+			require.NoError(t, broadcast.Register(authTrackName, credentialTrack(next)))
+			ann, retract := moqt.NewAnnouncement(context.Background(), sessionAuthPath)
+			t.Cleanup(retract)
+			mux.Announce(ann, broadcast)
+			sub := &subscriber{sess: relay.dial(t, mux)}
+			require.NoError(t, sub.watch(t, cam))
+			open := eventFrom(t, relay.cp, "subscriber open", func(ev UsageEvent) bool {
+				return ev.Type == eventSessionOpen && ev.Role == roleSubscriber
+			})
+
+			tt.end(sub.sess, retract)
+
+			closed := eventFrom(t, relay.cp, "subscriber close", func(ev UsageEvent) bool {
+				return ev.Type == eventSessionClose && ev.SessionID == open.SessionID
+			})
+			require.Equal(t, tt.want, closed.Reason)
+		})
+	}
+}

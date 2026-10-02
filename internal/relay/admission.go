@@ -231,13 +231,19 @@ func (s *Server) track(ad *admission, ann *moqt.Announcement, auth *authTrack) {
 
 	ctx, cancel := context.WithCancel(sess.Context())
 	ann.AfterFunc(func() {
-		cancel()
+		if !ad.subscriber {
+			cancel()
+			return
+		}
 		// A subscriber's session credential authorizes the whole session. If
 		// the client withdraws it but stays connected, the credential is no
 		// longer tracked for expiry or revocation, so the session must end.
-		if ad.subscriber {
-			go s.endIfRetracted(ad)
-		}
+		// The admission ends once that is decided, so its close event carries
+		// the reason.
+		go func() {
+			s.endIfRetracted(ad)
+			cancel()
+		}()
 	})
 	context.AfterFunc(ctx, func() {
 		s.admitted.remove(ad)
