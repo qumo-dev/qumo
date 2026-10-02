@@ -9,6 +9,7 @@ package relay
 import (
 	"context"
 	"crypto/tls"
+	"net/netip"
 	"testing"
 	"time"
 
@@ -261,4 +262,50 @@ func TestServer_SubscriberCredential_RetractionEndsSession(t *testing.T) {
 
 	require.Eventually(t, sub.ended, 3*time.Second, 20*time.Millisecond,
 		"a session that withdraws its credential is ended")
+}
+
+// A viewer that disconnects ends its session credential announcement along
+// with its session. That is an ordinary close, not a retraction.
+func TestServer_SubscriberCredential_DisconnectIsNotRetraction(t *testing.T) {
+	const cam = moqt.BroadcastPath("/tenant/project/live/cam1")
+	signer := newAppSigner(t)
+	relay := startRefreshTestRelay(t, trust.Snapshot{Keys: []trust.SnapshotKey{signer.snapshotKey("p1", "active")}})
+	relay.publishMedia(t, cam, signer.signPublish(t, "live", time.Minute))
+	retracted := func() float64 { return testutil.ToFloat64(metricSessionsEnded.WithLabelValues(reasonRetracted)) }
+	before := retracted()
+
+	// The announcement and the session end almost together; repeat so the
+	// announcement ending first is all but certain to happen at least once.
+	for range 10 {
+		viewer := relay.newSubscriber(t, signer.signSubscribe(t, "live", time.Minute))
+		require.NoError(t, viewer.watch(t, cam))
+		require.NoError(t, viewer.sess.CloseWithError(moqt.NoError, "bye"))
+	}
+
+	assert.Never(t, func() bool { return retracted() != before }, 2*retractionGrace, 50*time.Millisecond,
+		"a disconnect must not be counted as a retraction")
+}
+
+// A relay serves the SUBSCRIBEs of a peer it dialed, which arrive over the
+// dialed session: a broadcast published on the dialing relay can be watched
+// through the relay it dialed.
+func TestServer_SubscriberCredential_DialedPeerIsNotGated(t *testing.T) {
+	const cam = moqt.BroadcastPath("/tenant/project/live/cam1")
+	signer := newAppSigner(t)
+	snapshot := trust.Snapshot{Keys: []trust.SnapshotKey{signer.snapshotKey("p1", "active")}}
+	// b trusts native-QUIC sessions from loopback as relay peers; a dials b.
+	b := startManagedTestRelay(t, snapshot, relayAuth{peerCIDRs: []netip.Prefix{netip.MustParsePrefix("127.0.0.1/32")}})
+	a := startManagedTestRelay(t, snapshot, relayAuth{})
+	a.srv.Config.Peers = []Peer{{Address: b.addr}}
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	go a.srv.ConnectPeers(ctx)
+	a.publishMedia(t, cam, signer.signPublish(t, "live", time.Minute))
+	require.Eventually(t, func() bool { h, _ := b.srv.TrackMux.TrackHandler(cam); return h != nil },
+		5*time.Second, 20*time.Millisecond, "a's broadcast should reach b over the peer link")
+	viewer := b.newSubscriber(t, signer.signSubscribe(t, "live", time.Minute))
+
+	err := viewer.watch(t, cam)
+
+	assert.NoError(t, err, "b's SUBSCRIBE to a over a's dialed session must be served")
 }
