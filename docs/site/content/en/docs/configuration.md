@@ -121,4 +121,4 @@ On a managed relay:
 
 Credentials are app-signed (qumo-deploy ADR 0035) and verified entirely on the relay: an unknown `kid` is refused, then the `EdDSA` signature, `exp` and `iat` (required) and `nbf` (60 s leeway), a lifetime (`exp` − `iat`) of at most one hour, **prefix confinement** (every path `path_auth` grants, `root`+`pub` and `root`+`sub`, lies within the signing key's prefix at a `/` boundary; `.` and `..` segments are refused), and that `path_auth` covers the announced path. Other claims are ignored. On a managed relay every key carries its project's prefix, so a key can never sign for another tenant; the trust snapshot's keys without a prefix are ignored. Statically configured keys have no prefix.
 
-`QUMO_RELAY_AUDIENCE` and `QUMO_CREDENTIAL_ISSUER` are no longer supported, and the relay refuses to start when either is set. Introspection (`POST /v1/credentials/introspect`) and fetching the control plane's key set are removed.
+`QUMO_RELAY_AUDIENCE` and `QUMO_CREDENTIAL_ISSUER` are no longer read. Introspection (`POST /v1/credentials/introspect`) and fetching the control plane's key set are removed.
