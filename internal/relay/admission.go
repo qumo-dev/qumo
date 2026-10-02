@@ -20,6 +20,11 @@ const (
 	defaultMinRefreshInterval = 10 * time.Second
 	// maxCredentialBytes bounds one credential on the auth track.
 	maxCredentialBytes = 8 << 10
+	// retractionGrace is how long a subscriber session must stay connected
+	// after its session credential announcement ends for that to count as a
+	// retraction. A client that disconnects ends the announcement too, often
+	// just before the session itself ends; that is an ordinary close.
+	retractionGrace = time.Second
 )
 
 // Reasons the relay ends a session or refuses a refresh.
@@ -174,8 +179,8 @@ func (s *Server) track(ad *admission, ann *moqt.Announcement, auth *authTrack) {
 		// A subscriber's session credential authorizes the whole session. If
 		// the client withdraws it but stays connected, the credential is no
 		// longer tracked for expiry or revocation, so the session must end.
-		if ad.subscriber && sess.Context().Err() == nil {
-			endSession(sess, reasonRetracted)
+		if ad.subscriber {
+			go endIfRetracted(sess)
 		}
 	})
 	context.AfterFunc(ctx, func() {
@@ -332,6 +337,19 @@ func (s *Server) enforceTrust() {
 func endSession(sess *moqt.Session, reason string) {
 	metricSessionsEnded.WithLabelValues(reason).Inc()
 	_ = sess.CloseWithError(moqt.UnauthorizedSessionErrorCode, reason)
+}
+
+// endIfRetracted ends sess as credential_retracted once its session credential
+// announcement has ended, unless the session itself ends within
+// retractionGrace: then the client disconnected, and nothing was retracted.
+func endIfRetracted(sess *moqt.Session) {
+	t := time.NewTimer(retractionGrace)
+	defer t.Stop()
+	select {
+	case <-sess.Context().Done():
+	case <-t.C:
+		endSession(sess, reasonRetracted)
+	}
 }
 
 func (s *Server) expiryLeeway() time.Duration {
