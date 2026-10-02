@@ -11,6 +11,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"fmt"
+	"net"
 	"net/http"
 	"testing"
 	"time"
@@ -114,15 +115,28 @@ func dialContract(t *testing.T, tc transportCase, addr string, roots *x509.CertP
 	return sess
 }
 
-// acceptServerSession waits for the server side of the client's session.
-func acceptServerSession(t *testing.T, sessions <-chan *moqt.Session) *moqt.Session {
+// acceptServerSession waits for the server side of client's session. It
+// matches by the client's UDP port: a probe session from startContractServer
+// can still be in sessions, its close not yet seen by the server.
+func acceptServerSession(t *testing.T, sessions <-chan *moqt.Session, client *moqt.Session) *moqt.Session {
 	t.Helper()
-	select {
-	case sess := <-sessions:
-		return sess
-	case <-time.After(5 * time.Second):
-		t.Fatal("server never accepted the session")
-		return nil
+	port := func(a net.Addr) int {
+		if u, ok := a.(*net.UDPAddr); ok {
+			return u.Port
+		}
+		return -1
+	}
+	timeout := time.After(5 * time.Second)
+	for {
+		select {
+		case sess := <-sessions:
+			if port(sess.RemoteAddr()) == port(client.LocalAddr()) {
+				return sess
+			}
+		case <-timeout:
+			t.Fatal("server never accepted the session")
+			return nil
+		}
 	}
 }
 
@@ -176,8 +190,8 @@ func TestContract_AuthTrackStaysOpenForRefresh(t *testing.T) {
 			ann, endAnn := moqt.NewAnnouncement(context.Background(), "/pub")
 			t.Cleanup(endAnn)
 			clientMux.Announce(ann, broadcast)
-			_ = dialContract(t, tc, addr, roots, clientMux)
-			server := acceptServerSession(t, sessions)
+			client := dialContract(t, tc, addr, roots, clientMux)
+			server := acceptServerSession(t, sessions, client)
 
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
@@ -241,8 +255,8 @@ func TestContract_ReservedSessionAuthPath(t *testing.T) {
 			ann, endAnn := moqt.NewAnnouncement(context.Background(), reserved)
 			t.Cleanup(endAnn)
 			clientMux.Announce(ann, broadcast)
-			_ = dialContract(t, tc, addr, roots, clientMux)
-			server := acceptServerSession(t, sessions)
+			client := dialContract(t, tc, addr, roots, clientMux)
+			server := acceptServerSession(t, sessions, client)
 
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
@@ -287,7 +301,7 @@ func TestContract_ConnContextReachesHandlers(t *testing.T) {
 			})
 			addr, roots, sessions := startContractServer(t, serverMux)
 			client := dialContract(t, tc, addr, roots, moqt.NewTrackMux(0))
-			server := acceptServerSession(t, sessions)
+			server := acceptServerSession(t, sessions, client)
 
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
