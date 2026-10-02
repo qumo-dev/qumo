@@ -1,17 +1,16 @@
 package relay
 
 import (
-	"net/netip"
 	"strings"
 )
 
-// splitAddrList splits a comma-separated address list, trimming whitespace and
-// dropping empty entries. Used for both PEERS and UPSTREAM_ADDR so the two
-// share one parsing rule.
+// splitAddrList splits PEERS, a comma-separated list of host:port entries,
+// trimming whitespace and an optional "moqt://" prefix and dropping empty
+// entries.
 func splitAddrList(raw string) []string {
 	var addrs []string
 	for a := range strings.SplitSeq(raw, ",") {
-		a = strings.TrimSpace(a)
+		a = strings.TrimPrefix(strings.TrimSpace(a), "moqt://")
 		if a != "" {
 			addrs = append(addrs, a)
 		}
@@ -41,29 +40,18 @@ type Config struct {
 	// falls back to DefaultFramePool (DefaultNewFrameCapacity).
 	FrameCapacity int
 
-	// Peers is the list of upstream relay peers to connect to.
-	// The relay will dial each peer, discover announcements via
-	// ANNOUNCE_PLEASE, and register them on the local TrackMux.
+	// Peers is the list of relays to dial. Each host is resolved to all its
+	// addresses, and each address is dialed, so a DNS name with several
+	// records (e.g. role-hub.qumo-relay.service.consul:4433) connects to
+	// every relay behind it. The relay discovers their announcements via
+	// ANNOUNCE_PLEASE and registers them on the local TrackMux.
 	Peers []Peer
-
-	// UpstreamAddr is the address of an upstream relay to connect to.
-	// Used by edge relays to connect to upstream hub relays (e.g. role-hub.qumo-relay.service.consul:4433),
-	// or any relay connecting upstream. Multiple comma-separated addresses can be specified.
-	UpstreamAddr string
 
 	// NextSessionURI is the redirect URI sent to clients/peers in a GOAWAY
 	// message during graceful shutdown (gomoqt Server.NextSessionURI). Empty
 	// means no redirect is advertised. GOAWAY is an escape-hatch primitive;
 	// route/subscription migration is the primary mobility mechanism (#280).
 	NextSessionURI string
-
-	// PeerCIDRs are networks whose native-QUIC sessions are trusted as relay
-	// peers (e.g. a private mesh overlay such as 100.64.0.0/10). A native-QUIC
-	// session is a peer only if it comes from one of these networks or
-	// presented a client certificate verified against CA_FILE; any other
-	// session is authenticated like a client when credential auth is
-	// configured.
-	PeerCIDRs []netip.Prefix
 }
 
 // Peer represents a remote relay to connect to for announce discovery.

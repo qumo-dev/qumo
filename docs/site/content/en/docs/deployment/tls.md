@@ -22,17 +22,16 @@ qumo relay
 (`qumo playground` needs no manual cert — it generates and trusts its own dev
 certificate automatically.)
 
-## Mutual TLS between peers (optional)
+## Trusted peers (optional)
 
-Setting `CA_FILE` enables mutual TLS for the relay's peer mesh:
+Setting `CA_FILE` makes the relay's peers identify themselves by certificate:
 
-- incoming connections must present a client cert signed by this CA;
-- the dialer presents this node's `CERT_FILE` cert to remote relays and trusts only the CA pool.
+- a session presenting a client certificate signed by this CA is a trusted
+  peer, never asked by the auth server;
+- a client certificate stays optional, so browsers (which present none) still
+  connect and are admitted by the auth server;
+- the dialer presents this node's `CERT_FILE` cert to the relays in `PEERS` and
+  verifies theirs against the system roots plus this CA.
 
-Because mTLS is required by default once `CA_FILE` is set, browsers — which
-don't present a client cert — can no longer connect. If the same relay also
-serves browser/WebTransport traffic directly, set `MTLS_REQUIRED=false`: peer
-certs are still verified when presented, but connections without one are
-accepted. See
-[Configuration → mTLS]({{< relref "../configuration" >}}#mtls-optional) for
-the `CA_FILE` / `MTLS_REQUIRED` variable reference.
+Without `CA_FILE`, no session is a peer. See
+[Configuration → Peer trust]({{< relref "../configuration" >}}#peer-trust-optional).

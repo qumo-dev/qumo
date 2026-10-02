@@ -1,6 +1,6 @@
-# Nomad UPSTREAM_ADDR simulation
+# Nomad PEERS simulation
 
-A real single-region Nomad cluster that exercises the static-`UPSTREAM_ADDR`
+A real single-region Nomad cluster that exercises the static-`PEERS`
 edge→hub topology on real Nomad-launched containers, complementing the plain
 Docker Compose version in `docker-compose.static.yml`.
 
@@ -8,19 +8,19 @@ Docker Compose version in `docker-compose.static.yml`.
 
 | Path | Mechanism | Covered here |
 |---|---|---|
-| Edge → local hubs (within a region) | static `UPSTREAM_ADDR` (fixed hub aliases) | ✅ **yes** |
+| Edge → local hubs (within a region) | static `PEERS` (fixed hub aliases) | ✅ **yes** |
 | Hub → remote hubs (cross-region) | none — no dynamic cross-cluster discovery exists | ❌ no |
 
 A **single Nomad cluster models a single region.** Each hub gets a stable
 `network_aliases` name (`hub-0`, `hub-1`, ...) on the shared `qumo-net` Docker
 network via the docker driver's `network_aliases` config, resolvable by other
 containers on that network through Docker's embedded DNS. Edges are given a
-fixed `UPSTREAM_ADDR = "hub-0:4433,hub-1:4433"` matching the hubs group's
-`count`. Hubs get no `UPSTREAM_ADDR`, so within one cluster only edge→hub
+fixed `PEERS = "hub-0:4433,hub-1:4433"` matching the hubs group's
+`count`. Hubs get no `PEERS`, so within one cluster only edge→hub
 connections form.
 
 There is no dynamic peer discovery (peer routing uses static
-`PEERS` and `UPSTREAM_ADDR`; see internal/relay/server.go `ConnectPeers`),
+`PEERS`; see internal/relay/server.go `ConnectPeers`),
 so this sim only demonstrates a fixed topology, not runtime discovery
 of scaled-up/down hubs.
 
@@ -52,7 +52,7 @@ nomad service info qumo-relay            # 4 instances; tags role=hub|edge, regi
 ```
 
 **2. Edges actually connected to both hubs.** Each edge should reach
-`qumo_relay_peers_connected = 2`; hubs stay at `0` (no `UPSTREAM_ADDR` set on
+`qumo_relay_peers_connected = 2`; hubs stay at `0` (no `PEERS` set on
 hubs):
 
 ```bash
