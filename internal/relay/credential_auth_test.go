@@ -32,8 +32,6 @@ func TestNewCredentialAuth(t *testing.T) {
 		keysFile     string // QUMO_SIGNING_KEYS_FILE
 		controlPlane string // QUMO_CREDENTIAL_URL
 		relayToken   bool   // QUMO_RELAY_TOKEN set
-		audience     string // QUMO_RELAY_AUDIENCE (removed)
-		issuer       string // QUMO_CREDENTIAL_ISSUER (removed)
 		wantErr      error
 		wantErrText  string
 		wantStatic   bool
@@ -63,22 +61,11 @@ func TestNewCredentialAuth(t *testing.T) {
 			keysFile:    filepath.Join(t.TempDir(), "absent.json"),
 			wantErrText: "QUMO_SIGNING_KEYS_FILE",
 		},
-		"removed audience setting": {
-			keysFile:    keysFile,
-			audience:    "qumo-relay-dev",
-			wantErrText: "QUMO_RELAY_AUDIENCE",
-		},
-		"removed issuer setting": {
-			issuer:      "https://api.example.com",
-			wantErrText: "QUMO_CREDENTIAL_ISSUER",
-		},
 	}
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
 			t.Setenv("QUMO_SIGNING_KEYS_FILE", tt.keysFile)
 			t.Setenv("QUMO_CREDENTIAL_URL", tt.controlPlane)
-			t.Setenv("QUMO_RELAY_AUDIENCE", tt.audience)
-			t.Setenv("QUMO_CREDENTIAL_ISSUER", tt.issuer)
 			t.Setenv("QUMO_RELAY_TOKEN", "")
 			if tt.relayToken {
 				t.Setenv("QUMO_RELAY_TOKEN", "x")
