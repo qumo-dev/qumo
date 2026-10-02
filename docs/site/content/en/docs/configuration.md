@@ -133,4 +133,4 @@ Credentials are app-signed (qumo-deploy ADR 0035) and verified entirely on the r
 - At most one refresh per 10 s is verified per `auth` track.
 - Metric: `qumo_relay_credential_refreshes_total{result}`, where `result` is `accepted`, `checks`, `other_project`, `widens`, `uncovered_path`, `rate` or `size`.
 
-`QUMO_RELAY_AUDIENCE` and `QUMO_CREDENTIAL_ISSUER` are no longer supported, and the relay refuses to start when either is set. Introspection (`POST /v1/credentials/introspect`) and fetching the control plane's key set are removed.
+`QUMO_RELAY_AUDIENCE` and `QUMO_CREDENTIAL_ISSUER` are no longer read. Introspection (`POST /v1/credentials/introspect`) and fetching the control plane's key set are removed.
