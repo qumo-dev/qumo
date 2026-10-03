@@ -43,14 +43,3 @@ func (f *fakeAuth) received() []auth.Request {
 	defer f.mu.Unlock()
 	return append([]auth.Request(nil), f.requests...)
 }
-
-// allowAll admits every session to everything. Tests and benchmarks of a
-// relay whose admission isn't under test pass it as Server.authorize; a
-// Server without one refuses every client session.
-func allowAll(context.Context, auth.Request) (*auth.Grant, error) {
-	var g auth.Grant
-	if err := json.Unmarshal([]byte(`{"publish":["**"],"subscribe":["**"]}`), &g); err != nil {
-		return nil, err
-	}
-	return &g, nil
-}
