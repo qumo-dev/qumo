@@ -1,16 +1,12 @@
-//go:build integration
-
-package relay
+package auth
 
 import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"sync"
 	"testing"
-
-	"github.com/qumo-dev/qumo/internal/auth"
-	"github.com/stretchr/testify/require"
 )
 
 // fakeAuthServer is an auth server whose answer is set by its fields: status
@@ -20,11 +16,11 @@ type fakeAuthServer struct {
 	body   string
 
 	mu       sync.Mutex
-	requests []auth.Request
+	requests []Request
 }
 
 func (f *fakeAuthServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	var req auth.Request
+	var req Request
 	if err := json.NewDecoder(r.Body).Decode(&req); err == nil {
 		f.mu.Lock()
 		f.requests = append(f.requests, req)
@@ -40,19 +36,21 @@ func (f *fakeAuthServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 // received returns a copy of the requests seen so far.
-func (f *fakeAuthServer) received() []auth.Request {
+func (f *fakeAuthServer) received() []Request {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return append([]auth.Request(nil), f.requests...)
+	return append([]Request(nil), f.requests...)
 }
 
 // start serves f on a loopback httptest server for the test's life and
-// returns an auth.Client pointed at it.
-func (f *fakeAuthServer) start(t *testing.T) *auth.Client {
+// returns a Client pointed at it.
+func (f *fakeAuthServer) start(t *testing.T) *Client {
 	t.Helper()
 	srv := httptest.NewServer(f)
 	t.Cleanup(srv.Close)
-	client, err := auth.New(srv.URL)
-	require.NoError(t, err)
-	return client
+	endpoint, err := url.Parse(srv.URL)
+	if err != nil {
+		t.Fatalf("parse test server URL: %v", err)
+	}
+	return &Client{endpoint: endpoint, client: srv.Client()}
 }

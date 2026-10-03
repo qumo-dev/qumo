@@ -1,6 +1,6 @@
 //go:build integration
 
-// Integration tests for session admission (auth.go) on a real QUIC/MOQT relay:
+// Integration tests for session admission (admit.go, internal/auth) on a real QUIC/MOQT relay:
 // the auth server is asked at connect, a refused WebTransport client never gets
 // a session, and an admitted one may announce only what its grant covers. Run
 // with `go test -tags=integration ./internal/relay/...`.
@@ -17,6 +17,7 @@ import (
 
 	"github.com/quic-go/quic-go"
 	"github.com/qumo-dev/gomoqt/moqt"
+	"github.com/qumo-dev/qumo/internal/auth"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -26,7 +27,7 @@ import (
 // HandleWebTransport). peerCA, when set, plays CA_FILE: a client certificate
 // it verifies makes the session a trusted peer. It returns the relay's
 // loopback address and the server.
-func startAuthRelay(t *testing.T, auth *sessionAuth, peerCA *tls.Certificate) (string, *Server) {
+func startAuthRelay(t *testing.T, client *auth.Client, peerCA *tls.Certificate) (string, *Server) {
 	t.Helper()
 	cert := loadTempCert(t)
 
@@ -59,7 +60,7 @@ func startAuthRelay(t *testing.T, auth *sessionAuth, peerCA *tls.Certificate) (s
 		},
 		MOQDialer: &moqt.Dialer{TLSConfig: dialerTLS, QUICConfig: quicCfg},
 		Config:    &Config{NodeID: "relay-auth-test", Role: "relay"},
-		auth:      auth,
+		auth:      client,
 	}
 	httpMux.HandleFunc("/", srv.HandleWebTransport)
 	go func() { _ = srv.ListenAndServe() }()
@@ -157,8 +158,8 @@ func TestServer_SessionAuth_WebTransport(t *testing.T) {
 	}
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
-			auth := tt.server.start(t)
-			addr, srv := startAuthRelay(t, auth, nil)
+			client := tt.server.start(t)
+			addr, srv := startAuthRelay(t, client, nil)
 			probes := len(tt.server.received()) // startAuthRelay's readiness probes
 
 			err := announceOver(t, "https://"+addr+"/acme/app?jwt=header.payload.signature", nil, nil, path)
@@ -176,8 +177,8 @@ func TestServer_SessionAuth_WebTransport(t *testing.T) {
 			}
 			reqs := tt.server.received()[probes:]
 			require.Len(t, reqs, 1, "one connect request per session")
-			assert.Equal(t, eventConnect, reqs[0].Event)
-			assert.Equal(t, transportWebTransport, reqs[0].Transport)
+			assert.Equal(t, auth.EventConnect, reqs[0].Event)
+			assert.Equal(t, auth.TransportWebTransport, reqs[0].Transport)
 			assert.Equal(t, "/acme/app", reqs[0].Path)
 			assert.Equal(t, "jwt=header.payload.signature", reqs[0].Query, "the credential is forwarded unparsed")
 			assert.Len(t, reqs[0].ID, 32)
@@ -224,8 +225,8 @@ func TestServer_SessionAuth_NativeQUIC(t *testing.T) {
 	}
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
-			auth := tt.server.start(t)
-			addr, srv := startAuthRelay(t, auth, tt.peerCA)
+			client := tt.server.start(t)
+			addr, srv := startAuthRelay(t, client, tt.peerCA)
 			probes := len(tt.server.received()) // startAuthRelay's readiness probes
 
 			// A refused native session still completes SETUP; the relay closes it
@@ -243,7 +244,7 @@ func TestServer_SessionAuth_NativeQUIC(t *testing.T) {
 				return
 			}
 			require.NotEmpty(t, reqs)
-			assert.Equal(t, transportQUIC, reqs[len(reqs)-1].Transport)
+			assert.Equal(t, auth.TransportQUIC, reqs[len(reqs)-1].Transport)
 			assert.Equal(t, "/acme", reqs[len(reqs)-1].Path)
 			assert.Equal(t, "jwt=header.payload.signature", reqs[len(reqs)-1].Query, "native QUIC carries the credential too")
 		})
@@ -251,10 +252,9 @@ func TestServer_SessionAuth_NativeQUIC(t *testing.T) {
 }
 
 func TestServer_SessionAuth_Public(t *testing.T) {
-	patterns, err := parsePatterns([]string{"anon/**"})
+	client, err := auth.NewPublic("anon/**")
 	require.NoError(t, err)
-	auth := &sessionAuth{public: &grant{publish: patterns, subscribe: patterns}}
-	addr, srv := startAuthRelay(t, auth, nil)
+	addr, srv := startAuthRelay(t, client, nil)
 
 	t.Run("anonymous session publishes under the grant", func(t *testing.T) {
 		err := announceOver(t, "https://"+addr+"/", nil, nil, "/anon/room")

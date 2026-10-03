@@ -25,6 +25,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/quic-go/quic-go"
 	"github.com/qumo-dev/gomoqt/moqt"
+	"github.com/qumo-dev/qumo/internal/auth"
 	"github.com/qumo-dev/qumo/internal/cors"
 	"github.com/qumo-dev/qumo/internal/envconfig"
 	"github.com/qumo-dev/qumo/internal/gctune"
@@ -117,8 +118,8 @@ func Run(args []string) error {
 		slog.Info("relay: peering off (no CA_FILE): every inbound session is admitted like a client")
 	}
 
-	// Session admission: an auth server, or a static public grant (auth.go).
-	auth, err := newSessionAuth()
+	// Session admission: an auth server, or a static public grant (internal/auth).
+	sessionAuth, err := auth.FromEnv()
 	if err != nil {
 		return err
 	}
@@ -202,7 +203,7 @@ func Run(args []string) error {
 		Config:         &relayCfg,
 		TrackMux:       trackMux,
 		AllowedOrigins: cors.LoadAllowed(),
-		auth:           auth,
+		auth:           sessionAuth,
 	}
 
 	httpMux.HandleFunc("/", relayServer.HandleWebTransport)
@@ -246,7 +247,7 @@ func Run(args []string) error {
 	for _, p := range relayCfg.Peers {
 		log.Printf("\t%-8s: %s\n", "Peer", sanitizeLog(p.Address))
 	}
-	log.Printf("\t%-8s: %s\n", "Auth", sanitizeLog(auth.describe()))
+	log.Printf("\t%-8s: %s\n", "Auth", sanitizeLog(sessionAuth.String()))
 
 	// Start peer connections in background
 	go relayServer.ConnectPeers(ctx)
