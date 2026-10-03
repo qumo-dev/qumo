@@ -1,8 +1,7 @@
-// Package auth admits relay sessions (qumo-deploy ADR 0035, Decision 3). A
-// client session is admitted by an auth server, asked once per session event,
-// or by a static public grant. The relay forwards what it knows about the
-// session and enforces the grant it gets back. It never parses a credential:
-// keys, projects and quotas are the auth server's business.
+// Package auth asks an auth server whether a relay session may start
+// (qumo-deploy ADR 0035, Decision 3). The relay forwards what it knows about
+// the session and enforces the grant it gets back. It never parses a
+// credential: keys, projects and quotas are the auth server's business.
 //
 // The request and grant are a subset of moq-auth's (kixelated/moq), which is
 // still changing upstream: subtree patterns only, and no root rewriting,
@@ -29,20 +28,21 @@ const (
 	timeout = 5 * time.Second
 	// maxBody bounds the grant a reply may carry.
 	maxBody = 64 << 10
+)
 
+// Session events, the Request's Event.
+const (
 	EventConnect = "connect"
+)
 
+// Transports, the Request's Transport.
+const (
 	TransportWebTransport = "webtransport"
 	TransportQUIC         = "quic"
 )
 
-var (
-	// ErrInvalidGrant is a 2xx reply the relay cannot enforce as given.
-	ErrInvalidGrant = errors.New("auth: invalid grant")
-	// ErrCredentialOnPublic refuses a session that presents a credential to a
-	// relay that verifies none, rather than admitting it on the public grant.
-	ErrCredentialOnPublic = errors.New("auth: a credential was presented, but this relay has only a public grant")
-)
+// ErrInvalidGrant is a 2xx reply the relay cannot enforce as given.
+var ErrInvalidGrant = errors.New("auth: invalid grant")
 
 // RefusedError is an explicit refusal: a 401 or 403 from the auth server, or
 // a grant that names nothing.
@@ -54,11 +54,22 @@ func (e RefusedError) Error() string {
 	return fmt.Sprintf("auth: refused (%d)", e.Status)
 }
 
-// Client admits sessions. Exactly one of endpoint and public is set.
-type Client struct {
-	endpoint *url.URL
-	client   *http.Client
-	public   *Grant
+// RefusalStatus is the HTTP status a WebTransport client gets for err: the
+// refusal's status, or 503 when the auth server could not answer.
+func RefusalStatus(err error) int {
+	if refused, ok := errors.AsType[RefusedError](err); ok {
+		return refused.Status
+	}
+	return http.StatusServiceUnavailable
+}
+
+// Config is how a relay admits sessions. Exactly one field is set.
+type Config struct {
+	// URL is the auth server asked about every session.
+	URL string
+	// Public is the grant every session gets, to publish and subscribe,
+	// with no server.
+	Public Patterns
 }
 
 // LoadConfig reads the configuration from the environment:
@@ -68,33 +79,35 @@ type Client struct {
 //	                   session may publish and subscribe to; no server
 //
 // Exactly one must be set.
-func LoadConfig() (*Client, error) {
+func LoadConfig() (Config, error) {
 	rawURL := os.Getenv("QUMO_AUTH_URL")
 	public := os.Getenv("QUMO_AUTH_PUBLIC")
 	switch {
 	case rawURL != "" && public != "":
-		return nil, errors.New("QUMO_AUTH_URL and QUMO_AUTH_PUBLIC are both set: " +
+		return Config{}, errors.New("QUMO_AUTH_URL and QUMO_AUTH_PUBLIC are both set: " +
 			"a relay admits sessions through an auth server or a static public grant, not both")
 	case rawURL != "":
-		c, err := NewClient(rawURL)
-		if err != nil {
-			return nil, fmt.Errorf("QUMO_AUTH_URL: %w", err)
-		}
-		return c, nil
+		return Config{URL: rawURL}, nil
 	case public != "":
-		c, err := NewPublic(public)
+		p, err := parsePatterns(strings.Split(public, ","))
 		if err != nil {
-			return nil, fmt.Errorf("QUMO_AUTH_PUBLIC: %w", err)
+			return Config{}, fmt.Errorf("QUMO_AUTH_PUBLIC: %w", err)
 		}
-		return c, nil
+		return Config{Public: p}, nil
 	default:
-		return nil, errors.New("neither QUMO_AUTH_URL nor QUMO_AUTH_PUBLIC is set: " +
+		return Config{}, errors.New("neither QUMO_AUTH_URL nor QUMO_AUTH_PUBLIC is set: " +
 			"set QUMO_AUTH_URL to an auth server, or QUMO_AUTH_PUBLIC to the patterns anonymous sessions may use " +
 			"(QUMO_AUTH_PUBLIC='**' opens everything, for development only)")
 	}
 }
 
-// NewClient returns a Client that asks the auth server at rawURL: https, or http
+// Client asks an auth server about sessions.
+type Client struct {
+	endpoint *url.URL
+	client   *http.Client
+}
+
+// NewClient returns a Client for the auth server at rawURL: https, or http
 // only on a loopback host, since the request carries the client's credential.
 func NewClient(rawURL string) (*Client, error) {
 	u, err := url.Parse(rawURL)
@@ -114,21 +127,8 @@ func NewClient(rawURL string) (*Client, error) {
 	return &Client{endpoint: u, client: &http.Client{Timeout: timeout}}, nil
 }
 
-// NewPublic returns a Client that admits every session on a static grant: the
-// comma-separated subtree patterns, to both publish and subscribe.
-func NewPublic(patterns string) (*Client, error) {
-	p, err := parsePatterns(strings.Split(patterns, ","))
-	if err != nil {
-		return nil, err
-	}
-	return &Client{public: &Grant{Publish: p, Subscribe: p}}, nil
-}
-
-// String names the admission mode for the startup log.
+// String returns the auth server's URL.
 func (c *Client) String() string {
-	if c.public != nil {
-		return "public grant"
-	}
 	return c.endpoint.String()
 }
 
@@ -149,13 +149,6 @@ type Request struct {
 // error is a RefusedError for an explicit refusal; any other error means the
 // auth server could not answer, which refuses too.
 func (c *Client) Connect(ctx context.Context, req Request) (*Grant, error) {
-	if c.public != nil {
-		if q, err := url.ParseQuery(req.Query); err == nil && q.Has("jwt") {
-			return nil, ErrCredentialOnPublic
-		}
-		return c.public, nil
-	}
-
 	body, err := json.Marshal(req)
 	if err != nil {
 		return nil, fmt.Errorf("auth: encode request: %w", err)
@@ -173,10 +166,10 @@ func (c *Client) Connect(ctx context.Context, req Request) (*Grant, error) {
 
 	switch {
 	case resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden:
-		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, maxBody))
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, maxBody)) // not actionable: drained to reuse the connection
 		return nil, RefusedError{Status: resp.StatusCode}
 	case resp.StatusCode < 200 || resp.StatusCode >= 300:
-		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, maxBody))
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, maxBody)) // not actionable: drained to reuse the connection
 		return nil, fmt.Errorf("auth: server answered %d", resp.StatusCode)
 	}
 
@@ -188,17 +181,4 @@ func (c *Client) Connect(ctx context.Context, req Request) (*Grant, error) {
 		return nil, fmt.Errorf("%w: larger than %d bytes", ErrInvalidGrant, maxBody)
 	}
 	return parseGrant(raw, time.Now())
-}
-
-// RefusalStatus is the HTTP status a WebTransport client gets for err.
-func RefusalStatus(err error) int {
-	var refused RefusedError
-	switch {
-	case errors.As(err, &refused):
-		return refused.Status
-	case errors.Is(err, ErrCredentialOnPublic):
-		return http.StatusUnauthorized
-	default:
-		return http.StatusServiceUnavailable
-	}
 }

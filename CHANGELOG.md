@@ -54,7 +54,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- **Session admission moves to its own package, `internal/auth`.** It holds the auth-server client, the grant and its subtree patterns; `internal/relay/admit.go` keeps only what is relay-specific (building the request from a WebTransport upgrade or a native-QUIC session, and the metrics). No behavior change.
+- **The auth-server client moves to its own package, `internal/auth`.** It holds `LoadConfig`, the client, the grant (decoded through `json.Unmarshaler`) and its subtree patterns. `internal/relay/admit.go` keeps what is relay-specific: the `admitter` interface that the client and the public grant (`QUMO_AUTH_PUBLIC`) both satisfy, building the request from a WebTransport upgrade or a native-QUIC session, and the metrics. No behavior change.
 
 ## [v0.8.260927] - 2026-09-27
 

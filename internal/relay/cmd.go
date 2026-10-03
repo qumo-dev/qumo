@@ -118,8 +118,12 @@ func Run(args []string) error {
 		slog.Info("relay: peering off (no CA_FILE): every inbound session is admitted like a client")
 	}
 
-	// Session admission: an auth server, or a static public grant (internal/auth).
-	sessionAuth, err := auth.LoadConfig()
+	// Session admission: an auth server, or a static public grant (admit.go).
+	authCfg, err := auth.LoadConfig()
+	if err != nil {
+		return err
+	}
+	sessionAuth, err := newAdmitter(authCfg)
 	if err != nil {
 		return err
 	}

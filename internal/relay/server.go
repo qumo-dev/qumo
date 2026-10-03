@@ -36,7 +36,7 @@ type Server struct {
 	// auth admits client sessions (admit.go). nil admits every session with no
 	// check, for a Server embedded in tests; the relay command always sets it.
 	// Trusted peers are never asked.
-	auth *auth.Client
+	auth admitter
 
 	// framePool recycles frame buffers for track distributors; sized from Config.FrameCapacity in init() (falling back to
 	// DefaultFramePool when unset, so a minimally-constructed Server still works).

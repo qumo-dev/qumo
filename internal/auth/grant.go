@@ -16,58 +16,65 @@ type Grant struct {
 	Publish Patterns
 	// Subscribe is where the session may subscribe.
 	Subscribe Patterns
-	// expires is when the session must end; zero means never (public grant).
+	// expires is when the session must end; zero means never.
 	expires time.Time
 	// revalidate is how often to ask again; zero means never.
 	revalidate time.Duration
 }
 
-// grantWire is the grant as the auth server sends it. root, mounts and peer
-// are read only to refuse a grant that uses them.
-type grantWire struct {
-	Publish    []string        `json:"publish"`
-	Subscribe  []string        `json:"subscribe"`
-	Expires    *int64          `json:"expires"`
-	Revalidate *int64          `json:"revalidate"`
-	Root       string          `json:"root"`
-	Mounts     json.RawMessage `json:"mounts"`
-	Peer       bool            `json:"peer"`
-}
-
-func parseGrant(raw []byte, now time.Time) (*Grant, error) {
-	var w grantWire
-	if err := json.Unmarshal(raw, &w); err != nil {
-		return nil, fmt.Errorf("%w: %w", ErrInvalidGrant, err)
+// UnmarshalJSON decodes a grant as the auth server sends it. root, mounts and
+// peer are read only to refuse a grant that uses them.
+func (g *Grant) UnmarshalJSON(b []byte) error {
+	var w struct {
+		Publish    []string        `json:"publish"`
+		Subscribe  []string        `json:"subscribe"`
+		Expires    *int64          `json:"expires"`
+		Revalidate *int64          `json:"revalidate"`
+		Root       string          `json:"root"`
+		Mounts     json.RawMessage `json:"mounts"`
+		Peer       bool            `json:"peer"`
+	}
+	if err := json.Unmarshal(b, &w); err != nil {
+		return err
 	}
 	if w.Root != "" || (len(w.Mounts) > 0 && string(w.Mounts) != "null" && string(w.Mounts) != "{}") || w.Peer {
-		return nil, fmt.Errorf("%w: root, mounts and peer are not supported", ErrInvalidGrant)
+		return fmt.Errorf("root, mounts and peer are not supported")
 	}
 	publish, err := parsePatterns(w.Publish)
 	if err != nil {
-		return nil, fmt.Errorf("%w: publish: %w", ErrInvalidGrant, err)
+		return fmt.Errorf("publish: %w", err)
 	}
 	subscribe, err := parsePatterns(w.Subscribe)
 	if err != nil {
-		return nil, fmt.Errorf("%w: subscribe: %w", ErrInvalidGrant, err)
+		return fmt.Errorf("subscribe: %w", err)
 	}
-	if len(publish) == 0 && len(subscribe) == 0 {
-		return nil, RefusedError{Status: http.StatusForbidden}
-	}
-
-	g := &Grant{Publish: publish, Subscribe: subscribe}
+	*g = Grant{Publish: publish, Subscribe: subscribe}
 	if w.Expires != nil {
 		g.expires = time.Unix(*w.Expires, 0)
-		if !g.expires.After(now) {
-			return nil, fmt.Errorf("%w: expires is not in the future", ErrInvalidGrant)
-		}
 	}
 	if w.Revalidate != nil {
 		if *w.Revalidate <= 0 || w.Expires == nil {
-			return nil, fmt.Errorf("%w: revalidate needs a positive value and an expires", ErrInvalidGrant)
+			return fmt.Errorf("revalidate needs a positive value and an expires")
 		}
 		g.revalidate = time.Duration(*w.Revalidate) * time.Second
 	}
-	return g, nil
+	return nil
+}
+
+// parseGrant decodes an auth server's grant and checks it can be enforced at
+// now. A grant that names nothing is a refusal.
+func parseGrant(raw []byte, now time.Time) (*Grant, error) {
+	var g Grant
+	if err := json.Unmarshal(raw, &g); err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrInvalidGrant, err)
+	}
+	if len(g.Publish) == 0 && len(g.Subscribe) == 0 {
+		return nil, RefusedError{Status: http.StatusForbidden}
+	}
+	if !g.expires.IsZero() && !g.expires.After(now) {
+		return nil, fmt.Errorf("%w: expires is not in the future", ErrInvalidGrant)
+	}
+	return &g, nil
 }
 
 // Patterns is a set of subtree patterns.

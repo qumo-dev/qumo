@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
@@ -13,6 +14,51 @@ import (
 	"github.com/qumo-dev/gomoqt/moqt"
 	"github.com/qumo-dev/qumo/internal/auth"
 )
+
+// admitter decides whether a session may start: *auth.Client asks the auth
+// server (QUMO_AUTH_URL), and publicGrant admits every session on one fixed
+// grant (QUMO_AUTH_PUBLIC).
+type admitter interface {
+	Connect(ctx context.Context, req auth.Request) (*auth.Grant, error)
+	fmt.Stringer
+}
+
+var (
+	_ admitter = (*auth.Client)(nil)
+	_ admitter = publicGrant{}
+)
+
+// newAdmitter returns the admitter cfg describes.
+func newAdmitter(cfg auth.Config) (admitter, error) {
+	if cfg.URL == "" {
+		return publicGrant{grant: &auth.Grant{Publish: cfg.Public, Subscribe: cfg.Public}}, nil
+	}
+	c, err := auth.NewClient(cfg.URL)
+	if err != nil {
+		return nil, fmt.Errorf("QUMO_AUTH_URL: %w", err)
+	}
+	return c, nil
+}
+
+// publicGrant admits every session on the same grant, with no auth server.
+type publicGrant struct {
+	grant *auth.Grant
+}
+
+// Connect refuses a session that presents a credential (?jwt=) rather than
+// admitting it on the public grant: the client expects its credential to be
+// checked, and this relay checks none.
+func (p publicGrant) Connect(_ context.Context, req auth.Request) (*auth.Grant, error) {
+	if q, err := url.ParseQuery(req.Query); err == nil && q.Has("jwt") {
+		return nil, fmt.Errorf("a credential was presented to a relay with only a public grant: %w",
+			auth.RefusedError{Status: http.StatusUnauthorized})
+	}
+	return p.grant, nil
+}
+
+func (p publicGrant) String() string {
+	return "public grant"
+}
 
 // grantKey carries a WebTransport session's grant from the upgrade request
 // into the session, whose context derives from the request's.
@@ -81,11 +127,11 @@ func (s *Server) nodeID() string {
 // admit runs the connect check and records its outcome.
 func (s *Server) admit(ctx context.Context, req auth.Request) (*auth.Grant, error) {
 	g, err := s.auth.Connect(ctx, req)
-	var refused auth.RefusedError
+	_, refused := errors.AsType[auth.RefusedError](err)
 	switch {
 	case err == nil:
 		metricAuthRequests.WithLabelValues(auth.EventConnect, "admitted").Inc()
-	case errors.As(err, &refused), errors.Is(err, auth.ErrCredentialOnPublic):
+	case refused:
 		metricAuthRequests.WithLabelValues(auth.EventConnect, "refused").Inc()
 		slog.Info("relay: session refused", "transport", req.Transport, "remote", req.Remote,
 			"path", req.Path, "reason", err)
