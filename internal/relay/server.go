@@ -6,7 +6,6 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
-	"net/netip"
 	"strings"
 	"sync"
 	"time"
@@ -292,59 +291,39 @@ func (s *Server) ConnectPeers(ctx context.Context) {
 		})
 	}
 
-	// Static peers from config.
+	// Each configured peer host is resolved to all its A/AAAA records (e.g. a
+	// Consul DNS name for a group of hubs), and every address is dialed, so an
+	// edge acts as a multi-homed L7 load balancer across them.
 	for _, peer := range s.Config.Peers {
-		dialPeer(peer.Address)
-	}
-
-	// Upstream relay address (e.g. role-hub.qumo-relay.service.consul:4433).
-	// Used by edge relays to connect upstream, or any relay hierarchy.
-	// When a hostname is provided (e.g. Consul DNS), all resolved A/AAAA records
-	// are connected to so the edge acts as a multi-homed L7 load balancer.
-	if s.Config.UpstreamAddr != "" {
-		for _, u := range resolveUpstreamAddrs(ctx, s.Config.UpstreamAddr) {
-			dialPeer(u)
+		for _, addr := range resolvePeerAddrs(ctx, peer.Address) {
+			dialPeer(addr)
 		}
 	}
 
 	wg.Wait()
 }
 
-// resolveUpstreamAddrs resolves raw upstream address entries (supporting single DNS
-// name with multiple A/AAAA records as well as comma-separated addresses).
-// For each host:port, if host is not an IP, it attempts net.DefaultResolver.LookupIPAddr
-// and returns ip:port for every resolved address. If resolution fails or yields no IPs,
-// it falls back to the original entry.
-func resolveUpstreamAddrs(ctx context.Context, raw string) []string {
-	var results []string
-	for _, entry := range splitAddrList(raw) {
-		host, port, err := net.SplitHostPort(entry)
-		if err != nil {
-			// No port or unparseable host:port (e.g. invalid string) - keep as-is.
-			results = append(results, entry)
-			continue
-		}
-		if ip := net.ParseIP(host); ip != nil {
-			// Already an IP address.
-			results = append(results, entry)
-			continue
-		}
-
-		lookupCtx, cancel := context.WithTimeout(ctx, 500*time.Millisecond)
-		ips, err := net.DefaultResolver.LookupIPAddr(lookupCtx, host)
-		cancel()
-
-		if err != nil || len(ips) == 0 {
-			// Fallback to original host:port if DNS lookup fails.
-			results = append(results, entry)
-			continue
-		}
-
-		for _, ip := range ips {
-			results = append(results, net.JoinHostPort(ip.IP.String(), port))
-		}
+// resolvePeerAddrs resolves one peer entry (host:port) to ip:port for every
+// A/AAAA record of its host. An IP address, an unparseable entry, or a host
+// that fails to resolve is returned as is, so the dial loop retries it.
+func resolvePeerAddrs(ctx context.Context, entry string) []string {
+	host, port, err := net.SplitHostPort(entry)
+	if err != nil || net.ParseIP(host) != nil {
+		return []string{entry}
 	}
-	return results
+
+	lookupCtx, cancel := context.WithTimeout(ctx, 500*time.Millisecond)
+	ips, err := net.DefaultResolver.LookupIPAddr(lookupCtx, host)
+	cancel()
+	if err != nil || len(ips) == 0 {
+		return []string{entry}
+	}
+
+	addrs := make([]string, 0, len(ips))
+	for _, ip := range ips {
+		addrs = append(addrs, net.JoinHostPort(ip.IP.String(), port))
+	}
+	return addrs
 }
 
 // isConnected reports whether addr is currently in the connected set.
@@ -469,10 +448,10 @@ func (s *Server) Relay(sess *moqt.Session) {
 }
 
 // relayPeer handles inbound native QUIC sessions. A trusted relay peer, one
-// that presented a client certificate verified against CA_FILE or connects
-// from a configured PEER_CIDRS network, is served without asking. Any other
-// native-QUIC session is admitted exactly like a WebTransport client:
-// speaking the native protocol is not itself proof of being a peer.
+// that presented a client certificate verified against CA_FILE, is served
+// without asking. Any other native-QUIC session is admitted exactly like a
+// WebTransport client: speaking the native protocol is not itself proof of
+// being a peer.
 func (s *Server) relayPeer(sess *moqt.Session) {
 	if s.trustedPeer(sess) || s.auth == nil {
 		s.serveSession(sess, nil)
@@ -487,34 +466,14 @@ func (s *Server) relayPeer(sess *moqt.Session) {
 }
 
 func (s *Server) trustedPeer(sess *moqt.Session) bool {
-	var cidrs []netip.Prefix
-	if s.Config != nil {
-		cidrs = s.Config.PeerCIDRs
-	}
-	return isTrustedPeer(sess.ConnectionState().TLS, sess.RemoteAddr(), cidrs)
+	return isTrustedPeer(sess.ConnectionState().TLS)
 }
 
 // isTrustedPeer reports whether a native-QUIC session is a relay peer: its TLS
-// handshake verified a client certificate chain (mTLS against CA_FILE), or its
-// remote address lies in one of peerCIDRs.
-func isTrustedPeer(state *tls.ConnectionState, remote net.Addr, peerCIDRs []netip.Prefix) bool {
-	if state != nil && len(state.VerifiedChains) > 0 {
-		return true
-	}
-	if remote == nil || len(peerCIDRs) == 0 {
-		return false
-	}
-	ap, err := netip.ParseAddrPort(remote.String())
-	if err != nil {
-		return false
-	}
-	ip := ap.Addr().Unmap()
-	for _, p := range peerCIDRs {
-		if p.Contains(ip) {
-			return true
-		}
-	}
-	return false
+// handshake verified a client certificate chain against CA_FILE. Without
+// CA_FILE the relay verifies no client certificates, so no session is a peer.
+func isTrustedPeer(state *tls.ConnectionState) bool {
+	return state != nil && len(state.VerifiedChains) > 0
 }
 
 // serveSession is the shared core for Relay and relayPeer. g is the session's

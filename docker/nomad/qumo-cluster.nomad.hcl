@@ -1,11 +1,11 @@
 # Single-region (asia) qumo cluster on Nomad.
 #
-# Purpose: exercise the static UPSTREAM_ADDR edge->hub topology (see
+# Purpose: exercise the static PEERS edge->hub topology (see
 # internal/relay/server.go ConnectPeers) on real Nomad-launched containers,
 # complementing docker-compose.static.yml's plain-Docker-Compose version.
 #
 # There is no dynamic peer discovery; edges are pointed at the hubs via
-# a fixed UPSTREAM_ADDR list, resolved through Docker's embedded DNS
+# a fixed PEERS list, resolved through Docker's embedded DNS
 # using each hub's network_aliases on the shared "qumo-net" network.
 #
 # Cross-region hub<->hub is out of scope here — see docker/nomad/README.md.
@@ -95,7 +95,7 @@ job "qumo-cluster" {
         QUMO_AUTH_PUBLIC = "**" # open demo cluster; production sets QUMO_AUTH_URL
         # Static upstream list: both hub aliases from the "hubs" group above.
         # Fixed to match that group's count = 2; bump both together.
-        UPSTREAM_ADDR = "hub-0:4433,hub-1:4433"
+        PEERS = "hub-0:4433,hub-1:4433"
       }
 
       resources {

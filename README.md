@@ -121,12 +121,7 @@ graph LR
 
 ### Peer Discovery
 
-On startup, each relay dials peer addresses from two static, comma-separated env vars — there is no runtime service discovery:
-
-1. **`PEERS`**: static peer addresses to dial and maintain a connection to.
-2. **`UPSTREAM_ADDR`**: upstream relay address(es) to connect to (e.g. an edge relay dialing a hub, or any relay hierarchy). Accepts a DNS name that resolves to multiple/changing backends (e.g. `role-hub.qumo-relay.service.consul:4433`) as well as direct `host:port`.
-
-Both lists are dialed the same way and merged: each address is dialed once at startup and re-dialed with backoff on disconnect. `--role <hub|edge>` is an operator-facing label logged for visibility only; it does not affect which peers are dialed.
+On startup, each relay dials the static, comma-separated addresses in **`PEERS`** (e.g. an edge relay's hub, or any relay hierarchy) — there is no runtime service discovery. Each host is resolved to all its addresses (e.g. `role-hub.qumo-relay.service.consul:4433` for a group of hubs), and every address is dialed once at startup and re-dialed with backoff on disconnect. `--role <hub|edge>` is an operator-facing label logged for visibility only; it does not affect which peers are dialed.
 
 Each connection dials QUIC with ALPN `moqt`, exchanges `ANNOUNCE_PLEASE` / `ANNOUNCE`, and registers the peer's tracks on the local `TrackMux`. On disconnect the connection is retried with exponential backoff (1s–30s).
 
@@ -135,7 +130,6 @@ graph TD
     Start["Relay Startup"]
 
     Start -->|"for each PEERS address"| ALPN
-    Start -->|"for each UPSTREAM_ADDR address"| ALPN
 
     ALPN["QUIC dial (ALPN: moqt)"] --> Announce["ANNOUNCE_PLEASE / ANNOUNCE"]
     Announce --> TrackMux["Register tracks on local TrackMux"]
@@ -169,7 +163,7 @@ qumo/
 │   ├── docker-compose.yml               # Single relay (local build)
 │   ├── docker-compose.external.yml      # Single relay (GHCR prebuilt)
 │   ├── docker-compose.static.yml        # 3-region topology, static PEERS (no discovery)
-│   ├── docker-compose.nomad.yml         # Single-region Nomad cluster (UPSTREAM_ADDR sim)
+│   ├── docker-compose.nomad.yml         # Single-region Nomad cluster (PEERS sim)
 │   ├── nomad/                           # Nomad agent config + job spec
 │   └── README.md               # Docker usage guide
 │
