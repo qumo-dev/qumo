@@ -129,7 +129,7 @@ func TestNewClient(t *testing.T) {
 				return
 			}
 			require.NoError(t, err)
-			assert.Equal(t, tt.url, c.String())
+			assert.Equal(t, tt.url, c.endpoint.String())
 		})
 	}
 }

@@ -251,7 +251,11 @@ func Run(args []string) error {
 	for _, p := range relayCfg.Peers {
 		log.Printf("\t%-8s: %s\n", "Peer", sanitizeLog(p.Address))
 	}
-	log.Printf("\t%-8s: %s\n", "Auth", sanitizeLog(sessionAuth.String()))
+	authMode := "public grant"
+	if authCfg.URL != "" {
+		authMode = authCfg.URL
+	}
+	log.Printf("\t%-8s: %s\n", "Auth", sanitizeLog(authMode))
 
 	// Start peer connections in background
 	go relayServer.ConnectPeers(ctx)

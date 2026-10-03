@@ -20,7 +20,6 @@ import (
 // grant (QUMO_AUTH_PUBLIC).
 type admitter interface {
 	Connect(ctx context.Context, req auth.Request) (*auth.Grant, error)
-	fmt.Stringer
 }
 
 var (
@@ -54,10 +53,6 @@ func (p publicGrant) Connect(_ context.Context, req auth.Request) (*auth.Grant, 
 			auth.RefusedError{Status: http.StatusUnauthorized})
 	}
 	return p.grant, nil
-}
-
-func (p publicGrant) String() string {
-	return "public grant"
 }
 
 // admission is a session's grant, carried in the session's context so that

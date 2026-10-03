@@ -14,23 +14,23 @@ import (
 func TestNewAdmitter(t *testing.T) {
 	tests := map[string]struct {
 		cfg         auth.Config
-		want        string
+		want        admitter
 		wantErrText string
 	}{
-		"auth server":  {cfg: auth.Config{URL: "https://auth.example.com/"}, want: "https://auth.example.com/"},
-		"public grant": {cfg: auth.Config{}, want: "public grant"},
+		"auth server":  {cfg: auth.Config{URL: "https://auth.example.com/"}, want: &auth.Client{}},
+		"public grant": {cfg: auth.Config{}, want: publicGrant{}},
 		"bad URL":      {cfg: auth.Config{URL: "http://auth.example.com/"}, wantErrText: "QUMO_AUTH_URL"},
 	}
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
-			a, err := newAdmitter(tt.cfg)
+			got, err := newAdmitter(tt.cfg)
 
 			if tt.wantErrText != "" {
 				assert.ErrorContains(t, err, tt.wantErrText)
 				return
 			}
 			require.NoError(t, err)
-			assert.Equal(t, tt.want, a.String())
+			assert.IsType(t, tt.want, got)
 		})
 	}
 }
