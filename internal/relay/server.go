@@ -98,14 +98,16 @@ func (s *Server) HandleWebTransport(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusServiceUnavailable)
 		return
 	}
+	var g *auth.Grant
 	if s.auth != nil {
-		g, err := s.admit(r.Context(), s.webTransportRequest(r))
+		var err error
+		g, err = s.admit(r.Context(), s.webTransportRequest(r))
 		if err != nil {
 			w.WriteHeader(auth.RefusalStatus(err))
 			return
 		}
-		r = r.WithContext(context.WithValue(r.Context(), grantKey{}, g))
 	}
+	r = r.WithContext(withAdmission(r.Context(), decidedAdmission(g)))
 	s.webtransportHandler.ServeHTTP(w, r)
 }
 
@@ -153,10 +155,11 @@ func (s *Server) init() {
 		}
 
 		// ConnContext intercepts each accepted QUIC connection before the MOQ
-		// handshake. For native QUIC connections the underlying type satisfies
-		// connStatsProvider, so we launch a polling goroutine to collect
-		// connection-level stats (RTT, packet loss). WebTransport connections
-		// do not satisfy the interface and are silently skipped.
+		// handshake and gives its session a pending admission. For native
+		// QUIC connections the underlying type satisfies connStatsProvider,
+		// so we launch a polling goroutine to collect connection-level stats
+		// (RTT, packet loss). WebTransport connections do not satisfy the
+		// interface and are silently skipped.
 		s.MOQServer.ConnContext = func(ctx context.Context, conn moqt.StreamConn) context.Context {
 			if provider, ok := conn.(connStatsProvider); ok {
 				addr := conn.RemoteAddr().String()
@@ -164,7 +167,9 @@ func (s *Server) init() {
 				sampleConnStats(provider, addr) // immediate first sample
 				context.AfterFunc(conn.Context(), func() { s.sampler.removeConn(addr) })
 			}
-			return ctx
+			// relayPeer decides the admission once the session's SETUP has
+			// named its path; a subscription arriving before then waits.
+			return withAdmission(ctx, pendingAdmission())
 		}
 
 		// Resolve the per-node frame pool from Config.FrameCapacity. A caller
@@ -405,8 +410,9 @@ func (s *Server) maintainPeer(ctx context.Context, peer Peer) {
 		// reconnect with jitter. On success, loop back to serve the new session;
 		// on failure, break to the outer retry loop with exponential backoff.
 		for {
-			// A peer this relay dialed from its own configuration is trusted.
-			s.serveSession(sess, nil)
+			// A peer this relay dialed from its own configuration is trusted:
+			// its session carries no admission, so nothing on it is checked.
+			s.serveSession(sess)
 
 			<-sess.Context().Done()
 
@@ -439,13 +445,12 @@ func (s *Server) maintainPeer(ctx context.Context, peer Peer) {
 // Relay handles inbound WebTransport sessions (publishers and browser
 // clients), already admitted at the upgrade (HandleWebTransport).
 func (s *Server) Relay(sess *moqt.Session) {
-	g, _ := sess.Context().Value(grantKey{}).(*auth.Grant)
-	if s.auth != nil && g == nil {
+	if admissionFrom(sess.Context()) == nil {
 		// Unreachable through HandleWebTransport; refuse rather than run open.
-		_ = sess.CloseWithError(moqt.UnauthorizedSessionErrorCode, "no grant")
+		_ = sess.CloseWithError(moqt.UnauthorizedSessionErrorCode, "not admitted")
 		return
 	}
-	s.serveSession(sess, g)
+	s.serveSession(sess)
 }
 
 // relayPeer handles inbound native QUIC sessions. A trusted relay peer, one
@@ -454,16 +459,25 @@ func (s *Server) Relay(sess *moqt.Session) {
 // WebTransport client: speaking the native protocol is not itself proof of
 // being a peer.
 func (s *Server) relayPeer(sess *moqt.Session) {
+	a := admissionFrom(sess.Context())
+	if a == nil {
+		// Unreachable through ConnContext; refuse rather than run open.
+		_ = sess.CloseWithError(moqt.UnauthorizedSessionErrorCode, "not admitted")
+		return
+	}
 	if s.trustedPeer(sess) || s.auth == nil {
-		s.serveSession(sess, nil)
+		a.decide(nil)
+		s.serveSession(sess)
 		return
 	}
 	g, err := s.admit(sess.Context(), s.nativeRequest(sess))
 	if err != nil {
+		a.decide(refusedGrant)
 		_ = sess.CloseWithError(moqt.UnauthorizedSessionErrorCode, "refused")
 		return
 	}
-	s.serveSession(sess, g)
+	a.decide(g)
+	s.serveSession(sess)
 }
 
 func (s *Server) trustedPeer(sess *moqt.Session) bool {
@@ -477,10 +491,14 @@ func isTrustedPeer(state *tls.ConnectionState) bool {
 	return state != nil && len(state.VerifiedChains) > 0
 }
 
-// serveSession is the shared core for Relay and relayPeer. g is the session's
-// grant; nil serves a trusted peer (or a Server with no auth) unchecked.
-func (s *Server) serveSession(sess *moqt.Session, g *auth.Grant) {
+// serveSession is the shared core for Relay, relayPeer and maintainPeer. The
+// session's announcements are checked against its admitted grant.
+func (s *Server) serveSession(sess *moqt.Session) {
 	s.init()
+	g, err := sessionGrant(sess.Context())
+	if err != nil {
+		return
+	}
 	defer sess.CloseWithError(moqt.NoError, moqt.NoError.String())
 
 	metricSessionsActive.Inc()
