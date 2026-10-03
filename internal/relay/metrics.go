@@ -39,6 +39,15 @@ var (
 		Help:      "Announcements not routed because the session's grant doesn't cover the path.",
 	})
 
+	// metricSubscribeAuthorizations counts subscriptions checked against the
+	// session's grant. Trusted peers' subscriptions aren't checked or counted.
+	metricSubscribeAuthorizations = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "qumo",
+		Subsystem: "relay",
+		Name:      "subscribe_authorizations_total",
+		Help:      "Subscriptions checked against the session's grant, by result (admitted, not_covered).",
+	}, []string{"result"})
+
 	// metricPeersConnected tracks the number of active outbound relay peer
 	// connections managed by maintainPeer.
 	metricPeersConnected = promauto.NewGauge(prometheus.GaugeOpts{
