@@ -14,6 +14,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/qumo-dev/qumo/internal/allowall"
 )
 
 // ProcessState holds the running state of a relay subprocess.
@@ -33,8 +35,15 @@ func httpClient() *http.Client {
 // startRelay launches one relay process with the given configuration.
 func startRelay(ctx context.Context, bin string, node *RelayNode, certDir string, top *Topology) (*ProcessState, error) {
 	args := []string{"relay"}
+	// The relay admits sessions through an auth server: one served in this
+	// process for the relay's life, opening everything.
+	authURL, err := allowall.Serve(ctx)
+	if err != nil {
+		return nil, err
+	}
 	env := os.Environ()
 	env = append(env,
+		"QUMO_AUTH_URL="+authURL,
 		fmt.Sprintf("RELAY_ADDR=127.0.0.1:%d", node.Port),
 		fmt.Sprintf("CERT_FILE=%s", filepath.Join(certDir, "cert.pem")),
 		fmt.Sprintf("KEY_FILE=%s", filepath.Join(certDir, "key.pem")),
@@ -42,7 +51,6 @@ func startRelay(ctx context.Context, bin string, node *RelayNode, certDir string
 		fmt.Sprintf("RELAY_NAME=%s", node.Name),
 		"RELAY_GOGC=800",
 		"GROUP_CACHE_SIZE=8",
-		"QUMO_AUTH_PUBLIC=**", // benchmarks run open
 	)
 	if node.PeerAddr != "" {
 		env = append(env, fmt.Sprintf("PEERS=%s", node.PeerAddr))

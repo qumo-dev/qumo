@@ -19,7 +19,6 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"strings"
 	"time"
 )
 
@@ -63,42 +62,22 @@ func RefusalStatus(err error) int {
 	return http.StatusServiceUnavailable
 }
 
-// Config is how a relay admits sessions. Exactly one field is set.
+// Config is the relay's auth setting.
 type Config struct {
 	// URL is the auth server asked about every session.
 	URL string
-	// Public is the grant every session gets, to publish and subscribe,
-	// with no server.
-	Public Patterns
 }
 
-// LoadConfig reads the configuration from the environment:
-//
-//	QUMO_AUTH_URL    - the auth server; https, or http on a loopback host
-//	QUMO_AUTH_PUBLIC - comma-separated subtree patterns ("anon/**") that any
-//	                   session may publish and subscribe to; no server
-//
-// Exactly one must be set.
+// LoadConfig reads QUMO_AUTH_URL, the auth server: https, or http on a
+// loopback host. It is required: a relay admits every client session through
+// its auth server.
 func LoadConfig() (Config, error) {
 	rawURL := os.Getenv("QUMO_AUTH_URL")
-	public := os.Getenv("QUMO_AUTH_PUBLIC")
-	switch {
-	case rawURL != "" && public != "":
-		return Config{}, errors.New("QUMO_AUTH_URL and QUMO_AUTH_PUBLIC are both set: " +
-			"a relay admits sessions through an auth server or a static public grant, not both")
-	case rawURL != "":
-		return Config{URL: rawURL}, nil
-	case public != "":
-		p, err := parsePatterns(strings.Split(public, ","))
-		if err != nil {
-			return Config{}, fmt.Errorf("QUMO_AUTH_PUBLIC: %w", err)
-		}
-		return Config{Public: p}, nil
-	default:
-		return Config{}, errors.New("neither QUMO_AUTH_URL nor QUMO_AUTH_PUBLIC is set: " +
-			"set QUMO_AUTH_URL to an auth server, or QUMO_AUTH_PUBLIC to the patterns anonymous sessions may use " +
-			"(QUMO_AUTH_PUBLIC='**' opens everything, for development only)")
+	if rawURL == "" {
+		return Config{}, errors.New("QUMO_AUTH_URL is not set: point it at the auth server beside this relay " +
+			"(qumo auth; QUMO_AUTH_ANONYMOUS='**' there opens everything, for development only)")
 	}
+	return Config{URL: rawURL}, nil
 }
 
 // Client asks an auth server about sessions.

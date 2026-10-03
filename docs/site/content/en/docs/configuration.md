@@ -98,12 +98,13 @@ relay's HTTP port.
 
 ## Session auth (required)
 
-A relay admits each client session in exactly one of two ways. Setting both, or neither, stops the relay at startup.
+A relay admits each client session by asking its auth server. Without `QUMO_AUTH_URL`, the relay stops at startup.
 
 | Variable | Default | Description |
 |---|---|---|
-| `QUMO_AUTH_URL` | (unset) | An auth server the relay asks when each client session connects. `https://`, or `http://` on a loopback host only. |
-| `QUMO_AUTH_PUBLIC` | (unset) | Comma-separated subtree patterns (`anon/**`, `demo/**`) that any session may publish and subscribe to, with no server. `**` opens everything; use it for development only. |
+| `QUMO_AUTH_URL` | (unset) | The auth server the relay asks when each client session connects. `https://`, or `http://` on a loopback host only. |
+
+The auth server holds the policy: which credentials it accepts, and what a session that presents none may do. qumo doesn't ship one, because that policy differs by app. Local tools (`qumo playground`, `mage relay`, the benchmark harnesses) answer `QUMO_AUTH_URL` themselves with an allow-all responder that admits every session to everything (`{"publish":["**"],"subscribe":["**"]}`), and the compose files and the Nomad demo run one as a sidecar.
 
 **Trusted peers are never asked:** sessions with a client certificate verified against `CA_FILE`, and peers this relay dials (`PEERS`).
 
@@ -136,7 +137,5 @@ The server answers with a grant:
 - **Not yet enforced:**
   - which announcements a session can list: announce interest still lists every path under the requested prefix (qumo-dev/qumo#418);
   - `revalidate` (#419) and `expires` (#423).
-
-With `QUMO_AUTH_PUBLIC`, a session that presents a credential (`?jwt=`) is refused rather than admitted on the public grant.
 
 Metrics: `qumo_relay_auth_requests_total{event,result}` (`admitted`, `refused`, `invalid`, `error`), `qumo_relay_announcements_refused_total` and `qumo_relay_subscribe_authorizations_total{result}` (`admitted`, `not_covered`).

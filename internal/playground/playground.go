@@ -11,6 +11,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/qumo-dev/qumo/internal/allowall"
 	"github.com/qumo-dev/qumo/internal/cors"
 )
 
@@ -69,7 +70,18 @@ func Run(ctx context.Context, o Options) error {
 	slog.Info("dev certificate ready",
 		"cert", cert.CertFile, "hash", cert.HashHex)
 
-	// 2. Configure the relay via its env vars before it reads them.
+	// 2. Configure the relay via its env vars before it reads them. The relay
+	//    admits sessions through an auth server: an in-process one that opens
+	//    everything, unless the user points QUMO_AUTH_URL at their own.
+	if os.Getenv("QUMO_AUTH_URL") == "" {
+		authURL, err := allowall.Serve(ctx)
+		if err != nil {
+			return err
+		}
+		if err := os.Setenv("QUMO_AUTH_URL", authURL); err != nil {
+			return err
+		}
+	}
 	if err := configureRelayEnv(o.RelayAddr, cert); err != nil {
 		return err
 	}

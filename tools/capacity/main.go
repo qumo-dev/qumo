@@ -31,6 +31,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/qumo-dev/qumo/internal/allowall"
 )
 
 func main() {
@@ -228,11 +230,17 @@ func startRelay(ctx context.Context, cfg config, certFile, keyFile string) (func
 			name, cargs = ts, append([]string{"-c", cfg.relayCores, cfg.qumo}, cargs...)
 		}
 	}
+	// The relay admits sessions through an auth server: one served in this
+	// process for the relay's life, opening everything.
+	authURL, err := allowall.Serve(ctx)
+	if err != nil {
+		return nil, err
+	}
 	cmd := exec.CommandContext(ctx, name, cargs...)
 	cmd.Env = append(os.Environ(),
 		"RELAY_ADDR="+cfg.relay, "CERT_FILE="+certFile, "KEY_FILE="+keyFile,
 		"RELAY_NAME=capacity", "GOGC="+strconv.Itoa(cfg.gogc),
-		"QUMO_AUTH_PUBLIC=**", // capacity probes run open
+		"QUMO_AUTH_URL="+authURL,
 	)
 	cmd.Stdout, cmd.Stderr = io.Discard, io.Discard
 	if err := cmd.Start(); err != nil {

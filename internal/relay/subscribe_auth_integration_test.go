@@ -92,8 +92,8 @@ func subscribe(t *testing.T, url string, clientCert *tls.Certificate, path moqt.
 func TestServer_SubscribeAuth(t *testing.T) {
 	// One grant for every session: publish anywhere under acme, subscribe
 	// only under acme/app.
-	server := &fakeAuthServer{body: `{"publish":["acme/**"],"subscribe":["acme/app/**"]}`}
-	addr, srv := startAuthRelay(t, server.start(t), nil)
+	server := &fakeAuth{body: `{"publish":["acme/**"],"subscribe":["acme/app/**"]}`}
+	addr, srv := startAuthRelay(t, server.authorize, nil)
 	publishOver(t, srv, "https://"+addr+"/?jwt=a.b.c", "/acme/app", "/acme/app/live", "/acme/apple/live")
 	transports := map[string]string{
 		"webtransport": "https://" + addr + "/?jwt=a.b.c",
@@ -126,8 +126,8 @@ func TestServer_SubscribeAuth(t *testing.T) {
 
 func TestServer_SubscribeAuth_TrustedPeerUnchecked(t *testing.T) {
 	peerCert := loadTempCert(t)
-	server := &fakeAuthServer{body: `{"publish":["acme/**"],"subscribe":["acme/app/**"]}`}
-	addr, srv := startAuthRelay(t, server.start(t), &peerCert)
+	server := &fakeAuth{body: `{"publish":["acme/**"],"subscribe":["acme/app/**"]}`}
+	addr, srv := startAuthRelay(t, server.authorize, &peerCert)
 	publishOver(t, srv, "https://"+addr+"/?jwt=a.b.c", "/acme/apple/live")
 
 	err := subscribe(t, peerURL(addr)+"/", &peerCert, "/acme/apple/live")
@@ -136,8 +136,8 @@ func TestServer_SubscribeAuth_TrustedPeerUnchecked(t *testing.T) {
 }
 
 func TestServer_SubscribeAuth_FetchRejected(t *testing.T) {
-	server := &fakeAuthServer{body: `{"publish":["acme/**"],"subscribe":["acme/**"]}`}
-	addr, srv := startAuthRelay(t, server.start(t), nil)
+	server := &fakeAuth{body: `{"publish":["acme/**"],"subscribe":["acme/**"]}`}
+	addr, srv := startAuthRelay(t, server.authorize, nil)
 	publishOver(t, srv, "https://"+addr+"/?jwt=a.b.c", "/acme/app/live")
 	sess := dialOver(t, peerURL(addr)+"/?jwt=a.b.c", nil, moqt.NewTrackMux(0))
 

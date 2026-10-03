@@ -118,14 +118,14 @@ func Run(args []string) error {
 		slog.Info("relay: peering off (no CA_FILE): every inbound session is admitted like a client")
 	}
 
-	// Session admission: an auth server, or a static public grant (admit.go).
+	// Session admission: the auth server beside this relay (admit.go).
 	authCfg, err := auth.LoadConfig()
 	if err != nil {
 		return err
 	}
-	sessionAuth, err := newAdmitter(authCfg)
+	authClient, err := auth.NewClient(authCfg.URL)
 	if err != nil {
-		return err
+		return fmt.Errorf("QUMO_AUTH_URL: %w", err)
 	}
 
 	relayCfg := Config{
@@ -207,7 +207,7 @@ func Run(args []string) error {
 		Config:         &relayCfg,
 		TrackMux:       trackMux,
 		AllowedOrigins: cors.LoadAllowed(),
-		auth:           sessionAuth,
+		authorize:      authClient.Connect,
 	}
 
 	httpMux.HandleFunc("/", relayServer.HandleWebTransport)
@@ -251,11 +251,7 @@ func Run(args []string) error {
 	for _, p := range relayCfg.Peers {
 		log.Printf("\t%-8s: %s\n", "Peer", sanitizeLog(p.Address))
 	}
-	authMode := "public grant"
-	if authCfg.URL != "" {
-		authMode = authCfg.URL
-	}
-	log.Printf("\t%-8s: %s\n", "Auth", sanitizeLog(authMode))
+	log.Printf("\t%-8s: %s\n", "Auth", sanitizeLog(authCfg.URL))
 
 	// Start peer connections in background
 	go relayServer.ConnectPeers(ctx)

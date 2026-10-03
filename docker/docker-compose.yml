@@ -1,5 +1,13 @@
 version: '3.8'
 
+# The relay asks an auth server about every session (QUMO_AUTH_URL). These
+# local stacks run an allow-all one as a sidecar on each relay's loopback: it
+# answers every session with everything. A deployment runs a real auth server.
+x-allow-all: &allow-all
+  image: caddy:2-alpine
+  command: ["caddy", "respond", "--listen", "127.0.0.1:4440", "--body", '{"publish":["**"],"subscribe":["**"]}']
+  restart: unless-stopped
+
 services:
   # Relay Server
   relay:
@@ -14,7 +22,7 @@ services:
     environment:
       RELAY_ADDR: "0.0.0.0:4433"
       RELAY_NAME: "relay-1"
-      QUMO_AUTH_PUBLIC: "**"  # open for local testing; production sets QUMO_AUTH_URL
+      QUMO_AUTH_URL: "http://127.0.0.1:4440/"  # its allow-all sidecar (x-allow-all)
     volumes:
       # Generate certs first: mkcert -cert-file certs/server.crt -key-file certs/server.key localhost
       - ../certs:/app/certs:ro
@@ -27,6 +35,10 @@ services:
       start_period: 10s
     networks:
       - qumo-net
+
+  relay-auth:
+    <<: *allow-all
+    network_mode: "service:relay"
 
 networks:
   qumo-net:

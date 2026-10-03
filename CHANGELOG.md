@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed (breaking)
 
+- **The relay has one auth mode: `QUMO_AUTH_URL` is required, and `QUMO_AUTH_PUBLIC` is removed (`internal/relay`, `internal/auth`, #441).** What a session may do is decided only by the auth server; its policy, including what a session without a credential may use, differs by app, so qumo doesn't ship one.
+  - **In code:** the relay takes its check as a function field, `authorize`. The relay command sets it to the auth client's `Connect`, and tests pass a plain function. Removed: the `admitter` interface, `publicGrant`, and `auth.Config.Public`.
+  - **Local tools:** `qumo playground`, `mage relay`, `bench-multiproc` and `tools/capacity` answer `QUMO_AUTH_URL` with an in-process allow-all responder (`internal/allowall`) that admits every session to everything.
+  - **Compose and the Nomad demo:** they run the same allow-all answer as a sidecar on each relay's loopback (`caddy respond`).
+  - **Fixed:** `qumo playground` had no auth setting, so its relay stopped at startup.
 - **Subscriptions are checked against the session's grant (`internal/relay`, #418).** A SUBSCRIBE is served only if the grant's `subscribe` patterns cover its path; otherwise it's refused with `NotFound`, the same answer as a path that doesn't exist, so a client can't probe for paths. The session stays up.
   - **Every session's context carries its admission:** decided at the upgrade for WebTransport, and pending from `ConnContext` until `relayPeer` decides it for native QUIC. A subscription that arrives before admission finishes waits for it. Announcements are checked against the same admission, so `serveSession` no longer takes a grant.
   - **Unchanged:** trusted peers and dialed peers are never checked. FETCH stays rejected: the relay registers no fetch handler.
