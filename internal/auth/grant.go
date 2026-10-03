@@ -12,8 +12,10 @@ import (
 
 // Grant is what a session may do.
 type Grant struct {
-	publish   []pattern
-	subscribe []pattern
+	// Publish is where the session may announce broadcasts.
+	Publish Patterns
+	// Subscribe is where the session may subscribe.
+	Subscribe Patterns
 	// expires is when the session must end; zero means never (public grant).
 	expires time.Time
 	// revalidate is how often to ask again; zero means never.
@@ -52,7 +54,7 @@ func parseGrant(raw []byte, now time.Time) (*Grant, error) {
 		return nil, RefusedError{Status: http.StatusForbidden}
 	}
 
-	g := &Grant{publish: publish, subscribe: subscribe}
+	g := &Grant{Publish: publish, Subscribe: subscribe}
 	if w.Expires != nil {
 		g.expires = time.Unix(*w.Expires, 0)
 		if !g.expires.After(now) {
@@ -68,14 +70,13 @@ func parseGrant(raw []byte, now time.Time) (*Grant, error) {
 	return g, nil
 }
 
-// MayPublish reports whether the grant covers announcing path.
-func (g *Grant) MayPublish(path moqt.BroadcastPath) bool {
-	return anyCovers(g.publish, path)
-}
+// Patterns is a set of subtree patterns.
+type Patterns []pattern
 
-func anyCovers(patterns []pattern, path moqt.BroadcastPath) bool {
-	for _, p := range patterns {
-		if p.covers(path) {
+// Contains reports whether any of the patterns contains path.
+func (ps Patterns) Contains(path moqt.BroadcastPath) bool {
+	for _, p := range ps {
+		if p.contains(path) {
 			return true
 		}
 	}
@@ -88,8 +89,8 @@ type pattern struct {
 	base string
 }
 
-func parsePatterns(raw []string) ([]pattern, error) {
-	patterns := make([]pattern, 0, len(raw))
+func parsePatterns(raw []string) (Patterns, error) {
+	patterns := make(Patterns, 0, len(raw))
 	for _, s := range raw {
 		p, err := parsePattern(strings.TrimSpace(s))
 		if err != nil {
@@ -116,9 +117,9 @@ func parsePattern(s string) (pattern, error) {
 	return pattern{base: base}, nil
 }
 
-// covers reports whether path lies at or beneath the pattern's base. A
+// contains reports whether path lies at or beneath the pattern's base. A
 // broadcast path is rooted at "/"; patterns are relative to it.
-func (p pattern) covers(path moqt.BroadcastPath) bool {
+func (p pattern) contains(path moqt.BroadcastPath) bool {
 	if p.base == "" {
 		return true
 	}

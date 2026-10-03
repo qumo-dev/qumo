@@ -516,7 +516,7 @@ func (s *Server) serveSession(sess *moqt.Session, g *auth.Grant) {
 			"remote", sess.RemoteAddr(),
 		)
 
-		if g != nil && !g.MayPublish(ann.BroadcastPath()) {
+		if g != nil && !g.Publish.Contains(ann.BroadcastPath()) {
 			// MoQ has no per-announcement error response, so the publisher
 			// receives no explicit rejection: the ANNOUNCE is simply not
 			// mirrored into the TrackMux, and the session's other broadcasts

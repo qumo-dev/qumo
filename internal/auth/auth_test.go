@@ -43,7 +43,7 @@ func TestClient_Connect(t *testing.T) {
 				return
 			}
 			require.NoError(t, err)
-			assert.True(t, g.MayPublish(moqt.BroadcastPath(tt.wantPublish)))
+			assert.True(t, g.Publish.Contains(moqt.BroadcastPath(tt.wantPublish)))
 		})
 	}
 }
@@ -82,14 +82,14 @@ func TestClient_Connect_ServerDown(t *testing.T) {
 func TestClient_Connect_Public(t *testing.T) {
 	patterns, err := parsePatterns([]string{"anon/**"})
 	require.NoError(t, err)
-	auth := &Client{public: &Grant{publish: patterns, subscribe: patterns}}
+	auth := &Client{public: &Grant{Publish: patterns, Subscribe: patterns}}
 
 	t.Run("admits without a server", func(t *testing.T) {
 		g, err := auth.Connect(context.Background(), Request{Path: "/"})
 
 		require.NoError(t, err)
-		assert.True(t, g.MayPublish("/anon/room"))
-		assert.False(t, g.MayPublish("/other"))
+		assert.True(t, g.Publish.Contains("/anon/room"))
+		assert.False(t, g.Publish.Contains("/other"))
 	})
 	t.Run("refuses a session that presents a credential", func(t *testing.T) {
 		_, err := auth.Connect(context.Background(), Request{Path: "/", Query: "jwt=a.b.c"})

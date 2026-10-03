@@ -124,7 +124,7 @@ func NewPublic(patterns string) (*Client, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Client{public: &Grant{publish: p, subscribe: p}}, nil
+	return &Client{public: &Grant{Publish: p, Subscribe: p}}, nil
 }
 
 // String names the admission mode for the startup log.

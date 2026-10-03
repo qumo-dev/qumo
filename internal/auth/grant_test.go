@@ -11,14 +11,14 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestPattern_Covers(t *testing.T) {
+func TestPattern_Contains(t *testing.T) {
 	tests := map[string]struct {
 		pattern string
 		path    string
 		want    bool
 	}{
 		"everything":                      {pattern: "**", path: "/any/where", want: true},
-		"everything covers the root":      {pattern: "**", path: "/", want: true},
+		"everything contains the root":      {pattern: "**", path: "/", want: true},
 		"the base itself":                 {pattern: "acme/app/**", path: "/acme/app", want: true},
 		"beneath the base":                {pattern: "acme/app/**", path: "/acme/app/room/1", want: true},
 		"sibling sharing a string prefix": {pattern: "acme/app/**", path: "/acme/apple", want: false},
@@ -31,7 +31,7 @@ func TestPattern_Covers(t *testing.T) {
 			p, err := parsePattern(tt.pattern)
 			require.NoError(t, err)
 
-			got := p.covers(moqt.BroadcastPath(tt.path))
+			got := p.contains(moqt.BroadcastPath(tt.path))
 
 			assert.Equal(t, tt.want, got)
 		})
@@ -112,10 +112,10 @@ func TestParseGrant(t *testing.T) {
 			}
 			require.NoError(t, err)
 			if tt.wantPublish != "" {
-				assert.True(t, g.MayPublish(moqt.BroadcastPath(tt.wantPublish)))
+				assert.True(t, g.Publish.Contains(moqt.BroadcastPath(tt.wantPublish)))
 			}
 			if tt.wantNotPublish != "" {
-				assert.False(t, g.MayPublish(moqt.BroadcastPath(tt.wantNotPublish)))
+				assert.False(t, g.Publish.Contains(moqt.BroadcastPath(tt.wantNotPublish)))
 			}
 			assert.Equal(t, tt.wantExpires, g.expires)
 			assert.Equal(t, tt.wantRevalidate, g.revalidate)
