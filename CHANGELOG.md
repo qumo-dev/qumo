@@ -25,7 +25,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Peers are identified by certificate; peer settings are reduced to `CA_FILE` and `PEERS` (`internal/relay`).**
   - **Trusted peer:** a session whose client certificate is verified against `CA_FILE`. A client certificate is optional for everyone else, so browsers connect without one. Without `CA_FILE`, no session is a peer.
   - **Dialing:** relays in `PEERS` are verified against the system roots plus `CA_FILE` (before, `CA_FILE` replaced the system roots). This relay presents its `CERT_FILE` as its client certificate.
-  - **`PEERS`** resolves each host to all its addresses and dials every one, which `UPSTREAM_ADDR` used to do. A `moqt://` prefix is accepted; before, it produced `moqt://moqt://…`.
+  - **`PEERS`** resolves each host to all its addresses and dials every one, which `UPSTREAM_ADDR` used to do. Entries are plain `host:port`.
   - **Removed:** `PEER_CIDRS` (network-based trust), `MTLS_REQUIRED` (a client certificate is now always optional, verified when given), `UPSTREAM_ADDR` (use `PEERS`).
   - **Migration:** a relay that relied on `PEER_CIDRS` needs a private CA, with a client certificate for each relay, before upgrading. Native-QUIC tools (ingest, HLS egress) don't: they connect with `?jwt=` and are admitted by the auth server.
 

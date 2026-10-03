@@ -42,8 +42,8 @@ func freeUDPPort(t *testing.T) int {
 }
 
 // TestPeerDiscovery_EdgeConnectsToHubViaPeers is an in-process
-// integration test for the UPSTREAM_ADDR path: a real edge relay, configured
-// with UpstreamAddr pointing at a real hub relay, completes a QUIC/MOQT
+// integration test for the PEERS path: a real edge relay, configured with
+// Peers pointing at a real hub relay, completes a QUIC/MOQT
 // handshake to it. No Docker or Nomad required — this complements the manual
 // docker/nomad simulation and would catch regressions in the dial loop (e.g.
 // the #93 class, where an edge filtered out all hubs).

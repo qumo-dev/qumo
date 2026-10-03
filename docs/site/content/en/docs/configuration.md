@@ -42,7 +42,7 @@ qumo relay --role hub    # or "edge"; omit for a standalone / flat relay
 
 | Variable | Default | Description |
 |---|---|---|
-| `PEERS` | (empty) | Comma-separated relays to dial (`host:4433`; a `moqt://` prefix is accepted). Each host is resolved to all its addresses and every address is dialed, so a DNS name for a group of relays (`role-hub.qumo-relay.service.consul:4433`) connects to each. The node relays their announcements. |
+| `PEERS` | (empty) | Comma-separated relays to dial, as `host:4433`. Each host is resolved to all its addresses and every address is dialed, so a DNS name for a group of relays (`role-hub.qumo-relay.service.consul:4433`) connects to each. The node relays their announcements. |
 
 There is no runtime peer-discovery service — the list is static, dialed once
 at startup and re-dialed with backoff on disconnect. See

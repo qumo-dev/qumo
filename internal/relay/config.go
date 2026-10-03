@@ -5,12 +5,11 @@ import (
 )
 
 // splitAddrList splits PEERS, a comma-separated list of host:port entries,
-// trimming whitespace and an optional "moqt://" prefix and dropping empty
-// entries.
+// trimming whitespace and dropping empty entries.
 func splitAddrList(raw string) []string {
 	var addrs []string
 	for a := range strings.SplitSeq(raw, ",") {
-		a = strings.TrimPrefix(strings.TrimSpace(a), "moqt://")
+		a = strings.TrimSpace(a)
 		if a != "" {
 			addrs = append(addrs, a)
 		}
@@ -56,9 +55,7 @@ type Config struct {
 
 // Peer represents a remote relay to connect to for announce discovery.
 type Peer struct {
-	// Address is the dial address used to connect to a remote relay.
-	// It can be a full URL such as "moqt://relay-tokyo:4433"
-	// or a raw host:port string such as "relay-tokyo:4433".
-	// Raw host:port addresses default to the moqt:// scheme.
+	// Address is the remote relay's host:port, such as "relay-tokyo:4433",
+	// dialed over native QUIC (moqt://).
 	Address string
 }

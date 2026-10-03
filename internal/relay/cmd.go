@@ -117,20 +117,6 @@ func Run(args []string) error {
 		slog.Info("relay: peering off (no CA_FILE): every inbound session is admitted like a client")
 	}
 
-	// Nomad-native and remote-cluster peer resolution were retired in favor of
-	// static PEERS. Warn rather than silently ignore these, so an operator
-	// upgrading a deployment that still sets them notices peer discovery
-	// stopped instead of losing fan-out with no explanation.
-	for _, retired := range []string{
-		"LOCAL_RESOLVER_ADDR", "LOCAL_RESOLVER_SERVICE_NAME", "LOCAL_RESOLVER_INTERVAL",
-		"REMOTE_RESOLVER_URL", "REMOTE_AUTH_TOKEN", "REMOTE_RESOLVE_INTERVAL", "REMOTE_TLS_ENABLED",
-	} {
-		if os.Getenv(retired) != "" {
-			slog.Warn("relay: env var no longer has any effect; peer resolution is now static (PEERS)",
-				"var", retired)
-		}
-	}
-
 	// Session admission: an auth server, or a static public grant (auth.go).
 	auth, err := newSessionAuth()
 	if err != nil {

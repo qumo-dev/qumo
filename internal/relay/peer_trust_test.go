@@ -34,7 +34,6 @@ func TestSplitAddrList(t *testing.T) {
 		"empty":                {raw: "", want: nil},
 		"one":                  {raw: "hub:4433", want: []string{"hub:4433"}},
 		"list with whitespace": {raw: " hub1:4433 , hub2:4433 ,", want: []string{"hub1:4433", "hub2:4433"}},
-		"moqt scheme stripped": {raw: "moqt://hub1:4433,moqt://hub2:4433", want: []string{"hub1:4433", "hub2:4433"}},
 	}
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
