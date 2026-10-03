@@ -73,7 +73,9 @@ func sessionGrant(ctx context.Context) (*auth.Grant, error) {
 
 // authorizeSubscribe reports whether tw's session may subscribe to its path.
 // A refusal closes tw with NotFound, the mux's answer for a path that doesn't
-// exist, so a client can't probe for paths it may not see.
+// exist, so a SUBSCRIBE alone doesn't tell a client which paths exist. Path
+// names still reach it through announce interest and TRACK_INFO, which gomoqt
+// answers inside the shared TrackMux (#418).
 func authorizeSubscribe(tw *moqt.TrackWriter) bool {
 	g, err := sessionGrant(tw.Context())
 	switch {

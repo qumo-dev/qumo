@@ -110,6 +110,19 @@ func TestServer_HandleWebTransport_Refused(t *testing.T) {
 	}
 }
 
+func TestServer_HandleWebTransport_NotAnUpgrade(t *testing.T) {
+	fake := &fakeAuth{}
+	srv := newTestServer("127.0.0.1:0")
+	srv.authorize = fake.authorize
+	t.Cleanup(func() { _ = srv.Close() })
+	rec := httptest.NewRecorder()
+
+	srv.HandleWebTransport(rec, httptest.NewRequest(http.MethodGet, "https://relay.example/?jwt=a.b.c", nil))
+
+	assert.Empty(t, fake.received(), "a request that isn't an upgrade never reaches the auth server")
+	assert.Equal(t, http.StatusBadRequest, rec.Code, "gomoqt answers it without a session")
+}
+
 func TestServer_HandleWebTransport_NoAuthorizeRefuses(t *testing.T) {
 	srv := newTestServer("127.0.0.1:0") // authorize left unset
 	t.Cleanup(func() { _ = srv.Close() })

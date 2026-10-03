@@ -93,11 +93,17 @@ func (s *Server) ServeStatus(w http.ResponseWriter, r *http.Request) {
 // HandleWebTransport admits a WebTransport upgrade before it happens: a
 // refused client gets the HTTP status (401 or 403, or 503 when the auth
 // server can't answer), and an admitted one carries its grant into the
-// session through the request context.
+// session through the request context. Only an upgrade (an extended
+// CONNECT) asks the auth server; any other request falls through to the
+// WebTransport handler, which answers it without a session.
 func (s *Server) HandleWebTransport(w http.ResponseWriter, r *http.Request) {
 	s.init()
 	if s.webtransportHandler == nil {
 		w.WriteHeader(http.StatusServiceUnavailable)
+		return
+	}
+	if r.Method != http.MethodConnect {
+		s.webtransportHandler.ServeHTTP(w, r)
 		return
 	}
 	g, err := s.admit(r.Context(), s.webTransportRequest(r))

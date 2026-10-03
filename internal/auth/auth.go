@@ -103,7 +103,13 @@ func NewClient(rawURL string) (*Client, error) {
 	default:
 		return nil, fmt.Errorf("want an https URL, got scheme %q", u.Scheme)
 	}
-	return &Client{endpoint: u, client: &http.Client{Timeout: timeout}}, nil
+	return &Client{endpoint: u, client: &http.Client{
+		Timeout: timeout,
+		// Never follow a redirect: a 307 or 308 would re-POST the client's
+		// credential to wherever Location points, past the scheme and
+		// loopback checks above. A 3xx is answered like any non-2xx: refused.
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+	}}, nil
 }
 
 // Request is one session event sent to the auth server.

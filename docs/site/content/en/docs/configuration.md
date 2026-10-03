@@ -132,10 +132,10 @@ The server answers with a grant:
   - A 401 or 403 refuses it. A WebTransport client gets that status before the upgrade; a native-QUIC session is closed with `0x2` (Unauthorized).
   - Anything else refuses too: a timeout, a 5xx, an invalid grant, or a grant that names nothing. Nothing is admitted while the auth server is down; a WebTransport client gets 503.
 - **Announcements** are routed only if the grant's `publish` patterns cover their path.
-- **Subscriptions** are served only if the grant's `subscribe` patterns cover their path. A refused subscription gets the same answer as a path that doesn't exist (`NotFound`), so a client can't probe for paths it may not see.
+- **Subscriptions** are served only if the grant's `subscribe` patterns cover their path. A refused subscription gets the same answer as a path that doesn't exist (`NotFound`).
 - **Trusted peers**, and peers this relay dials, are never checked.
 - **Not yet enforced:**
-  - which announcements a session can list: announce interest still lists every path under the requested prefix (qumo-dev/qumo#418);
+  - which paths a session can discover (qumo-dev/qumo#418): announce interest lists every path under the requested prefix, and a TRACK request returns a track's publisher properties (TRACK_INFO) for any path. Both reveal path names and metadata, never media;
   - `revalidate` (#419) and `expires` (#423).
 
 Metrics: `qumo_relay_auth_requests_total{event,result}` (`admitted`, `refused`, `invalid`, `error`), `qumo_relay_announcements_refused_total` and `qumo_relay_subscribe_authorizations_total{result}` (`admitted`, `not_covered`).
