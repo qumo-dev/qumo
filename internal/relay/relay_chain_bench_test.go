@@ -143,7 +143,7 @@ func spinRelay(tb testing.TB, nodeID, addr string, cert tls.Certificate, pool *x
 		// prevention (excludeHop==0 disables it): without it a ≥3-hop chain
 		// re-floods the announcement and hits "duplicated broadcast path".
 		TrackMux:  moqt.NewTrackMux(moqt.NewHopID()),
-		authorize: admitUnchecked,
+		Authorize: admitUnchecked,
 	}
 	go func() { _ = s.ListenAndServe() }()
 	tb.Cleanup(func() {

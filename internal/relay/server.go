@@ -33,12 +33,17 @@ type Server struct {
 	// relay command. See internal/cors.
 	AllowedOrigins []string
 
-	// authorize asks whether a client session may start, and returns its
+	// Authorize decides whether a client session may start, and returns its
 	// grant (admit.go). The relay command sets it to the auth server's
-	// client (QUMO_AUTH_URL); tests pass a plain function. nil refuses every
-	// client session, and logs why: a Server never runs open by omission.
-	// Trusted peers are never asked.
-	authorize func(ctx context.Context, req auth.Request) (*auth.Grant, error)
+	// client (QUMO_AUTH_URL), or, with auth off, to a function that admits
+	// every session unchecked. An application embedding the relay supplies
+	// its own. A nil grant with a nil error admits the session unchecked;
+	// an auth.RefusedError refuses it with its status; any other error
+	// refuses it as unavailable.
+	//
+	// A nil Authorize refuses every client session and logs why: a Server
+	// never runs open by omission. Trusted peers are never asked.
+	Authorize func(ctx context.Context, req auth.Request) (*auth.Grant, error)
 
 	// framePool recycles frame buffers for track distributors; sized from Config.FrameCapacity in init() (falling back to
 	// DefaultFramePool when unset, so a minimally-constructed Server still works).
