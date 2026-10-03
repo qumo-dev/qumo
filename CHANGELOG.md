@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed (breaking)
 
+- **`relay.Server.Authorize` is exported (`internal/relay`, #444).** It is how an application that embeds the relay supplies its own admission: a nil grant with a nil error admits unchecked, an `auth.RefusedError` refuses with its status, and any other error refuses as unavailable. A nil `Authorize` still refuses every client session. The admission tests moved to `internal/integration` and test the relay through this public API; CONTRIBUTING.md now says where integration tests go.
 - **Auth is optional: with `QUMO_AUTH_URL` the relay asks its auth server, without it auth is off; `QUMO_AUTH_PUBLIC` is removed (`internal/relay`, `internal/auth`, #441).** qumo is a data plane that runs on its own: auth is off unless `QUMO_AUTH_URL` is set, like Caddy's or nginx's. What a session may do is otherwise decided only by the auth server, whose policy differs by app, so qumo ships none. A static public grant in the relay was policy in the data plane.
   - **Auth off:** every session is admitted unchecked, like a trusted peer's, and the relay logs a warning at startup. No auth server is asked, and the admission is counted as `unchecked`.
   - **In code:** the relay takes its check as a function field, `authorize`. The relay command sets it to the auth client's `Connect`, or to `admitUnchecked` when auth is off; tests pass a plain function. Removed: the `admitter` interface, `publicGrant`, and `auth.Config.Public`.

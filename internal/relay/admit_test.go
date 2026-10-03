@@ -85,7 +85,7 @@ func TestServer_HandleWebTransport_Refused(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			fake := &fakeAuth{err: tt.err}
 			srv := newTestServer("127.0.0.1:0")
-			srv.authorize = fake.authorize
+			srv.Authorize = fake.authorize
 			t.Cleanup(func() { _ = srv.Close() })
 			// A WebTransport upgrade is an extended CONNECT whose :path is the
 			// URL's path; httptest parses a CONNECT target as an authority, so
@@ -113,7 +113,7 @@ func TestServer_HandleWebTransport_Refused(t *testing.T) {
 func TestServer_HandleWebTransport_NotAnUpgrade(t *testing.T) {
 	fake := &fakeAuth{}
 	srv := newTestServer("127.0.0.1:0")
-	srv.authorize = fake.authorize
+	srv.Authorize = fake.authorize
 	t.Cleanup(func() { _ = srv.Close() })
 	rec := httptest.NewRecorder()
 
@@ -155,7 +155,7 @@ func TestServer_Admit_Metrics(t *testing.T) {
 			if authorize == nil {
 				authorize = (&fakeAuth{err: tt.err}).authorize
 			}
-			srv := &Server{authorize: authorize}
+			srv := &Server{Authorize: authorize}
 			counter := metricAuthRequests.WithLabelValues(auth.EventConnect, tt.wantResult)
 			var err error
 
