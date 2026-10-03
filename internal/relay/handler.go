@@ -778,7 +778,7 @@ func (d *trackDistributor) deliverGroup(tw *moqt.TrackWriter, twCtx context.Cont
 		tWrite := d.stages.now()
 		if err := gw.WriteFrame(frame); err != nil {
 			// Flush bytes written before the failure: these frames were already
-			// handed to QUIC, so they count against egress (and metering) even
+			// handed to QUIC, so they count against egress even
 			// though the group is being abandoned. The failing frame is excluded.
 			d.egressCounter.Add(float64(egressTotal))
 			return true

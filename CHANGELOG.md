@@ -22,6 +22,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **Dev launchers** (`mage run`, the compose files, the demo Nomad job, `bench-multiproc`, `tools/capacity`) set `QUMO_AUTH_PUBLIC=**`.
   - **New metrics:** `qumo_relay_auth_requests_total{event,result}`, `qumo_relay_announcements_refused_total`.
   - **Requires** gomoqt v0.21.0: the WebTransport upgrade request's context reaches the session, and a native-QUIC client's `?jwt=` reaches the relay in the SETUP path (`Session.RequestURI`).
+  - **Docs:** the remaining "credential auth" wording (README, the `qumo relay` CLI page) now says session auth, and an egress comment no longer mentions the removed metering.
 ## [v0.8.260929] - 2026-09-29
 
 ### Added

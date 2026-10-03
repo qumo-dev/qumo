@@ -174,7 +174,7 @@ qumo/
 │   └── README.md               # Docker usage guide
 │
 ├── internal/                   # Core implementation
-│   ├── relay/                  # Relay server (handlers, peer resolvers, caching, credential auth)
+│   ├── relay/                  # Relay server (handlers, peer resolvers, caching, session auth)
 │   ├── ingest/                 # RTMP & RTSP ingest (push + pull), codec init-data builders
 │   ├── rtmp/                   # RTMP protocol stack
 │   ├── rtsp/                   # RTSP protocol stack & RTP de-packetization
