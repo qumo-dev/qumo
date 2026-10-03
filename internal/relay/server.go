@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/qumo-dev/gomoqt/moqt"
+	"github.com/qumo-dev/qumo/internal/auth"
 	"github.com/qumo-dev/qumo/internal/cors"
 )
 
@@ -32,10 +33,10 @@ type Server struct {
 	// relay command. See internal/cors.
 	AllowedOrigins []string
 
-	// auth admits client sessions (auth.go). nil admits every session with no
+	// auth admits client sessions (admit.go). nil admits every session with no
 	// check, for a Server embedded in tests; the relay command always sets it.
 	// Trusted peers are never asked.
-	auth *sessionAuth
+	auth admitter
 
 	// framePool recycles frame buffers for track distributors; sized from Config.FrameCapacity in init() (falling back to
 	// DefaultFramePool when unset, so a minimally-constructed Server still works).
@@ -100,7 +101,7 @@ func (s *Server) HandleWebTransport(w http.ResponseWriter, r *http.Request) {
 	if s.auth != nil {
 		g, err := s.admit(r.Context(), s.webTransportRequest(r))
 		if err != nil {
-			w.WriteHeader(refusalStatus(err))
+			w.WriteHeader(auth.RefusalStatus(err))
 			return
 		}
 		r = r.WithContext(context.WithValue(r.Context(), grantKey{}, g))
@@ -438,7 +439,7 @@ func (s *Server) maintainPeer(ctx context.Context, peer Peer) {
 // Relay handles inbound WebTransport sessions (publishers and browser
 // clients), already admitted at the upgrade (HandleWebTransport).
 func (s *Server) Relay(sess *moqt.Session) {
-	g, _ := sess.Context().Value(grantKey{}).(*grant)
+	g, _ := sess.Context().Value(grantKey{}).(*auth.Grant)
 	if s.auth != nil && g == nil {
 		// Unreachable through HandleWebTransport; refuse rather than run open.
 		_ = sess.CloseWithError(moqt.UnauthorizedSessionErrorCode, "no grant")
@@ -478,7 +479,7 @@ func isTrustedPeer(state *tls.ConnectionState) bool {
 
 // serveSession is the shared core for Relay and relayPeer. g is the session's
 // grant; nil serves a trusted peer (or a Server with no auth) unchecked.
-func (s *Server) serveSession(sess *moqt.Session, g *grant) {
+func (s *Server) serveSession(sess *moqt.Session, g *auth.Grant) {
 	s.init()
 	defer sess.CloseWithError(moqt.NoError, moqt.NoError.String())
 
@@ -515,7 +516,7 @@ func (s *Server) serveSession(sess *moqt.Session, g *grant) {
 			"remote", sess.RemoteAddr(),
 		)
 
-		if g != nil && !g.mayPublish(ann.BroadcastPath()) {
+		if g != nil && !g.Publish.Contains(ann.BroadcastPath()) {
 			// MoQ has no per-announcement error response, so the publisher
 			// receives no explicit rejection: the ANNOUNCE is simply not
 			// mirrored into the TrackMux, and the session's other broadcasts

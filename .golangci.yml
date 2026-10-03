@@ -52,7 +52,7 @@ linters:
       # the auth contract (ADR 0035). G704 flags any *http.Request data reaching
       # Client.Do, but the destination is fixed: https, or http on loopback.
       - linters: [gosec]
-        path: "internal/relay/auth.go"
+        path: "internal/auth/auth.go"
         text: "G704"
       # False positive: the capacity driver launches `qumo relay` / `qumo loadgen`
       # (the --qumo path) optionally under taskset, and reads results.jsonl from

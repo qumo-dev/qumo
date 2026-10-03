@@ -52,6 +52,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   compute the verdict over launched sessions so a mid-ramp abort (Ctrl-C) stays
   well-defined.
 
+### Changed
+
+- **The auth-server client moves to its own package, `internal/auth`.** It holds `LoadConfig`, the client, the grant (decoded through `json.Unmarshaler`) and its subtree patterns. `internal/relay/admit.go` keeps what is relay-specific: the `admitter` interface that the client and the public grant (`QUMO_AUTH_PUBLIC`) both satisfy, building the request from a WebTransport upgrade or a native-QUIC session, and the metrics. No behavior change.
+
 ## [v0.8.260927] - 2026-09-27
 
 ### Changed
