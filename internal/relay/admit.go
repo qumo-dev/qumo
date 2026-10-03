@@ -22,8 +22,7 @@ import (
 // arriving before then waits.
 type admission struct {
 	decided chan struct{}
-	// grant is set before decided closes. nil is unchecked: a trusted peer,
-	// or a Server with no auth.
+	// grant is set before decided closes. nil is unchecked: a trusted peer.
 	grant *auth.Grant
 }
 
@@ -154,8 +153,18 @@ func (s *Server) nodeID() string {
 	return s.Config.NodeID
 }
 
+// errNoAuthorize refuses every client session of a Server whose authorize is
+// unset, rather than running it open.
+var errNoAuthorize = errors.New("relay: no auth server configured")
+
 // admit runs the connect check and records its outcome.
 func (s *Server) admit(ctx context.Context, req auth.Request) (*auth.Grant, error) {
+	if s.authorize == nil {
+		metricAuthRequests.WithLabelValues(auth.EventConnect, "error").Inc()
+		slog.Error("relay: session refused: no auth server configured (Server.authorize is nil)",
+			"transport", req.Transport, "remote", req.Remote, "path", req.Path)
+		return nil, errNoAuthorize
+	}
 	g, err := s.authorize(ctx, req)
 	_, refused := errors.AsType[auth.RefusedError](err)
 	switch {

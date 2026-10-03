@@ -35,9 +35,9 @@ type Server struct {
 
 	// authorize asks whether a client session may start, and returns its
 	// grant (admit.go). The relay command sets it to the auth server's
-	// client (QUMO_AUTH_URL); tests pass a plain function. nil admits every
-	// session unchecked, for a Server embedded in tests. Trusted peers are
-	// never asked.
+	// client (QUMO_AUTH_URL); tests pass a plain function. nil refuses every
+	// client session, and logs why: a Server never runs open by omission.
+	// Trusted peers are never asked.
 	authorize func(ctx context.Context, req auth.Request) (*auth.Grant, error)
 
 	// framePool recycles frame buffers for track distributors; sized from Config.FrameCapacity in init() (falling back to
@@ -100,14 +100,10 @@ func (s *Server) HandleWebTransport(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusServiceUnavailable)
 		return
 	}
-	var g *auth.Grant
-	if s.authorize != nil {
-		var err error
-		g, err = s.admit(r.Context(), s.webTransportRequest(r))
-		if err != nil {
-			w.WriteHeader(auth.RefusalStatus(err))
-			return
-		}
+	g, err := s.admit(r.Context(), s.webTransportRequest(r))
+	if err != nil {
+		w.WriteHeader(auth.RefusalStatus(err))
+		return
 	}
 	r = r.WithContext(withAdmission(r.Context(), decidedAdmission(g)))
 	s.webtransportHandler.ServeHTTP(w, r)
@@ -467,7 +463,7 @@ func (s *Server) relayPeer(sess *moqt.Session) {
 		_ = sess.CloseWithError(moqt.UnauthorizedSessionErrorCode, "not admitted")
 		return
 	}
-	if s.trustedPeer(sess) || s.authorize == nil {
+	if s.trustedPeer(sess) {
 		a.decide(nil)
 		s.serveSession(sess)
 		return

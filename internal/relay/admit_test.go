@@ -110,6 +110,20 @@ func TestServer_HandleWebTransport_Refused(t *testing.T) {
 	}
 }
 
+func TestServer_HandleWebTransport_NoAuthorizeRefuses(t *testing.T) {
+	srv := newTestServer("127.0.0.1:0") // authorize left unset
+	t.Cleanup(func() { _ = srv.Close() })
+	req := httptest.NewRequest(http.MethodGet, "https://relay.example/acme/app", nil)
+	req.Method = http.MethodConnect
+	rec := httptest.NewRecorder()
+	counter := metricAuthRequests.WithLabelValues(auth.EventConnect, "error")
+
+	delta := counterDelta(t, func() { srv.HandleWebTransport(rec, req) }, counter)
+
+	assert.Equal(t, http.StatusServiceUnavailable, rec.Code, "a Server without authorize never runs open")
+	assert.Equal(t, 1.0, delta)
+}
+
 func TestServer_Admit_Metrics(t *testing.T) {
 	tests := map[string]struct {
 		err        error

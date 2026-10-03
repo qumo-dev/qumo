@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **The relay has one auth mode: `QUMO_AUTH_URL` is required, and `QUMO_AUTH_PUBLIC` is removed (`internal/relay`, `internal/auth`, #441).** What a session may do is decided only by the auth server; its policy, including what a session without a credential may use, differs by app, so qumo doesn't ship one.
   - **In code:** the relay takes its check as a function field, `authorize`. The relay command sets it to the auth client's `Connect`, and tests pass a plain function. Removed: the `admitter` interface, `publicGrant`, and `auth.Config.Public`.
+  - **Fail-closed:** a `Server` without `authorize` refuses every client session (WebTransport gets 503) and logs why, rather than running open. Tests that don't exercise admission pass `allowAll`.
   - **Local tools:** `qumo playground`, `mage relay`, `bench-multiproc` and `tools/capacity` answer `QUMO_AUTH_URL` with an in-process allow-all responder (`internal/allowall`) that admits every session to everything.
   - **Compose and the Nomad demo:** they run the same allow-all answer as a sidecar on each relay's loopback (`caddy respond`).
   - **Fixed:** `qumo playground` had no auth setting, so its relay stopped at startup.
