@@ -52,7 +52,7 @@ func (f *fakeAuthServer) start(t *testing.T) *auth.Client {
 	t.Helper()
 	srv := httptest.NewServer(f)
 	t.Cleanup(srv.Close)
-	client, err := auth.New(srv.URL)
+	client, err := auth.NewClient(srv.URL)
 	require.NoError(t, err)
 	return client
 }

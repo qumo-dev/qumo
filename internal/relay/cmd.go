@@ -119,7 +119,7 @@ func Run(args []string) error {
 	}
 
 	// Session admission: an auth server, or a static public grant (internal/auth).
-	sessionAuth, err := auth.FromEnv()
+	sessionAuth, err := auth.LoadConfig()
 	if err != nil {
 		return err
 	}

@@ -99,11 +99,10 @@ func TestClient_Connect_Public(t *testing.T) {
 	})
 }
 
-func TestFromEnv(t *testing.T) {
+func TestLoadConfig(t *testing.T) {
 	tests := map[string]struct {
 		url         string
 		public      string
-		wantErr     error
 		wantErrText string
 		wantPublic  bool
 	}{
@@ -111,8 +110,8 @@ func TestFromEnv(t *testing.T) {
 		"auth server on loopback http": {url: "http://127.0.0.1:4440/"},
 		"auth server on localhost":     {url: "http://localhost:4440/"},
 		"public grant":                 {public: "anon/**, demo/**", wantPublic: true},
-		"neither":                      {wantErr: errNoSetting},
-		"both":                         {url: "https://auth.example.com", public: "**", wantErr: errBothSettings},
+		"neither":                      {wantErrText: "neither"},
+		"both":                         {url: "https://auth.example.com", public: "**", wantErrText: "both set"},
 		"http off loopback":            {url: "http://auth.example.com/", wantErrText: "loopback"},
 		"another scheme":               {url: "ftp://auth.example.com/", wantErrText: "https"},
 		"bad public pattern":           {public: "anon", wantErrText: "QUMO_AUTH_PUBLIC"},
@@ -122,19 +121,16 @@ func TestFromEnv(t *testing.T) {
 			t.Setenv("QUMO_AUTH_URL", tt.url)
 			t.Setenv("QUMO_AUTH_PUBLIC", tt.public)
 
-			auth, err := FromEnv()
+			auth, err := LoadConfig()
 
-			switch {
-			case tt.wantErr != nil:
-				assert.ErrorIs(t, err, tt.wantErr)
-			case tt.wantErrText != "":
+			if tt.wantErrText != "" {
 				assert.ErrorContains(t, err, tt.wantErrText)
-			default:
-				require.NoError(t, err)
-				assert.Equal(t, tt.wantPublic, auth.public != nil)
-				if tt.url != "" {
-					assert.Equal(t, tt.url, auth.endpoint.String())
-				}
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.wantPublic, auth.public != nil)
+			if tt.url != "" {
+				assert.Equal(t, tt.url, auth.endpoint.String())
 			}
 		})
 	}
