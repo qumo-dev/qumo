@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
 	"sync"
 	"testing"
 )
@@ -48,9 +47,9 @@ func (f *fakeAuthServer) start(t *testing.T) *Client {
 	t.Helper()
 	srv := httptest.NewServer(f)
 	t.Cleanup(srv.Close)
-	endpoint, err := url.Parse(srv.URL)
+	c, err := NewClient(srv.URL)
 	if err != nil {
-		t.Fatalf("parse test server URL: %v", err)
+		t.Fatalf("auth client for the test server: %v", err)
 	}
-	return &Client{endpoint: endpoint, client: srv.Client()}
+	return c
 }
