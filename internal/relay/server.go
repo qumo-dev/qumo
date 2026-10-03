@@ -155,10 +155,11 @@ func (s *Server) init() {
 		}
 
 		// ConnContext intercepts each accepted QUIC connection before the MOQ
-		// handshake, and gives its session a pending admission. For native QUIC connections the underlying type satisfies
-		// connStatsProvider, so we launch a polling goroutine to collect
-		// connection-level stats (RTT, packet loss). WebTransport connections
-		// do not satisfy the interface and are silently skipped.
+		// handshake and gives its session a pending admission. For native
+		// QUIC connections the underlying type satisfies connStatsProvider,
+		// so we launch a polling goroutine to collect connection-level stats
+		// (RTT, packet loss). WebTransport connections do not satisfy the
+		// interface and are silently skipped.
 		s.MOQServer.ConnContext = func(ctx context.Context, conn moqt.StreamConn) context.Context {
 			if provider, ok := conn.(connStatsProvider); ok {
 				addr := conn.RemoteAddr().String()
@@ -471,7 +472,7 @@ func (s *Server) relayPeer(sess *moqt.Session) {
 	}
 	g, err := s.admit(sess.Context(), s.nativeRequest(sess))
 	if err != nil {
-		a.decide(refused)
+		a.decide(refusedGrant)
 		_ = sess.CloseWithError(moqt.UnauthorizedSessionErrorCode, "refused")
 		return
 	}

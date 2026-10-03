@@ -29,8 +29,8 @@ type admission struct {
 
 type admissionKey struct{}
 
-// refused is the grant of a refused session: it covers nothing.
-var refused = &auth.Grant{}
+// refusedGrant is the grant of a refused session: it covers nothing.
+var refusedGrant = &auth.Grant{}
 
 func pendingAdmission() *admission {
 	return &admission{decided: make(chan struct{})}
