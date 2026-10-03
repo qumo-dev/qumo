@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`qumo auth`, the auth server a relay asks about every session (`internal/authserver`, #441).** Ported from qumo-deploy (foalk-inc/qumo-deploy#1249, closed unmerged): it runs next to every relay, a customer's own included, so it ships with the relay.
+  - **Credentials:** verifies app-signed capability tokens (EdDSA JWTs whose claims are exactly `path_auth`, `iat`, `nbf`, `exp` and an optional `jti`) against a JWK Set (`QUMO_AUTH_KEYS_FILE`). Every path a token grants must lie within its key's `prefix`.
+  - **Anonymous grant:** `QUMO_AUTH_ANONYMOUS` patterns for a session that presents no credential. A session that presents one is always verified, never given the anonymous grant instead.
+  - **Serving:** `QUMO_AUTH_ADDR` (default `127.0.0.1:4440`) and `GET /healthz`.
+
 ### Changed (breaking)
 
 - **Subscriptions are checked against the session's grant (`internal/relay`, #418).** A SUBSCRIBE is served only if the grant's `subscribe` patterns cover its path; otherwise it's refused with `NotFound`, the same answer as a path that doesn't exist, so a client can't probe for paths. The session stays up.

@@ -140,3 +140,16 @@ The server answers with a grant:
 With `QUMO_AUTH_PUBLIC`, a session that presents a credential (`?jwt=`) is refused rather than admitted on the public grant.
 
 Metrics: `qumo_relay_auth_requests_total{event,result}` (`admitted`, `refused`, `invalid`, `error`), `qumo_relay_announcements_refused_total` and `qumo_relay_subscribe_authorizations_total{result}` (`admitted`, `not_covered`).
+
+### The auth server: `qumo auth`
+`qumo auth` is the auth server. It runs next to a relay, on loopback, and the relay points `QUMO_AUTH_URL` at it (`http://127.0.0.1:4440/`).
+- **With a credential:** it verifies the client's capability token, an EdDSA JWT that the app signs with a key you trust. It grants the token's `path_auth` scopes, and only when every scope lies within that key's `prefix`.
+- **With no credential:** it grants the anonymous patterns, if any are set. A client that presents a credential is always verified, and is refused rather than given the anonymous grant when its token fails.
+
+| Variable | Default | Description |
+|---|---|---|
+| `QUMO_AUTH_ADDR` | `127.0.0.1:4440` | Listen address. Keep it on loopback: the relay beside it is the only client. |
+| `QUMO_AUTH_KEYS_FILE` | (unset) | JWK Set of the trusted Ed25519 public keys. Each key may carry a `prefix` that confines what its tokens can grant. |
+| `QUMO_AUTH_ANONYMOUS` | (unset) | Comma-separated subtree patterns (`anon/**`) that a session with no credential may publish and subscribe to. `**` opens everything; use it for development only. |
+
+At least one of `QUMO_AUTH_KEYS_FILE` and `QUMO_AUTH_ANONYMOUS` must be set. The server also serves `GET /healthz`.
