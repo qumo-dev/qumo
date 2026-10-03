@@ -79,59 +79,57 @@ func TestClient_Connect_ServerDown(t *testing.T) {
 	assert.Equal(t, http.StatusServiceUnavailable, RefusalStatus(err))
 }
 
-func TestClient_Connect_Public(t *testing.T) {
-	patterns, err := parsePatterns([]string{"anon/**"})
-	require.NoError(t, err)
-	auth := &Client{public: &Grant{Publish: patterns, Subscribe: patterns}}
-
-	t.Run("admits without a server", func(t *testing.T) {
-		g, err := auth.Connect(context.Background(), Request{Path: "/"})
-
-		require.NoError(t, err)
-		assert.True(t, g.Publish.Contains("/anon/room"))
-		assert.False(t, g.Publish.Contains("/other"))
-	})
-	t.Run("refuses a session that presents a credential", func(t *testing.T) {
-		_, err := auth.Connect(context.Background(), Request{Path: "/", Query: "jwt=a.b.c"})
-
-		assert.ErrorIs(t, err, ErrCredentialOnPublic)
-		assert.Equal(t, http.StatusUnauthorized, RefusalStatus(err))
-	})
-}
-
 func TestLoadConfig(t *testing.T) {
 	tests := map[string]struct {
 		url         string
 		public      string
+		want        Config
 		wantErrText string
-		wantPublic  bool
 	}{
-		"auth server over https":       {url: "https://auth.example.com/v1/sessions"},
-		"auth server on loopback http": {url: "http://127.0.0.1:4440/"},
-		"auth server on localhost":     {url: "http://localhost:4440/"},
-		"public grant":                 {public: "anon/**, demo/**", wantPublic: true},
-		"neither":                      {wantErrText: "neither"},
-		"both":                         {url: "https://auth.example.com", public: "**", wantErrText: "both set"},
-		"http off loopback":            {url: "http://auth.example.com/", wantErrText: "loopback"},
-		"another scheme":               {url: "ftp://auth.example.com/", wantErrText: "https"},
-		"bad public pattern":           {public: "anon", wantErrText: "QUMO_AUTH_PUBLIC"},
+		"auth server":        {url: "https://auth.example.com/v1/sessions", want: Config{URL: "https://auth.example.com/v1/sessions"}},
+		"public grant":       {public: "anon/**, demo/**", want: Config{Public: Patterns{{base: "anon"}, {base: "demo"}}}},
+		"neither":            {wantErrText: "neither"},
+		"both":               {url: "https://auth.example.com", public: "**", wantErrText: "both set"},
+		"bad public pattern": {public: "anon", wantErrText: "QUMO_AUTH_PUBLIC"},
 	}
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
 			t.Setenv("QUMO_AUTH_URL", tt.url)
 			t.Setenv("QUMO_AUTH_PUBLIC", tt.public)
 
-			auth, err := LoadConfig()
+			got, err := LoadConfig()
 
 			if tt.wantErrText != "" {
 				assert.ErrorContains(t, err, tt.wantErrText)
 				return
 			}
 			require.NoError(t, err)
-			assert.Equal(t, tt.wantPublic, auth.public != nil)
-			if tt.url != "" {
-				assert.Equal(t, tt.url, auth.endpoint.String())
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
+func TestNewClient(t *testing.T) {
+	tests := map[string]struct {
+		url         string
+		wantErrText string
+	}{
+		"https":             {url: "https://auth.example.com/v1/sessions"},
+		"loopback http":     {url: "http://127.0.0.1:4440/"},
+		"localhost http":    {url: "http://localhost:4440/"},
+		"http off loopback": {url: "http://auth.example.com/", wantErrText: "loopback"},
+		"another scheme":    {url: "ftp://auth.example.com/", wantErrText: "https"},
+	}
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			c, err := NewClient(tt.url)
+
+			if tt.wantErrText != "" {
+				assert.ErrorContains(t, err, tt.wantErrText)
+				return
 			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.url, c.String())
 		})
 	}
 }

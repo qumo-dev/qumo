@@ -27,7 +27,7 @@ import (
 // HandleWebTransport). peerCA, when set, plays CA_FILE: a client certificate
 // it verifies makes the session a trusted peer. It returns the relay's
 // loopback address and the server.
-func startAuthRelay(t *testing.T, client *auth.Client, peerCA *tls.Certificate) (string, *Server) {
+func startAuthRelay(t *testing.T, client admitter, peerCA *tls.Certificate) (string, *Server) {
 	t.Helper()
 	cert := loadTempCert(t)
 
@@ -252,7 +252,11 @@ func TestServer_SessionAuth_NativeQUIC(t *testing.T) {
 }
 
 func TestServer_SessionAuth_Public(t *testing.T) {
-	client, err := auth.NewPublic("anon/**")
+	t.Setenv("QUMO_AUTH_PUBLIC", "anon/**")
+	t.Setenv("QUMO_AUTH_URL", "")
+	cfg, err := auth.LoadConfig()
+	require.NoError(t, err)
+	client, err := newAdmitter(cfg)
 	require.NoError(t, err)
 	addr, srv := startAuthRelay(t, client, nil)
 
