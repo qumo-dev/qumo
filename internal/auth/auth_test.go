@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"testing"
 
@@ -67,6 +68,27 @@ func TestClient_Connect_SendsTheRequest(t *testing.T) {
 
 	require.NoError(t, err)
 	assert.Equal(t, []Request{req}, server.received())
+}
+
+func TestClient_Connect_DoesNotFollowRedirects(t *testing.T) {
+	elsewhere := &fakeAuthServer{body: `{"publish":["**"]}`}
+	elsewhereURL := elsewhere.start(t).endpoint.String()
+	for _, status := range []int{http.StatusTemporaryRedirect, http.StatusPermanentRedirect, http.StatusFound} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			redirect := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				http.Redirect(w, r, elsewhereURL, status)
+			}))
+			t.Cleanup(redirect.Close)
+			c, err := NewClient(redirect.URL)
+			require.NoError(t, err)
+
+			_, err = c.Connect(context.Background(), Request{ID: "00ff", Event: EventConnect, Query: "jwt=a.b.c"})
+
+			require.Error(t, err)
+			assert.Equal(t, http.StatusServiceUnavailable, RefusalStatus(err))
+			assert.Empty(t, elsewhere.received(), "the credential must not follow the redirect")
+		})
+	}
 }
 
 func TestClient_Connect_ServerDown(t *testing.T) {
