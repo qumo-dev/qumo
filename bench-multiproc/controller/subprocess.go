@@ -43,6 +43,7 @@ func startRelay(ctx context.Context, bin string, node *RelayNode, certDir string
 		"RELAY_GOGC=800",
 		"GROUP_CACHE_SIZE=8",
 		"LOCAL_RESOLVER_INTERVAL=0s",
+		"QUMO_AUTH_PUBLIC=**", // benchmarks run open
 	)
 	if node.PeerAddr != "" {
 		env = append(env, fmt.Sprintf("PEERS=%s", node.PeerAddr))

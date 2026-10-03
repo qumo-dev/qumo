@@ -52,6 +52,7 @@ job "qumo-cluster" {
       env {
         RELAY_ADDR = "0.0.0.0:4433"
         RELAY_NAME = "hub-asia-${NOMAD_ALLOC_INDEX}"
+        QUMO_AUTH_PUBLIC = "**" # open demo cluster; production sets QUMO_AUTH_URL
       }
 
       resources {
@@ -91,6 +92,7 @@ job "qumo-cluster" {
       env {
         RELAY_ADDR = "0.0.0.0:4433"
         RELAY_NAME = "edge-asia-${NOMAD_ALLOC_INDEX}"
+        QUMO_AUTH_PUBLIC = "**" # open demo cluster; production sets QUMO_AUTH_URL
         # Static upstream list: both hub aliases from the "hubs" group above.
         # Fixed to match that group's count = 2; bump both together.
         UPSTREAM_ADDR = "hub-0:4433,hub-1:4433"

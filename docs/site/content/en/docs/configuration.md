@@ -56,7 +56,7 @@ for a worked example of giving relays stable addresses on Nomad.
 | Variable | Default | Description |
 |---|---|---|
 | `CA_FILE` | (empty) | PEM CA certificate. When set, mutual TLS is enabled between peers. |
-| `PEER_CIDRS` | (empty) | Comma-separated networks whose native-QUIC sessions are trusted as relay peers, e.g. a private mesh overlay (`100.64.0.0/10`). When credential auth is on (`QUMO_CREDENTIAL_URL`), a native-QUIC session is a peer only if it comes from one of these networks or presents a client certificate verified against `CA_FILE`; any other native-QUIC session authenticates its announcements like a WebTransport client. Set this (or mTLS) for relay-to-relay and ingress connections. |
+| `PEER_CIDRS` | (empty) | Comma-separated networks whose native-QUIC sessions are trusted as relay peers, e.g. a private mesh overlay (`100.64.0.0/10`). A native-QUIC session is a peer only if it comes from one of these networks or presents a client certificate verified against `CA_FILE`; any other native-QUIC session is admitted like a WebTransport client (see Session auth). Set this (or mTLS) for relay-to-relay and ingress connections. |
 | `MTLS_REQUIRED` | `true` | Whether every connection must present a client cert signed by `CA_FILE`. Set to `false` to accept connections without one (verified if presented), e.g. when the relay also serves browser/WebTransport traffic directly. Only applies when `CA_FILE` is set. |
 
 See [Deployment → TLS & mTLS]({{< relref "deployment/tls" >}}).
@@ -99,13 +99,43 @@ relay's HTTP port.
 |---|---|---|
 | `CORS_ALLOWED_ORIGINS` | (unset) | Origins permitted to open WebTransport sessions to `qumo relay`, `qumo rtmp`, and `qumo rtsp`/`rtsp-push`. Comma-separated. `*` allows any origin; `same-host` allows any port on the request's own host. If unset, only same-origin and headerless (non-browser) clients are accepted. |
 
-## Credential auth & metering (optional)
+## Session auth (required)
+
+A relay admits each client session in exactly one of two ways. Setting both, or neither, stops the relay at startup.
 
 | Variable | Default | Description |
 |---|---|---|
-| `QUMO_CREDENTIAL_URL` | (unset) | Base URL of the qumo credential server. When set, the relay authenticates publisher JWTs via `POST /v1/credentials/introspect` — sending the token together with the announced `broadcast_path`, so the credential server decides whether the credential covers that path — and reports cumulative ingress/egress byte totals via `POST /v1/usage/events`. Leave unset for open-relay mode. |
-| `QUMO_RELAY_TOKEN` | (unset) | Shared bearer token the relay presents to the credential server. Must match the server's configured token. |
-| `QUMO_RELAY_AUDIENCE` | (unset) | Set to verify credentials **locally** instead of introspecting them: the relay checks each publisher JWT against the control plane's public keys (`GET {QUMO_CREDENTIAL_URL}/v1/credentials/jwks`) and requires `aud` to equal this value. Use `qumo-relay-dev` on a relay you run for a qumo-deploy **dev project**. Local mode needs no `QUMO_RELAY_TOKEN`, reads no revocation feed (a revoked credential stops working at its expiry, at most an hour) and reports no usage. `qumo-relay`, the managed network's audience, is refused for now: managed relays keep introspection until they consume the revocation feed. |
-| `QUMO_CREDENTIAL_ISSUER` | `QUMO_CREDENTIAL_URL` | Local mode only: the `iss` a credential must carry, the control plane's public API URL. Set it when the relay reaches the control plane at a different URL than the one it signs as. |
+| `QUMO_AUTH_URL` | (unset) | An auth server the relay asks when each client session connects. `https://`, or `http://` on a loopback host only. |
+| `QUMO_AUTH_PUBLIC` | (unset) | Comma-separated subtree patterns (`anon/**`, `demo/**`) that any session may publish and subscribe to, with no server. `**` opens everything; use it for development only. |
 
-In local mode the relay fetches the key set at start and admits nothing until that succeeds. It refreshes every 5 minutes and refetches on an unknown key id (at most every 30 s). If refreshes fail it keeps admitting on the cached keys for up to 6 hours, then stops. Credentials are checked for the `EdDSA` signature, `exp`, `nbf` and `iat` (60 s leeway), `iss`, `aud`, and that the credential's `path_auth` covers the announced path.
+**Trusted peers are never asked:** native-QUIC sessions from `PEER_CIDRS` or with a client certificate verified against `CA_FILE`, and peers this relay dials (`PEERS`, `UPSTREAM_ADDR`).
+
+### The auth server contract
+A subset of [`moq-auth`](https://github.com/kixelated/moq/blob/main/doc/bin/relay/auth.md) (qumo-deploy ADR 0035). When a client connects, the relay POSTs JSON:
+
+```json
+{"id": "<random hex>", "event": "connect", "node": "<RELAY_NAME>", "transport": "webtransport|quic",
+ "remote": "ip:port", "local": "ip:port", "server_name": "relay.example.com",
+ "path": "/as/dialed", "query": "jwt=<credential>"}
+```
+
+**The relay never parses the credential;** the client puts it in the connect URL (`https://relay.example.com/…?jwt=…`, or `moqt://relay.example.com/…?jwt=…` over native QUIC) and the relay forwards `query` as is.
+
+The server answers with a grant:
+
+```json
+{"publish": ["acme/app/**"], "subscribe": ["acme/**"], "expires": 1767225600, "revalidate": 30}
+```
+
+- **Patterns** are subtree patterns only: `**` (everything) or `a/b/**` (`a/b` and everything beneath it, on `/` boundaries).
+- **Unsupported fields** (`root`, `mounts`, `peer`) make a grant invalid. `tier` is ignored.
+- **Admission:**
+  - A 2xx with a non-empty grant admits the session.
+  - A 401 or 403 refuses it. A WebTransport client gets that status before the upgrade; a native-QUIC session is closed with `0x2` (Unauthorized).
+  - Anything else refuses too: a timeout, a 5xx, an invalid grant, or a grant that names nothing. Nothing is admitted while the auth server is down; a WebTransport client gets 503.
+- **Announcements** are routed only if the grant's `publish` patterns cover their path.
+- **Not yet enforced:** `subscribe` patterns (qumo-dev/qumo#418), `revalidate` (#419) and `expires` (#423).
+
+With `QUMO_AUTH_PUBLIC`, a session that presents a credential (`?jwt=`) is refused rather than admitted on the public grant.
+
+Metrics: `qumo_relay_auth_requests_total{event,result}` (`admitted`, `refused`, `invalid`, `error`) and `qumo_relay_announcements_refused_total`.
