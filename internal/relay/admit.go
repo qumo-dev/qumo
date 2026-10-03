@@ -5,7 +5,6 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
-	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
@@ -15,46 +14,6 @@ import (
 	"github.com/qumo-dev/qumo/internal/auth"
 )
 
-// admitter decides whether a session may start: *auth.Client asks the auth
-// server (QUMO_AUTH_URL), and publicGrant admits every session on one fixed
-// grant (QUMO_AUTH_PUBLIC).
-type admitter interface {
-	Connect(ctx context.Context, req auth.Request) (*auth.Grant, error)
-}
-
-var (
-	_ admitter = (*auth.Client)(nil)
-	_ admitter = publicGrant{}
-)
-
-// newAdmitter returns the admitter cfg describes.
-func newAdmitter(cfg auth.Config) (admitter, error) {
-	if cfg.URL == "" {
-		return publicGrant{grant: &auth.Grant{Publish: cfg.Public, Subscribe: cfg.Public}}, nil
-	}
-	c, err := auth.NewClient(cfg.URL)
-	if err != nil {
-		return nil, fmt.Errorf("QUMO_AUTH_URL: %w", err)
-	}
-	return c, nil
-}
-
-// publicGrant admits every session on the same grant, with no auth server.
-type publicGrant struct {
-	grant *auth.Grant
-}
-
-// Connect refuses a session that presents a credential (?jwt=) rather than
-// admitting it on the public grant: the client expects its credential to be
-// checked, and this relay checks none.
-func (p publicGrant) Connect(_ context.Context, req auth.Request) (*auth.Grant, error) {
-	if q, err := url.ParseQuery(req.Query); err == nil && q.Has("jwt") {
-		return nil, fmt.Errorf("a credential was presented to a relay with only a public grant: %w",
-			auth.RefusedError{Status: http.StatusUnauthorized})
-	}
-	return p.grant, nil
-}
-
 // admission is a session's grant, carried in the session's context so that
 // both checks find it: announcements (serveSession) and subscriptions
 // (authorizeSubscribe), whose TrackWriter context derives from the session's.
@@ -63,8 +22,7 @@ func (p publicGrant) Connect(_ context.Context, req auth.Request) (*auth.Grant, 
 // arriving before then waits.
 type admission struct {
 	decided chan struct{}
-	// grant is set before decided closes. nil is unchecked: a trusted peer,
-	// or a Server with no auth.
+	// grant is set before decided closes. nil is unchecked: a trusted peer.
 	grant *auth.Grant
 }
 
@@ -197,11 +155,30 @@ func (s *Server) nodeID() string {
 	return s.Config.NodeID
 }
 
+// admitUnchecked admits every session without asking anyone: the relay runs
+// with auth off (QUMO_AUTH_URL unset). Its sessions are unchecked, like a
+// trusted peer's.
+func admitUnchecked(context.Context, auth.Request) (*auth.Grant, error) {
+	return nil, nil
+}
+
+// errNoAuthorize refuses every client session of a Server whose authorize is
+// unset, rather than running it open.
+var errNoAuthorize = errors.New("relay: no auth server configured")
+
 // admit runs the connect check and records its outcome.
 func (s *Server) admit(ctx context.Context, req auth.Request) (*auth.Grant, error) {
-	g, err := s.auth.Connect(ctx, req)
+	if s.authorize == nil {
+		metricAuthRequests.WithLabelValues(auth.EventConnect, "error").Inc()
+		slog.Error("relay: session refused: no auth server configured (Server.authorize is nil)",
+			"transport", req.Transport, "remote", req.Remote, "path", req.Path)
+		return nil, errNoAuthorize
+	}
+	g, err := s.authorize(ctx, req)
 	_, refused := errors.AsType[auth.RefusedError](err)
 	switch {
+	case err == nil && g == nil:
+		metricAuthRequests.WithLabelValues(auth.EventConnect, "unchecked").Inc()
 	case err == nil:
 		metricAuthRequests.WithLabelValues(auth.EventConnect, "admitted").Inc()
 	case refused:

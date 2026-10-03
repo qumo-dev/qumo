@@ -118,14 +118,19 @@ func Run(args []string) error {
 		slog.Info("relay: peering off (no CA_FILE): every inbound session is admitted like a client")
 	}
 
-	// Session admission: an auth server, or a static public grant (admit.go).
-	authCfg, err := auth.LoadConfig()
-	if err != nil {
-		return err
-	}
-	sessionAuth, err := newAdmitter(authCfg)
-	if err != nil {
-		return err
+	// Session admission (admit.go): the auth server beside this relay, or,
+	// with no QUMO_AUTH_URL, auth off.
+	authCfg := auth.LoadConfig()
+	authorize := admitUnchecked
+	authMode := "off (QUMO_AUTH_URL unset): every session is admitted unchecked"
+	if authCfg.URL != "" {
+		authClient, err := auth.NewClient(authCfg.URL)
+		if err != nil {
+			return fmt.Errorf("QUMO_AUTH_URL: %w", err)
+		}
+		authorize, authMode = authClient.Connect, authCfg.URL
+	} else {
+		slog.Warn("relay: auth is off: QUMO_AUTH_URL is not set, so every session is admitted unchecked")
 	}
 
 	relayCfg := Config{
@@ -207,7 +212,7 @@ func Run(args []string) error {
 		Config:         &relayCfg,
 		TrackMux:       trackMux,
 		AllowedOrigins: cors.LoadAllowed(),
-		auth:           sessionAuth,
+		authorize:      authorize,
 	}
 
 	httpMux.HandleFunc("/", relayServer.HandleWebTransport)
@@ -250,10 +255,6 @@ func Run(args []string) error {
 	log.Printf("\t%-8s: Prometheus metrics\n", "/metrics")
 	for _, p := range relayCfg.Peers {
 		log.Printf("\t%-8s: %s\n", "Peer", sanitizeLog(p.Address))
-	}
-	authMode := "public grant"
-	if authCfg.URL != "" {
-		authMode = authCfg.URL
 	}
 	log.Printf("\t%-8s: %s\n", "Auth", sanitizeLog(authMode))
 

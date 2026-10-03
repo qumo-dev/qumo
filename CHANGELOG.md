@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed (breaking)
 
+- **Auth is optional: with `QUMO_AUTH_URL` the relay asks its auth server, without it auth is off; `QUMO_AUTH_PUBLIC` is removed (`internal/relay`, `internal/auth`, #441).** qumo is a data plane that runs on its own: auth is off unless `QUMO_AUTH_URL` is set, like Caddy's or nginx's. What a session may do is otherwise decided only by the auth server, whose policy differs by app, so qumo ships none. A static public grant in the relay was policy in the data plane.
+  - **Auth off:** every session is admitted unchecked, like a trusted peer's, and the relay logs a warning at startup. No auth server is asked, and the admission is counted as `unchecked`.
+  - **In code:** the relay takes its check as a function field, `authorize`. The relay command sets it to the auth client's `Connect`, or to `admitUnchecked` when auth is off; tests pass a plain function. Removed: the `admitter` interface, `publicGrant`, and `auth.Config.Public`.
+  - **Fail-closed:** a `Server` built without `authorize` refuses every client session (WebTransport gets 503) and logs an error. Turning auth off is a setting; forgetting `authorize` is a bug.
+  - **Only an upgrade asks:** a request to the WebTransport endpoint that isn't an extended CONNECT goes straight to gomoqt's fallback (400), without asking the auth server.
+  - **Local tools, compose and the Nomad demo** run with auth off; they no longer set `QUMO_AUTH_PUBLIC`.
+  - **Fixed:** `qumo playground` had no auth setting, so its relay stopped at startup. Auth off now applies.
 - **Subscriptions are checked against the session's grant (`internal/relay`, #418).** A SUBSCRIBE is served only if the grant's `subscribe` patterns cover its path; otherwise it's refused with `NotFound`, the same answer as a path that doesn't exist. The session stays up.
   - **Every session's context carries its admission:** decided at the upgrade for WebTransport, and pending from `ConnContext` until `relayPeer` decides it for native QUIC. A subscription that arrives before admission finishes waits for it. Announcements are checked against the same admission, so `serveSession` no longer takes a grant.
   - **Unchanged:** trusted peers and dialed peers are never checked. FETCH stays rejected: the relay registers no fetch handler.

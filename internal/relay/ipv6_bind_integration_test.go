@@ -53,6 +53,7 @@ func TestServer_DualStackBind_ReachableOverIPv6(t *testing.T) {
 		Config: &Config{
 			NodeID: "v6-relay", Role: "hub",
 		},
+		authorize: admitUnchecked,
 	}
 	go func() { _ = srv.ListenAndServe() }()
 	t.Cleanup(func() {

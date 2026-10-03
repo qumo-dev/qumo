@@ -33,10 +33,12 @@ type Server struct {
 	// relay command. See internal/cors.
 	AllowedOrigins []string
 
-	// auth admits client sessions (admit.go). nil admits every session with no
-	// check, for a Server embedded in tests; the relay command always sets it.
+	// authorize asks whether a client session may start, and returns its
+	// grant (admit.go). The relay command sets it to the auth server's
+	// client (QUMO_AUTH_URL); tests pass a plain function. nil refuses every
+	// client session, and logs why: a Server never runs open by omission.
 	// Trusted peers are never asked.
-	auth admitter
+	authorize func(ctx context.Context, req auth.Request) (*auth.Grant, error)
 
 	// framePool recycles frame buffers for track distributors; sized from Config.FrameCapacity in init() (falling back to
 	// DefaultFramePool when unset, so a minimally-constructed Server still works).
@@ -91,21 +93,23 @@ func (s *Server) ServeStatus(w http.ResponseWriter, r *http.Request) {
 // HandleWebTransport admits a WebTransport upgrade before it happens: a
 // refused client gets the HTTP status (401 or 403, or 503 when the auth
 // server can't answer), and an admitted one carries its grant into the
-// session through the request context.
+// session through the request context. Only an upgrade (an extended
+// CONNECT) asks the auth server; any other request falls through to the
+// WebTransport handler, which answers it without a session.
 func (s *Server) HandleWebTransport(w http.ResponseWriter, r *http.Request) {
 	s.init()
 	if s.webtransportHandler == nil {
 		w.WriteHeader(http.StatusServiceUnavailable)
 		return
 	}
-	var g *auth.Grant
-	if s.auth != nil {
-		var err error
-		g, err = s.admit(r.Context(), s.webTransportRequest(r))
-		if err != nil {
-			w.WriteHeader(auth.RefusalStatus(err))
-			return
-		}
+	if r.Method != http.MethodConnect {
+		s.webtransportHandler.ServeHTTP(w, r)
+		return
+	}
+	g, err := s.admit(r.Context(), s.webTransportRequest(r))
+	if err != nil {
+		w.WriteHeader(auth.RefusalStatus(err))
+		return
 	}
 	r = r.WithContext(withAdmission(r.Context(), decidedAdmission(g)))
 	s.webtransportHandler.ServeHTTP(w, r)
@@ -465,7 +469,7 @@ func (s *Server) relayPeer(sess *moqt.Session) {
 		_ = sess.CloseWithError(moqt.UnauthorizedSessionErrorCode, "not admitted")
 		return
 	}
-	if s.trustedPeer(sess) || s.auth == nil {
+	if s.trustedPeer(sess) {
 		a.decide(nil)
 		s.serveSession(sess)
 		return

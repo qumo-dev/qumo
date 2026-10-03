@@ -10,6 +10,7 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"errors"
 	"fmt"
 	"net/http"
 	"testing"
@@ -27,7 +28,7 @@ import (
 // HandleWebTransport). peerCA, when set, plays CA_FILE: a client certificate
 // it verifies makes the session a trusted peer. It returns the relay's
 // loopback address and the server.
-func startAuthRelay(t *testing.T, client admitter, peerCA *tls.Certificate) (string, *Server) {
+func startAuthRelay(t *testing.T, authorize func(context.Context, auth.Request) (*auth.Grant, error), peerCA *tls.Certificate) (string, *Server) {
 	t.Helper()
 	cert := loadTempCert(t)
 
@@ -60,7 +61,7 @@ func startAuthRelay(t *testing.T, client admitter, peerCA *tls.Certificate) (str
 		},
 		MOQDialer: &moqt.Dialer{TLSConfig: dialerTLS, QUICConfig: quicCfg},
 		Config:    &Config{NodeID: "relay-auth-test", Role: "relay"},
-		auth:      client,
+		authorize: authorize,
 	}
 	httpMux.HandleFunc("/", srv.HandleWebTransport)
 	go func() { _ = srv.ListenAndServe() }()
@@ -139,27 +140,26 @@ func routed(srv *Server, path moqt.BroadcastPath) func() bool {
 func TestServer_SessionAuth_WebTransport(t *testing.T) {
 	const path = moqt.BroadcastPath("/acme/app/live")
 	tests := map[string]struct {
-		server    *fakeAuthServer
+		server    *fakeAuth
 		wantDial  bool
 		wantRoute bool
 	}{
 		"admitted, path granted": {
-			server:    &fakeAuthServer{body: `{"publish":["acme/app/**"]}`},
+			server:    &fakeAuth{body: `{"publish":["acme/app/**"]}`},
 			wantDial:  true,
 			wantRoute: true,
 		},
 		"admitted, path not granted": {
-			server:   &fakeAuthServer{body: `{"publish":["acme/other/**"],"subscribe":["acme/**"]}`},
+			server:   &fakeAuth{body: `{"publish":["acme/other/**"],"subscribe":["acme/**"]}`},
 			wantDial: true,
 		},
-		"401":               {server: &fakeAuthServer{status: http.StatusUnauthorized}},
-		"403":               {server: &fakeAuthServer{status: http.StatusForbidden}},
-		"auth server error": {server: &fakeAuthServer{status: http.StatusInternalServerError}},
+		"401":               {server: &fakeAuth{err: auth.RefusedError{Status: http.StatusUnauthorized}}},
+		"403":               {server: &fakeAuth{err: auth.RefusedError{Status: http.StatusForbidden}}},
+		"auth server error": {server: &fakeAuth{err: errors.New("auth server unavailable")}},
 	}
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
-			client := tt.server.start(t)
-			addr, srv := startAuthRelay(t, client, nil)
+			addr, srv := startAuthRelay(t, tt.server.authorize, nil)
 			probes := len(tt.server.received()) // startAuthRelay's readiness probes
 
 			err := announceOver(t, "https://"+addr+"/acme/app?jwt=header.payload.signature", nil, nil, path)
@@ -191,42 +191,41 @@ func TestServer_SessionAuth_NativeQUIC(t *testing.T) {
 	peerCert := loadTempCert(t)
 	otherCert := loadTempCert(t)
 	tests := map[string]struct {
-		server       *fakeAuthServer
+		server       *fakeAuth
 		peerCA       *tls.Certificate // the relay's CA_FILE; nil means unset
 		clientCert   *tls.Certificate // what the dialing session presents
 		wantRoute    bool
 		wantRequests bool
 	}{
 		"untrusted, admitted": {
-			server:       &fakeAuthServer{body: `{"publish":["acme/**"]}`},
+			server:       &fakeAuth{body: `{"publish":["acme/**"]}`},
 			wantRoute:    true,
 			wantRequests: true,
 		},
 		"untrusted, refused": {
-			server:       &fakeAuthServer{status: http.StatusUnauthorized},
+			server:       &fakeAuth{err: auth.RefusedError{Status: http.StatusUnauthorized}},
 			wantRequests: true,
 		},
 		"peer certificate verified by CA_FILE": {
-			server:     &fakeAuthServer{status: http.StatusUnauthorized},
+			server:     &fakeAuth{err: auth.RefusedError{Status: http.StatusUnauthorized}},
 			peerCA:     &peerCert,
 			clientCert: &peerCert,
 			wantRoute:  true,
 		},
 		"certificate from another CA fails the handshake": {
-			server:     &fakeAuthServer{status: http.StatusUnauthorized},
+			server:     &fakeAuth{err: auth.RefusedError{Status: http.StatusUnauthorized}},
 			peerCA:     &peerCert,
 			clientCert: &otherCert,
 		},
 		"certificate without CA_FILE is not a peer": {
-			server:       &fakeAuthServer{status: http.StatusUnauthorized},
+			server:       &fakeAuth{err: auth.RefusedError{Status: http.StatusUnauthorized}},
 			clientCert:   &peerCert,
 			wantRequests: true,
 		},
 	}
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
-			client := tt.server.start(t)
-			addr, srv := startAuthRelay(t, client, tt.peerCA)
+			addr, srv := startAuthRelay(t, tt.server.authorize, tt.peerCA)
 			probes := len(tt.server.received()) // startAuthRelay's readiness probes
 
 			// A refused native session still completes SETUP; the relay closes it
@@ -249,32 +248,4 @@ func TestServer_SessionAuth_NativeQUIC(t *testing.T) {
 			assert.Equal(t, "jwt=header.payload.signature", reqs[len(reqs)-1].Query, "native QUIC carries the credential too")
 		})
 	}
-}
-
-func TestServer_SessionAuth_Public(t *testing.T) {
-	t.Setenv("QUMO_AUTH_PUBLIC", "anon/**")
-	t.Setenv("QUMO_AUTH_URL", "")
-	cfg, err := auth.LoadConfig()
-	require.NoError(t, err)
-	client, err := newAdmitter(cfg)
-	require.NoError(t, err)
-	addr, srv := startAuthRelay(t, client, nil)
-
-	t.Run("anonymous session publishes under the grant", func(t *testing.T) {
-		err := announceOver(t, "https://"+addr+"/", nil, nil, "/anon/room")
-
-		require.NoError(t, err)
-		require.Eventually(t, routed(srv, "/anon/room"), 3*time.Second, 25*time.Millisecond)
-	})
-	t.Run("outside the grant is not routed", func(t *testing.T) {
-		err := announceOver(t, "https://"+addr+"/", nil, nil, "/private/room")
-
-		require.NoError(t, err)
-		assert.Never(t, routed(srv, "/private/room"), 1500*time.Millisecond, 25*time.Millisecond)
-	})
-	t.Run("a session presenting a credential is refused", func(t *testing.T) {
-		err := announceOver(t, "https://"+addr+"/?jwt=header.payload.signature", nil, nil, "/anon/other")
-
-		require.Error(t, err)
-	})
 }
