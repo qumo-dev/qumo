@@ -1,25 +1,20 @@
-//go:build integration
-
 package relay
 
 import (
 	"context"
 	"encoding/json"
-	"errors"
-	"net/http"
 	"sync"
 
 	"github.com/qumo-dev/qumo/internal/auth"
 )
 
-// fakeAuth answers every session as an auth server would: refused with
-// status when it is 401 or 403, unavailable for any other non-zero status,
-// and otherwise admitted with the grant in body (JSON, as the auth server
-// sends it). It records every request. Its authorize method is what a
-// Server's authorize field takes.
+// fakeAuth answers every session through its authorize method, which is what
+// Server.authorize takes: err when set, otherwise the grant in body (JSON, as
+// the auth server sends it). The zero value admits every session with a grant
+// that covers nothing. It records every request.
 type fakeAuth struct {
-	status int
-	body   string
+	body string
+	err  error
 
 	mu       sync.Mutex
 	requests []auth.Request
@@ -29,14 +24,13 @@ func (f *fakeAuth) authorize(_ context.Context, req auth.Request) (*auth.Grant, 
 	f.mu.Lock()
 	f.requests = append(f.requests, req)
 	f.mu.Unlock()
-	switch f.status {
-	case 0:
-	case http.StatusUnauthorized, http.StatusForbidden:
-		return nil, auth.RefusedError{Status: f.status}
-	default:
-		return nil, errors.New("auth server unavailable")
+	if f.err != nil {
+		return nil, f.err
 	}
 	var g auth.Grant
+	if f.body == "" {
+		return &g, nil
+	}
 	if err := json.Unmarshal([]byte(f.body), &g); err != nil {
 		return nil, err
 	}

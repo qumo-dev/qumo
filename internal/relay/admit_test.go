@@ -83,12 +83,9 @@ func TestServer_HandleWebTransport_Refused(t *testing.T) {
 	}
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
-			var got []auth.Request
+			fake := &fakeAuth{err: tt.err}
 			srv := newTestServer("127.0.0.1:0")
-			srv.authorize = func(_ context.Context, req auth.Request) (*auth.Grant, error) {
-				got = append(got, req)
-				return nil, tt.err
-			}
+			srv.authorize = fake.authorize
 			t.Cleanup(func() { _ = srv.Close() })
 			// A WebTransport upgrade is an extended CONNECT whose :path is the
 			// URL's path; httptest parses a CONNECT target as an authority, so
@@ -101,6 +98,7 @@ func TestServer_HandleWebTransport_Refused(t *testing.T) {
 			srv.HandleWebTransport(rec, req)
 
 			assert.Equal(t, tt.wantStatus, rec.Code)
+			got := fake.received()
 			require.Len(t, got, 1, "the auth server is asked once per upgrade")
 			assert.Equal(t, auth.EventConnect, got[0].Event)
 			assert.Equal(t, auth.TransportWebTransport, got[0].Transport)
@@ -114,31 +112,27 @@ func TestServer_HandleWebTransport_Refused(t *testing.T) {
 
 func TestServer_Admit_Metrics(t *testing.T) {
 	tests := map[string]struct {
-		grant      *auth.Grant
 		err        error
 		wantResult string
 	}{
-		"admitted":    {grant: &auth.Grant{}, wantResult: "admitted"},
+		"admitted":    {wantResult: "admitted"},
 		"refused":     {err: auth.RefusedError{Status: http.StatusForbidden}, wantResult: "refused"},
 		"invalid":     {err: fmt.Errorf("%w: root", auth.ErrInvalidGrant), wantResult: "invalid"},
 		"unavailable": {err: errors.New("timeout"), wantResult: "error"},
 	}
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
-			srv := &Server{authorize: func(context.Context, auth.Request) (*auth.Grant, error) {
-				return tt.grant, tt.err
-			}}
+			fake := &fakeAuth{err: tt.err}
+			srv := &Server{authorize: fake.authorize}
 			counter := metricAuthRequests.WithLabelValues(auth.EventConnect, tt.wantResult)
-			var g *auth.Grant
 			var err error
 
 			delta := counterDelta(t, func() {
-				g, err = srv.admit(context.Background(), auth.Request{Event: auth.EventConnect})
+				_, err = srv.admit(context.Background(), auth.Request{Event: auth.EventConnect})
 			}, counter)
 
 			assert.Equal(t, 1.0, delta)
-			assert.Same(t, tt.grant, g)
-			assert.Equal(t, tt.err, err)
+			assert.ErrorIs(t, err, tt.err)
 		})
 	}
 }

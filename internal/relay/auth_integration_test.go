@@ -10,6 +10,7 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"errors"
 	"fmt"
 	"net/http"
 	"testing"
@@ -152,9 +153,9 @@ func TestServer_SessionAuth_WebTransport(t *testing.T) {
 			server:   &fakeAuth{body: `{"publish":["acme/other/**"],"subscribe":["acme/**"]}`},
 			wantDial: true,
 		},
-		"401":               {server: &fakeAuth{status: http.StatusUnauthorized}},
-		"403":               {server: &fakeAuth{status: http.StatusForbidden}},
-		"auth server error": {server: &fakeAuth{status: http.StatusInternalServerError}},
+		"401":               {server: &fakeAuth{err: auth.RefusedError{Status: http.StatusUnauthorized}}},
+		"403":               {server: &fakeAuth{err: auth.RefusedError{Status: http.StatusForbidden}}},
+		"auth server error": {server: &fakeAuth{err: errors.New("auth server unavailable")}},
 	}
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
@@ -202,22 +203,22 @@ func TestServer_SessionAuth_NativeQUIC(t *testing.T) {
 			wantRequests: true,
 		},
 		"untrusted, refused": {
-			server:       &fakeAuth{status: http.StatusUnauthorized},
+			server:       &fakeAuth{err: auth.RefusedError{Status: http.StatusUnauthorized}},
 			wantRequests: true,
 		},
 		"peer certificate verified by CA_FILE": {
-			server:     &fakeAuth{status: http.StatusUnauthorized},
+			server:     &fakeAuth{err: auth.RefusedError{Status: http.StatusUnauthorized}},
 			peerCA:     &peerCert,
 			clientCert: &peerCert,
 			wantRoute:  true,
 		},
 		"certificate from another CA fails the handshake": {
-			server:     &fakeAuth{status: http.StatusUnauthorized},
+			server:     &fakeAuth{err: auth.RefusedError{Status: http.StatusUnauthorized}},
 			peerCA:     &peerCert,
 			clientCert: &otherCert,
 		},
 		"certificate without CA_FILE is not a peer": {
-			server:       &fakeAuth{status: http.StatusUnauthorized},
+			server:       &fakeAuth{err: auth.RefusedError{Status: http.StatusUnauthorized}},
 			clientCert:   &peerCert,
 			wantRequests: true,
 		},
