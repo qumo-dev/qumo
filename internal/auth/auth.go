@@ -127,11 +127,6 @@ func NewClient(rawURL string) (*Client, error) {
 	return &Client{endpoint: u, client: &http.Client{Timeout: timeout}}, nil
 }
 
-// String returns the auth server's URL.
-func (c *Client) String() string {
-	return c.endpoint.String()
-}
-
 // Request is one session event sent to the auth server.
 type Request struct {
 	ID         string `json:"id"`
