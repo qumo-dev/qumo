@@ -37,12 +37,6 @@ const (
 )
 
 var (
-	errBothSettings = errors.New("QUMO_AUTH_URL and QUMO_AUTH_PUBLIC are both set: " +
-		"a relay admits sessions through an auth server or a static public grant, not both")
-	errNoSetting = errors.New("neither QUMO_AUTH_URL nor QUMO_AUTH_PUBLIC is set: " +
-		"set QUMO_AUTH_URL to an auth server, or QUMO_AUTH_PUBLIC to the patterns anonymous sessions may use " +
-		"(QUMO_AUTH_PUBLIC='**' opens everything, for development only)")
-
 	// ErrInvalidGrant is a 2xx reply the relay cannot enforce as given.
 	ErrInvalidGrant = errors.New("auth: invalid grant")
 	// ErrCredentialOnPublic refuses a session that presents a credential to a
@@ -67,21 +61,22 @@ type Client struct {
 	public   *Grant
 }
 
-// FromEnv reads the configuration from the environment:
+// LoadConfig reads the configuration from the environment:
 //
 //	QUMO_AUTH_URL    - the auth server; https, or http on a loopback host
 //	QUMO_AUTH_PUBLIC - comma-separated subtree patterns ("anon/**") that any
 //	                   session may publish and subscribe to; no server
 //
 // Exactly one must be set.
-func FromEnv() (*Client, error) {
+func LoadConfig() (*Client, error) {
 	rawURL := os.Getenv("QUMO_AUTH_URL")
 	public := os.Getenv("QUMO_AUTH_PUBLIC")
 	switch {
 	case rawURL != "" && public != "":
-		return nil, errBothSettings
+		return nil, errors.New("QUMO_AUTH_URL and QUMO_AUTH_PUBLIC are both set: " +
+			"a relay admits sessions through an auth server or a static public grant, not both")
 	case rawURL != "":
-		c, err := New(rawURL)
+		c, err := NewClient(rawURL)
 		if err != nil {
 			return nil, fmt.Errorf("QUMO_AUTH_URL: %w", err)
 		}
@@ -93,13 +88,15 @@ func FromEnv() (*Client, error) {
 		}
 		return c, nil
 	default:
-		return nil, errNoSetting
+		return nil, errors.New("neither QUMO_AUTH_URL nor QUMO_AUTH_PUBLIC is set: " +
+			"set QUMO_AUTH_URL to an auth server, or QUMO_AUTH_PUBLIC to the patterns anonymous sessions may use " +
+			"(QUMO_AUTH_PUBLIC='**' opens everything, for development only)")
 	}
 }
 
-// New returns a Client that asks the auth server at rawURL: https, or http
+// NewClient returns a Client that asks the auth server at rawURL: https, or http
 // only on a loopback host, since the request carries the client's credential.
-func New(rawURL string) (*Client, error) {
+func NewClient(rawURL string) (*Client, error) {
 	u, err := url.Parse(rawURL)
 	if err != nil {
 		return nil, err
