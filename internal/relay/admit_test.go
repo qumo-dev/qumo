@@ -2,6 +2,10 @@ package relay
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"testing/synctest"
 
@@ -65,4 +69,76 @@ func TestSessionGrant_ContextEndsWhilePending(t *testing.T) {
 
 	assert.ErrorIs(t, err, context.Canceled)
 	assert.Nil(t, got)
+}
+
+func TestServer_HandleWebTransport_Refused(t *testing.T) {
+	tests := map[string]struct {
+		err        error
+		wantStatus int
+	}{
+		"401 from the auth server":   {err: auth.RefusedError{Status: http.StatusUnauthorized}, wantStatus: http.StatusUnauthorized},
+		"403 from the auth server":   {err: auth.RefusedError{Status: http.StatusForbidden}, wantStatus: http.StatusForbidden},
+		"auth server unavailable":    {err: errors.New("connection refused"), wantStatus: http.StatusServiceUnavailable},
+		"grant the relay can't keep": {err: fmt.Errorf("%w: mounts", auth.ErrInvalidGrant), wantStatus: http.StatusServiceUnavailable},
+	}
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			var got []auth.Request
+			srv := newTestServer("127.0.0.1:0")
+			srv.authorize = func(_ context.Context, req auth.Request) (*auth.Grant, error) {
+				got = append(got, req)
+				return nil, tt.err
+			}
+			t.Cleanup(func() { _ = srv.Close() })
+			// A WebTransport upgrade is an extended CONNECT whose :path is the
+			// URL's path; httptest parses a CONNECT target as an authority, so
+			// build the URL first and set the method after.
+			req := httptest.NewRequest(http.MethodGet, "https://relay.example/acme/app?jwt=a.b.c", nil)
+			req.Method = http.MethodConnect
+			req.RemoteAddr = "192.0.2.1:5000"
+			rec := httptest.NewRecorder()
+
+			srv.HandleWebTransport(rec, req)
+
+			assert.Equal(t, tt.wantStatus, rec.Code)
+			require.Len(t, got, 1, "the auth server is asked once per upgrade")
+			assert.Equal(t, auth.EventConnect, got[0].Event)
+			assert.Equal(t, auth.TransportWebTransport, got[0].Transport)
+			assert.Equal(t, "/acme/app", got[0].Path)
+			assert.Equal(t, "jwt=a.b.c", got[0].Query, "the credential is forwarded unparsed")
+			assert.Equal(t, "192.0.2.1:5000", got[0].Remote)
+			assert.Len(t, got[0].ID, 32)
+		})
+	}
+}
+
+func TestServer_Admit_Metrics(t *testing.T) {
+	tests := map[string]struct {
+		grant      *auth.Grant
+		err        error
+		wantResult string
+	}{
+		"admitted":    {grant: &auth.Grant{}, wantResult: "admitted"},
+		"refused":     {err: auth.RefusedError{Status: http.StatusForbidden}, wantResult: "refused"},
+		"invalid":     {err: fmt.Errorf("%w: root", auth.ErrInvalidGrant), wantResult: "invalid"},
+		"unavailable": {err: errors.New("timeout"), wantResult: "error"},
+	}
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			srv := &Server{authorize: func(context.Context, auth.Request) (*auth.Grant, error) {
+				return tt.grant, tt.err
+			}}
+			counter := metricAuthRequests.WithLabelValues(auth.EventConnect, tt.wantResult)
+			var g *auth.Grant
+			var err error
+
+			delta := counterDelta(t, func() {
+				g, err = srv.admit(context.Background(), auth.Request{Event: auth.EventConnect})
+			}, counter)
+
+			assert.Equal(t, 1.0, delta)
+			assert.Same(t, tt.grant, g)
+			assert.Equal(t, tt.err, err)
+		})
+	}
 }
