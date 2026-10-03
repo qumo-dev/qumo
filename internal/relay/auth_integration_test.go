@@ -10,7 +10,6 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -86,17 +85,6 @@ func startAuthRelay(t *testing.T, authorize func(context.Context, auth.Request) 
 		return true
 	}, 5*time.Second, 50*time.Millisecond, "relay never became reachable")
 	return addr, srv
-}
-
-// allowAll admits every session to everything. Tests and benchmarks of a
-// relay whose admission isn't under test pass it as Server.authorize; a
-// Server without one refuses every client session.
-func allowAll(context.Context, auth.Request) (*auth.Grant, error) {
-	var g auth.Grant
-	if err := json.Unmarshal([]byte(`{"publish":["**"],"subscribe":["**"]}`), &g); err != nil {
-		return nil, err
-	}
-	return &g, nil
 }
 
 // loadTempCert returns a fresh self-signed certificate. It has no key usage

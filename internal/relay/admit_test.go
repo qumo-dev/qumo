@@ -139,9 +139,11 @@ func TestServer_HandleWebTransport_NoAuthorizeRefuses(t *testing.T) {
 
 func TestServer_Admit_Metrics(t *testing.T) {
 	tests := map[string]struct {
+		authorize  func(context.Context, auth.Request) (*auth.Grant, error)
 		err        error
 		wantResult string
 	}{
+		"auth off":    {authorize: admitUnchecked, wantResult: "unchecked"},
 		"admitted":    {wantResult: "admitted"},
 		"refused":     {err: auth.RefusedError{Status: http.StatusForbidden}, wantResult: "refused"},
 		"invalid":     {err: fmt.Errorf("%w: root", auth.ErrInvalidGrant), wantResult: "invalid"},
@@ -149,8 +151,11 @@ func TestServer_Admit_Metrics(t *testing.T) {
 	}
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
-			fake := &fakeAuth{err: tt.err}
-			srv := &Server{authorize: fake.authorize}
+			authorize := tt.authorize
+			if authorize == nil {
+				authorize = (&fakeAuth{err: tt.err}).authorize
+			}
+			srv := &Server{authorize: authorize}
 			counter := metricAuthRequests.WithLabelValues(auth.EventConnect, tt.wantResult)
 			var err error
 

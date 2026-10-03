@@ -52,37 +52,11 @@ job "qumo-cluster" {
       env {
         RELAY_ADDR = "0.0.0.0:4433"
         RELAY_NAME = "hub-asia-${NOMAD_ALLOC_INDEX}"
-        QUMO_AUTH_URL = "http://127.0.0.1:4440/" # the allow-all "auth" task below
       }
 
       resources {
         cpu    = 100
         memory = 128
-      }
-    }
-
-    # The relay asks an auth server about every session (QUMO_AUTH_URL). This
-    # open demo runs an allow-all one in the relay's network namespace: it
-    # answers every session with everything. A deployment runs a real auth
-    # server.
-    task "auth" {
-      driver = "docker"
-
-      lifecycle {
-        hook    = "poststart"
-        sidecar = true
-      }
-
-      config {
-        image        = "caddy:2-alpine"
-        network_mode = "container:relay-${NOMAD_ALLOC_ID}"
-        command      = "caddy"
-        args         = ["respond", "--listen", "127.0.0.1:4440", "--body", "{\"publish\":[\"**\"],\"subscribe\":[\"**\"]}"]
-      }
-
-      resources {
-        cpu    = 50
-        memory = 32
       }
     }
   }
@@ -117,7 +91,6 @@ job "qumo-cluster" {
       env {
         RELAY_ADDR = "0.0.0.0:4433"
         RELAY_NAME = "edge-asia-${NOMAD_ALLOC_INDEX}"
-        QUMO_AUTH_URL = "http://127.0.0.1:4440/" # the allow-all "auth" task below
         # Static upstream list: both hub aliases from the "hubs" group above.
         # Fixed to match that group's count = 2; bump both together.
         PEERS = "hub-0:4433,hub-1:4433"
@@ -126,31 +99,6 @@ job "qumo-cluster" {
       resources {
         cpu    = 100
         memory = 128
-      }
-    }
-
-    # The relay asks an auth server about every session (QUMO_AUTH_URL). This
-    # open demo runs an allow-all one in the relay's network namespace: it
-    # answers every session with everything. A deployment runs a real auth
-    # server.
-    task "auth" {
-      driver = "docker"
-
-      lifecycle {
-        hook    = "poststart"
-        sidecar = true
-      }
-
-      config {
-        image        = "caddy:2-alpine"
-        network_mode = "container:relay-${NOMAD_ALLOC_ID}"
-        command      = "caddy"
-        args         = ["respond", "--listen", "127.0.0.1:4440", "--body", "{\"publish\":[\"**\"],\"subscribe\":[\"**\"]}"]
-      }
-
-      resources {
-        cpu    = 50
-        memory = 32
       }
     }
   }

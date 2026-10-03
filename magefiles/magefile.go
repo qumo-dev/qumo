@@ -14,10 +14,8 @@ import (
 	"encoding/hex"
 	"encoding/pem"
 	"fmt"
-	"io"
 	"math/big"
 	"net"
-	"net/http"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -304,19 +302,8 @@ func Relay() error {
 		}
 	}()
 
-	// The relay admits sessions through an auth server: unless QUMO_AUTH_URL
-	// points at one, serve an allow-all answer from this process for the
-	// relay's life.
-	authURL := os.Getenv("QUMO_AUTH_URL")
-	if authURL == "" {
-		var err error
-		if authURL, err = serveAllowAll(ctx); err != nil {
-			return err
-		}
-	}
-
 	cmd := exec.CommandContext(ctx, "go", "run", ".", "relay")
-	cmd.Env = relayDevEnv(authURL)
+	cmd.Env = relayDevEnv()
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	// On Windows, exec.CommandContext only kills the direct process (go run),
@@ -342,14 +329,13 @@ func Relay() error {
 // relayDevEnv returns os.Environ() plus dev-friendly defaults for `qumo relay`,
 // applied only when the user hasn't set them: a dual-stack bind (RELAY_ADDR),
 // an advertised address (required for the wildcard bind), and CORS allowing the
-// `mage web` Vite origins, and the auth server at authURL. It logs which
-// defaults it applied so the relaxation is visible. These affect ONLY this dev
-// wrapper, not the `qumo relay` binary.
-func relayDevEnv(authURL string) []string {
+// `mage web` Vite origins. It logs which defaults it applied so the relaxation
+// is visible. These affect ONLY this dev wrapper, not the `qumo relay` binary.
+// With no QUMO_AUTH_URL the relay runs with auth off, admitting every session.
+func relayDevEnv() []string {
 	defaults := map[string]string{
 		"RELAY_ADDR":           ":4433",
 		"CORS_ALLOWED_ORIGINS": "http://localhost:5173,http://127.0.0.1:5173",
-		"QUMO_AUTH_URL":        authURL,
 	}
 	applied := []string{}
 	env := os.Environ()
@@ -368,26 +354,6 @@ func relayDevEnv(authURL string) []string {
 		fmt.Printf("   Dev defaults applied (override via env): %s\n", strings.Join(applied, ", "))
 	}
 	return env
-}
-
-// serveAllowAll serves an auth server that admits every session to everything,
-// on a loopback port until ctx ends, and returns its URL. It mirrors
-// internal/allowall, which this separate module can't import.
-func serveAllowAll(ctx context.Context) (string, error) {
-	ln, err := (&net.ListenConfig{}).Listen(ctx, "tcp", "127.0.0.1:0")
-	if err != nil {
-		return "", fmt.Errorf("allow-all auth server: %w", err)
-	}
-	srv := &http.Server{
-		Handler: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-			w.Header().Set("Content-Type", "application/json")
-			_, _ = io.WriteString(w, `{"publish":["**"],"subscribe":["**"]}`) // not actionable: the relay refuses on a failed request
-		}),
-		ReadHeaderTimeout: 5 * time.Second,
-	}
-	go func() { _ = srv.Serve(ln) }() // not actionable: returns ErrServerClosed after Close below
-	context.AfterFunc(ctx, func() { _ = srv.Close() })
-	return "http://" + ln.Addr().String() + "/", nil
 }
 
 // ingestDevEnv returns os.Environ() with dev-friendly defaults for the

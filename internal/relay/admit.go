@@ -155,6 +155,13 @@ func (s *Server) nodeID() string {
 	return s.Config.NodeID
 }
 
+// admitUnchecked admits every session without asking anyone: the relay runs
+// with auth off (QUMO_AUTH_URL unset). Its sessions are unchecked, like a
+// trusted peer's.
+func admitUnchecked(context.Context, auth.Request) (*auth.Grant, error) {
+	return nil, nil
+}
+
 // errNoAuthorize refuses every client session of a Server whose authorize is
 // unset, rather than running it open.
 var errNoAuthorize = errors.New("relay: no auth server configured")
@@ -170,6 +177,8 @@ func (s *Server) admit(ctx context.Context, req auth.Request) (*auth.Grant, erro
 	g, err := s.authorize(ctx, req)
 	_, refused := errors.AsType[auth.RefusedError](err)
 	switch {
+	case err == nil && g == nil:
+		metricAuthRequests.WithLabelValues(auth.EventConnect, "unchecked").Inc()
 	case err == nil:
 		metricAuthRequests.WithLabelValues(auth.EventConnect, "admitted").Inc()
 	case refused:

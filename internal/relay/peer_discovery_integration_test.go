@@ -74,7 +74,7 @@ func TestPeerDiscovery_EdgeConnectsToHubViaPeers(t *testing.T) {
 		MOQServer: &moqt.Server{Addr: hubAddr, TLSConfig: serverTLS, QUICConfig: quicCfg},
 		MOQDialer: &moqt.Dialer{TLSConfig: dialerTLS, QUICConfig: quicCfg},
 		Config:    &Config{NodeID: "hub-1", Role: "hub"},
-		authorize: allowAll,
+		authorize: admitUnchecked,
 	}
 	go func() { _ = hub.ListenAndServe() }()
 	t.Cleanup(func() {
@@ -108,7 +108,7 @@ func TestPeerDiscovery_EdgeConnectsToHubViaPeers(t *testing.T) {
 			NodeID: "edge-1", Role: "edge",
 			Peers: []Peer{{Address: hubAddr}},
 		},
-		authorize: allowAll,
+		authorize: admitUnchecked,
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())

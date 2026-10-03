@@ -102,21 +102,22 @@ func TestClient_Connect_ServerDown(t *testing.T) {
 }
 
 func TestLoadConfig(t *testing.T) {
-	t.Run("set", func(t *testing.T) {
-		t.Setenv("QUMO_AUTH_URL", "http://127.0.0.1:4440/")
+	tests := map[string]struct {
+		url  string
+		want Config
+	}{
+		"set":             {url: "http://127.0.0.1:4440/", want: Config{URL: "http://127.0.0.1:4440/"}},
+		"unset: auth off": {url: "", want: Config{}},
+	}
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Setenv("QUMO_AUTH_URL", tt.url)
 
-		got, err := LoadConfig()
+			got := LoadConfig()
 
-		require.NoError(t, err)
-		assert.Equal(t, Config{URL: "http://127.0.0.1:4440/"}, got)
-	})
-	t.Run("unset", func(t *testing.T) {
-		t.Setenv("QUMO_AUTH_URL", "")
-
-		_, err := LoadConfig()
-
-		assert.ErrorContains(t, err, "QUMO_AUTH_URL is not set")
-	})
+			assert.Equal(t, tt.want, got)
+		})
+	}
 }
 
 func TestNewClient(t *testing.T) {

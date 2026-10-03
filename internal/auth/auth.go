@@ -64,20 +64,15 @@ func RefusalStatus(err error) int {
 
 // Config is the relay's auth setting.
 type Config struct {
-	// URL is the auth server asked about every session.
+	// URL is the auth server asked about every session. Empty turns auth
+	// off: the relay admits every session unchecked.
 	URL string
 }
 
 // LoadConfig reads QUMO_AUTH_URL, the auth server: https, or http on a
-// loopback host. It is required: a relay admits every client session through
-// its auth server.
-func LoadConfig() (Config, error) {
-	rawURL := os.Getenv("QUMO_AUTH_URL")
-	if rawURL == "" {
-		return Config{}, errors.New("QUMO_AUTH_URL is not set: point it at the auth server beside this relay " +
-			"(qumo auth; QUMO_AUTH_ANONYMOUS='**' there opens everything, for development only)")
-	}
-	return Config{URL: rawURL}, nil
+// loopback host. It is optional; unset, the relay runs with auth off.
+func LoadConfig() Config {
+	return Config{URL: os.Getenv("QUMO_AUTH_URL")}
 }
 
 // Client asks an auth server about sessions.

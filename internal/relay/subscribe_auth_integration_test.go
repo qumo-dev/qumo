@@ -150,3 +150,24 @@ func TestServer_SubscribeAuth_FetchRejected(t *testing.T) {
 
 	assert.Error(t, err)
 }
+
+func TestServer_AuthOff(t *testing.T) {
+	addr, srv := startAuthRelay(t, admitUnchecked, nil)
+	publishOver(t, srv, "https://"+addr+"/", "/any/where")
+
+	t.Run("webtransport subscribes anywhere", func(t *testing.T) {
+		err := subscribe(t, "https://"+addr+"/", nil, "/any/where")
+
+		assert.NoError(t, err)
+	})
+	t.Run("native QUIC subscribes anywhere", func(t *testing.T) {
+		err := subscribe(t, peerURL(addr)+"/", nil, "/any/where")
+
+		assert.NoError(t, err)
+	})
+	t.Run("a credential is ignored, not refused", func(t *testing.T) {
+		err := subscribe(t, "https://"+addr+"/?jwt=a.b.c", nil, "/any/where")
+
+		assert.NoError(t, err)
+	})
+}

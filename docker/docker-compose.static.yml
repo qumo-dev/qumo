@@ -46,14 +46,6 @@ x-relay-base: &relay-base
   networks:
     - qumo-net
 
-# The relay asks an auth server about every session (QUMO_AUTH_URL). These
-# local stacks run an allow-all one as a sidecar on each relay's loopback: it
-# answers every session with everything. A deployment runs a real auth server.
-x-allow-all: &allow-all
-  image: caddy:2-alpine
-  command: ["caddy", "respond", "--listen", "127.0.0.1:4440", "--body", '{"publish":["**"],"subscribe":["**"]}']
-  restart: unless-stopped
-
 services:
 
   # ─── Asia region ────────────────────────────────────────────────────────────
@@ -64,7 +56,6 @@ services:
     command: ["relay", "--role", "hub"]
     environment:
       RELAY_NAME: "relay-hub-asia"
-      QUMO_AUTH_URL: "http://127.0.0.1:4440/"  # its allow-all sidecar (x-allow-all)
       # Connect to hubs in other regions
       PEERS: "relay-hub-europe:4433,relay-hub-americas:4433"
     ports:
@@ -80,7 +71,6 @@ services:
         condition: service_healthy
     environment:
       RELAY_NAME: "relay-edge-asia"
-      QUMO_AUTH_URL: "http://127.0.0.1:4440/"  # its allow-all sidecar (x-allow-all)
       # Connect to local hub
       PEERS: "relay-hub-asia:4433"
     ports:
@@ -95,7 +85,6 @@ services:
     command: ["relay", "--role", "hub"]
     environment:
       RELAY_NAME: "relay-hub-europe"
-      QUMO_AUTH_URL: "http://127.0.0.1:4440/"  # its allow-all sidecar (x-allow-all)
       # Connect to hubs in other regions
       PEERS: "relay-hub-asia:4433,relay-hub-americas:4433"
     ports:
@@ -111,7 +100,6 @@ services:
         condition: service_healthy
     environment:
       RELAY_NAME: "relay-edge-europe"
-      QUMO_AUTH_URL: "http://127.0.0.1:4440/"  # its allow-all sidecar (x-allow-all)
       # Connect to local hub
       PEERS: "relay-hub-europe:4433"
     ports:
@@ -126,7 +114,6 @@ services:
     command: ["relay", "--role", "hub"]
     environment:
       RELAY_NAME: "relay-hub-americas"
-      QUMO_AUTH_URL: "http://127.0.0.1:4440/"  # its allow-all sidecar (x-allow-all)
       # Connect to hubs in other regions
       PEERS: "relay-hub-asia:4433,relay-hub-europe:4433"
     ports:
@@ -142,36 +129,11 @@ services:
         condition: service_healthy
     environment:
       RELAY_NAME: "relay-edge-americas"
-      QUMO_AUTH_URL: "http://127.0.0.1:4440/"  # its allow-all sidecar (x-allow-all)
       # Connect to local hub
       PEERS: "relay-hub-americas:4433"
     ports:
       - "9006:4433/udp"
       - "9006:4433/tcp"
-
-  relay-hub-asia-auth:
-    <<: *allow-all
-    network_mode: "service:relay-hub-asia"
-
-  relay-edge-asia-auth:
-    <<: *allow-all
-    network_mode: "service:relay-edge-asia"
-
-  relay-hub-europe-auth:
-    <<: *allow-all
-    network_mode: "service:relay-hub-europe"
-
-  relay-edge-europe-auth:
-    <<: *allow-all
-    network_mode: "service:relay-edge-europe"
-
-  relay-hub-americas-auth:
-    <<: *allow-all
-    network_mode: "service:relay-hub-americas"
-
-  relay-edge-americas-auth:
-    <<: *allow-all
-    network_mode: "service:relay-edge-americas"
 
 networks:
   qumo-net:
