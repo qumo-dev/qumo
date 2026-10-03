@@ -26,7 +26,7 @@ qumo relay
 
 The node's **topology role** is a CLI flag, not an env var. It is an
 operator-facing label logged at startup for visibility only — it does not
-affect which peers are dialed (see `PEERS` / `UPSTREAM_ADDR` below):
+affect which peers are dialed (see `PEERS` below):
 
 ```bash
 qumo relay --role hub    # or "edge"; omit for a standalone / flat relay
@@ -42,22 +42,19 @@ qumo relay --role hub    # or "edge"; omit for a standalone / flat relay
 
 | Variable | Default | Description |
 |---|---|---|
-| `PEERS` | (empty) | Comma-separated peer relay addresses (`moqt://host:4433,...`). The node connects to each and relays their announcements. |
-| `UPSTREAM_ADDR` | (empty) | Comma-separated upstream relay address(es), e.g. an edge relay's hub(s), or any relay connecting upward in a hierarchy (`role-hub.qumo-relay.service.consul:4433` or a direct `host:port`). Dialed the same way as `PEERS`. |
+| `PEERS` | (empty) | Comma-separated relays to dial, as `host:4433`. Each host is resolved to all its addresses and every address is dialed, so a DNS name for a group of relays (`role-hub.qumo-relay.service.consul:4433`) connects to each. The node relays their announcements. |
 
-There is no runtime peer-discovery service — both variables are static,
-dialed once at startup and re-dialed with backoff on disconnect. See
+There is no runtime peer-discovery service — the list is static, dialed once
+at startup and re-dialed with backoff on disconnect. See
 [Deployment → Peer topology]({{< relref "deployment/peer-topology" >}}) for
 how they fit together, and [Deployment → Nomad]({{< relref "deployment/nomad" >}})
 for a worked example of giving relays stable addresses on Nomad.
 
-## mTLS (optional)
+## Peer trust (optional)
 
 | Variable | Default | Description |
 |---|---|---|
-| `CA_FILE` | (empty) | PEM CA certificate. When set, mutual TLS is enabled between peers. |
-| `PEER_CIDRS` | (empty) | Comma-separated networks whose native-QUIC sessions are trusted as relay peers, e.g. a private mesh overlay (`100.64.0.0/10`). A native-QUIC session is a peer only if it comes from one of these networks or presents a client certificate verified against `CA_FILE`; any other native-QUIC session is admitted like a WebTransport client (see Session auth). Set this (or mTLS) for relay-to-relay and ingress connections. |
-| `MTLS_REQUIRED` | `true` | Whether every connection must present a client cert signed by `CA_FILE`. Set to `false` to accept connections without one (verified if presented), e.g. when the relay also serves browser/WebTransport traffic directly. Only applies when `CA_FILE` is set. |
+| `CA_FILE` | (empty) | PEM CA certificate. A session whose client certificate it verifies is a **trusted relay peer**: it is never asked by the auth server. Client certificates stay optional for everyone else (browsers present none). Relays this one dials are verified against the system roots plus this CA, and this relay presents its `CERT_FILE` as its client certificate. Unset: no session is a peer. |
 
 See [Deployment → TLS & mTLS]({{< relref "deployment/tls" >}}).
 
@@ -108,7 +105,7 @@ A relay admits each client session in exactly one of two ways. Setting both, or 
 | `QUMO_AUTH_URL` | (unset) | An auth server the relay asks when each client session connects. `https://`, or `http://` on a loopback host only. |
 | `QUMO_AUTH_PUBLIC` | (unset) | Comma-separated subtree patterns (`anon/**`, `demo/**`) that any session may publish and subscribe to, with no server. `**` opens everything; use it for development only. |
 
-**Trusted peers are never asked:** native-QUIC sessions from `PEER_CIDRS` or with a client certificate verified against `CA_FILE`, and peers this relay dials (`PEERS`, `UPSTREAM_ADDR`).
+**Trusted peers are never asked:** sessions with a client certificate verified against `CA_FILE`, and peers this relay dials (`PEERS`).
 
 ### The auth server contract
 A subset of [`moq-auth`](https://github.com/kixelated/moq/blob/main/doc/bin/relay/auth.md) (qumo-deploy ADR 0035). When a client connects, the relay POSTs JSON:

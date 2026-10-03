@@ -25,19 +25,16 @@ relay) is a CLI flag on `qumo relay` — see [CLI → relay]({{< relref "../cli/
 
 ## Peer discovery
 
-There is no runtime discovery service — on startup, each relay dials a fixed,
-comma-separated list of addresses from two env vars:
+There is no runtime discovery service — on startup, each relay dials the
+fixed, comma-separated list of addresses in **`PEERS`**: e.g. an edge's hub(s),
+or any relay it peers with. Each host is resolved to all its addresses and
+every address is dialed, so a name for a group of relays (a Consul DNS name, a
+Docker network alias) connects to each of them. See [Nomad]({{< relref "nomad" >}})
+for a worked example on Nomad.
 
-1. **`PEERS`** — static peer addresses to dial and maintain a connection to.
-2. **`UPSTREAM_ADDR`** — upstream relay address(es), e.g. for an edge dialing
-   its hub(s), or any relay connecting upward in a hierarchy. Accepts a name
-   that resolves to a stable address for the peer (a Consul DNS name, a Docker
-   network alias, a fixed host:port). See [Nomad]({{< relref "nomad" >}}) for
-   a worked example on Nomad.
-
-Both lists are dialed the same way and merged. `--role hub`/`--role edge` is a
-CLI flag on `qumo relay`; it is an operator-facing label logged at startup for
-visibility only and has no effect on which addresses are dialed.
+`--role hub`/`--role edge` is a CLI flag on `qumo relay`; it is an
+operator-facing label logged at startup for visibility only and has no effect
+on which addresses are dialed.
 
 Each connection dials QUIC with ALPN `moqt`, exchanges `ANNOUNCE_PLEASE` /
 `ANNOUNCE`, and registers the peer's tracks on the local `TrackMux`. On
@@ -49,7 +46,6 @@ graph TD
     Start["Relay Startup"]
 
     Start -->|"for each PEERS address"| ALPN
-    Start -->|"for each UPSTREAM_ADDR address"| ALPN
 
     ALPN["QUIC dial (ALPN: moqt)"] --> Announce["ANNOUNCE_PLEASE / ANNOUNCE"]
     Announce --> TrackMux["Register tracks on local TrackMux"]

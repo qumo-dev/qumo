@@ -333,13 +333,11 @@ func TestServer_Init_MultipleCallsWithDifferentConfigs(t *testing.T) {
 	assert.Equal(t, "node-2", server.Config.NodeID, "Config assignment should work even after init")
 }
 
-// TestConnectPeers_UpstreamAddr tests that both PEERS and UPSTREAM_ADDR
-// addresses are dialed, including that UPSTREAM_ADDR entries are trimmed.
-func TestConnectPeers_UpstreamAddr(t *testing.T) {
+// TestConnectPeers_DialsEveryPeer tests that every PEERS entry is dialed.
+func TestConnectPeers_DialsEveryPeer(t *testing.T) {
 	server := newTestServer("localhost:4433")
 	server.Config = &Config{
-		Peers:        []Peer{{Address: "peer1:4433"}},
-		UpstreamAddr: "hub1:4433, hub2:4433",
+		Peers: []Peer{{Address: "peer1:4433"}, {Address: "hub1:4433"}, {Address: "hub2:4433"}},
 	}
 
 	server.init()
@@ -353,13 +351,13 @@ func TestConnectPeers_UpstreamAddr(t *testing.T) {
 
 	// Each dial is marked connected synchronously in dialPeer before its
 	// maintainPeer goroutine ever touches the network, so this should observe
-	// all three addresses (1 from PEERS, 2 trimmed from UPSTREAM_ADDR) well
-	// before any real dial to these unreachable hosts could complete.
+	// all three addresses (unresolvable hosts are dialed as given) well before
+	// any real dial to these unreachable hosts could complete.
 	assert.Eventually(t, func() bool {
 		return server.isConnected("peer1:4433") &&
 			server.isConnected("hub1:4433") &&
 			server.isConnected("hub2:4433")
-	}, 5*time.Second, 20*time.Millisecond, "PEERS and UPSTREAM_ADDR addresses should all be dialed")
+	}, 5*time.Second, 20*time.Millisecond, "every PEERS address should be dialed")
 
 	cancel()
 	<-done
@@ -391,26 +389,21 @@ func TestServer_Address_Formats(t *testing.T) {
 	}
 }
 
-// TestResolveUpstreamAddrs verifies that resolveUpstreamAddrs handles IPs,
-// multi-record lookups (localhost resolves to 127.0.0.1 and/or ::1), and unparseable strings.
-func TestResolveUpstreamAddrs(t *testing.T) {
+// TestResolvePeerAddrs verifies that resolvePeerAddrs passes IPs and
+// unparseable entries through, and resolves a host to every address it has
+// (localhost resolves to 127.0.0.1 and/or ::1).
+func TestResolvePeerAddrs(t *testing.T) {
 	ctx := context.Background()
 
-	// 1. IP address passes through unchanged.
-	ipResults := resolveUpstreamAddrs(ctx, "127.0.0.1:4433")
-	assert.Equal(t, []string{"127.0.0.1:4433"}, ipResults)
+	assert.Equal(t, []string{"127.0.0.1:4433"}, resolvePeerAddrs(ctx, "127.0.0.1:4433"))
+	assert.Equal(t, []string{"no-port"}, resolvePeerAddrs(ctx, "no-port"))
 
-	// 2. localhost resolves to local IP(s) with port preserved.
-	lhResults := resolveUpstreamAddrs(ctx, "localhost:4433")
-	assert.NotEmpty(t, lhResults)
-	for _, r := range lhResults {
+	resolved := resolvePeerAddrs(ctx, "localhost:4433")
+	require.NotEmpty(t, resolved)
+	for _, r := range resolved {
 		host, port, err := net.SplitHostPort(r)
-		assert.NoError(t, err)
+		require.NoError(t, err)
 		assert.Equal(t, "4433", port)
 		assert.NotNil(t, net.ParseIP(host))
 	}
-
-	// 3. Comma-separated addresses work as expected.
-	multiResults := resolveUpstreamAddrs(ctx, "127.0.0.1:4433, 10.0.0.1:4433")
-	assert.Equal(t, []string{"127.0.0.1:4433", "10.0.0.1:4433"}, multiResults)
 }

@@ -9,9 +9,9 @@ package relay
 import (
 	"context"
 	"crypto/tls"
+	"crypto/x509"
 	"fmt"
 	"net/http"
-	"net/netip"
 	"testing"
 	"time"
 
@@ -23,18 +23,24 @@ import (
 
 // startAuthRelay stands up a real relay that admits client sessions through
 // auth, wired the way the relay command does (WebTransport through
-// HandleWebTransport). It returns the relay's loopback address and the server.
-func startAuthRelay(t *testing.T, auth *sessionAuth, peerCIDRs []netip.Prefix) (string, *Server) {
+// HandleWebTransport). peerCA, when set, plays CA_FILE: a client certificate
+// it verifies makes the session a trusted peer. It returns the relay's
+// loopback address and the server.
+func startAuthRelay(t *testing.T, auth *sessionAuth, peerCA *tls.Certificate) (string, *Server) {
 	t.Helper()
-	certFile, keyFile := createTempCert(t)
-	cert, err := tls.LoadX509KeyPair(certFile, keyFile)
-	require.NoError(t, err)
+	cert := loadTempCert(t)
 
 	quicCfg := &quic.Config{EnableDatagrams: true, KeepAlivePeriod: 5 * time.Second, MaxIdleTimeout: 30 * time.Second}
 	serverTLS := &tls.Config{
 		Certificates: []tls.Certificate{cert},
 		NextProtos:   []string{"h3", moqt.NextProtoMOQ},
 		MinVersion:   tls.VersionTLS13,
+	}
+	if peerCA != nil {
+		pool := x509.NewCertPool()
+		pool.AddCert(peerCA.Leaf)
+		serverTLS.ClientAuth = tls.VerifyClientCertIfGiven
+		serverTLS.ClientCAs = pool
 	}
 	dialerTLS := &tls.Config{
 		NextProtos:         []string{moqt.NextProtoMOQ},
@@ -52,7 +58,7 @@ func startAuthRelay(t *testing.T, auth *sessionAuth, peerCIDRs []netip.Prefix) (
 			WebTransportServer: moqt.NewWebTransportServer(httpMux),
 		},
 		MOQDialer: &moqt.Dialer{TLSConfig: dialerTLS, QUICConfig: quicCfg},
-		Config:    &Config{NodeID: "relay-auth-test", Role: "relay", PeerCIDRs: peerCIDRs},
+		Config:    &Config{NodeID: "relay-auth-test", Role: "relay"},
 		auth:      auth,
 	}
 	httpMux.HandleFunc("/", srv.HandleWebTransport)
@@ -79,14 +85,29 @@ func startAuthRelay(t *testing.T, auth *sessionAuth, peerCIDRs []netip.Prefix) (
 	return addr, srv
 }
 
-// announceOver dials url and announces path from the new session. It returns
-// the dial error, so a test can assert on a refused upgrade.
-func announceOver(t *testing.T, url string, nextProtos []string, path moqt.BroadcastPath) error {
+// loadTempCert returns a fresh self-signed certificate. It has no key usage
+// restrictions, so it serves as a server certificate, a client certificate,
+// and its own CA.
+func loadTempCert(t *testing.T) tls.Certificate {
+	t.Helper()
+	certFile, keyFile := createTempCert(t)
+	cert, err := tls.LoadX509KeyPair(certFile, keyFile)
+	require.NoError(t, err)
+	return cert
+}
+
+// announceOver dials url, presenting clientCert when set, and announces path
+// from the new session. It returns the dial error, so a test can assert on a
+// refused upgrade or handshake.
+func announceOver(t *testing.T, url string, nextProtos []string, clientCert *tls.Certificate, path moqt.BroadcastPath) error {
 	t.Helper()
 	dialerTLS := &tls.Config{
 		InsecureSkipVerify: true, //nolint:gosec // test-only self-signed cert
 		MinVersion:         tls.VersionTLS13,
 		NextProtos:         nextProtos,
+	}
+	if clientCert != nil {
+		dialerTLS.Certificates = []tls.Certificate{*clientCert}
 	}
 	quicCfg := &quic.Config{EnableDatagrams: true, KeepAlivePeriod: 5 * time.Second, MaxIdleTimeout: 30 * time.Second}
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
@@ -140,7 +161,7 @@ func TestServer_SessionAuth_WebTransport(t *testing.T) {
 			addr, srv := startAuthRelay(t, auth, nil)
 			probes := len(tt.server.received()) // startAuthRelay's readiness probes
 
-			err := announceOver(t, "https://"+addr+"/acme/app?jwt=header.payload.signature", nil, path)
+			err := announceOver(t, "https://"+addr+"/acme/app?jwt=header.payload.signature", nil, nil, path)
 
 			if !tt.wantDial {
 				require.Error(t, err, "a refused client must not get a session")
@@ -166,10 +187,12 @@ func TestServer_SessionAuth_WebTransport(t *testing.T) {
 
 func TestServer_SessionAuth_NativeQUIC(t *testing.T) {
 	const path = moqt.BroadcastPath("/acme/app/live")
-	loopback := []netip.Prefix{netip.MustParsePrefix("127.0.0.0/8")}
+	peerCert := loadTempCert(t)
+	otherCert := loadTempCert(t)
 	tests := map[string]struct {
 		server       *fakeAuthServer
-		peerCIDRs    []netip.Prefix
+		peerCA       *tls.Certificate // the relay's CA_FILE; nil means unset
+		clientCert   *tls.Certificate // what the dialing session presents
 		wantRoute    bool
 		wantRequests bool
 	}{
@@ -182,21 +205,32 @@ func TestServer_SessionAuth_NativeQUIC(t *testing.T) {
 			server:       &fakeAuthServer{status: http.StatusUnauthorized},
 			wantRequests: true,
 		},
-		"trusted peer network": {
-			server:    &fakeAuthServer{status: http.StatusUnauthorized},
-			peerCIDRs: loopback,
-			wantRoute: true,
+		"peer certificate verified by CA_FILE": {
+			server:     &fakeAuthServer{status: http.StatusUnauthorized},
+			peerCA:     &peerCert,
+			clientCert: &peerCert,
+			wantRoute:  true,
+		},
+		"certificate from another CA fails the handshake": {
+			server:     &fakeAuthServer{status: http.StatusUnauthorized},
+			peerCA:     &peerCert,
+			clientCert: &otherCert,
+		},
+		"certificate without CA_FILE is not a peer": {
+			server:       &fakeAuthServer{status: http.StatusUnauthorized},
+			clientCert:   &peerCert,
+			wantRequests: true,
 		},
 	}
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
 			auth := tt.server.start(t)
-			addr, srv := startAuthRelay(t, auth, tt.peerCIDRs)
+			addr, srv := startAuthRelay(t, auth, tt.peerCA)
 			probes := len(tt.server.received()) // startAuthRelay's readiness probes
 
 			// A refused native session still completes SETUP; the relay closes it
 			// right after, so the dial itself may succeed either way.
-			_ = announceOver(t, peerURL(addr)+"/acme?jwt=header.payload.signature", []string{moqt.NextProtoMOQ}, path)
+			_ = announceOver(t, peerURL(addr)+"/acme?jwt=header.payload.signature", []string{moqt.NextProtoMOQ}, tt.clientCert, path)
 
 			if tt.wantRoute {
 				require.Eventually(t, routed(srv, path), 3*time.Second, 25*time.Millisecond)
@@ -205,7 +239,7 @@ func TestServer_SessionAuth_NativeQUIC(t *testing.T) {
 			}
 			reqs := tt.server.received()[probes:]
 			if !tt.wantRequests {
-				assert.Empty(t, reqs, "a trusted peer is never asked")
+				assert.Empty(t, reqs, "a trusted peer, or a failed handshake, is never asked")
 				return
 			}
 			require.NotEmpty(t, reqs)
@@ -223,19 +257,19 @@ func TestServer_SessionAuth_Public(t *testing.T) {
 	addr, srv := startAuthRelay(t, auth, nil)
 
 	t.Run("anonymous session publishes under the grant", func(t *testing.T) {
-		err := announceOver(t, "https://"+addr+"/", nil, "/anon/room")
+		err := announceOver(t, "https://"+addr+"/", nil, nil, "/anon/room")
 
 		require.NoError(t, err)
 		require.Eventually(t, routed(srv, "/anon/room"), 3*time.Second, 25*time.Millisecond)
 	})
 	t.Run("outside the grant is not routed", func(t *testing.T) {
-		err := announceOver(t, "https://"+addr+"/", nil, "/private/room")
+		err := announceOver(t, "https://"+addr+"/", nil, nil, "/private/room")
 
 		require.NoError(t, err)
 		assert.Never(t, routed(srv, "/private/room"), 1500*time.Millisecond, 25*time.Millisecond)
 	})
 	t.Run("a session presenting a credential is refused", func(t *testing.T) {
-		err := announceOver(t, "https://"+addr+"/?jwt=header.payload.signature", nil, "/anon/other")
+		err := announceOver(t, "https://"+addr+"/?jwt=header.payload.signature", nil, nil, "/anon/other")
 
 		require.Error(t, err)
 	})

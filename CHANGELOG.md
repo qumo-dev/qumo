@@ -13,7 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **One required setting:** `QUMO_AUTH_URL` (an auth server) or `QUMO_AUTH_PUBLIC` (static subtree patterns, `**` for development). Setting both, or neither, stops the relay at startup.
   - **The contract** is a subset of `moq-auth`. The relay POSTs a `connect` request with the session's path and raw `query`, and enforces the grant's `publish` patterns on announcements. The relay never parses the credential, which clients put in the connect URL (`?jwt=`).
   - **Refusal:** a WebTransport client gets 401, 403 or 503 before the upgrade; a native-QUIC session is closed with `0x2`.
-  - **Peers:** trusted peers (`PEER_CIDRS`, mTLS) are never asked. Peers this relay dials (`PEERS`, `UPSTREAM_ADDR`) are now trusted too.
+  - **Peers:** trusted peers are never asked. Peers this relay dials (`PEERS`) are now trusted too.
   - **Removed:**
     - introspection (`POST /v1/credentials/introspect`) and the `auth` track;
     - local verification against the control plane's JWKS (`internal/credential`);
@@ -22,6 +22,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **Dev launchers** (`mage run`, the compose files, the demo Nomad job, `bench-multiproc`, `tools/capacity`) set `QUMO_AUTH_PUBLIC=**`.
   - **New metrics:** `qumo_relay_auth_requests_total{event,result}`, `qumo_relay_announcements_refused_total`.
   - **Requires** gomoqt v0.21.0: the WebTransport upgrade request's context reaches the session, and a native-QUIC client's `?jwt=` reaches the relay in the SETUP path (`Session.RequestURI`).
+- **Peers are identified by certificate; peer settings are reduced to `CA_FILE` and `PEERS` (`internal/relay`).**
+  - **Trusted peer:** a session whose client certificate is verified against `CA_FILE`. A client certificate is optional for everyone else, so browsers connect without one. Without `CA_FILE`, no session is a peer.
+  - **Dialing:** relays in `PEERS` are verified against the system roots plus `CA_FILE` (before, `CA_FILE` replaced the system roots). This relay presents its `CERT_FILE` as its client certificate.
+  - **`PEERS`** resolves each host to all its addresses and dials every one, which `UPSTREAM_ADDR` used to do. Entries are plain `host:port`.
+  - **Removed:** `PEER_CIDRS` (network-based trust), `MTLS_REQUIRED` (a client certificate is now always optional, verified when given), `UPSTREAM_ADDR` (use `PEERS`).
+  - **Migration:** a relay that relied on `PEER_CIDRS` needs a private CA, with a client certificate for each relay, before upgrading. Native-QUIC tools (ingest, HLS egress) don't: they connect with `?jwt=` and are admitted by the auth server.
+
 ## [v0.8.260929] - 2026-09-29
 
 ### Added

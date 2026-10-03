@@ -8,7 +8,7 @@ Files
 - `docker-compose.yml` — single relay (local build)
 - `docker-compose.external.yml` — single relay (pre-built image)
 - `docker-compose.static.yml` — **full 3-region topology** (hub + edge per region), wired with **static `PEERS`** (no discovery)
-- `docker-compose.nomad.yml` + `nomad/` — **real single-region Nomad cluster** that exercises the static-`UPSTREAM_ADDR` edge→hub topology on Nomad-launched containers; see [`nomad/README.md`](nomad/README.md)
+- `docker-compose.nomad.yml` + `nomad/` — **real single-region Nomad cluster** that exercises the static-`PEERS` edge→hub topology on Nomad-launched containers; see [`nomad/README.md`](nomad/README.md)
 - `docker-compose.demo.yml` — **local multi-scenario demo**: relay (MoQ-MoQ echo) + RTMP + RTSP origins up at once, with opt-in ffmpeg test-pattern pushers. Managed via `mage demo:up` / `mage demo:push` / `mage demo:down`
 
 Quick start (single relay)
@@ -97,8 +97,8 @@ Environment variables (relay)
 | `RELAY_ADDR` | `0.0.0.0:4433` | Bind address |
 | `RELAY_NAME` | `relay-$HOSTNAME` | Node ID |
 | `CERT_FILE` / `KEY_FILE` | `certs/server.crt` / `certs/server.key` | TLS cert/key (mount them; e.g. from `mage cert`) |
-| `PEERS` | (empty) | Comma-separated static peer addresses |
-| `UPSTREAM_ADDR` | (empty) | Comma-separated upstream relay address(es), e.g. for an edge dialing hub(s) |
+| `PEERS` | (empty) | Comma-separated relays to dial, e.g. an edge's hub(s); each host is resolved to all its addresses |
+| `CA_FILE` | (empty) | PEM CA; a client certificate it verifies makes the session a trusted peer |
 
 Build locally
 
