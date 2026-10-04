@@ -123,13 +123,13 @@ func Run(args []string) error {
 	authCfg := auth.LoadConfig()
 	authorize := admitUnchecked
 	var reportEnd func(context.Context, auth.Request) error // nil: auth off reports nothing
-	authMode := "off (QUMO_AUTH_URL unset): every session is admitted unchecked"
 	if authCfg.URL != "" {
 		authClient, err := auth.NewClient(authCfg.URL)
 		if err != nil {
 			return fmt.Errorf("QUMO_AUTH_URL: %w", err)
 		}
-		authorize, reportEnd, authMode = authClient.Authorize, authClient.End, authCfg.URL
+		authorize = authClient.Authorize
+		reportEnd = authClient.End
 	} else {
 		slog.Warn("relay: auth is off: QUMO_AUTH_URL is not set, so every session is admitted unchecked")
 	}
@@ -258,7 +258,11 @@ func Run(args []string) error {
 	for _, p := range relayCfg.Peers {
 		log.Printf("\t%-8s: %s\n", "Peer", sanitizeLog(p.Address))
 	}
-	log.Printf("\t%-8s: %s\n", "Auth", sanitizeLog(authMode))
+	if authCfg.URL != "" {
+		log.Printf("\t%-8s: %s\n", "Auth", sanitizeLog(authCfg.URL))
+	} else {
+		log.Printf("\t%-8s: off (QUMO_AUTH_URL unset): every session is admitted unchecked\n", "Auth")
+	}
 
 	// Start peer connections in background
 	go relayServer.ConnectPeers(ctx)
