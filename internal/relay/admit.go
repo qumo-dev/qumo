@@ -5,7 +5,6 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
-	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
@@ -15,49 +14,86 @@ import (
 	"github.com/qumo-dev/qumo/internal/auth"
 )
 
-// admitter decides whether a session may start: *auth.Client asks the auth
-// server (QUMO_AUTH_URL), and publicGrant admits every session on one fixed
-// grant (QUMO_AUTH_PUBLIC).
-type admitter interface {
-	Connect(ctx context.Context, req auth.Request) (*auth.Grant, error)
-}
-
-var (
-	_ admitter = (*auth.Client)(nil)
-	_ admitter = publicGrant{}
-)
-
-// newAdmitter returns the admitter cfg describes.
-func newAdmitter(cfg auth.Config) (admitter, error) {
-	if cfg.URL == "" {
-		return publicGrant{grant: &auth.Grant{Publish: cfg.Public, Subscribe: cfg.Public}}, nil
-	}
-	c, err := auth.NewClient(cfg.URL)
-	if err != nil {
-		return nil, fmt.Errorf("QUMO_AUTH_URL: %w", err)
-	}
-	return c, nil
-}
-
-// publicGrant admits every session on the same grant, with no auth server.
-type publicGrant struct {
+// admission is a session's grant, carried in the session's context so that
+// both checks find it: announcements (serveSession) and subscriptions
+// (authorizeSubscribe), whose TrackWriter context derives from the session's.
+// A WebTransport session's is decided at the upgrade. A native-QUIC session's
+// is pending from ConnContext until relayPeer decides it, and a subscription
+// arriving before then waits.
+type admission struct {
+	decided chan struct{}
+	// grant is set before decided closes. nil is unchecked: a trusted peer.
 	grant *auth.Grant
 }
 
-// Connect refuses a session that presents a credential (?jwt=) rather than
-// admitting it on the public grant: the client expects its credential to be
-// checked, and this relay checks none.
-func (p publicGrant) Connect(_ context.Context, req auth.Request) (*auth.Grant, error) {
-	if q, err := url.ParseQuery(req.Query); err == nil && q.Has("jwt") {
-		return nil, fmt.Errorf("a credential was presented to a relay with only a public grant: %w",
-			auth.RefusedError{Status: http.StatusUnauthorized})
-	}
-	return p.grant, nil
+type admissionKey struct{}
+
+// refusedGrant is the grant of a refused session: it covers nothing.
+var refusedGrant = &auth.Grant{}
+
+func pendingAdmission() *admission {
+	return &admission{decided: make(chan struct{})}
 }
 
-// grantKey carries a WebTransport session's grant from the upgrade request
-// into the session, whose context derives from the request's.
-type grantKey struct{}
+func decidedAdmission(g *auth.Grant) *admission {
+	a := pendingAdmission()
+	a.decide(g)
+	return a
+}
+
+func (a *admission) decide(g *auth.Grant) {
+	a.grant = g
+	close(a.decided)
+}
+
+func withAdmission(ctx context.Context, a *admission) context.Context {
+	return context.WithValue(ctx, admissionKey{}, a)
+}
+
+func admissionFrom(ctx context.Context) *admission {
+	a, _ := ctx.Value(admissionKey{}).(*admission)
+	return a
+}
+
+// sessionGrant returns the grant of the session ctx belongs to, waiting for a
+// pending admission. nil is unchecked; so is a context with no admission,
+// which only a session this relay dialed has (a trusted peer).
+func sessionGrant(ctx context.Context) (*auth.Grant, error) {
+	a := admissionFrom(ctx)
+	if a == nil {
+		return nil, nil
+	}
+	select {
+	case <-a.decided:
+		return a.grant, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
+// authorizeSubscribe reports whether tw's session may subscribe to its path.
+// A refusal closes tw with NotFound, the mux's answer for a path that doesn't
+// exist, so a SUBSCRIBE alone doesn't tell a client which paths exist. Path
+// names still reach it through announce interest and TRACK_INFO, which gomoqt
+// answers inside the shared TrackMux (#418).
+func authorizeSubscribe(tw *moqt.TrackWriter) bool {
+	g, err := sessionGrant(tw.Context())
+	switch {
+	case err != nil:
+		// The subscription ended before its session was admitted.
+		return false
+	case g == nil:
+		return true
+	case g.Subscribe.Contains(tw.BroadcastPath):
+		metricSubscribeAuthorizations.WithLabelValues("admitted").Inc()
+		return true
+	}
+	metricSubscribeAuthorizations.WithLabelValues("not_covered").Inc()
+	slog.Info("relay: subscription refused: not covered by the session's grant",
+		"broadcast_path", tw.BroadcastPath, "track_name", tw.TrackName)
+	tw.CloseWithError(moqt.SubscribeErrorCodeNotFound)
+	return false
+}
 
 // newSessionID returns a random 128-bit hex id, unique per session.
 func newSessionID() string {
@@ -119,11 +155,30 @@ func (s *Server) nodeID() string {
 	return s.Config.NodeID
 }
 
+// admitUnchecked admits every session without asking anyone: the relay runs
+// with auth off (QUMO_AUTH_URL unset). Its sessions are unchecked, like a
+// trusted peer's.
+func admitUnchecked(context.Context, auth.Request) (*auth.Grant, error) {
+	return nil, nil
+}
+
+// errNoAuthorize refuses every client session of a Server whose Authorize is
+// unset, rather than running it open.
+var errNoAuthorize = errors.New("relay: no auth server configured")
+
 // admit runs the connect check and records its outcome.
 func (s *Server) admit(ctx context.Context, req auth.Request) (*auth.Grant, error) {
-	g, err := s.auth.Connect(ctx, req)
+	if s.Authorize == nil {
+		metricAuthRequests.WithLabelValues(auth.EventConnect, "error").Inc()
+		slog.Error("relay: session refused: no auth server configured (Server.Authorize is nil)",
+			"transport", req.Transport, "remote", req.Remote, "path", req.Path)
+		return nil, errNoAuthorize
+	}
+	g, err := s.Authorize(ctx, req)
 	_, refused := errors.AsType[auth.RefusedError](err)
 	switch {
+	case err == nil && g == nil:
+		metricAuthRequests.WithLabelValues(auth.EventConnect, "unchecked").Inc()
 	case err == nil:
 		metricAuthRequests.WithLabelValues(auth.EventConnect, "admitted").Inc()
 	case refused:

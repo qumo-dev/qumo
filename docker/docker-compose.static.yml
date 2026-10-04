@@ -56,7 +56,6 @@ services:
     command: ["relay", "--role", "hub"]
     environment:
       RELAY_NAME: "relay-hub-asia"
-      QUMO_AUTH_PUBLIC: "**"  # open for local testing; production sets QUMO_AUTH_URL
       # Connect to hubs in other regions
       PEERS: "relay-hub-europe:4433,relay-hub-americas:4433"
     ports:
@@ -72,7 +71,6 @@ services:
         condition: service_healthy
     environment:
       RELAY_NAME: "relay-edge-asia"
-      QUMO_AUTH_PUBLIC: "**"  # open for local testing; production sets QUMO_AUTH_URL
       # Connect to local hub
       PEERS: "relay-hub-asia:4433"
     ports:
@@ -87,7 +85,6 @@ services:
     command: ["relay", "--role", "hub"]
     environment:
       RELAY_NAME: "relay-hub-europe"
-      QUMO_AUTH_PUBLIC: "**"  # open for local testing; production sets QUMO_AUTH_URL
       # Connect to hubs in other regions
       PEERS: "relay-hub-asia:4433,relay-hub-americas:4433"
     ports:
@@ -103,7 +100,6 @@ services:
         condition: service_healthy
     environment:
       RELAY_NAME: "relay-edge-europe"
-      QUMO_AUTH_PUBLIC: "**"  # open for local testing; production sets QUMO_AUTH_URL
       # Connect to local hub
       PEERS: "relay-hub-europe:4433"
     ports:
@@ -118,7 +114,6 @@ services:
     command: ["relay", "--role", "hub"]
     environment:
       RELAY_NAME: "relay-hub-americas"
-      QUMO_AUTH_PUBLIC: "**"  # open for local testing; production sets QUMO_AUTH_URL
       # Connect to hubs in other regions
       PEERS: "relay-hub-asia:4433,relay-hub-europe:4433"
     ports:
@@ -134,7 +129,6 @@ services:
         condition: service_healthy
     environment:
       RELAY_NAME: "relay-edge-americas"
-      QUMO_AUTH_PUBLIC: "**"  # open for local testing; production sets QUMO_AUTH_URL
       # Connect to local hub
       PEERS: "relay-hub-americas:4433"
     ports:

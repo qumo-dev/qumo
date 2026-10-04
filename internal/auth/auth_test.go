@@ -103,29 +103,18 @@ func TestClient_Connect_ServerDown(t *testing.T) {
 
 func TestLoadConfig(t *testing.T) {
 	tests := map[string]struct {
-		url         string
-		public      string
-		want        Config
-		wantErrText string
+		url  string
+		want Config
 	}{
-		"auth server":        {url: "https://auth.example.com/v1/sessions", want: Config{URL: "https://auth.example.com/v1/sessions"}},
-		"public grant":       {public: "anon/**, demo/**", want: Config{Public: Patterns{{base: "anon"}, {base: "demo"}}}},
-		"neither":            {wantErrText: "neither"},
-		"both":               {url: "https://auth.example.com", public: "**", wantErrText: "both set"},
-		"bad public pattern": {public: "anon", wantErrText: "QUMO_AUTH_PUBLIC"},
+		"set":             {url: "http://127.0.0.1:4440/", want: Config{URL: "http://127.0.0.1:4440/"}},
+		"unset: auth off": {url: "", want: Config{}},
 	}
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
 			t.Setenv("QUMO_AUTH_URL", tt.url)
-			t.Setenv("QUMO_AUTH_PUBLIC", tt.public)
 
-			got, err := LoadConfig()
+			got := LoadConfig()
 
-			if tt.wantErrText != "" {
-				assert.ErrorContains(t, err, tt.wantErrText)
-				return
-			}
-			require.NoError(t, err)
 			assert.Equal(t, tt.want, got)
 		})
 	}

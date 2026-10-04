@@ -1,8 +1,9 @@
 package relay
 
 import (
-	"github.com/qumo-dev/gomoqt/moqt"
 	"testing"
+
+	"github.com/qumo-dev/gomoqt/moqt"
 )
 
 // BenchmarkNext_Serial compares serial next() calls with baseline vs lockless

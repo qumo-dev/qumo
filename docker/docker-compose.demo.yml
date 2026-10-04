@@ -50,7 +50,6 @@ services:
       <<: *qumo-env
       RELAY_ADDR: "0.0.0.0:4433"
       RELAY_NAME: "demo-relay"
-      QUMO_AUTH_PUBLIC: "**"  # open for local testing; production sets QUMO_AUTH_URL
     ports:
       - "4433:4433/udp"   # MoQT (QUIC)
       - "4433:4433/tcp"   # HTTP health/metrics
