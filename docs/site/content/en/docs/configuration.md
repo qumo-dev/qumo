@@ -137,7 +137,7 @@ The server answers with a grant:
 - **Revalidation:** every `revalidate` seconds, the relay sends the session's connect request again, with the same `id` and `event: "revalidate"`. This is how key revocation, project suspension or a spend limit reaches a live session.
   - **A 401 or 403** ends the session with `0x2` (Unauthorized) and reason `refused`.
   - **A grant that can't be enforced** ends it with reason `invalid`.
-  - **An admitted grant** keeps the session and takes the new `expires` and `revalidate`. Its patterns are not compared: they were fixed at connect, and the credential is the same.
+  - **An admitted grant** keeps the session and takes the new `expires` and `revalidate`. Its patterns are not compared: they were fixed at connect, and the credential is the same. A grant without `expires` keeps the session's current deadline; a revalidate never lifts it.
   - **Anything else** (a timeout, a 5xx) is retried with jittered exponential backoff, from about 1 s up to 30 s. The session lives until its current `expires`, so an outage is bounded by what the server last granted.
 - **Trusted peers**, and peers this relay dials, are never checked.
 - **Not yet enforced:** which paths a session can discover (qumo-dev/qumo#450). Announce interest lists every path under the requested prefix, and a TRACK request returns a track's publisher properties (TRACK_INFO) for any path. Both reveal path names and metadata, never media.
