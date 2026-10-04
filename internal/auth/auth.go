@@ -130,7 +130,8 @@ type Request struct {
 	// Bytes is the session's cumulative byte totals, sent on revalidate
 	// and end. Reporting them on revalidate as well as end is qumo's one
 	// extension of moq-auth, so billing sees a long session before it ends.
-	Bytes *Bytes `json:"bytes,omitempty"`
+	// Zero totals are left out, so an absent bytes means none.
+	Bytes Bytes `json:"bytes,omitzero"`
 	// Reason is why the session ended, sent on end.
 	Reason string `json:"reason,omitempty"`
 	// Duration is how long the session lasted in whole seconds, sent on end.

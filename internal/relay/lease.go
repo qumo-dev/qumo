@@ -230,8 +230,8 @@ func retryDelay(attempt int) time.Duration {
 
 // sessionBytes returns a session's cumulative byte totals as the auth server
 // receives them.
-func sessionBytes(st moqt.SessionStats) *auth.Bytes {
-	return &auth.Bytes{Sent: st.BytesSent, Received: st.BytesReceived}
+func sessionBytes(st moqt.SessionStats) auth.Bytes {
+	return auth.Bytes{Sent: st.BytesSent, Received: st.BytesReceived}
 }
 
 // endReason returns why a checked session ended: the lease's reason when it

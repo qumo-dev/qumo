@@ -157,7 +157,7 @@ func TestClient_End(t *testing.T) {
 		ID:       "00ff",
 		Event:    EventEnd,
 		Path:     "/acme",
-		Bytes:    &Bytes{Sent: 1500, Received: 300},
+		Bytes:    Bytes{Sent: 1500, Received: 300},
 		Reason:   "closed",
 		Duration: 42,
 	}
@@ -192,7 +192,7 @@ func TestClient_End_ServerDown(t *testing.T) {
 }
 
 // TestRequest_MarshalJSON verifies the end-only members are left out of a
-// connect request, and bytes is sent even when zero once set.
+// connect request, and bytes is left out while both totals are zero.
 func TestRequest_MarshalJSON(t *testing.T) {
 	tests := map[string]struct {
 		req  Request
@@ -203,11 +203,15 @@ func TestRequest_MarshalJSON(t *testing.T) {
 			want: `{"id":"00ff","event":"connect","transport":"quic","path":"/acme"}`,
 		},
 		"revalidate with no bytes yet": {
-			req:  Request{ID: "00ff", Event: EventRevalidate, Transport: TransportQUIC, Path: "/acme", Bytes: &Bytes{}},
-			want: `{"id":"00ff","event":"revalidate","transport":"quic","path":"/acme","bytes":{"sent":0,"received":0}}`,
+			req:  Request{ID: "00ff", Event: EventRevalidate, Transport: TransportQUIC, Path: "/acme"},
+			want: `{"id":"00ff","event":"revalidate","transport":"quic","path":"/acme"}`,
+		},
+		"bytes in one direction": {
+			req:  Request{ID: "00ff", Event: EventRevalidate, Transport: TransportQUIC, Path: "/acme", Bytes: Bytes{Received: 7}},
+			want: `{"id":"00ff","event":"revalidate","transport":"quic","path":"/acme","bytes":{"sent":0,"received":7}}`,
 		},
 		"end": {
-			req:  Request{ID: "00ff", Event: EventEnd, Transport: TransportQUIC, Path: "/acme", Bytes: &Bytes{Sent: 9, Received: 1}, Reason: "dropped", Duration: 3},
+			req:  Request{ID: "00ff", Event: EventEnd, Transport: TransportQUIC, Path: "/acme", Bytes: Bytes{Sent: 9, Received: 1}, Reason: "dropped", Duration: 3},
 			want: `{"id":"00ff","event":"end","transport":"quic","path":"/acme","bytes":{"sent":9,"received":1},"reason":"dropped","duration":3}`,
 		},
 	}

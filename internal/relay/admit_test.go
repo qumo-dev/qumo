@@ -230,7 +230,7 @@ func TestServer_ReportEnd(t *testing.T) {
 			assert.Equal(t, 1.0, delta)
 			want := connect
 			want.Event = auth.EventEnd
-			want.Bytes = &auth.Bytes{Sent: 9000, Received: 120}
+			want.Bytes = auth.Bytes{Sent: 9000, Received: 120}
 			want.Reason = endDropped
 			want.Duration = 42
 			assert.Equal(t, []auth.Request{want}, server.ended())
@@ -291,7 +291,6 @@ func TestServer_HandleWebTransport_FailedUpgradeReportsEnd(t *testing.T) {
 	connect := fake.received()[0]
 	want := connect
 	want.Event = auth.EventEnd
-	want.Bytes = &auth.Bytes{}
 	want.Reason = endUpgradeFailed
 	assert.Equal(t, []auth.Request{want}, fake.ended())
 }

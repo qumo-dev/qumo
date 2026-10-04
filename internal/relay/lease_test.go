@@ -69,7 +69,7 @@ func TestLease_RevalidateEnds(t *testing.T) {
 				assert.Equal(t, []sessionClose{{code: moqt.UnauthorizedSessionErrorCode, msg: tt.wantReason}}, sess.closed())
 				want := leaseRequest
 				want.Event = auth.EventRevalidate
-				want.Bytes = &auth.Bytes{Sent: 1500, Received: 300}
+				want.Bytes = auth.Bytes{Sent: 1500, Received: 300}
 				assert.Equal(t, []auth.Request{want}, server.received())
 			})
 		})
@@ -195,7 +195,7 @@ func TestLease_RevalidateReportsBytes(t *testing.T) {
 
 		var got []auth.Bytes
 		for _, req := range server.received() {
-			got = append(got, *req.Bytes)
+			got = append(got, req.Bytes)
 		}
 		assert.Equal(t, []auth.Bytes{{Sent: 100, Received: 10}, {Sent: 250, Received: 40}}, got)
 	})

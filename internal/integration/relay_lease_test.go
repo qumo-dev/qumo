@@ -121,7 +121,6 @@ func TestRelay_SessionEndReport(t *testing.T) {
 			assert.Equal(t, auth.EventEnd, end.Event)
 			assert.Equal(t, tt.wantReason, end.Reason)
 			assert.Equal(t, connect.Path, end.Path, "end re-sends the connect request")
-			require.NotNil(t, end.Bytes)
 			assert.Positive(t, end.Bytes.Sent, "SETUP alone sends bytes")
 			assert.Positive(t, end.Bytes.Received)
 		})
