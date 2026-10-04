@@ -6,11 +6,13 @@ import (
 	"context"
 	"crypto/tls"
 	"fmt"
+	"net/http"
 	"testing"
 	"time"
 
 	"github.com/quic-go/quic-go"
 	"github.com/qumo-dev/gomoqt/moqt"
+	"github.com/qumo-dev/qumo/internal/auth"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -51,6 +53,23 @@ func TestRelay_SessionEndsAtExpires(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestRelay_RevalidateRefusedEndsSession verifies a live session is ended
+// when the auth server refuses it at a revalidate, which is how key
+// revocation and project suspension reach sessions already running.
+func TestRelay_RevalidateRefusedEndsSession(t *testing.T) {
+	server := &fakeAuth{
+		body:          fmt.Sprintf(`{"subscribe":["acme/**"],"expires":%d,"revalidate":1}`, time.Now().Add(time.Hour).Unix()),
+		revalidateErr: auth.RefusedError{Status: http.StatusForbidden},
+	}
+	addr, _ := startAuthRelay(t, server.authorize, nil)
+
+	sess := dialSession(t, nativeURL(addr)+"/acme?jwt=h.p.s", []string{moqt.NextProtoMOQ})
+
+	require.Eventually(t, func() bool { return sess.Context().Err() != nil },
+		5*time.Second, 50*time.Millisecond, "a refused revalidate did not end the session")
+	assert.ErrorContains(t, context.Cause(sess.Context()), "refused")
 }
 
 // dialSession dials url and returns the session, closed when the test ends.

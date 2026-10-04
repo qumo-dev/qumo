@@ -31,7 +31,11 @@ const (
 
 // Session events, the Request's Event.
 const (
+	// EventConnect asks whether a new session may start.
 	EventConnect = "connect"
+	// EventRevalidate asks again, at the grant's revalidate cadence, whether
+	// a live session may continue.
+	EventRevalidate = "revalidate"
 )
 
 // Transports, the Request's Transport.
@@ -120,10 +124,11 @@ type Request struct {
 	Query      string `json:"query,omitempty"`
 }
 
-// Connect asks whether a new session may start, and returns its grant. The
-// error is a RefusedError for an explicit refusal; any other error means the
-// auth server could not answer, which refuses too.
-func (c *Client) Connect(ctx context.Context, req Request) (*Grant, error) {
+// Authorize sends req, a connect or revalidate event, and returns the grant.
+// The error is a RefusedError for an explicit refusal, wraps ErrInvalidGrant
+// for a grant the relay cannot enforce, and is otherwise an auth server that
+// could not answer.
+func (c *Client) Authorize(ctx context.Context, req Request) (*Grant, error) {
 	body, err := json.Marshal(req)
 	if err != nil {
 		return nil, fmt.Errorf("auth: encode request: %w", err)

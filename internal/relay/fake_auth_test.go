@@ -12,26 +12,47 @@ import (
 // Server.Authorize takes: err when set, otherwise the grant in body (JSON, as
 // the auth server sends it). The zero value admits every session with a grant
 // that covers nothing. It records every request.
+//
+// replies, when set, is a results queue that takes the place of body and
+// err: one reply per call in order, the last repeating once it is exhausted.
+// block makes every call wait for its context to end, like a stalled server.
 type fakeAuth struct {
-	body string
-	err  error
+	body    string
+	err     error
+	replies []fakeReply
+	block   bool
 
 	mu       sync.Mutex
 	requests []auth.Request
 }
 
-func (f *fakeAuth) authorize(_ context.Context, req auth.Request) (*auth.Grant, error) {
+// fakeReply is one answer from fakeAuth: err when set, otherwise the grant in
+// body.
+type fakeReply struct {
+	body string
+	err  error
+}
+
+func (f *fakeAuth) authorize(ctx context.Context, req auth.Request) (*auth.Grant, error) {
 	f.mu.Lock()
 	f.requests = append(f.requests, req)
+	reply := fakeReply{body: f.body, err: f.err}
+	if len(f.replies) > 0 {
+		reply = f.replies[min(len(f.requests), len(f.replies))-1]
+	}
 	f.mu.Unlock()
-	if f.err != nil {
-		return nil, f.err
+	if f.block {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+	if reply.err != nil {
+		return nil, reply.err
 	}
 	var g auth.Grant
-	if f.body == "" {
+	if reply.body == "" {
 		return &g, nil
 	}
-	if err := json.Unmarshal([]byte(f.body), &g); err != nil {
+	if err := json.Unmarshal([]byte(reply.body), &g); err != nil {
 		return nil, err
 	}
 	return &g, nil

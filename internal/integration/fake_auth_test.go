@@ -14,9 +14,11 @@ import (
 // relay.Server.Authorize takes: err when set, otherwise the grant in body
 // (JSON, as an auth server sends it). The zero value admits every session
 // with a grant that covers nothing. It records every request.
+// revalidateErr, when set, answers every revalidate instead.
 type fakeAuth struct {
-	body string
-	err  error
+	body          string
+	err           error
+	revalidateErr error
 
 	mu       sync.Mutex
 	requests []auth.Request
@@ -26,6 +28,9 @@ func (f *fakeAuth) authorize(_ context.Context, req auth.Request) (*auth.Grant, 
 	f.mu.Lock()
 	f.requests = append(f.requests, req)
 	f.mu.Unlock()
+	if req.Event == auth.EventRevalidate && f.revalidateErr != nil {
+		return nil, f.revalidateErr
+	}
 	if f.err != nil {
 		return nil, f.err
 	}

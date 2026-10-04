@@ -128,7 +128,7 @@ func Run(args []string) error {
 		if err != nil {
 			return fmt.Errorf("QUMO_AUTH_URL: %w", err)
 		}
-		authorize, authMode = authClient.Connect, authCfg.URL
+		authorize, authMode = authClient.Authorize, authCfg.URL
 	} else {
 		slog.Warn("relay: auth is off: QUMO_AUTH_URL is not set, so every session is admitted unchecked")
 	}
