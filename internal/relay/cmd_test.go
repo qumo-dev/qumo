@@ -4,6 +4,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"slices"
 	"testing"
 	"time"
 
@@ -184,6 +185,38 @@ func TestParseRelayArgs(t *testing.T) {
 			}
 			require.NoError(t, err)
 			assert.Equal(t, tc.wantRole, flags.Role)
+		})
+	}
+}
+
+func TestCheckNoStaleAuthEnv(t *testing.T) {
+	tests := map[string]struct {
+		set         []string // variables set to a non-empty value
+		wantErrText string
+	}{
+		"nothing set":                {},
+		"unrelated setting":          {set: []string{"RELAY_NAME"}},
+		"public grant left set":      {set: []string{"QUMO_AUTH_PUBLIC"}, wantErrText: "QUMO_AUTH_PUBLIC set"},
+		"credential URL left set":    {set: []string{"QUMO_CREDENTIAL_URL"}, wantErrText: "QUMO_CREDENTIAL_URL set"},
+		"several are named together": {set: []string{"QUMO_RELAY_TOKEN", "QUMO_RELAY_AUDIENCE"}, wantErrText: "QUMO_RELAY_TOKEN, QUMO_RELAY_AUDIENCE set"},
+		"issuer left set":            {set: []string{"QUMO_CREDENTIAL_ISSUER"}, wantErrText: "QUMO_CREDENTIAL_ISSUER set"},
+	}
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			getenv := func(key string) string {
+				if slices.Contains(tt.set, key) {
+					return "x"
+				}
+				return ""
+			}
+
+			err := checkNoStaleAuthEnv(getenv)
+
+			if tt.wantErrText != "" {
+				assert.ErrorContains(t, err, tt.wantErrText)
+				return
+			}
+			assert.NoError(t, err)
 		})
 	}
 }

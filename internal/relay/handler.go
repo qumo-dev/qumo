@@ -102,9 +102,9 @@ type relayHandler struct {
 	announcement *moqt.Announcement
 	session      *moqt.Session
 
-	tracks       *trackManager
-	flights      singleflight.Group
-	nodeID       string
+	tracks  *trackManager
+	flights singleflight.Group
+	nodeID  string
 
 	trackInfoCache sync.Map           // moqt.TrackName -> moqt.PublishInfo
 	infoFlights    singleflight.Group // deduplicates concurrent upstream TrackInfo queries

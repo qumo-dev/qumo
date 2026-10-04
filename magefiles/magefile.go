@@ -329,18 +329,13 @@ func Relay() error {
 // relayDevEnv returns os.Environ() plus dev-friendly defaults for `qumo relay`,
 // applied only when the user hasn't set them: a dual-stack bind (RELAY_ADDR),
 // an advertised address (required for the wildcard bind), and CORS allowing the
-// `mage web` Vite origins, and an open public grant (QUMO_AUTH_PUBLIC=**) unless
-// an auth server is configured. It logs which defaults it applied so the
-// relaxation is visible. These affect ONLY this dev wrapper, not the
-// `qumo relay` binary.
+// `mage web` Vite origins. It logs which defaults it applied so the relaxation
+// is visible. These affect ONLY this dev wrapper, not the `qumo relay` binary.
+// With no QUMO_AUTH_URL the relay runs with auth off, admitting every session.
 func relayDevEnv() []string {
 	defaults := map[string]string{
 		"RELAY_ADDR":           ":4433",
 		"CORS_ALLOWED_ORIGINS": "http://localhost:5173,http://127.0.0.1:5173",
-		"QUMO_AUTH_PUBLIC":     "**",
-	}
-	if os.Getenv("QUMO_AUTH_URL") != "" {
-		delete(defaults, "QUMO_AUTH_PUBLIC") // the two settings are exclusive
 	}
 	applied := []string{}
 	env := os.Environ()

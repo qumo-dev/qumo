@@ -1,9 +1,10 @@
 //go:build integration
 
-// Integration tests for subscribe authorization (admit.go, #418) on a real
-// QUIC/MOQT relay: a subscription is served only when the session's grant
-// covers its path, and a refusal is indistinguishable from a missing path.
-package relay
+// Black-box tests of the relay's subscribe authorization (#418) and auth off,
+// through its public API on a real QUIC/MOQT relay: a subscription is served
+// only when the session's grant covers its path, and a refusal answers like a
+// missing path.
+package integration
 
 import (
 	"context"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/quic-go/quic-go"
 	"github.com/qumo-dev/gomoqt/moqt"
+	"github.com/qumo-dev/qumo/internal/relay"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -22,7 +24,7 @@ const testTrack = moqt.TrackName("video")
 // publishOver dials url and publishes each path: any track at it sends a
 // one-frame group every 50 ms until its subscription ends. It returns once srv
 // has routed every path.
-func publishOver(t *testing.T, srv *Server, url string, paths ...moqt.BroadcastPath) {
+func publishOver(t *testing.T, srv *relay.Server, url string, paths ...moqt.BroadcastPath) {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
@@ -89,15 +91,15 @@ func subscribe(t *testing.T, url string, clientCert *tls.Certificate, path moqt.
 	return err
 }
 
-func TestServer_SubscribeAuth(t *testing.T) {
+func TestRelay_SubscribeAuth(t *testing.T) {
 	// One grant for every session: publish anywhere under acme, subscribe
 	// only under acme/app.
-	server := &fakeAuthServer{body: `{"publish":["acme/**"],"subscribe":["acme/app/**"]}`}
-	addr, srv := startAuthRelay(t, server.start(t), nil)
+	server := &fakeAuth{body: `{"publish":["acme/**"],"subscribe":["acme/app/**"]}`}
+	addr, srv := startAuthRelay(t, server.authorize, nil)
 	publishOver(t, srv, "https://"+addr+"/?jwt=a.b.c", "/acme/app", "/acme/app/live", "/acme/apple/live")
 	transports := map[string]string{
 		"webtransport": "https://" + addr + "/?jwt=a.b.c",
-		"native QUIC":  peerURL(addr) + "/?jwt=a.b.c",
+		"native QUIC":  nativeURL(addr) + "/?jwt=a.b.c",
 	}
 
 	for transport, url := range transports {
@@ -124,22 +126,22 @@ func TestServer_SubscribeAuth(t *testing.T) {
 	}
 }
 
-func TestServer_SubscribeAuth_TrustedPeerUnchecked(t *testing.T) {
+func TestRelay_SubscribeAuth_TrustedPeerUnchecked(t *testing.T) {
 	peerCert := loadTempCert(t)
-	server := &fakeAuthServer{body: `{"publish":["acme/**"],"subscribe":["acme/app/**"]}`}
-	addr, srv := startAuthRelay(t, server.start(t), &peerCert)
+	server := &fakeAuth{body: `{"publish":["acme/**"],"subscribe":["acme/app/**"]}`}
+	addr, srv := startAuthRelay(t, server.authorize, &peerCert)
 	publishOver(t, srv, "https://"+addr+"/?jwt=a.b.c", "/acme/apple/live")
 
-	err := subscribe(t, peerURL(addr)+"/", &peerCert, "/acme/apple/live")
+	err := subscribe(t, nativeURL(addr)+"/", &peerCert, "/acme/apple/live")
 
 	assert.NoError(t, err, "a trusted peer subscribes outside any grant")
 }
 
-func TestServer_SubscribeAuth_FetchRejected(t *testing.T) {
-	server := &fakeAuthServer{body: `{"publish":["acme/**"],"subscribe":["acme/**"]}`}
-	addr, srv := startAuthRelay(t, server.start(t), nil)
+func TestRelay_SubscribeAuth_FetchRejected(t *testing.T) {
+	server := &fakeAuth{body: `{"publish":["acme/**"],"subscribe":["acme/**"]}`}
+	addr, srv := startAuthRelay(t, server.authorize, nil)
 	publishOver(t, srv, "https://"+addr+"/?jwt=a.b.c", "/acme/app/live")
-	sess := dialOver(t, peerURL(addr)+"/?jwt=a.b.c", nil, moqt.NewTrackMux(0))
+	sess := dialOver(t, nativeURL(addr)+"/?jwt=a.b.c", nil, moqt.NewTrackMux(0))
 
 	gr, err := sess.Fetch(&moqt.FetchRequest{BroadcastPath: "/acme/app/live", TrackName: testTrack})
 	if err == nil {
@@ -149,4 +151,25 @@ func TestServer_SubscribeAuth_FetchRejected(t *testing.T) {
 	}
 
 	assert.Error(t, err)
+}
+
+func TestRelay_AuthOff(t *testing.T) {
+	addr, srv := startAuthRelay(t, authOff, nil)
+	publishOver(t, srv, "https://"+addr+"/", "/any/where")
+
+	t.Run("webtransport subscribes anywhere", func(t *testing.T) {
+		err := subscribe(t, "https://"+addr+"/", nil, "/any/where")
+
+		assert.NoError(t, err)
+	})
+	t.Run("native QUIC subscribes anywhere", func(t *testing.T) {
+		err := subscribe(t, nativeURL(addr)+"/", nil, "/any/where")
+
+		assert.NoError(t, err)
+	})
+	t.Run("a credential is ignored, not refused", func(t *testing.T) {
+		err := subscribe(t, "https://"+addr+"/?jwt=a.b.c", nil, "/any/where")
+
+		assert.NoError(t, err)
+	})
 }

@@ -232,7 +232,6 @@ func startRelay(ctx context.Context, cfg config, certFile, keyFile string) (func
 	cmd.Env = append(os.Environ(),
 		"RELAY_ADDR="+cfg.relay, "CERT_FILE="+certFile, "KEY_FILE="+keyFile,
 		"RELAY_NAME=capacity", "GOGC="+strconv.Itoa(cfg.gogc),
-		"QUMO_AUTH_PUBLIC=**", // capacity probes run open
 	)
 	cmd.Stdout, cmd.Stderr = io.Discard, io.Discard
 	if err := cmd.Start(); err != nil {
