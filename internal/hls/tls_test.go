@@ -97,3 +97,30 @@ func selfSignedCertPEM(tb testing.TB) []byte {
 	require.NoError(tb, err)
 	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
 }
+
+func TestFeedConfig_Validate(t *testing.T) {
+	tests := map[string]struct {
+		cfg     feedConfig
+		wantErr string
+	}{
+		"no client certificate":               {cfg: feedConfig{relayURL: "https://relay:4433"}},
+		"client certificate over native QUIC": {cfg: feedConfig{relayURL: "moqt://relay:4433", certFile: "c.pem", keyFile: "k.pem"}},
+		"client certificate over WebTransport": {
+			cfg:     feedConfig{relayURL: "https://relay:4433", certFile: "c.pem", keyFile: "k.pem"},
+			wantErr: "moqt://",
+		},
+		"cert without key": {cfg: feedConfig{relayURL: "moqt://relay:4433", certFile: "c.pem"}, wantErr: "together"},
+		"key without cert": {cfg: feedConfig{relayURL: "moqt://relay:4433", keyFile: "k.pem"}, wantErr: "together"},
+	}
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			err := tt.cfg.validate()
+
+			if tt.wantErr != "" {
+				assert.ErrorContains(t, err, tt.wantErr)
+				return
+			}
+			assert.NoError(t, err)
+		})
+	}
+}

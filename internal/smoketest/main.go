@@ -14,6 +14,7 @@ import (
 
 	"github.com/qumo-dev/gomoqt/moqt"
 
+	"github.com/qumo-dev/qumo/internal/relayurl"
 	"github.com/qumo-dev/qumo/internal/tlsclient"
 )
 
@@ -23,8 +24,8 @@ const (
 )
 
 func main() {
-	pubURL := flag.String("pub", "", "publisher-side relay URL (e.g. moqt://localhost:9002)")
-	subURL := flag.String("sub", "", "subscriber-side relay URL (e.g. moqt://localhost:9006)")
+	pubURL := flag.String("pub", "", "publisher-side relay URL (e.g. moqt://localhost:9002); add ?jwt=… for a relay with an auth server")
+	subURL := flag.String("sub", "", "subscriber-side relay URL (e.g. moqt://localhost:9006); add ?jwt=… for a relay with an auth server")
 	caFile := flag.String("ca", "", "PEM file of the relays' TLS cert/CA to trust (required unless -insecure)")
 	insecure := flag.Bool("insecure", false, "skip TLS verification (dev; self-signed relays)")
 	timeout := flag.Duration("timeout", 30*time.Second, "overall test timeout")
@@ -119,11 +120,11 @@ func run(ctx context.Context, pubURL, subURL string, numGroups, numFrames, frame
 	pubDialer := &moqt.Dialer{TLSConfig: tlsConf}
 	pubSess, err := pubDialer.Dial(ctx, pubURL, pubMux)
 	if err != nil {
-		log.Printf("publish: dial %s: %v", pubURL, err)
+		log.Printf("publish: dial %s: %v", relayurl.Redact(pubURL), relayurl.ScrubError(err, pubURL))
 		return 1
 	}
 	defer pubSess.CloseWithError(moqt.NoError, "done")
-	log.Printf("publish: connected to %s", pubURL)
+	log.Printf("publish: connected to %s", relayurl.Redact(pubURL))
 
 	// Wait for announcement to propagate across relay mesh.
 	select {
@@ -138,11 +139,11 @@ func run(ctx context.Context, pubURL, subURL string, numGroups, numFrames, frame
 	subDialer := &moqt.Dialer{TLSConfig: tlsConf}
 	subSess, err := subDialer.Dial(ctx, subURL, subMux)
 	if err != nil {
-		log.Printf("subscribe: dial %s: %v", subURL, err)
+		log.Printf("subscribe: dial %s: %v", relayurl.Redact(subURL), relayurl.ScrubError(err, subURL))
 		return 1
 	}
 	defer subSess.CloseWithError(moqt.NoError, "done")
-	log.Printf("subscribe: connected to %s", subURL)
+	log.Printf("subscribe: connected to %s", relayurl.Redact(subURL))
 
 	tr, err := subSess.Subscribe(ctx,
 		moqt.BroadcastPath(broadcastPath),
@@ -185,7 +186,7 @@ func run(ctx context.Context, pubURL, subURL string, numGroups, numFrames, frame
 
 	fmt.Println("")
 	fmt.Printf("📡 PASS: %d groups × %d frames streamed end-to-end\n   %s → %s\n",
-		numGroups, numFrames, pubURL, subURL)
+		numGroups, numFrames, relayurl.Redact(pubURL), relayurl.Redact(subURL))
 	return 0
 }
 

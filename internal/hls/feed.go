@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net/url"
 	"time"
 
 	"github.com/qumo-dev/gomoqt/moqt"
@@ -17,6 +18,7 @@ import (
 	"github.com/okdaichi/qumo-ledger/ledger"
 
 	"github.com/qumo-dev/qumo/internal/cmaf"
+	"github.com/qumo-dev/qumo/internal/relayurl"
 	"github.com/qumo-dev/qumo/internal/tlsclient"
 )
 
@@ -33,6 +35,12 @@ type feedConfig struct {
 	// relay. It dominates caFile when both are set — matching crypto/tls, where
 	// InsecureSkipVerify short-circuits verification regardless of RootCAs.
 	insecure bool
+	// certFile and keyFile, when set, are the egress's client certificate
+	// and key (PEM), from the private CA the relay trusts as CA_FILE. The
+	// relay then serves the egress as a trusted peer, which needs no
+	// credential and has no grant to expire (ADR 0035, Decision 7). Only a
+	// native-QUIC (moqt://) relayURL presents it.
+	certFile, keyFile string
 
 	// liveTimeout is how long the feed waits for a group before deciding the
 	// publisher is gone. It is also how stale a manifest may be before the
@@ -85,6 +93,27 @@ func connectWithRetry(ctx context.Context, cfg feedConfig) (*moqt.Session, media
 	}
 }
 
+// validate checks the settings that would otherwise fail only at the first
+// dial, or silently: a client certificate the relay would never see.
+func (c feedConfig) validate() error {
+	if c.certFile == "" && c.keyFile == "" {
+		return nil
+	}
+	if c.certFile == "" || c.keyFile == "" {
+		return errors.New("RELAY_CERT_FILE and RELAY_KEY_FILE must be set together")
+	}
+	u, err := url.Parse(c.relayURL)
+	if err != nil {
+		return fmt.Errorf("RELAY_URL: %w", err)
+	}
+	if u.Scheme != "moqt" {
+		// A WebTransport session is never a trusted peer: the relay asks its
+		// auth server about every one.
+		return fmt.Errorf("RELAY_CERT_FILE needs a native-QUIC RELAY_URL (moqt://), got %q", u.Scheme)
+	}
+	return nil
+}
+
 // relayTLSConfig builds the client TLS config for dialing the relay. The egress
 // verifies the relay's certificate by default: against the system root store
 // when caFile is empty, or against a single relay cert when caFile names a PEM.
@@ -107,9 +136,14 @@ func connect(ctx context.Context, cfg feedConfig) (*moqt.Session, mediaInfo, err
 	if err != nil {
 		return nil, mediaInfo{}, fmt.Errorf("hls: relay TLS config: %w", err)
 	}
+	// Loaded on every connect, so a short-lived certificate renewed on disk
+	// is presented at the next reconnect.
+	if err := tlsclient.ApplyClientCert(tc, cfg.certFile, cfg.keyFile); err != nil {
+		return nil, mediaInfo{}, fmt.Errorf("hls: relay client certificate: %w", err)
+	}
 	session, err := (&moqt.Dialer{TLSConfig: tc}).Dial(ctx, cfg.relayURL, moqt.NewTrackMux(0))
 	if err != nil {
-		return nil, mediaInfo{}, fmt.Errorf("hls: dial relay: %w", err)
+		return nil, mediaInfo{}, fmt.Errorf("hls: dial relay %s: %w", relayurl.Redact(cfg.relayURL), relayurl.ScrubError(err, cfg.relayURL))
 	}
 
 	catalog, err := fetchCatalog(ctx, session, cfg.trackPath)

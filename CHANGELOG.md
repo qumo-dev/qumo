@@ -20,6 +20,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **When a checked session closes,** the relay sends `event: "end"` with the connect request's `id`, the final `bytes`, `duration` in whole seconds and a `reason`: `expired`, `refused`, `invalid`, `closed` or `dropped` (an idle timeout or stateless reset).
   - **The end report is best effort:** one attempt with a 2 s timeout, sent after the close, so a slow or failing auth server can't hold a session open. A lost one costs at most one revalidate interval of usage.
   - `qumo_relay_auth_requests_total{event="end"}` counts reports, with `result` `ok` or `error`.
+- **The HLS egress connects as a trusted peer (#432, ADR 0035 Decision 7).** It is an HLS origin, and viewers are authorized in front of it, so it holds no credential.
+  - `RELAY_CERT_FILE` and `RELAY_KEY_FILE` set its client certificate from the private CA the relay trusts as `CA_FILE`. The relay then never asks its auth server about it, and the session never expires.
+  - Both settings need a `moqt://` `RELAY_URL`, since only native-QUIC sessions can be trusted peers; the egress refuses to start otherwise.
+  - The certificate is read again on every reconnect, so a renewed one is picked up without a restart.
+- **`qumo loadgen --relay` takes a `moqt://` URL with a credential** (`moqt://host:port/path?jwt=…`) as well as `host:port`, to load a relay with an auth server. `smoketest`'s `-pub` and `-sub` URLs carry one the same way. Neither refreshes it: they run for less than a credential's lifetime.
+
+### Security
+
+- **A relay URL's credential is never logged (#432).** The HLS egress, `loadgen` and `smoketest` log a relay URL without its query, and remove it from dial errors that quote the URL.
 
 ### Changed (breaking)
 
