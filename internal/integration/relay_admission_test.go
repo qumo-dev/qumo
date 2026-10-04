@@ -28,10 +28,9 @@ import (
 // startAuthRelay stands up a real relay that admits client sessions through
 // auth, wired the way the relay command does (WebTransport through
 // HandleWebTransport). peerCA, when set, plays CA_FILE: a client certificate
-// it verifies makes the session a trusted peer. It returns the relay's
-// loopback address and the server.
-// startAuthRelay starts a relay that admits sessions through authorize. opts
-// adjust the Server before it starts, such as setting End.
+// it verifies makes the session a trusted peer. opts adjust the Server before
+// it starts, such as setting End. It returns the relay's loopback address and
+// the server.
 func startAuthRelay(t *testing.T, authorize func(context.Context, auth.Request) (*auth.Grant, error), peerCA *tls.Certificate, opts ...func(*relay.Server)) (string, *relay.Server) {
 	t.Helper()
 	cert := loadTempCert(t)
@@ -65,6 +64,9 @@ func startAuthRelay(t *testing.T, authorize func(context.Context, auth.Request) 
 		},
 		MOQDialer: &moqt.Dialer{TLSConfig: dialerTLS, QUICConfig: quicCfg},
 		Config:    &relay.Config{NodeID: "relay-auth-test", Role: "relay"},
+		// A per-relay hop id, as the relay command uses: with two relays
+		// peered, it stops an announcement looping between them.
+		TrackMux:  moqt.NewTrackMux(moqt.NewHopID()),
 		Authorize: authorize,
 	}
 	for _, opt := range opts {
@@ -167,7 +169,6 @@ func TestRelay_SessionAuth_WebTransport(t *testing.T) {
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
 			addr, srv := startAuthRelay(t, tt.server.authorize, nil)
-			probes := len(tt.server.received()) // startAuthRelay's readiness probes
 
 			err := announceOver(t, "https://"+addr+"/acme/app?jwt=header.payload.signature", nil, nil, path)
 
@@ -182,7 +183,15 @@ func TestRelay_SessionAuth_WebTransport(t *testing.T) {
 					assert.Never(t, routed(srv, path), 1500*time.Millisecond, 25*time.Millisecond)
 				}
 			}
-			reqs := tt.server.received()[probes:]
+			// startAuthRelay's readiness probes are native-QUIC sessions whose
+			// requests can land after it returns; this session is the only
+			// WebTransport one.
+			var reqs []auth.Request
+			for _, req := range tt.server.received() {
+				if req.Transport == auth.TransportWebTransport {
+					reqs = append(reqs, req)
+				}
+			}
 			require.Len(t, reqs, 1, "one connect request per session")
 			assert.Equal(t, auth.EventConnect, reqs[0].Event)
 			assert.Equal(t, auth.TransportWebTransport, reqs[0].Transport)
@@ -233,7 +242,6 @@ func TestRelay_SessionAuth_NativeQUIC(t *testing.T) {
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
 			addr, srv := startAuthRelay(t, tt.server.authorize, tt.peerCA)
-			probes := len(tt.server.received()) // startAuthRelay's readiness probes
 
 			// A refused native session still completes SETUP; the relay closes it
 			// right after, so the dial itself may succeed either way.
@@ -244,7 +252,14 @@ func TestRelay_SessionAuth_NativeQUIC(t *testing.T) {
 			} else {
 				assert.Never(t, routed(srv, path), 1500*time.Millisecond, 25*time.Millisecond)
 			}
-			reqs := tt.server.received()[probes:]
+			// startAuthRelay's readiness probes dial "/", and their requests can
+			// land after it returns; this session is the only one at /acme.
+			var reqs []auth.Request
+			for _, req := range tt.server.received() {
+				if req.Path == "/acme" {
+					reqs = append(reqs, req)
+				}
+			}
 			if !tt.wantRequests {
 				assert.Empty(t, reqs, "a trusted peer, or a failed handshake, is never asked")
 				return
