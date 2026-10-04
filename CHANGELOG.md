@@ -43,6 +43,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **Removed:** `PEER_CIDRS` (network-based trust), `MTLS_REQUIRED` (a client certificate is now always optional, verified when given), `UPSTREAM_ADDR` (use `PEERS`).
   - **Migration:** a relay that relied on `PEER_CIDRS` needs a private CA, with a client certificate for each relay, before upgrading. Native-QUIC tools (ingest, HLS egress) don't: they connect with `?jwt=` and are admitted by the auth server.
 
+### Changed
+
+- **Bumped `github.com/qumo-dev/gomoqt` to v0.22.0.** No code change was needed. It brings:
+  - **Tracks the relay forwards end promptly.** The relay forwards groups with `OpenGroupAt`, which made gomoqt's SUBSCRIBE_END name a group that was never sent. Every downstream subscriber then waited out a close grace period before `io.EOF`.
+  - **A native-QUIC client that fails SETUP is disconnected.** Before, the connection stayed open with no error code, and before any auth ran.
+  - **Control messages are capped at 64 KiB.** A peer could make the relay reserve up to 50 MiB per stream by declaring a long message and never sending it.
+  - **GOAWAY is a hint.** After a peer relay's GOAWAY, its session keeps serving subscriptions until it closes, which matches how `handlePeerGoaway` already treats it. Closing the session afterwards now really closes the connection.
+  - **Leak fixes:** a failed subscription no longer leaks its registration or queued group streams, and an announce stream the peer ends releases its reader and ends the broadcasts it announced.
+
 ## [v0.8.260929] - 2026-09-29
 
 ### Added
