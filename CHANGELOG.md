@@ -17,13 +17,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **Only an upgrade asks:** a request to the WebTransport endpoint that isn't an extended CONNECT goes straight to gomoqt's fallback (400), without asking the auth server.
   - **Local tools, compose and the Nomad demo** run with auth off; they no longer set `QUMO_AUTH_PUBLIC`.
   - **Fixed:** `qumo playground` had no auth setting, so its relay stopped at startup. Auth off now applies.
+  - **The auth-server client moves to its own package, `internal/auth`:** `LoadConfig`, the client, the grant (decoded through `json.Unmarshaler`) and its subtree patterns. `internal/relay/admit.go` keeps what is relay-specific: building the request from a WebTransport upgrade or a native-QUIC session, the session's admission, and the metrics.
 - **Subscriptions are checked against the session's grant (`internal/relay`, #418).** A SUBSCRIBE is served only if the grant's `subscribe` patterns cover its path; otherwise it's refused with `NotFound`, the same answer as a path that doesn't exist. The session stays up.
   - **Every session's context carries its admission:** decided at the upgrade for WebTransport, and pending from `ConnContext` until `relayPeer` decides it for native QUIC. A subscription that arrives before admission finishes waits for it. Announcements are checked against the same admission, so `serveSession` no longer takes a grant.
   - **Unchanged:** trusted peers and dialed peers are never checked. FETCH stays rejected: the relay registers no fetch handler.
   - **Still open on #418:** path names and metadata are still discoverable, never media. Announce interest lists every path under the requested prefix, and a TRACK request returns a track's publisher properties (TRACK_INFO) for any path. gomoqt answers both inside the shared `TrackMux`, and `TrackInfoProvider.TrackInfo` has no context to tell which session is asking.
   - **New metric:** `qumo_relay_subscribe_authorizations_total{result}` (`admitted`, `not_covered`).
 - **Relays ask an auth server when a session connects; introspection is removed (`internal/relay`).** First step of the relay side of qumo-deploy ADR 0035, as revised on 2026-10-02 (#417, epic #426).
-  - **One required setting:** `QUMO_AUTH_URL` (an auth server) or `QUMO_AUTH_PUBLIC` (static subtree patterns, `**` for development). Setting both, or neither, stops the relay at startup.
+  - **Setting:** `QUMO_AUTH_URL`, the auth server. (This change first also required one of `QUMO_AUTH_URL` or `QUMO_AUTH_PUBLIC`; auth has since become optional and `QUMO_AUTH_PUBLIC` was removed before release, see #441 above.)
   - **The contract** is a subset of `moq-auth`. The relay POSTs a `connect` request with the session's path and raw `query`, and enforces the grant's `publish` patterns on announcements. The relay never parses the credential, which clients put in the connect URL (`?jwt=`).
   - **Refusal:** a WebTransport client gets 401, 403 or 503 before the upgrade; a native-QUIC session is closed with `0x2`.
   - **Peers:** trusted peers are never asked. Peers this relay dials (`PEERS`) are now trusted too.
@@ -32,7 +33,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     - local verification against the control plane's JWKS (`internal/credential`);
     - `QUMO_CREDENTIAL_URL`, `QUMO_RELAY_TOKEN`, `QUMO_RELAY_AUDIENCE`, `QUMO_CREDENTIAL_ISSUER`;
     - usage reporting to `POST /v1/usage/events`. Session bytes return through the auth contract in #424.
-  - **Dev launchers** (`mage run`, the compose files, the demo Nomad job, `bench-multiproc`, `tools/capacity`) set `QUMO_AUTH_PUBLIC=**`.
   - **New metrics:** `qumo_relay_auth_requests_total{event,result}`, `qumo_relay_announcements_refused_total`.
   - **Requires** gomoqt v0.21.0: the WebTransport upgrade request's context reaches the session, and a native-QUIC client's `?jwt=` reaches the relay in the SETUP path (`Session.RequestURI`).
   - **Docs:** the remaining "credential auth" wording (README, the `qumo relay` CLI page) now says session auth, and an egress comment no longer mentions the removed metering.
@@ -64,10 +64,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the pacing window, record `ramp_per_sec` and `launched` in the JSONL row, and
   compute the verdict over launched sessions so a mid-ramp abort (Ctrl-C) stays
   well-defined.
-
-### Changed
-
-- **The auth-server client moves to its own package, `internal/auth`.** It holds `LoadConfig`, the client, the grant (decoded through `json.Unmarshaler`) and its subtree patterns. `internal/relay/admit.go` keeps what is relay-specific: the `admitter` interface that the client and the public grant (`QUMO_AUTH_PUBLIC`) both satisfy, building the request from a WebTransport upgrade or a native-QUIC session, and the metrics. No behavior change.
 
 ## [v0.8.260927] - 2026-09-27
 
