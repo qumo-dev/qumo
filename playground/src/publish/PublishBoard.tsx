@@ -12,6 +12,7 @@ import {
 import { getMediaStream, type MediaSourceType } from "./media.ts";
 import { background, type CancelFunc, type Context, withCancel } from "@okdaichi/golikejs/context";
 import { MediaFrame } from "./media_frame.ts";
+import type { Recorder } from "../devtools/recorder.ts";
 import { friendlyMessage } from "../errors.ts";
 import { createMediaLogger, MediaTags } from "@okdaichi/media-log";
 import { createStatsTicker } from "../stats.ts";
@@ -57,8 +58,14 @@ const SOURCES: { id: MediaSourceType; label: string; icon: Component<{ class?: s
 	{ id: "screen", label: "Screen", icon: Monitor },
 ];
 
+// The name a sent track is recorded under. Each subscriber gets its own
+// writer with its own groups, so the subscription is part of the name.
+function sentName(writer: TrackWriter): string {
+	return `${writer.trackName} sent #${writer.subscribeId}`;
+}
+
 export function PublishBoard(
-	props: { mux: TrackMux; path: Accessor<string> },
+	props: { mux: TrackMux; path: Accessor<string>; recorder?: Recorder },
 ) {
 	const mux = props.mux;
 
@@ -401,18 +408,32 @@ export function PublishBoard(
 					// subscriber must not stop the others.
 					const written = await Promise.allSettled(
 						[...writers].map(async (writer) => {
+							const name = sentName(writer);
 							let group = currentGroups.get(writer);
 							if (chunk.type === "key") {
-								if (group) void group.close();
+								if (group) {
+									void group.close();
+									props.recorder?.groupEnded(name, group.sequence, "complete");
+								}
 								const [opened, openErr] = await writer.openGroup();
 								if (openErr) throw openErr;
 								group = opened;
 								currentGroups.set(writer, opened);
+								props.recorder?.groupArrived(name, opened.sequence);
 							} else if (!group) {
 								return; // drop delta frames until first keyframe
 							}
 							const writeErr = await group.writeFrame(new MediaFrame(chunk));
-							if (writeErr) throw writeErr;
+							if (writeErr) {
+								props.recorder?.groupEnded(name, group.sequence, "aborted");
+								throw writeErr;
+							}
+							props.recorder?.frameArrived(
+								name,
+								group.sequence,
+								chunk.timestamp,
+								chunk.byteLength,
+							);
 						}),
 					);
 					for (const result of written) {
@@ -444,6 +465,7 @@ export function PublishBoard(
 		await broadcast.registerTrack(initialTrack, {
 			async serveTrack(trackWriter) {
 				writers.add(trackWriter);
+				props.recorder?.markSent(sentName(trackWriter));
 				log.info("publish: subscriber attached", {
 					track: trackWriter.trackName,
 					subscribers: writers.size,
@@ -452,6 +474,10 @@ export function PublishBoard(
 					await publishCtx!.done();
 				} finally {
 					writers.delete(trackWriter);
+					const open = currentGroups.get(trackWriter);
+					if (open) {
+						props.recorder?.groupEnded(sentName(trackWriter), open.sequence, "stopped");
+					}
 					currentGroups.delete(trackWriter);
 				}
 			},
@@ -462,15 +488,28 @@ export function PublishBoard(
 			const capturedAudioEncodeNode = audioEncodeNode;
 			await broadcast.registerTrack(audioTrackDef, {
 				async serveTrack(trackWriter) {
+					const name = sentName(trackWriter);
+					props.recorder?.markSent(name);
 					const { done } = capturedAudioEncodeNode.encodeTo({
 						// Each Opus frame is independently decodable — one group per frame
 						// lets subscribers join at any point without waiting for a keyframe.
 						async output(chunk: EncodedAudioChunk, _?: AudioDecoderConfig) {
 							const [group, err] = await trackWriter.openGroup();
 							if (err) return err;
+							props.recorder?.groupArrived(name, group.sequence);
 							const writeErr = await group.writeFrame(new MediaFrame(chunk));
 							void group.close();
-							if (writeErr) throw writeErr;
+							if (writeErr) {
+								props.recorder?.groupEnded(name, group.sequence, "aborted");
+								throw writeErr;
+							}
+							props.recorder?.frameArrived(
+								name,
+								group.sequence,
+								chunk.timestamp,
+								chunk.byteLength,
+							);
+							props.recorder?.groupEnded(name, group.sequence, "complete");
 						},
 					});
 					await done;

@@ -40,6 +40,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Both settings need a `moqt://` `RELAY_URL`, since only native-QUIC sessions can be trusted peers; the egress refuses to start otherwise.
   - The certificate is read again on every reconnect, so a renewed one is picked up without a restart.
 - **`qumo loadgen --relay` takes a `moqt://` URL with a credential** (`moqt://host:port/path?jwt=…`) as well as `host:port`, to load a relay with an auth server. `smoketest`'s `-pub` and `-sub` URLs carry one the same way. Neither refreshes it: they run for less than a credential's lifetime.
+- **The playground has a DevTools panel for the subscribed tracks (`playground/src/devtools`).** It sits under the boards, closed until opened, and remembers that choice.
+  - **Session:** the media bitrate being received, plus the connection's round-trip time, byte counts and estimated send rate where the browser reports them.
+  - **Tracks:** per track, the received bitrate and frame rate, the latest group, and how many groups ended complete, skipped, aborted or late.
+  - **Timeline:** the last minute of each track. Groups are drawn as they arrived, one lane unless they overlap, marked by how they ended (complete, skipped, aborted, late, or still open when playback was stopped); below them, one lane shows what was rendered. A track with too many groups to draw singly (audio) is drawn as one column per second.
+  - **Reading it:** the time shown can be 60, 10 or 2 seconds (at 2 seconds each audio group is its own mark), the display can be paused, and pointing at a group picks out both its received bar and its rendered span.
+  - **How it is fed:** the viewer reports group and frame events to an observer it is given, and the publish board records the groups it sends through the same recorder; nothing is measured inside `@qumo/moq`.
 
 ### Changed
 
@@ -58,6 +64,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed (breaking)
 
 - **`qumo_relay_sessions_expired_total` is replaced by `qumo_relay_sessions_ended_total{reason}`,** with `reason` `expired`, `refused` or `invalid`. The old metric shipped only in v0.9.261004; use `reason="expired"` for the same count. `qumo_relay_auth_requests_total{event}` now also counts `revalidate`.
+
+### Changed
+
+- **The playground's viewer is a UI-free module, and it no longer waits on a stalled group (`playground/src/player`).**
+  - **Structure:** playback moved out of `SubscribeBoard` into a `Viewer` that knows nothing about SolidJS. It reads from a small Track / Group / Frame interface it defines itself; `@qumo/moq` is adapted to that interface in one file.
+  - **Groups are read as they arrive,** instead of one at a time. Frames are still delivered in group order, but a missing or stalled group is waited for only so long: once a later group has had a frame ready for the playback delay (100 ms at least) and its media is further ahead than that, the awaited group is cancelled (`ExpiredGroup`) and playback moves on. A group that arrives after playback has passed it is cancelled at once. The scheme follows the moq-dev reference player, with the wait also measured on the clock, so groups that merely arrive together are not mistaken for late ones. Two further rules keep playback at the live edge: a group whose frames are all played and which the next group continues without a gap is finished without waiting for its stream to end, and a group that is already too late when its turn comes is skipped whole if a newer one is ready (so a stall is not followed by its backlog).
+  - **A group aborted part-way no longer ends the track:** its frames so far are played and the next group follows.
+  - **Audio and video are played on a clock.** Both trail the live edge by the same delay: room for one retransmit (1.25 × the connection's round-trip time), and never less than 100 ms. Video frames are held until they are due instead of being drawn as soon as they decode, so video no longer runs ahead of audio. The delay is also how long a group is waited for. It is sized once per Start, and the audio output is opened per Start to match. Each track keeps its own clock, since their timestamps need not start from the same origin.
+  - **Fixed:** a failed start left the other tracks' read loops running, so pressing Start again could feed the decoder twice; the catalog subscription was never closed; stopping before the first catalog arrived left the video and audio subscriptions open.
+  - **Tests:** the group reader, the playback clock and the frame pacer have unit tests (`deno task test`), which `deno task build` now runs first.
 
 ## [v0.9.261004] - 2026-10-04
 
