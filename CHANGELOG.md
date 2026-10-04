@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [v0.9.261004] - 2026-10-04
+
+> **Breaking for operators.** Session auth now goes through an external auth server (`QUMO_AUTH_URL`; unset means auth off, with a warning), and introspection is removed. Relay peers are identified by a client certificate verified against `CA_FILE`; `PEER_CIDRS`, `MTLS_REQUIRED` and `UPSTREAM_ADDR` are removed (use `PEERS`). Sessions end at their grant's `expires`. **Not yet enforced:** revalidation (#419), and which paths a session can discover through announce interest and TRACK_INFO (#418).
+
 ### Changed (breaking)
 
 - **`relay.Server.Authorize` is exported (`internal/relay`, #444),** so code elsewhere in this module that builds a relay, such as the black-box tests, can supply its admission. A nil grant with a nil error admits unchecked, an `auth.RefusedError` refuses with its status, and any other error refuses as unavailable. A nil `Authorize` still refuses every client session. The package stays `internal/`, so code outside qumo can't import it yet. The admission tests moved to `internal/integration` and test the relay through this exported API; CONTRIBUTING.md now says where integration tests go.
