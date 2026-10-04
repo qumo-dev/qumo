@@ -25,9 +25,11 @@ type admission struct {
 	decided chan struct{}
 	// grant is set before decided closes. nil is unchecked: a trusted peer.
 	grant *auth.Grant
-	// deadline is when the session must end, set with grant: the grant's
-	// expires, taken on the monotonic clock when the grant is accepted so
-	// that a wall-clock jump doesn't move it. Zero means never.
+	// req is the connect request that admitted the session, set with
+	// grant. A revalidate re-sends it, with the same id.
+	req auth.Request
+	// deadline is when the session must end, set with grant: its expires,
+	// on the monotonic clock (see deadlineOf). Zero means never.
 	deadline time.Time
 }
 
@@ -40,20 +42,29 @@ func pendingAdmission() *admission {
 	return &admission{decided: make(chan struct{})}
 }
 
-func decidedAdmission(g *auth.Grant) *admission {
+func decidedAdmission(g *auth.Grant, req auth.Request) *admission {
 	a := pendingAdmission()
-	a.decide(g)
+	a.decide(g, req)
 	return a
 }
 
-func (a *admission) decide(g *auth.Grant) {
+// decide records the outcome of the connect request req: g, nil for an
+// unchecked session or refusedGrant for a refused one.
+func (a *admission) decide(g *auth.Grant, req auth.Request) {
 	a.grant = g
-	if g != nil && !g.Expires().IsZero() {
-		// time.Now carries a monotonic reading and Add keeps it, so the
-		// deadline is measured from now on the monotonic clock.
-		a.deadline = time.Now().Add(time.Until(g.Expires()))
-	}
+	a.req = req
+	a.deadline = deadlineOf(g)
 	close(a.decided)
+}
+
+// deadlineOf returns when a session holding g must end: its expires, taken
+// now on the monotonic clock so that a wall-clock jump doesn't move it.
+// time.Now carries a monotonic reading and Add keeps it. Zero means never.
+func deadlineOf(g *auth.Grant) time.Time {
+	if g == nil || g.Expires().IsZero() {
+		return time.Time{}
+	}
+	return time.Now().Add(time.Until(g.Expires()))
 }
 
 func withAdmission(ctx context.Context, a *admission) context.Context {
@@ -103,25 +114,6 @@ func authorizeSubscribe(tw *moqt.TrackWriter) bool {
 		"broadcast_path", tw.BroadcastPath, "track_name", tw.TrackName)
 	tw.CloseWithError(moqt.SubscribeErrorCodeNotFound)
 	return false
-}
-
-// sessionCloser is the part of a session endAtDeadline closes.
-type sessionCloser interface {
-	CloseWithError(code moqt.SessionErrorCode, msg string) error
-}
-
-// endAtDeadline closes sess with Unauthorized and reason "expired" at
-// deadline, the end of its grant; the client reconnects with a fresh
-// credential. It returns nil for a zero deadline, which never expires;
-// otherwise the caller stops the timer when the session ends first.
-func endAtDeadline(sess sessionCloser, deadline time.Time) *time.Timer {
-	if deadline.IsZero() {
-		return nil
-	}
-	return time.AfterFunc(time.Until(deadline), func() {
-		metricSessionsExpired.Inc()
-		_ = sess.CloseWithError(moqt.UnauthorizedSessionErrorCode, "expired") // not actionable: the session is ending either way
-	})
 }
 
 // newSessionID returns a random 128-bit hex id, unique per session.
@@ -195,31 +187,50 @@ func admitUnchecked(context.Context, auth.Request) (*auth.Grant, error) {
 // unset, rather than running it open.
 var errNoAuthorize = errors.New("relay: no auth server configured")
 
+// Outcomes of an auth request, the result label of metricAuthRequests.
+const (
+	authUnchecked = "unchecked"
+	authAdmitted  = "admitted"
+	authRefused   = "refused"
+	authInvalid   = "invalid"
+	authError     = "error"
+)
+
+// authOutcome classifies an Authorize reply.
+func authOutcome(g *auth.Grant, err error) string {
+	_, refused := errors.AsType[auth.RefusedError](err)
+	switch {
+	case err == nil && g == nil:
+		return authUnchecked
+	case err == nil:
+		return authAdmitted
+	case refused:
+		return authRefused
+	case errors.Is(err, auth.ErrInvalidGrant):
+		return authInvalid
+	}
+	return authError
+}
+
 // admit runs the connect check and records its outcome.
 func (s *Server) admit(ctx context.Context, req auth.Request) (*auth.Grant, error) {
 	if s.Authorize == nil {
-		metricAuthRequests.WithLabelValues(auth.EventConnect, "error").Inc()
+		metricAuthRequests.WithLabelValues(auth.EventConnect, authError).Inc()
 		slog.Error("relay: session refused: no auth server configured (Server.Authorize is nil)",
 			"transport", req.Transport, "remote", req.Remote, "path", req.Path)
 		return nil, errNoAuthorize
 	}
 	g, err := s.Authorize(ctx, req)
-	_, refused := errors.AsType[auth.RefusedError](err)
-	switch {
-	case err == nil && g == nil:
-		metricAuthRequests.WithLabelValues(auth.EventConnect, "unchecked").Inc()
-	case err == nil:
-		metricAuthRequests.WithLabelValues(auth.EventConnect, "admitted").Inc()
-	case refused:
-		metricAuthRequests.WithLabelValues(auth.EventConnect, "refused").Inc()
+	outcome := authOutcome(g, err)
+	metricAuthRequests.WithLabelValues(auth.EventConnect, outcome).Inc()
+	switch outcome {
+	case authRefused:
 		slog.Info("relay: session refused", "transport", req.Transport, "remote", req.Remote,
 			"path", req.Path, "reason", err)
-	case errors.Is(err, auth.ErrInvalidGrant):
-		metricAuthRequests.WithLabelValues(auth.EventConnect, "invalid").Inc()
+	case authInvalid:
 		slog.Error("relay: session refused: the auth server's grant can't be enforced", "transport", req.Transport,
 			"remote", req.Remote, "path", req.Path, "error", err)
-	default:
-		metricAuthRequests.WithLabelValues(auth.EventConnect, "error").Inc()
+	case authError:
 		slog.Error("relay: session refused: auth server unavailable", "transport", req.Transport,
 			"remote", req.Remote, "path", req.Path, "error", err)
 	}

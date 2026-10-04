@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Sessions are revalidated with the auth server (#419).** At the grant's `revalidate` cadence, the relay sends the session's connect request again as `event: "revalidate"`, with the same `id`. This is how key revocation, project suspension and spend limits reach live sessions; the auth server decides, and the relay doesn't know which it was.
+  - **A 401 or 403** ends the session with `0x2` (Unauthorized) and reason `refused`.
+  - **A grant that can't be enforced** ends it with reason `invalid`.
+  - **An admitted grant** keeps the session and moves its `expires` and cadence. Its patterns aren't compared, since they were fixed at connect.
+  - **No answer** (a timeout or a 5xx) is retried with jittered exponential backoff, from about 1 s up to 30 s. The session lives until its current `expires`, and a stalled request is cut off at that deadline.
+  - **One timer per session** drives both expiry (#423) and revalidation, and is stopped when the session ends first.
+
+### Changed (breaking)
+
+- **`qumo_relay_sessions_expired_total` is replaced by `qumo_relay_sessions_ended_total{reason}`,** with `reason` `expired`, `refused` or `invalid`. The old metric shipped only in v0.9.261004; use `reason="expired"` for the same count. `qumo_relay_auth_requests_total{event}` now also counts `revalidate`.
+
 ## [v0.9.261004] - 2026-10-04
 
 > **Breaking for operators.** Session auth now goes through an external auth server (`QUMO_AUTH_URL`; unset means auth off, with a warning), and introspection is removed. Relay peers are identified by a client certificate verified against `CA_FILE`; `PEER_CIDRS`, `MTLS_REQUIRED` and `UPSTREAM_ADDR` are removed (use `PEERS`). Sessions end at their grant's `expires`. **Not yet enforced:** revalidation (#419), and which paths a session can discover through announce interest and TRACK_INFO (#418).

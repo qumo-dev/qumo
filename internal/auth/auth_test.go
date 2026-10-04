@@ -13,7 +13,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestClient_Connect(t *testing.T) {
+func TestClient_Authorize(t *testing.T) {
 	tests := map[string]struct {
 		server      *fakeAuthServer
 		wantStatus  int // the HTTP status a WebTransport client would get; 0 means admitted
@@ -36,7 +36,7 @@ func TestClient_Connect(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			auth := tt.server.start(t)
 
-			g, err := auth.Connect(context.Background(), Request{ID: "00ff", Event: EventConnect, Path: "/acme"})
+			g, err := auth.Authorize(context.Background(), Request{ID: "00ff", Event: EventConnect, Path: "/acme"})
 
 			if tt.wantStatus != 0 {
 				require.Error(t, err)
@@ -49,7 +49,7 @@ func TestClient_Connect(t *testing.T) {
 	}
 }
 
-func TestClient_Connect_SendsTheRequest(t *testing.T) {
+func TestClient_Authorize_SendsTheRequest(t *testing.T) {
 	server := fakeAuthServer{body: `{"publish":["**"]}`}
 	auth := server.start(t)
 	req := Request{
@@ -64,13 +64,13 @@ func TestClient_Connect_SendsTheRequest(t *testing.T) {
 		Query:      "jwt=a.b.c",
 	}
 
-	_, err := auth.Connect(context.Background(), req)
+	_, err := auth.Authorize(context.Background(), req)
 
 	require.NoError(t, err)
 	assert.Equal(t, []Request{req}, server.received())
 }
 
-func TestClient_Connect_DoesNotFollowRedirects(t *testing.T) {
+func TestClient_Authorize_DoesNotFollowRedirects(t *testing.T) {
 	elsewhere := &fakeAuthServer{body: `{"publish":["**"]}`}
 	elsewhereURL := elsewhere.start(t).endpoint.String()
 	for _, status := range []int{http.StatusTemporaryRedirect, http.StatusPermanentRedirect, http.StatusFound} {
@@ -82,7 +82,7 @@ func TestClient_Connect_DoesNotFollowRedirects(t *testing.T) {
 			c, err := NewClient(redirect.URL)
 			require.NoError(t, err)
 
-			_, err = c.Connect(context.Background(), Request{ID: "00ff", Event: EventConnect, Query: "jwt=a.b.c"})
+			_, err = c.Authorize(context.Background(), Request{ID: "00ff", Event: EventConnect, Query: "jwt=a.b.c"})
 
 			require.Error(t, err)
 			assert.Equal(t, http.StatusServiceUnavailable, RefusalStatus(err))
@@ -91,11 +91,11 @@ func TestClient_Connect_DoesNotFollowRedirects(t *testing.T) {
 	}
 }
 
-func TestClient_Connect_ServerDown(t *testing.T) {
+func TestClient_Authorize_ServerDown(t *testing.T) {
 	auth := (&fakeAuthServer{}).start(t)
 	auth.endpoint = &url.URL{Scheme: "http", Host: "127.0.0.1:1"} // nothing listens on port 1
 
-	_, err := auth.Connect(context.Background(), Request{ID: "00ff", Event: EventConnect})
+	_, err := auth.Authorize(context.Background(), Request{ID: "00ff", Event: EventConnect})
 
 	require.Error(t, err)
 	assert.Equal(t, http.StatusServiceUnavailable, RefusalStatus(err))

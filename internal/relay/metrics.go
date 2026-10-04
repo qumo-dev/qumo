@@ -29,13 +29,16 @@ var (
 		[]string{"event", "result"},
 	)
 
-	// metricSessionsExpired counts sessions closed at their grant's expires.
-	metricSessionsExpired = promauto.NewCounter(prometheus.CounterOpts{
+	// metricSessionsEnded counts checked sessions the relay ended because of
+	// their grant, by reason: expired (the grant's expires passed), refused
+	// (a revalidate was refused) or invalid (a revalidate's grant can't be
+	// enforced).
+	metricSessionsEnded = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "qumo",
 		Subsystem: "relay",
-		Name:      "sessions_expired_total",
-		Help:      "Sessions closed at their grant's expires.",
-	})
+		Name:      "sessions_ended_total",
+		Help:      "Checked sessions the relay ended because of their grant, by reason.",
+	}, []string{"reason"})
 
 	// metricAnnouncementsRefused counts announcements not routed because the
 	// session's grant doesn't cover their path.

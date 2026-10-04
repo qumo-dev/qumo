@@ -112,12 +112,13 @@ func (s *Server) HandleWebTransport(w http.ResponseWriter, r *http.Request) {
 		s.webtransportHandler.ServeHTTP(w, r)
 		return
 	}
-	g, err := s.admit(r.Context(), s.webTransportRequest(r))
+	req := s.webTransportRequest(r)
+	g, err := s.admit(r.Context(), req)
 	if err != nil {
 		w.WriteHeader(auth.RefusalStatus(err))
 		return
 	}
-	r = r.WithContext(withAdmission(r.Context(), decidedAdmission(g)))
+	r = r.WithContext(withAdmission(r.Context(), decidedAdmission(g, req)))
 	s.webtransportHandler.ServeHTTP(w, r)
 }
 
@@ -476,17 +477,18 @@ func (s *Server) relayPeer(sess *moqt.Session) {
 		return
 	}
 	if s.trustedPeer(sess) {
-		a.decide(nil)
+		a.decide(nil, auth.Request{})
 		s.serveSession(sess)
 		return
 	}
-	g, err := s.admit(sess.Context(), s.nativeRequest(sess))
+	req := s.nativeRequest(sess)
+	g, err := s.admit(sess.Context(), req)
 	if err != nil {
-		a.decide(refusedGrant)
+		a.decide(refusedGrant, req)
 		_ = sess.CloseWithError(moqt.UnauthorizedSessionErrorCode, "refused")
 		return
 	}
-	a.decide(g)
+	a.decide(g, req)
 	s.serveSession(sess)
 }
 
@@ -510,9 +512,9 @@ func (s *Server) serveSession(sess *moqt.Session) {
 		return
 	}
 	defer sess.CloseWithError(moqt.NoError, moqt.NoError.String())
-	if a := admissionFrom(sess.Context()); a != nil {
-		if t := endAtDeadline(sess, a.deadline); t != nil {
-			defer t.Stop()
+	if a := admissionFrom(sess.Context()); a != nil && a.grant != nil {
+		if l := startLease(sess.Context(), sess, s.Authorize, a.req, a.deadline, a.grant.Revalidate()); l != nil {
+			defer l.stop()
 		}
 	}
 

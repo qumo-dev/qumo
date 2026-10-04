@@ -134,9 +134,12 @@ The server answers with a grant:
 - **Announcements** are routed only if the grant's `publish` patterns cover their path.
 - **Subscriptions** are served only if the grant's `subscribe` patterns cover their path. A refused subscription gets the same answer as a path that doesn't exist (`NotFound`).
 - **Expiry:** a session ends at its grant's `expires` (Unix seconds), closed with `0x2` (Unauthorized) and reason `expired`. This covers publishers and subscribers. The client reconnects with a fresh credential, ideally shortly before the credential's `exp`. A grant without `expires` never expires. The deadline is taken on the relay's monotonic clock when the grant is accepted, so a wall-clock jump doesn't move it; any leeway is the auth server's to add.
+- **Revalidation:** every `revalidate` seconds, the relay sends the session's connect request again, with the same `id` and `event: "revalidate"`. This is how key revocation, project suspension or a spend limit reaches a live session.
+  - **A 401 or 403** ends the session with `0x2` (Unauthorized) and reason `refused`.
+  - **A grant that can't be enforced** ends it with reason `invalid`.
+  - **An admitted grant** keeps the session and takes the new `expires` and `revalidate`. Its patterns are not compared: they were fixed at connect, and the credential is the same.
+  - **Anything else** (a timeout, a 5xx) is retried with jittered exponential backoff, from about 1 s up to 30 s. The session lives until its current `expires`, so an outage is bounded by what the server last granted.
 - **Trusted peers**, and peers this relay dials, are never checked.
-- **Not yet enforced:**
-  - which paths a session can discover (qumo-dev/qumo#418): announce interest lists every path under the requested prefix, and a TRACK request returns a track's publisher properties (TRACK_INFO) for any path. Both reveal path names and metadata, never media;
-  - `revalidate` (#419).
+- **Not yet enforced:** which paths a session can discover (qumo-dev/qumo#450). Announce interest lists every path under the requested prefix, and a TRACK request returns a track's publisher properties (TRACK_INFO) for any path. Both reveal path names and metadata, never media.
 
-Metrics: `qumo_relay_auth_requests_total{event,result}` (`admitted`, `refused`, `invalid`, `error`, and `unchecked` with auth off), `qumo_relay_announcements_refused_total`, `qumo_relay_subscribe_authorizations_total{result}` (`admitted`, `not_covered`) and `qumo_relay_sessions_expired_total`.
+Metrics: `qumo_relay_auth_requests_total{event,result}` (`admitted`, `refused`, `invalid`, `error`, and `unchecked` with auth off), `qumo_relay_announcements_refused_total`, `qumo_relay_subscribe_authorizations_total{result}` (`admitted`, `not_covered`) and `qumo_relay_sessions_ended_total{reason}` (`expired`, `refused`, `invalid`). `auth_requests_total`'s `event` is `connect` or `revalidate`.

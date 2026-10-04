@@ -11,7 +11,6 @@ import (
 	"testing/synctest"
 	"time"
 
-	"github.com/qumo-dev/gomoqt/moqt"
 	"github.com/qumo-dev/qumo/internal/auth"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -24,8 +23,8 @@ func TestSessionGrant(t *testing.T) {
 		want *auth.Grant
 	}{
 		"no admission is unchecked": {ctx: context.Background(), want: nil},
-		"decided with a grant":      {ctx: withAdmission(context.Background(), decidedAdmission(g)), want: g},
-		"decided unchecked":         {ctx: withAdmission(context.Background(), decidedAdmission(nil)), want: nil},
+		"decided with a grant":      {ctx: withAdmission(context.Background(), decidedAdmission(g, auth.Request{})), want: g},
+		"decided unchecked":         {ctx: withAdmission(context.Background(), decidedAdmission(nil, auth.Request{})), want: nil},
 	}
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
@@ -56,7 +55,7 @@ func TestSessionGrant_WaitsForPendingAdmission(t *testing.T) {
 			t.Fatal("sessionGrant returned before the admission was decided")
 		default:
 		}
-		a.decide(g)
+		a.decide(g, auth.Request{})
 		<-done
 
 		require.NoError(t, err)
@@ -189,7 +188,7 @@ func TestAdmission_Decide_Deadline(t *testing.T) {
 		}
 		// t.Run is unsupported inside a synctest bubble.
 		for _, tc := range cases {
-			a := decidedAdmission(tc.grant)
+			a := decidedAdmission(tc.grant, auth.Request{})
 
 			if tc.want == 0 {
 				assert.True(t, a.deadline.IsZero(), tc.name)
@@ -197,42 +196,6 @@ func TestAdmission_Decide_Deadline(t *testing.T) {
 			}
 			assert.Equal(t, tc.want, time.Until(a.deadline), tc.name)
 		}
-	})
-}
-
-// TestEndAtDeadline verifies a session is closed with Unauthorized "expired"
-// at its deadline and not before, that a stopped timer never closes it, and
-// that a zero deadline arms nothing.
-func TestEndAtDeadline(t *testing.T) {
-	expired := []sessionClose{{code: moqt.UnauthorizedSessionErrorCode, msg: "expired"}}
-
-	t.Run("closes at the deadline, not before", func(t *testing.T) {
-		synctest.Test(t, func(t *testing.T) {
-			sess := &fakeSessionCloser{}
-			endAtDeadline(sess, time.Now().Add(time.Minute))
-
-			time.Sleep(time.Minute - time.Nanosecond)
-			synctest.Wait()
-			assert.Empty(t, sess.closed(), "closed before the deadline")
-
-			time.Sleep(time.Nanosecond)
-			synctest.Wait()
-			assert.Equal(t, expired, sess.closed())
-		})
-	})
-	t.Run("a session that ends first stops the timer", func(t *testing.T) {
-		synctest.Test(t, func(t *testing.T) {
-			sess := &fakeSessionCloser{}
-			timer := endAtDeadline(sess, time.Now().Add(time.Minute))
-
-			require.True(t, timer.Stop())
-			time.Sleep(2 * time.Minute)
-			synctest.Wait()
-			assert.Empty(t, sess.closed())
-		})
-	})
-	t.Run("no deadline arms nothing", func(t *testing.T) {
-		assert.Nil(t, endAtDeadline(&fakeSessionCloser{}, time.Time{}))
 	})
 }
 
