@@ -96,14 +96,15 @@ relay's HTTP port.
 |---|---|---|
 | `CORS_ALLOWED_ORIGINS` | (unset) | Origins permitted to open WebTransport sessions to `qumo relay`, `qumo rtmp`, and `qumo rtsp`/`rtsp-push`. Comma-separated. `*` allows any origin; `same-host` allows any port on the request's own host. If unset, only same-origin and headerless (non-browser) clients are accepted. |
 
-## Session auth (required)
+## Session auth (optional)
 
-A relay admits each client session in exactly one of two ways. Setting both, or neither, stops the relay at startup.
+Auth is off unless `QUMO_AUTH_URL` is set. Off, the relay admits every session unchecked and logs a warning at startup: the right setting for local development and for a relay that is open on purpose. On, the relay asks its auth server about every client session.
 
 | Variable | Default | Description |
 |---|---|---|
-| `QUMO_AUTH_URL` | (unset) | An auth server the relay asks when each client session connects. `https://`, or `http://` on a loopback host only. |
-| `QUMO_AUTH_PUBLIC` | (unset) | Comma-separated subtree patterns (`anon/**`, `demo/**`) that any session may publish and subscribe to, with no server. `**` opens everything; use it for development only. |
+| `QUMO_AUTH_URL` | (unset: auth off) | The auth server the relay asks when each client session connects. `https://`, or `http://` on a loopback host only. |
+
+The auth server holds the policy: which credentials it accepts, and what a session that presents none may do. qumo doesn't ship one, because that policy differs by app.
 
 **Trusted peers are never asked:** sessions with a client certificate verified against `CA_FILE`, and peers this relay dials (`PEERS`).
 
@@ -131,8 +132,10 @@ The server answers with a grant:
   - A 401 or 403 refuses it. A WebTransport client gets that status before the upgrade; a native-QUIC session is closed with `0x2` (Unauthorized).
   - Anything else refuses too: a timeout, a 5xx, an invalid grant, or a grant that names nothing. Nothing is admitted while the auth server is down; a WebTransport client gets 503.
 - **Announcements** are routed only if the grant's `publish` patterns cover their path.
-- **Not yet enforced:** `subscribe` patterns (qumo-dev/qumo#418), `revalidate` (#419) and `expires` (#423).
+- **Subscriptions** are served only if the grant's `subscribe` patterns cover their path. A refused subscription gets the same answer as a path that doesn't exist (`NotFound`).
+- **Trusted peers**, and peers this relay dials, are never checked.
+- **Not yet enforced:**
+  - which paths a session can discover (qumo-dev/qumo#418): announce interest lists every path under the requested prefix, and a TRACK request returns a track's publisher properties (TRACK_INFO) for any path. Both reveal path names and metadata, never media;
+  - `revalidate` (#419) and `expires` (#423).
 
-With `QUMO_AUTH_PUBLIC`, a session that presents a credential (`?jwt=`) is refused rather than admitted on the public grant.
-
-Metrics: `qumo_relay_auth_requests_total{event,result}` (`admitted`, `refused`, `invalid`, `error`) and `qumo_relay_announcements_refused_total`.
+Metrics: `qumo_relay_auth_requests_total{event,result}` (`admitted`, `refused`, `invalid`, `error`, and `unchecked` with auth off), `qumo_relay_announcements_refused_total` and `qumo_relay_subscribe_authorizations_total{result}` (`admitted`, `not_covered`).

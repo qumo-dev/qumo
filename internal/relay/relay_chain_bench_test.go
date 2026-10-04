@@ -142,7 +142,8 @@ func spinRelay(tb testing.TB, nodeID, addr string, cert tls.Certificate, pool *x
 		// A real (non-zero) per-relay HopID is REQUIRED for announce-loop
 		// prevention (excludeHop==0 disables it): without it a ≥3-hop chain
 		// re-floods the announcement and hits "duplicated broadcast path".
-		TrackMux: moqt.NewTrackMux(moqt.NewHopID()),
+		TrackMux:  moqt.NewTrackMux(moqt.NewHopID()),
+		Authorize: admitUnchecked,
 	}
 	go func() { _ = s.ListenAndServe() }()
 	tb.Cleanup(func() {
