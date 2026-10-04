@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"time"
 
 	"github.com/qumo-dev/gomoqt/moqt"
 	"github.com/qumo-dev/qumo/internal/auth"
@@ -24,6 +25,10 @@ type admission struct {
 	decided chan struct{}
 	// grant is set before decided closes. nil is unchecked: a trusted peer.
 	grant *auth.Grant
+	// deadline is when the session must end, set with grant: the grant's
+	// expires, taken on the monotonic clock when the grant is accepted so
+	// that a wall-clock jump doesn't move it. Zero means never.
+	deadline time.Time
 }
 
 type admissionKey struct{}
@@ -43,6 +48,11 @@ func decidedAdmission(g *auth.Grant) *admission {
 
 func (a *admission) decide(g *auth.Grant) {
 	a.grant = g
+	if g != nil && !g.Expires().IsZero() {
+		// time.Now carries a monotonic reading and Add keeps it, so the
+		// deadline is measured from now on the monotonic clock.
+		a.deadline = time.Now().Add(time.Until(g.Expires()))
+	}
 	close(a.decided)
 }
 
@@ -93,6 +103,25 @@ func authorizeSubscribe(tw *moqt.TrackWriter) bool {
 		"broadcast_path", tw.BroadcastPath, "track_name", tw.TrackName)
 	tw.CloseWithError(moqt.SubscribeErrorCodeNotFound)
 	return false
+}
+
+// sessionCloser is the part of a session endAtDeadline closes.
+type sessionCloser interface {
+	CloseWithError(code moqt.SessionErrorCode, msg string) error
+}
+
+// endAtDeadline closes sess with Unauthorized and reason "expired" at
+// deadline, the end of its grant; the client reconnects with a fresh
+// credential. It returns nil for a zero deadline, which never expires;
+// otherwise the caller stops the timer when the session ends first.
+func endAtDeadline(sess sessionCloser, deadline time.Time) *time.Timer {
+	if deadline.IsZero() {
+		return nil
+	}
+	return time.AfterFunc(time.Until(deadline), func() {
+		metricSessionsExpired.Inc()
+		_ = sess.CloseWithError(moqt.UnauthorizedSessionErrorCode, "expired") // not actionable: the session is ending either way
+	})
 }
 
 // newSessionID returns a random 128-bit hex id, unique per session.

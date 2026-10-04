@@ -2,13 +2,16 @@ package relay
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 	"testing/synctest"
+	"time"
 
+	"github.com/qumo-dev/gomoqt/moqt"
 	"github.com/qumo-dev/qumo/internal/auth"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -167,4 +170,76 @@ func TestServer_Admit_Metrics(t *testing.T) {
 			assert.ErrorIs(t, err, tt.err)
 		})
 	}
+}
+
+// TestAdmission_Decide_Deadline verifies a decided admission carries its
+// grant's expires as the session deadline, measured from when the grant is
+// accepted, and no deadline for a grant without expires or no grant.
+func TestAdmission_Decide_Deadline(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		expiring := grantFrom(t, fmt.Sprintf(`{"subscribe":["**"],"expires":%d}`, time.Now().Add(90*time.Second).Unix()))
+		cases := []struct {
+			name  string
+			grant *auth.Grant
+			want  time.Duration // from now; 0 means no deadline
+		}{
+			{name: "grant with expires", grant: expiring, want: 90 * time.Second},
+			{name: "grant without expires", grant: grantFrom(t, `{"subscribe":["**"]}`)},
+			{name: "unchecked", grant: nil},
+		}
+		// t.Run is unsupported inside a synctest bubble.
+		for _, tc := range cases {
+			a := decidedAdmission(tc.grant)
+
+			if tc.want == 0 {
+				assert.True(t, a.deadline.IsZero(), tc.name)
+				continue
+			}
+			assert.Equal(t, tc.want, time.Until(a.deadline), tc.name)
+		}
+	})
+}
+
+// TestEndAtDeadline verifies a session is closed with Unauthorized "expired"
+// at its deadline and not before, that a stopped timer never closes it, and
+// that a zero deadline arms nothing.
+func TestEndAtDeadline(t *testing.T) {
+	expired := []sessionClose{{code: moqt.UnauthorizedSessionErrorCode, msg: "expired"}}
+
+	t.Run("closes at the deadline, not before", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			sess := &fakeSessionCloser{}
+			endAtDeadline(sess, time.Now().Add(time.Minute))
+
+			time.Sleep(time.Minute - time.Nanosecond)
+			synctest.Wait()
+			assert.Empty(t, sess.closed(), "closed before the deadline")
+
+			time.Sleep(time.Nanosecond)
+			synctest.Wait()
+			assert.Equal(t, expired, sess.closed())
+		})
+	})
+	t.Run("a session that ends first stops the timer", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			sess := &fakeSessionCloser{}
+			timer := endAtDeadline(sess, time.Now().Add(time.Minute))
+
+			require.True(t, timer.Stop())
+			time.Sleep(2 * time.Minute)
+			synctest.Wait()
+			assert.Empty(t, sess.closed())
+		})
+	})
+	t.Run("no deadline arms nothing", func(t *testing.T) {
+		assert.Nil(t, endAtDeadline(&fakeSessionCloser{}, time.Time{}))
+	})
+}
+
+// grantFrom decodes a grant as the auth server sends it.
+func grantFrom(tb testing.TB, body string) *auth.Grant {
+	tb.Helper()
+	var g auth.Grant
+	require.NoError(tb, json.Unmarshal([]byte(body), &g))
+	return &g
 }
