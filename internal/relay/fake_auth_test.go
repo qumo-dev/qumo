@@ -9,7 +9,7 @@ import (
 )
 
 // fakeAuth answers every session through its authorize method, which is what
-// Server.authorize takes: err when set, otherwise the grant in body (JSON, as
+// Server.Authorize takes: err when set, otherwise the grant in body (JSON, as
 // the auth server sends it). The zero value admits every session with a grant
 // that covers nothing. It records every request.
 type fakeAuth struct {
