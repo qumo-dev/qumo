@@ -2,9 +2,11 @@ package relayurl
 
 import (
 	"errors"
+	"net/url"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestRedact(t *testing.T) {
@@ -47,5 +49,17 @@ func TestScrubError(t *testing.T) {
 	}
 	t.Run("nil", func(t *testing.T) {
 		assert.NoError(t, ScrubError(nil, raw))
+	})
+	t.Run("a URL that doesn't parse", func(t *testing.T) {
+		// The error url.Parse returns for it, which quotes its whole input,
+		// credential included.
+		const malformed = "moqt://[bad/acme?jwt=h.p.s"
+		parseErr := &url.Error{Op: "parse", URL: malformed, Err: errors.New("missing ']' in host")}
+		require.Contains(t, parseErr.Error(), "jwt=h.p.s")
+
+		got := ScrubError(parseErr, malformed)
+
+		assert.NotContains(t, got.Error(), "jwt=h.p.s")
+		assert.ErrorIs(t, got, parseErr)
 	})
 }

@@ -104,7 +104,7 @@ func (c feedConfig) validate() error {
 	}
 	u, err := url.Parse(c.relayURL)
 	if err != nil {
-		return fmt.Errorf("RELAY_URL: %w", err)
+		return fmt.Errorf("RELAY_URL: %w", relayurl.ScrubError(err, c.relayURL))
 	}
 	if u.Scheme != "moqt" {
 		// A WebTransport session is never a trusted peer: the relay asks its

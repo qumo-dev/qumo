@@ -45,3 +45,12 @@ func TestNewTarget_Relay(t *testing.T) {
 		})
 	}
 }
+
+// TestNewTarget_MalformedRelayHidesCredential verifies a --relay URL that
+// doesn't parse is reported without its query.
+func TestNewTarget_MalformedRelayHidesCredential(t *testing.T) {
+	_, err := newTarget("moqt://[bad/acme?jwt=h.p.s", "", "/bench", "data", "", true, time.Second, time.Second)
+
+	require.Error(t, err)
+	assert.NotContains(t, err.Error(), "jwt=h.p.s")
+}

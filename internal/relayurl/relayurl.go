@@ -23,18 +23,25 @@ func Redact(raw string) string {
 }
 
 // ScrubError returns err with raw's query removed from its message, for an
-// error from dialing raw that may quote it. The original error stays in the
-// chain, so errors.Is and errors.As still see it. A nil err, or a raw with no
-// query, is returned as is.
+// error from dialing or parsing raw that may quote it. A raw that doesn't
+// parse, which url.Parse's own error quotes whole, loses everything after its
+// first "?". The original error stays in the chain, so errors.Is and
+// errors.As still see it. A nil err, or a raw with no query, is returned as
+// is.
 func ScrubError(err error, raw string) error {
 	if err == nil {
 		return nil
 	}
-	u, perr := url.Parse(raw)
-	if perr != nil || u.RawQuery == "" {
+	query := ""
+	if u, perr := url.Parse(raw); perr == nil {
+		query = u.RawQuery
+	} else {
+		_, query, _ = strings.Cut(raw, "?")
+	}
+	if query == "" {
 		return err
 	}
-	return &scrubbedError{err: err, query: "?" + u.RawQuery}
+	return &scrubbedError{err: err, query: "?" + query}
 }
 
 // scrubbedError is an error whose message leaves out a URL query.

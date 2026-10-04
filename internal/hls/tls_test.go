@@ -124,3 +124,15 @@ func TestFeedConfig_Validate(t *testing.T) {
 		})
 	}
 }
+
+// TestFeedConfig_Validate_MalformedURLHidesCredential verifies a RELAY_URL
+// that doesn't parse is reported without its query: url.Parse's error quotes
+// its whole input, credential included.
+func TestFeedConfig_Validate_MalformedURLHidesCredential(t *testing.T) {
+	cfg := feedConfig{relayURL: "moqt://[bad/live?jwt=h.p.s", certFile: "c.pem", keyFile: "k.pem"}
+
+	err := cfg.validate()
+
+	require.Error(t, err)
+	assert.NotContains(t, err.Error(), "jwt=h.p.s")
+}
