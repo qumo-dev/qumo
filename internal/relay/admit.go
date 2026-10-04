@@ -162,7 +162,7 @@ func admitUnchecked(context.Context, auth.Request) (*auth.Grant, error) {
 	return nil, nil
 }
 
-// errNoAuthorize refuses every client session of a Server whose authorize is
+// errNoAuthorize refuses every client session of a Server whose Authorize is
 // unset, rather than running it open.
 var errNoAuthorize = errors.New("relay: no auth server configured")
 
