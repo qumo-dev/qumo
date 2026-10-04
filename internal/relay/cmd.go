@@ -212,7 +212,7 @@ func Run(args []string) error {
 		Config:         &relayCfg,
 		TrackMux:       trackMux,
 		AllowedOrigins: cors.LoadAllowed(),
-		authorize:      authorize,
+		Authorize:      authorize,
 	}
 
 	httpMux.HandleFunc("/", relayServer.HandleWebTransport)

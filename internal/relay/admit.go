@@ -162,19 +162,19 @@ func admitUnchecked(context.Context, auth.Request) (*auth.Grant, error) {
 	return nil, nil
 }
 
-// errNoAuthorize refuses every client session of a Server whose authorize is
+// errNoAuthorize refuses every client session of a Server whose Authorize is
 // unset, rather than running it open.
 var errNoAuthorize = errors.New("relay: no auth server configured")
 
 // admit runs the connect check and records its outcome.
 func (s *Server) admit(ctx context.Context, req auth.Request) (*auth.Grant, error) {
-	if s.authorize == nil {
+	if s.Authorize == nil {
 		metricAuthRequests.WithLabelValues(auth.EventConnect, "error").Inc()
-		slog.Error("relay: session refused: no auth server configured (Server.authorize is nil)",
+		slog.Error("relay: session refused: no auth server configured (Server.Authorize is nil)",
 			"transport", req.Transport, "remote", req.Remote, "path", req.Path)
 		return nil, errNoAuthorize
 	}
-	g, err := s.authorize(ctx, req)
+	g, err := s.Authorize(ctx, req)
 	_, refused := errors.AsType[auth.RefusedError](err)
 	switch {
 	case err == nil && g == nil:

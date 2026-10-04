@@ -1,10 +1,11 @@
 //go:build integration
 
-// Integration tests for session admission (admit.go, internal/auth) on a real QUIC/MOQT relay:
-// the auth server is asked at connect, a refused WebTransport client never gets
-// a session, and an admitted one may announce only what its grant covers. Run
-// with `go test -tags=integration ./internal/relay/...`.
-package relay
+// Black-box tests of the relay's session admission, through its public API
+// (relay.Server with an Authorize function) on a real QUIC/MOQT relay: the
+// auth server is asked at connect, a refused WebTransport client never gets a
+// session, and an admitted one may announce only what its grant covers. Run
+// with `go test -tags=integration ./internal/integration/...`.
+package integration
 
 import (
 	"context"
@@ -19,6 +20,7 @@ import (
 	"github.com/quic-go/quic-go"
 	"github.com/qumo-dev/gomoqt/moqt"
 	"github.com/qumo-dev/qumo/internal/auth"
+	"github.com/qumo-dev/qumo/internal/relay"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -28,7 +30,7 @@ import (
 // HandleWebTransport). peerCA, when set, plays CA_FILE: a client certificate
 // it verifies makes the session a trusted peer. It returns the relay's
 // loopback address and the server.
-func startAuthRelay(t *testing.T, authorize func(context.Context, auth.Request) (*auth.Grant, error), peerCA *tls.Certificate) (string, *Server) {
+func startAuthRelay(t *testing.T, authorize func(context.Context, auth.Request) (*auth.Grant, error), peerCA *tls.Certificate) (string, *relay.Server) {
 	t.Helper()
 	cert := loadTempCert(t)
 
@@ -52,7 +54,7 @@ func startAuthRelay(t *testing.T, authorize func(context.Context, auth.Request) 
 
 	addr := fmt.Sprintf("127.0.0.1:%d", freeUDPPort(t))
 	httpMux := http.NewServeMux()
-	srv := &Server{
+	srv := &relay.Server{
 		MOQServer: &moqt.Server{
 			Addr:               addr,
 			TLSConfig:          serverTLS,
@@ -60,8 +62,8 @@ func startAuthRelay(t *testing.T, authorize func(context.Context, auth.Request) 
 			WebTransportServer: moqt.NewWebTransportServer(httpMux),
 		},
 		MOQDialer: &moqt.Dialer{TLSConfig: dialerTLS, QUICConfig: quicCfg},
-		Config:    &Config{NodeID: "relay-auth-test", Role: "relay"},
-		authorize: authorize,
+		Config:    &relay.Config{NodeID: "relay-auth-test", Role: "relay"},
+		Authorize: authorize,
 	}
 	httpMux.HandleFunc("/", srv.HandleWebTransport)
 	go func() { _ = srv.ListenAndServe() }()
@@ -77,7 +79,7 @@ func startAuthRelay(t *testing.T, authorize func(context.Context, auth.Request) 
 	require.Eventually(t, func() bool {
 		ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 		defer cancel()
-		sess, err := (&moqt.Dialer{TLSConfig: dialerTLS, QUICConfig: quicCfg}).Dial(ctx, peerURL(addr), moqt.NewTrackMux(0))
+		sess, err := (&moqt.Dialer{TLSConfig: dialerTLS, QUICConfig: quicCfg}).Dial(ctx, nativeURL(addr), moqt.NewTrackMux(0))
 		if err != nil {
 			return false
 		}
@@ -130,14 +132,14 @@ func announceOver(t *testing.T, url string, nextProtos []string, clientCert *tls
 }
 
 // routed reports whether the relay installed a route for path.
-func routed(srv *Server, path moqt.BroadcastPath) func() bool {
+func routed(srv *relay.Server, path moqt.BroadcastPath) func() bool {
 	return func() bool {
 		ann, _ := srv.TrackMux.TrackHandler(path)
 		return ann != nil
 	}
 }
 
-func TestServer_SessionAuth_WebTransport(t *testing.T) {
+func TestRelay_SessionAuth_WebTransport(t *testing.T) {
 	const path = moqt.BroadcastPath("/acme/app/live")
 	tests := map[string]struct {
 		server    *fakeAuth
@@ -186,7 +188,7 @@ func TestServer_SessionAuth_WebTransport(t *testing.T) {
 	}
 }
 
-func TestServer_SessionAuth_NativeQUIC(t *testing.T) {
+func TestRelay_SessionAuth_NativeQUIC(t *testing.T) {
 	const path = moqt.BroadcastPath("/acme/app/live")
 	peerCert := loadTempCert(t)
 	otherCert := loadTempCert(t)
@@ -230,7 +232,7 @@ func TestServer_SessionAuth_NativeQUIC(t *testing.T) {
 
 			// A refused native session still completes SETUP; the relay closes it
 			// right after, so the dial itself may succeed either way.
-			_ = announceOver(t, peerURL(addr)+"/acme?jwt=header.payload.signature", []string{moqt.NextProtoMOQ}, tt.clientCert, path)
+			_ = announceOver(t, nativeURL(addr)+"/acme?jwt=header.payload.signature", []string{moqt.NextProtoMOQ}, tt.clientCert, path)
 
 			if tt.wantRoute {
 				require.Eventually(t, routed(srv, path), 3*time.Second, 25*time.Millisecond)
