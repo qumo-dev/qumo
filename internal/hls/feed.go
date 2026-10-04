@@ -10,7 +10,6 @@ import (
 	"io"
 	"log/slog"
 	"net/url"
-	"strings"
 	"time"
 
 	"github.com/qumo-dev/gomoqt/moqt"
@@ -96,22 +95,20 @@ func connectWithRetry(ctx context.Context, cfg feedConfig) (*moqt.Session, media
 // validate checks the settings that would otherwise fail only at the first
 // dial, or silently: a client certificate the relay would never see.
 func (c feedConfig) validate() error {
-	// The egress never holds a credential (ADR 0035, Decision 7), so a query
-	// in RELAY_URL can only be one put there by mistake. Refusing it keeps
-	// RELAY_URL safe to log. It is checked before parsing, whose error quotes
-	// the URL.
-	if strings.Contains(c.relayURL, "?") {
-		return errors.New("RELAY_URL must not have a query: the egress connects without a credential, as a trusted peer with RELAY_CERT_FILE")
+	u, err := url.Parse(c.relayURL)
+	if err != nil {
+		// url.Parse's *url.Error quotes the whole URL, and its query may
+		// carry a credential; report only the reason it wraps.
+		if ue, ok := errors.AsType[*url.Error](err); ok {
+			err = ue.Err
+		}
+		return fmt.Errorf("RELAY_URL: invalid URL: %w", err)
 	}
 	if c.certFile == "" && c.keyFile == "" {
 		return nil
 	}
 	if c.certFile == "" || c.keyFile == "" {
 		return errors.New("RELAY_CERT_FILE and RELAY_KEY_FILE must be set together")
-	}
-	u, err := url.Parse(c.relayURL)
-	if err != nil {
-		return fmt.Errorf("RELAY_URL: %w", err)
 	}
 	if u.Scheme != "moqt" {
 		// A WebTransport session is never a trusted peer: the relay asks its
@@ -150,7 +147,7 @@ func connect(ctx context.Context, cfg feedConfig) (*moqt.Session, mediaInfo, err
 	}
 	session, err := (&moqt.Dialer{TLSConfig: tc}).Dial(ctx, cfg.relayURL, moqt.NewTrackMux(0))
 	if err != nil {
-		return nil, mediaInfo{}, fmt.Errorf("hls: dial relay %s: %w", cfg.relayURL, err)
+		return nil, mediaInfo{}, fmt.Errorf("hls: dial relay: %w", err)
 	}
 
 	catalog, err := fetchCatalog(ctx, session, cfg.trackPath)

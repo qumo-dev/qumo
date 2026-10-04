@@ -33,8 +33,7 @@ import (
 //	LEDGER_ROOT        - qumo-ledger filesystem store directory (default "./ledger")
 //	LEDGER_TRACK       - ledger track path (default "live/cam1/video")
 //	RELAY_URL          - MoQ relay URL, e.g. "https://host:4433" (default "https://localhost:4433").
-//	                     Use "moqt://host:4433" with RELAY_CERT_FILE. It must
-//	                     not have a query: the egress holds no credential.
+//	                     Use "moqt://host:4433" with RELAY_CERT_FILE.
 //	RELAY_TRACK_PATH   - MoQ broadcast path whose catalog to read (default "/hls/live",
 //	                     the playground's HLS scenario)
 //	RELAY_TRACK_NAME   - media track name in the catalog to relay (default "video")

@@ -92,7 +92,7 @@ All configuration is via environment variables:
 | Variable | Default | Description |
 |---|---|---|
 | `HLS_ADDR` | `:8080` | HTTP listen address. |
-| `RELAY_URL` | `https://localhost:4433` | MoQ relay URL to subscribe to. Use `moqt://…` with `RELAY_CERT_FILE`. It must not have a query: the egress holds no credential. |
+| `RELAY_URL` | `https://localhost:4433` | MoQ relay URL to subscribe to. Use `moqt://…` with `RELAY_CERT_FILE`. |
 | `RELAY_TRACK_PATH` | `/hls/live` | MoQ broadcast path whose catalog to read. |
 | `RELAY_TRACK_NAME` | `video` | Media track name in the catalog to relay. |
 | `LEDGER_ROOT` | `./ledger` | qumo-ledger filesystem store directory. |

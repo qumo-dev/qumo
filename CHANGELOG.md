@@ -29,7 +29,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
-- **A relay URL's credential is never logged (#432).** `loadgen` logs only the relay's `host:port`, and `smoketest` a URL without its query. A URL that doesn't parse is reported without quoting it. The HLS egress holds no credential, so its `RELAY_URL` refuses a query, also without quoting it.
+- **A relay URL's credential is never logged (#432).** `loadgen` logs only the relay's `host:port`, `smoketest` a URL without its query, and the HLS egress doesn't log `RELAY_URL`. A URL that doesn't parse is reported without quoting it.
 
 ### Changed (breaking)
 
