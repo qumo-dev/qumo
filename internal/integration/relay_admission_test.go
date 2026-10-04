@@ -28,10 +28,9 @@ import (
 // startAuthRelay stands up a real relay that admits client sessions through
 // auth, wired the way the relay command does (WebTransport through
 // HandleWebTransport). peerCA, when set, plays CA_FILE: a client certificate
-// it verifies makes the session a trusted peer. It returns the relay's
-// loopback address and the server.
-// startAuthRelay starts a relay that admits sessions through authorize. opts
-// adjust the Server before it starts, such as setting End.
+// it verifies makes the session a trusted peer. opts adjust the Server before
+// it starts, such as setting End. It returns the relay's loopback address and
+// the server.
 func startAuthRelay(t *testing.T, authorize func(context.Context, auth.Request) (*auth.Grant, error), peerCA *tls.Certificate, opts ...func(*relay.Server)) (string, *relay.Server) {
 	t.Helper()
 	cert := loadTempCert(t)

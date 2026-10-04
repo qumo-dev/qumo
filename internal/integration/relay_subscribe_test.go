@@ -145,17 +145,17 @@ func TestRelay_SubscribeAuth_TrustedPeerUnchecked(t *testing.T) {
 func TestRelay_SubscribeAuth_DialedPeerUnchecked(t *testing.T) {
 	const path = moqt.BroadcastPath("/acme/apple/live")
 	peerCert := loadTempCert(t)
-	// a's sessions may subscribe only under acme/app, which the path is not.
-	aAuth := &fakeAuth{body: `{"publish":["acme/**"],"subscribe":["acme/app/**"]}`}
-	aAddr, a := startAuthRelay(t, aAuth.authorize, nil)
 	bAuth := &fakeAuth{body: `{"publish":["acme/**"],"subscribe":["acme/**"]}`}
 	bAddr, b := startAuthRelay(t, bAuth.authorize, &peerCert)
-	// a presents peerCert, which b verifies: a is b's trusted peer.
-	a.MOQDialer.TLSConfig.Certificates = []tls.Certificate{peerCert}
-	a.Config.Peers = []relay.Peer{{Address: bAddr}}
-	ctx, cancel := context.WithCancel(context.Background())
-	t.Cleanup(cancel)
-	go a.ConnectPeers(ctx)
+	// a's sessions may subscribe only under acme/app, which the path is not.
+	aAuth := &fakeAuth{body: `{"publish":["acme/**"],"subscribe":["acme/app/**"]}`}
+	aAddr, a := startAuthRelay(t, aAuth.authorize, nil, func(s *relay.Server) {
+		// a dials b presenting peerCert, which b verifies: a is b's
+		// trusted peer.
+		s.MOQDialer.TLSConfig.Certificates = []tls.Certificate{peerCert}
+		s.Config.Peers = []relay.Peer{{Address: bAddr}}
+	})
+	go a.ConnectPeers(t.Context())
 	publishOver(t, a, "https://"+aAddr+"/?jwt=a.b.c", path)
 	require.Eventually(t, routed(b, path), 5*time.Second, 25*time.Millisecond,
 		"a's broadcast should reach b over the peer link")
