@@ -122,13 +122,14 @@ func Run(args []string) error {
 	// with no QUMO_AUTH_URL, auth off.
 	authCfg := auth.LoadConfig()
 	authorize := admitUnchecked
-	authMode := "off (QUMO_AUTH_URL unset): every session is admitted unchecked"
+	var reportEnd func(context.Context, auth.Request) error // nil: auth off reports nothing
 	if authCfg.URL != "" {
 		authClient, err := auth.NewClient(authCfg.URL)
 		if err != nil {
 			return fmt.Errorf("QUMO_AUTH_URL: %w", err)
 		}
-		authorize, authMode = authClient.Authorize, authCfg.URL
+		authorize = authClient.Authorize
+		reportEnd = authClient.End
 	} else {
 		slog.Warn("relay: auth is off: QUMO_AUTH_URL is not set, so every session is admitted unchecked")
 	}
@@ -213,6 +214,7 @@ func Run(args []string) error {
 		TrackMux:       trackMux,
 		AllowedOrigins: cors.LoadAllowed(),
 		Authorize:      authorize,
+		End:            reportEnd,
 	}
 
 	httpMux.HandleFunc("/", relayServer.HandleWebTransport)
@@ -256,7 +258,11 @@ func Run(args []string) error {
 	for _, p := range relayCfg.Peers {
 		log.Printf("\t%-8s: %s\n", "Peer", sanitizeLog(p.Address))
 	}
-	log.Printf("\t%-8s: %s\n", "Auth", sanitizeLog(authMode))
+	if authCfg.URL != "" {
+		log.Printf("\t%-8s: %s\n", "Auth", sanitizeLog(authCfg.URL))
+	} else {
+		log.Printf("\t%-8s: off (QUMO_AUTH_URL unset): every session is admitted unchecked\n", "Auth")
+	}
 
 	// Start peer connections in background
 	go relayServer.ConnectPeers(ctx)

@@ -22,6 +22,22 @@ type fakeAuth struct {
 
 	mu       sync.Mutex
 	requests []auth.Request
+	ends     []auth.Request
+}
+
+// end records an end report, which is what relay.Server.End takes.
+func (f *fakeAuth) end(_ context.Context, req auth.Request) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.ends = append(f.ends, req)
+	return nil
+}
+
+// ended returns a copy of the end reports seen so far.
+func (f *fakeAuth) ended() []auth.Request {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]auth.Request(nil), f.ends...)
 }
 
 func (f *fakeAuth) authorize(_ context.Context, req auth.Request) (*auth.Grant, error) {

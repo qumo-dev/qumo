@@ -15,6 +15,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **An admitted grant** keeps the session and moves its `expires` and cadence. Its patterns aren't compared, since they were fixed at connect. A grant without `expires` keeps the deadline the session has: a revalidate never lifts it.
   - **No answer** (a timeout or a 5xx) is retried with jittered exponential backoff, from about 1 s up to 30 s. The session lives until its current `expires`, and a stalled request is cut off at that deadline.
   - **One timer per session** drives both expiry (#423) and revalidation, and is stopped when the session ends first.
+- **Session bytes and end reports (#424).** The auth server now sees each checked session's usage, so it can attribute it for billing and count live sessions.
+  - **Every revalidate** carries the session's cumulative `bytes` (`sent` and `received`, from the relay's side), left out while both are zero. Sending them on revalidate as well as end is qumo's one extension of moq-auth, so billing sees a long session before it ends.
+  - **When a checked session closes,** the relay sends `event: "end"` with the connect request's `id`, the final `bytes`, `duration` in whole seconds and a `reason`: `expired`, `refused`, `invalid`, `closed`, `dropped` (an idle timeout or stateless reset) or `upgrade_failed`.
+  - **Every `connect` gets an `end`,** so the auth server's live-session count can't be inflated. A WebTransport session admitted at connect whose upgrade then fails reports `end` with reason `upgrade_failed` and no `bytes`. A request from an `Origin` the relay refuses is no longer sent to the auth server at all.
+  - **The end report is best effort:** one attempt with a 2 s timeout, sent after the close, so a slow or failing auth server can't hold a session open. A lost one costs at most one revalidate interval of usage.
+  - `qumo_relay_auth_requests_total{event="end"}` counts reports, with `result` `ok` or `error`.
+- **The HLS egress connects as a trusted peer (#432, ADR 0035 Decision 7).** It is an HLS origin, and viewers are authorized in front of it, so it holds no credential.
+  - `RELAY_CERT_FILE` and `RELAY_KEY_FILE` set its client certificate from the private CA the relay trusts as `CA_FILE`. The relay then never asks its auth server about it, and the session never expires.
+  - Both settings need a `moqt://` `RELAY_URL`, since only native-QUIC sessions can be trusted peers; the egress refuses to start otherwise.
+  - The certificate is read again on every reconnect, so a renewed one is picked up without a restart.
+- **`qumo loadgen --relay` takes a `moqt://` URL with a credential** (`moqt://host:port/path?jwt=…`) as well as `host:port`, to load a relay with an auth server. `smoketest`'s `-pub` and `-sub` URLs carry one the same way. Neither refreshes it: they run for less than a credential's lifetime.
+
+### Security
+
+- **A relay URL's credential is never logged (#432).** `loadgen` logs only the relay's `host:port`, `smoketest` a URL without its query, and the HLS egress doesn't log `RELAY_URL`. A URL that doesn't parse is reported without quoting it.
 
 ### Changed (breaking)
 

@@ -22,8 +22,12 @@ type fakeAuth struct {
 	replies []fakeReply
 	block   bool
 
+	// endErr is what end answers.
+	endErr error
+
 	mu       sync.Mutex
 	requests []auth.Request
+	ends     []auth.Request
 }
 
 // fakeReply is one answer from fakeAuth: err when set, otherwise the grant in
@@ -56,6 +60,22 @@ func (f *fakeAuth) authorize(ctx context.Context, req auth.Request) (*auth.Grant
 		return nil, err
 	}
 	return &g, nil
+}
+
+// end records an end report, which is what Server.End takes. It answers
+// endErr.
+func (f *fakeAuth) end(_ context.Context, req auth.Request) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.ends = append(f.ends, req)
+	return f.endErr
+}
+
+// ended returns a copy of the end reports seen so far.
+func (f *fakeAuth) ended() []auth.Request {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]auth.Request(nil), f.ends...)
 }
 
 // received returns a copy of the requests seen so far.

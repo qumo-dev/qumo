@@ -31,6 +31,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -89,7 +90,8 @@ Run "qumo loadgen <subcommand> -h" for that subcommand's flags.
 
 // dialTarget holds the connection parameters shared by both subcommands.
 type dialTarget struct {
-	relay   string // moqt dial target, host:port
+	relay   string // the relay's host:port, safe to log
+	url     string // moqt:// URL dialed; may carry a credential, so never logged
 	metrics string // relay /metrics URL (subscribe only)
 	path    string
 	track   string
@@ -103,10 +105,18 @@ type dialTarget struct {
 // http://<relay>/metrics. The trust decision is shared across qumo's clients
 // via [tlsclient.Apply]; only the load generator's base config (MoQ ALPN, TLS
 // 1.3 floor) and the QUIC tuning are owned here.
+//
+// relay is the relay's host:port, or a moqt:// URL whose query may carry a
+// credential (?jwt=…) for a relay with an auth server. Only the host:port is
+// logged.
 func newTarget(relay, metrics, path, track, caFile string, insecure bool, idle, keepalive time.Duration) (dialTarget, error) {
+	u, err := parseRelay(relay)
+	if err != nil {
+		return dialTarget{}, fmt.Errorf("--relay: %w", err)
+	}
 	m := metrics
 	if m == "" {
-		m = "http://" + relay + "/metrics"
+		m = "http://" + u.Host + "/metrics"
 	}
 	tc := &tls.Config{
 		NextProtos: []string{moqt.NextProtoMOQ},
@@ -116,7 +126,8 @@ func newTarget(relay, metrics, path, track, caFile string, insecure bool, idle, 
 		return dialTarget{}, err
 	}
 	return dialTarget{
-		relay:   relay,
+		relay:   u.Host,
+		url:     u.String(),
 		metrics: m,
 		path:    path,
 		track:   track,
@@ -129,10 +140,31 @@ func newTarget(relay, metrics, path, track, caFile string, insecure bool, idle, 
 	}, nil
 }
 
+// parseRelay parses --relay: a host:port, or a moqt:// URL whose query may
+// carry a credential.
+func parseRelay(relay string) (*url.URL, error) {
+	if !strings.Contains(relay, "://") {
+		relay = "moqt://" + relay
+	}
+	u, err := url.Parse(relay)
+	if err != nil {
+		// url.Parse's *url.Error quotes the whole URL, credential and all;
+		// report only the reason it wraps.
+		if ue, ok := errors.AsType[*url.Error](err); ok {
+			err = ue.Err
+		}
+		return nil, fmt.Errorf("invalid URL: %w", err)
+	}
+	if u.Scheme != "moqt" {
+		return nil, fmt.Errorf("want host:port or a moqt:// URL, got scheme %q", u.Scheme)
+	}
+	return u, nil
+}
+
 // bindCommon registers the flags common to publish/subscribe on fs and returns a
 // finalizer that validates them and builds the TLS/QUIC config after Parse.
 func bindCommon(fs *flag.FlagSet) func() (dialTarget, error) {
-	relay := fs.String("relay", "127.0.0.1:4433", "relay moqt address (host:port)")
+	relay := fs.String("relay", "127.0.0.1:4433", "relay moqt address (host:port), or a moqt:// URL carrying a credential (moqt://host:port/path?jwt=…)")
 	metrics := fs.String("metrics", "", "relay /metrics URL (default http://<relay>/metrics)")
 	caFile := fs.String("ca", "", "PEM file of the relay's TLS cert/CA to trust (required unless --insecure)")
 	path := fs.String("path", "/bench/carry", "broadcast path")
@@ -202,7 +234,7 @@ func publishTrickle(ctx context.Context, target dialTarget, gps float64, size in
 			}
 		}
 	})
-	sess, err := dialer(target).Dial(ctx, "moqt://"+target.relay, mux)
+	sess, err := dialer(target).Dial(ctx, target.url, mux)
 	if err != nil {
 		return fmt.Errorf("dial relay %s: %w", target.relay, err)
 	}
@@ -462,7 +494,7 @@ func dialWithRetry(ctx context.Context, target dialTarget) (*moqt.Session, error
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
 		}
-		sess, err := dialer(target).Dial(ctx, "moqt://"+target.relay, moqt.NewTrackMux(0))
+		sess, err := dialer(target).Dial(ctx, target.url, moqt.NewTrackMux(0))
 		if err == nil {
 			return sess, nil
 		}
