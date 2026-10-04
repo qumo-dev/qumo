@@ -222,6 +222,7 @@ func TestEndReason(t *testing.T) {
 		})
 	}
 }
+
 // TestLease_RevalidateWithoutExpiresKeepsDeadline verifies an admitted
 // revalidate whose grant has no expires keeps the session's deadline rather
 // than lifting it.

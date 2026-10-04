@@ -247,3 +247,51 @@ func TestServer_ReportEnd_Off(t *testing.T) {
 
 	assert.Zero(t, delta)
 }
+
+// TestServer_HandleWebTransport_DisallowedOriginNotAsked verifies a request
+// from an Origin the upgrade refuses never reaches the auth server, which
+// would otherwise count a session that never starts.
+func TestServer_HandleWebTransport_DisallowedOriginNotAsked(t *testing.T) {
+	fake := &fakeAuth{body: `{"subscribe":["**"]}`}
+	srv := newTestServer("127.0.0.1:0")
+	srv.Authorize = fake.authorize
+	srv.End = fake.end
+	srv.AllowedOrigins = []string{"https://good.example"}
+	t.Cleanup(func() { _ = srv.Close() })
+	req := httptest.NewRequest(http.MethodGet, "https://relay.example/acme?jwt=a.b.c", nil)
+	req.Method = http.MethodConnect
+	req.Header.Set("Origin", "https://evil.example")
+	rec := httptest.NewRecorder()
+
+	srv.HandleWebTransport(rec, req)
+
+	assert.Empty(t, fake.received(), "a refused Origin never reaches the auth server")
+	assert.Empty(t, fake.ended())
+	assert.Equal(t, http.StatusBadRequest, rec.Code, "gomoqt refuses the upgrade as before")
+}
+
+// TestServer_HandleWebTransport_FailedUpgradeReportsEnd verifies an admitted
+// upgrade that fails anyway reports an end, so the auth server can close the
+// session it counted at connect.
+func TestServer_HandleWebTransport_FailedUpgradeReportsEnd(t *testing.T) {
+	fake := &fakeAuth{body: `{"subscribe":["**"]}`}
+	srv := newTestServer("127.0.0.1:0")
+	srv.Authorize = fake.authorize
+	srv.End = fake.end
+	t.Cleanup(func() { _ = srv.Close() })
+	// An extended CONNECT without the WebTransport headers: admitted, then
+	// refused by the upgrade.
+	req := httptest.NewRequest(http.MethodGet, "https://relay.example/acme?jwt=a.b.c", nil)
+	req.Method = http.MethodConnect
+	rec := httptest.NewRecorder()
+
+	srv.HandleWebTransport(rec, req)
+
+	require.Len(t, fake.received(), 1)
+	connect := fake.received()[0]
+	want := connect
+	want.Event = auth.EventEnd
+	want.Bytes = &auth.Bytes{}
+	want.Reason = endUpgradeFailed
+	assert.Equal(t, []auth.Request{want}, fake.ended())
+}
