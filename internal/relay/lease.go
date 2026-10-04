@@ -2,12 +2,14 @@ package relay
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"math/rand/v2"
 	"sync"
 	"time"
 
 	"github.com/qumo-dev/gomoqt/moqt"
+	"github.com/qumo-dev/gomoqt/transport"
 	"github.com/qumo-dev/qumo/internal/auth"
 )
 
@@ -20,17 +22,26 @@ const (
 	revalidateRetryMax  = 30 * time.Second
 )
 
-// Reasons a lease ends its session, the reason label of metricSessionsEnded
-// and the close message the client sees with Unauthorized.
+// Reasons a session ends, the reason of its end report. A lease ends a
+// session for the first three, which are also the reason label of
+// metricSessionsEnded and the close message the client sees with
+// Unauthorized.
 const (
 	endExpired = "expired"
 	endRefused = "refused"
 	endInvalid = "invalid"
+	// endClosed is a session the client or the relay closed normally.
+	endClosed = "closed"
+	// endDropped is a session whose connection was lost: an idle timeout or
+	// a stateless reset.
+	endDropped = "dropped"
 )
 
-// sessionCloser is the part of a session a lease closes.
-type sessionCloser interface {
+// leasedSession is the part of a session a lease uses: it reads its byte
+// totals for a revalidate, and closes it.
+type leasedSession interface {
 	CloseWithError(code moqt.SessionErrorCode, msg string) error
+	Stats() moqt.SessionStats
 }
 
 // authorizeFunc asks the auth server about a session: Server.Authorize.
@@ -48,7 +59,7 @@ type lease struct {
 	// ctx is the session's. It ends a revalidate in flight when the session
 	// closes.
 	ctx       context.Context
-	sess      sessionCloser
+	sess      leasedSession
 	authorize authorizeFunc
 	req       auth.Request
 
@@ -63,13 +74,15 @@ type lease struct {
 	// failures counts revalidates in a row the auth server could not answer.
 	failures int
 	stopped  bool
+	// ended is why the lease ended the session, or "" while it hasn't.
+	ended string
 }
 
 // startLease starts the lease of a session admitted by req, which must end at
 // deadline (zero: never) and be revalidated every cadence (zero: never). It
 // returns nil when there is nothing to do; otherwise the caller stops it when
 // the session ends first.
-func startLease(ctx context.Context, sess sessionCloser, authorize authorizeFunc, req auth.Request, deadline time.Time, cadence time.Duration) *lease {
+func startLease(ctx context.Context, sess leasedSession, authorize authorizeFunc, req auth.Request, deadline time.Time, cadence time.Duration) *lease {
 	if deadline.IsZero() && cadence <= 0 {
 		return nil
 	}
@@ -108,6 +121,17 @@ func (l *lease) untilDueLocked() time.Duration {
 	return max(time.Until(due), 0)
 }
 
+// endedBy returns why the lease ended its session, or "" if it didn't. It is
+// safe on a nil lease, which never ends a session.
+func (l *lease) endedBy() string {
+	if l == nil {
+		return ""
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.ended
+}
+
 // fire runs on the timer's goroutine: it ends the session at its deadline,
 // or revalidates. It decides under the lock and closes the session after
 // releasing it, since a close waits for the session's handlers.
@@ -128,7 +152,7 @@ func (l *lease) check() string {
 		return ""
 	}
 	if !l.deadline.IsZero() && !time.Now().Before(l.deadline) {
-		l.stopped = true
+		l.stopped, l.ended = true, endExpired
 		l.mu.Unlock()
 		return endExpired
 	}
@@ -144,12 +168,12 @@ func (l *lease) check() string {
 	}
 	switch authOutcome(g, err) {
 	case authRefused:
-		l.stopped = true
+		l.stopped, l.ended = true, endRefused
 		return endRefused
 	case authInvalid:
 		slog.Error("relay: the auth server's revalidate grant can't be enforced",
 			"id", l.req.ID, "remote", l.req.Remote, "error", err)
-		l.stopped = true
+		l.stopped, l.ended = true, endInvalid
 		return endInvalid
 	case authError:
 		l.failures++
@@ -183,6 +207,7 @@ func (l *lease) revalidate(deadline time.Time) (*auth.Grant, error) {
 	}
 	req := l.req
 	req.Event = auth.EventRevalidate
+	req.Bytes = sessionBytes(l.sess.Stats())
 	g, err := l.authorize(ctx, req)
 	metricAuthRequests.WithLabelValues(auth.EventRevalidate, authOutcome(g, err)).Inc()
 	return g, err
@@ -194,4 +219,26 @@ func (l *lease) revalidate(deadline time.Time) (*auth.Grant, error) {
 func retryDelay(attempt int) time.Duration {
 	d := min(revalidateRetryBase<<min(attempt-1, 30), revalidateRetryMax)
 	return d/2 + rand.N(d/2+1)
+}
+
+// sessionBytes returns a session's cumulative byte totals as the auth server
+// receives them.
+func sessionBytes(st moqt.SessionStats) *auth.Bytes {
+	return &auth.Bytes{Sent: st.BytesSent, Received: st.BytesReceived}
+}
+
+// endReason returns why a checked session ended: the lease's reason when it
+// ended the session, otherwise from the session's close cause. A lost
+// connection is dropped; any other close is closed.
+func endReason(l *lease, cause error) string {
+	if reason := l.endedBy(); reason != "" {
+		return reason
+	}
+	if _, ok := errors.AsType[*transport.IdleTimeoutError](cause); ok {
+		return endDropped
+	}
+	if _, ok := errors.AsType[*transport.StatelessResetError](cause); ok {
+		return endDropped
+	}
+	return endClosed
 }

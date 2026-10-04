@@ -122,13 +122,14 @@ func Run(args []string) error {
 	// with no QUMO_AUTH_URL, auth off.
 	authCfg := auth.LoadConfig()
 	authorize := admitUnchecked
+	var reportEnd func(context.Context, auth.Request) error // nil: auth off reports nothing
 	authMode := "off (QUMO_AUTH_URL unset): every session is admitted unchecked"
 	if authCfg.URL != "" {
 		authClient, err := auth.NewClient(authCfg.URL)
 		if err != nil {
 			return fmt.Errorf("QUMO_AUTH_URL: %w", err)
 		}
-		authorize, authMode = authClient.Authorize, authCfg.URL
+		authorize, reportEnd, authMode = authClient.Authorize, authClient.End, authCfg.URL
 	} else {
 		slog.Warn("relay: auth is off: QUMO_AUTH_URL is not set, so every session is admitted unchecked")
 	}
@@ -213,6 +214,7 @@ func Run(args []string) error {
 		TrackMux:       trackMux,
 		AllowedOrigins: cors.LoadAllowed(),
 		Authorize:      authorize,
+		End:            reportEnd,
 	}
 
 	httpMux.HandleFunc("/", relayServer.HandleWebTransport)

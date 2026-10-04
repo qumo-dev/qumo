@@ -25,6 +25,8 @@ import (
 const (
 	// timeout bounds one request to the auth server.
 	timeout = 5 * time.Second
+	// endTimeout bounds an end report: it is best effort, sent once.
+	endTimeout = 2 * time.Second
 	// maxBody bounds the grant a reply may carry.
 	maxBody = 64 << 10
 )
@@ -36,6 +38,8 @@ const (
 	// EventRevalidate asks again, at the grant's revalidate cadence, whether
 	// a live session may continue.
 	EventRevalidate = "revalidate"
+	// EventEnd reports that a session ended, with its final byte totals.
+	EventEnd = "end"
 )
 
 // Transports, the Request's Transport.
@@ -122,13 +126,46 @@ type Request struct {
 	ServerName string `json:"server_name,omitempty"`
 	Path       string `json:"path"`
 	Query      string `json:"query,omitempty"`
+
+	// Bytes is the session's cumulative byte totals, sent on revalidate
+	// and end. Reporting them on revalidate as well as end is qumo's one
+	// extension of moq-auth, so billing sees a long session before it ends.
+	Bytes *Bytes `json:"bytes,omitempty"`
+	// Reason is why the session ended, sent on end.
+	Reason string `json:"reason,omitempty"`
+	// Duration is how long the session lasted in whole seconds, sent on end.
+	Duration int64 `json:"duration,omitempty"`
 }
 
-// Authorize sends req, a connect or revalidate event, and returns the grant.
-// The error is a RefusedError for an explicit refusal, wraps ErrInvalidGrant
-// for a grant the relay cannot enforce, and is otherwise an auth server that
-// could not answer.
-func (c *Client) Authorize(ctx context.Context, req Request) (*Grant, error) {
+// Bytes is a session's byte totals, both directions from the relay's point
+// of view.
+type Bytes struct {
+	// Sent is the bytes the relay sent to the peer.
+	Sent uint64 `json:"sent"`
+	// Received is the bytes the relay received from the peer.
+	Received uint64 `json:"received"`
+}
+
+// End reports req, an end event. It is best effort: one attempt, bounded by
+// a short timeout, and its reply is not read beyond the status. The error is
+// for the caller to record; nothing depends on it.
+func (c *Client) End(ctx context.Context, req Request) error {
+	ctx, cancel := context.WithTimeout(ctx, endTimeout)
+	defer cancel()
+	resp, err := c.post(ctx, req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, maxBody)) // not actionable: drained to reuse the connection
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("auth: server answered %d", resp.StatusCode)
+	}
+	return nil
+}
+
+// post sends req to the auth server as JSON.
+func (c *Client) post(ctx context.Context, req Request) (*http.Response, error) {
 	body, err := json.Marshal(req)
 	if err != nil {
 		return nil, fmt.Errorf("auth: encode request: %w", err)
@@ -141,6 +178,18 @@ func (c *Client) Authorize(ctx context.Context, req Request) (*Grant, error) {
 	resp, err := c.client.Do(httpReq)
 	if err != nil {
 		return nil, fmt.Errorf("auth: %w", err)
+	}
+	return resp, nil
+}
+
+// Authorize sends req, a connect or revalidate event, and returns the grant.
+// The error is a RefusedError for an explicit refusal, wraps ErrInvalidGrant
+// for a grant the relay cannot enforce, and is otherwise an auth server that
+// could not answer.
+func (c *Client) Authorize(ctx context.Context, req Request) (*Grant, error) {
+	resp, err := c.post(ctx, req)
+	if err != nil {
+		return nil, err
 	}
 	defer resp.Body.Close()
 

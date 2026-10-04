@@ -15,6 +15,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **An admitted grant** keeps the session and moves its `expires` and cadence. Its patterns aren't compared, since they were fixed at connect.
   - **No answer** (a timeout or a 5xx) is retried with jittered exponential backoff, from about 1 s up to 30 s. The session lives until its current `expires`, and a stalled request is cut off at that deadline.
   - **One timer per session** drives both expiry (#423) and revalidation, and is stopped when the session ends first.
+- **Session bytes and end reports (#424).** The auth server now sees each checked session's usage, so it can attribute it for billing and count live sessions.
+  - **Every revalidate** carries the session's cumulative `bytes` (`sent` and `received`, from the relay's side). Sending them on revalidate as well as end is qumo's one extension of moq-auth, so billing sees a long session before it ends.
+  - **When a checked session closes,** the relay sends `event: "end"` with the connect request's `id`, the final `bytes`, `duration` in whole seconds and a `reason`: `expired`, `refused`, `invalid`, `closed` or `dropped` (an idle timeout or stateless reset).
+  - **The end report is best effort:** one attempt with a 2 s timeout, sent after the close, so a slow or failing auth server can't hold a session open. A lost one costs at most one revalidate interval of usage.
+  - `qumo_relay_auth_requests_total{event="end"}` counts reports, with `result` `ok` or `error`.
 
 ### Changed (breaking)
 

@@ -13,6 +13,7 @@ import (
 	"github.com/quic-go/quic-go"
 	"github.com/qumo-dev/gomoqt/moqt"
 	"github.com/qumo-dev/qumo/internal/auth"
+	"github.com/qumo-dev/qumo/internal/relay"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -70,6 +71,83 @@ func TestRelay_RevalidateRefusedEndsSession(t *testing.T) {
 	require.Eventually(t, func() bool { return sess.Context().Err() != nil },
 		5*time.Second, 50*time.Millisecond, "a refused revalidate did not end the session")
 	assert.ErrorContains(t, context.Cause(sess.Context()), "refused")
+}
+
+// TestRelay_SessionEndReport verifies the relay reports the end of a checked
+// session to its auth server: the connect request's id, why it ended, and its
+// final byte totals.
+func TestRelay_SessionEndReport(t *testing.T) {
+	tests := map[string]struct {
+		revalidateErr error
+		closeByClient bool
+		wantReason    string
+	}{
+		"the client closes": {closeByClient: true, wantReason: "closed"},
+		"revalidate refused": {
+			revalidateErr: auth.RefusedError{Status: http.StatusForbidden},
+			wantReason:    "refused",
+		},
+	}
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			server := &fakeAuth{
+				body:          fmt.Sprintf(`{"subscribe":["acme/**"],"expires":%d,"revalidate":1}`, time.Now().Add(time.Hour).Unix()),
+				revalidateErr: tt.revalidateErr,
+			}
+			if tt.closeByClient {
+				// No revalidate: the client closes first.
+				server.body = fmt.Sprintf(`{"subscribe":["acme/**"],"expires":%d}`, time.Now().Add(time.Hour).Unix())
+			}
+			addr, _ := startAuthRelay(t, server.authorize, nil, func(s *relay.Server) { s.End = server.end })
+
+			sess := dialSession(t, nativeURL(addr)+"/acme?jwt=h.p.s", []string{moqt.NextProtoMOQ})
+			if tt.closeByClient {
+				// Close once the relay has admitted the session: one closed
+				// before its connect never started, so it has no end.
+				require.Eventually(t, func() bool { return len(server.received()) > 0 },
+					5*time.Second, 25*time.Millisecond, "no connect")
+				require.NoError(t, sess.CloseWithError(moqt.NoError, "done"))
+			}
+
+			// The readiness probes' sessions may report too; ours is the one
+			// that connected with the credential.
+			var end auth.Request
+			require.Eventually(t, func() bool {
+				var ok bool
+				end, ok = endFor(server, "jwt=h.p.s")
+				return ok
+			}, 5*time.Second, 25*time.Millisecond, "no end report")
+			connect := connectFor(t, server.received(), end.ID)
+			assert.Equal(t, auth.EventEnd, end.Event)
+			assert.Equal(t, tt.wantReason, end.Reason)
+			assert.Equal(t, connect.Path, end.Path, "end re-sends the connect request")
+			require.NotNil(t, end.Bytes)
+			assert.Positive(t, end.Bytes.Sent, "SETUP alone sends bytes")
+			assert.Positive(t, end.Bytes.Received)
+		})
+	}
+}
+
+// endFor returns the end report of the session that connected with query.
+func endFor(server *fakeAuth, query string) (auth.Request, bool) {
+	for _, end := range server.ended() {
+		if end.Query == query {
+			return end, true
+		}
+	}
+	return auth.Request{}, false
+}
+
+// connectFor returns the connect request with id among requests.
+func connectFor(t *testing.T, requests []auth.Request, id string) auth.Request {
+	t.Helper()
+	for _, req := range requests {
+		if req.ID == id && req.Event == auth.EventConnect {
+			return req
+		}
+	}
+	t.Fatalf("no connect request with id %q", id)
+	return auth.Request{}
 }
 
 // dialSession dials url and returns the session, closed when the test ends.

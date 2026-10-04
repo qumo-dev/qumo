@@ -2,6 +2,7 @@ package auth
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -149,4 +150,73 @@ func TestRefusalStatus_UnknownError(t *testing.T) {
 	got := RefusalStatus(errors.New("boom"))
 
 	assert.Equal(t, http.StatusServiceUnavailable, got)
+}
+
+func TestClient_End(t *testing.T) {
+	req := Request{
+		ID:       "00ff",
+		Event:    EventEnd,
+		Path:     "/acme",
+		Bytes:    &Bytes{Sent: 1500, Received: 300},
+		Reason:   "closed",
+		Duration: 42,
+	}
+	tests := map[string]struct {
+		server  *fakeAuthServer
+		wantErr bool
+	}{
+		"2xx":          {server: &fakeAuthServer{status: http.StatusNoContent}},
+		"server error": {server: &fakeAuthServer{status: http.StatusInternalServerError}, wantErr: true},
+	}
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			auth := tt.server.start(t)
+
+			err := auth.End(context.Background(), req)
+
+			if tt.wantErr {
+				assert.Error(t, err)
+			} else {
+				assert.NoError(t, err)
+			}
+			assert.Equal(t, []Request{req}, tt.server.received())
+		})
+	}
+}
+
+func TestClient_End_ServerDown(t *testing.T) {
+	auth := (&fakeAuthServer{}).start(t)
+	auth.endpoint = &url.URL{Scheme: "http", Host: "127.0.0.1:1"} // nothing listens on port 1
+
+	assert.Error(t, auth.End(context.Background(), Request{ID: "00ff", Event: EventEnd}))
+}
+
+// TestRequest_MarshalJSON verifies the end-only members are left out of a
+// connect request, and bytes is sent even when zero once set.
+func TestRequest_MarshalJSON(t *testing.T) {
+	tests := map[string]struct {
+		req  Request
+		want string
+	}{
+		"connect": {
+			req:  Request{ID: "00ff", Event: EventConnect, Transport: TransportQUIC, Path: "/acme"},
+			want: `{"id":"00ff","event":"connect","transport":"quic","path":"/acme"}`,
+		},
+		"revalidate with no bytes yet": {
+			req:  Request{ID: "00ff", Event: EventRevalidate, Transport: TransportQUIC, Path: "/acme", Bytes: &Bytes{}},
+			want: `{"id":"00ff","event":"revalidate","transport":"quic","path":"/acme","bytes":{"sent":0,"received":0}}`,
+		},
+		"end": {
+			req:  Request{ID: "00ff", Event: EventEnd, Transport: TransportQUIC, Path: "/acme", Bytes: &Bytes{Sent: 9, Received: 1}, Reason: "dropped", Duration: 3},
+			want: `{"id":"00ff","event":"end","transport":"quic","path":"/acme","bytes":{"sent":9,"received":1},"reason":"dropped","duration":3}`,
+		},
+	}
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			got, err := json.Marshal(tt.req)
+
+			require.NoError(t, err)
+			assert.JSONEq(t, tt.want, string(got))
+		})
+	}
 }

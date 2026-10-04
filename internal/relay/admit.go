@@ -187,13 +187,15 @@ func admitUnchecked(context.Context, auth.Request) (*auth.Grant, error) {
 // unset, rather than running it open.
 var errNoAuthorize = errors.New("relay: no auth server configured")
 
-// Outcomes of an auth request, the result label of metricAuthRequests.
+// Outcomes of an auth request, the result label of metricAuthRequests. An
+// end report is ok or error.
 const (
 	authUnchecked = "unchecked"
 	authAdmitted  = "admitted"
 	authRefused   = "refused"
 	authInvalid   = "invalid"
 	authError     = "error"
+	authOK        = "ok"
 )
 
 // authOutcome classifies an Authorize reply.
@@ -235,4 +237,25 @@ func (s *Server) admit(ctx context.Context, req auth.Request) (*auth.Grant, erro
 			"remote", req.Remote, "path", req.Path, "error", err)
 	}
 	return g, err
+}
+
+// reportEnd sends the end event of a checked session admitted by req, with
+// its final byte totals, why it ended and how long it lasted. ctx is the
+// session's: done by now, so the report keeps its values but not its
+// cancellation. A failed report is recorded and otherwise ignored; End
+// bounds its own wait.
+func (s *Server) reportEnd(ctx context.Context, req auth.Request, stats moqt.SessionStats, reason string, d time.Duration) {
+	if s.End == nil {
+		return
+	}
+	req.Event = auth.EventEnd
+	req.Bytes = sessionBytes(stats)
+	req.Reason = reason
+	req.Duration = int64(d / time.Second)
+	if err := s.End(context.WithoutCancel(ctx), req); err != nil {
+		metricAuthRequests.WithLabelValues(auth.EventEnd, authError).Inc()
+		slog.Warn("relay: end report failed", "id", req.ID, "reason", reason, "error", err)
+		return
+	}
+	metricAuthRequests.WithLabelValues(auth.EventEnd, authOK).Inc()
 }

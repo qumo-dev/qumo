@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/qumo-dev/gomoqt/moqt"
+	"github.com/qumo-dev/gomoqt/transport"
 	"github.com/qumo-dev/qumo/internal/auth"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -19,13 +20,13 @@ import (
 var leaseRequest = auth.Request{ID: "00ff", Event: auth.EventConnect, Path: "/acme", Query: "jwt=h.p.s"}
 
 func TestStartLease_NothingToDo(t *testing.T) {
-	assert.Nil(t, startLease(context.Background(), &fakeSessionCloser{}, (&fakeAuth{}).authorize, leaseRequest, time.Time{}, 0))
+	assert.Nil(t, startLease(context.Background(), &fakeLeasedSession{}, (&fakeAuth{}).authorize, leaseRequest, time.Time{}, 0))
 }
 
 // TestLease_Expires verifies a session ends at its deadline and not before.
 func TestLease_Expires(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		sess := &fakeSessionCloser{}
+		sess := &fakeLeasedSession{}
 		l := startLease(t.Context(), sess, (&fakeAuth{}).authorize, leaseRequest, time.Now().Add(time.Minute), 0)
 		defer l.stop()
 
@@ -54,7 +55,8 @@ func TestLease_RevalidateEnds(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
 				server := &fakeAuth{err: tt.err}
-				sess := &fakeSessionCloser{}
+				sess := &fakeLeasedSession{}
+				sess.setStats(1500, 300)
 				l := startLease(t.Context(), sess, server.authorize, leaseRequest, time.Now().Add(time.Hour), 30*time.Second)
 				defer l.stop()
 
@@ -67,6 +69,7 @@ func TestLease_RevalidateEnds(t *testing.T) {
 				assert.Equal(t, []sessionClose{{code: moqt.UnauthorizedSessionErrorCode, msg: tt.wantReason}}, sess.closed())
 				want := leaseRequest
 				want.Event = auth.EventRevalidate
+				want.Bytes = &auth.Bytes{Sent: 1500, Received: 300}
 				assert.Equal(t, []auth.Request{want}, server.received())
 			})
 		})
@@ -79,7 +82,7 @@ func TestLease_RevalidateMovesExpires(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		// The reply's patterns differ from connect's; only expires matters.
 		server := &fakeAuth{body: fmt.Sprintf(`{"publish":["other/**"],"expires":%d,"revalidate":30}`, time.Now().Add(2*time.Minute).Unix())}
-		sess := &fakeSessionCloser{}
+		sess := &fakeLeasedSession{}
 		l := startLease(t.Context(), sess, server.authorize, leaseRequest, time.Now().Add(time.Minute), 30*time.Second)
 		defer l.stop()
 
@@ -104,7 +107,7 @@ func TestLease_AuthServerUnavailable(t *testing.T) {
 	for name, server := range tests {
 		t.Run(name, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
-				sess := &fakeSessionCloser{}
+				sess := &fakeLeasedSession{}
 				l := startLease(t.Context(), sess, server.authorize, leaseRequest, time.Now().Add(time.Minute), 30*time.Second)
 				defer l.stop()
 
@@ -121,7 +124,7 @@ func TestLease_AuthServerUnavailable(t *testing.T) {
 	t.Run("retries back off", func(t *testing.T) {
 		synctest.Test(t, func(t *testing.T) {
 			server := &fakeAuth{err: errors.New("503")}
-			l := startLease(t.Context(), &fakeSessionCloser{}, server.authorize, leaseRequest, time.Now().Add(time.Hour), 30*time.Second)
+			l := startLease(t.Context(), &fakeLeasedSession{}, server.authorize, leaseRequest, time.Now().Add(time.Hour), 30*time.Second)
 			defer l.stop()
 
 			// Retries follow the first attempt at 30 s with jittered delays of
@@ -140,7 +143,7 @@ func TestLease_AuthServerUnavailable(t *testing.T) {
 func TestLease_Stop(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		server := &fakeAuth{}
-		sess := &fakeSessionCloser{}
+		sess := &fakeLeasedSession{}
 		l := startLease(t.Context(), sess, server.authorize, leaseRequest, time.Now().Add(time.Minute), 30*time.Second)
 
 		time.Sleep(10 * time.Second)
@@ -170,6 +173,52 @@ func TestRetryDelay(t *testing.T) {
 				require.GreaterOrEqual(t, d, tt.min)
 				require.LessOrEqual(t, d, tt.max)
 			}
+		})
+	}
+}
+
+// TestLease_RevalidateReportsBytes verifies each revalidate carries the
+// session's cumulative byte totals at that moment.
+func TestLease_RevalidateReportsBytes(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		server := &fakeAuth{body: fmt.Sprintf(`{"subscribe":["**"],"expires":%d,"revalidate":30}`, time.Now().Add(time.Hour).Unix())}
+		sess := &fakeLeasedSession{}
+		l := startLease(t.Context(), sess, server.authorize, leaseRequest, time.Now().Add(time.Hour), 30*time.Second)
+		defer l.stop()
+
+		sess.setStats(100, 10)
+		time.Sleep(30 * time.Second)
+		synctest.Wait()
+		sess.setStats(250, 40)
+		time.Sleep(30 * time.Second)
+		synctest.Wait()
+
+		var got []auth.Bytes
+		for _, req := range server.received() {
+			got = append(got, *req.Bytes)
+		}
+		assert.Equal(t, []auth.Bytes{{Sent: 100, Received: 10}, {Sent: 250, Received: 40}}, got)
+	})
+}
+
+func TestEndReason(t *testing.T) {
+	expired := &lease{ended: endExpired}
+	tests := map[string]struct {
+		lease *lease
+		cause error
+		want  string
+	}{
+		"the lease ended it":         {lease: expired, cause: &transport.ApplicationError{}, want: endExpired},
+		"closed by an application":   {cause: &transport.ApplicationError{}, want: endClosed},
+		"idle timeout":               {cause: &transport.IdleTimeoutError{}, want: endDropped},
+		"stateless reset":            {cause: &transport.StatelessResetError{}, want: endDropped},
+		"wrapped idle timeout":       {cause: fmt.Errorf("session: %w", &transport.IdleTimeoutError{}), want: endDropped},
+		"canceled":                   {cause: context.Canceled, want: endClosed},
+		"a lease that didn't end it": {lease: &lease{}, cause: &transport.IdleTimeoutError{}, want: endDropped},
+	}
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			assert.Equal(t, tt.want, endReason(tt.lease, tt.cause))
 		})
 	}
 }

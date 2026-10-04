@@ -46,6 +46,11 @@ type Server struct {
 	// never runs open by omission. Trusted peers are never asked.
 	Authorize func(ctx context.Context, req auth.Request) (*auth.Grant, error)
 
+	// End reports the end of a checked session, with its final byte totals:
+	// the auth client's End. Nil reports nothing, as with auth off. It is
+	// called after the session has closed, so it can't hold a session open.
+	End func(ctx context.Context, req auth.Request) error
+
 	// framePool recycles frame buffers for track distributors; sized from Config.FrameCapacity in init() (falling back to
 	// DefaultFramePool when unset, so a minimally-constructed Server still works).
 	framePool *FramePool
@@ -511,9 +516,20 @@ func (s *Server) serveSession(sess *moqt.Session) {
 	if err != nil {
 		return
 	}
+	a := admissionFrom(sess.Context())
+	checked := a != nil && a.grant != nil
+	var l *lease
+	if checked {
+		start := time.Now()
+		// Registered first so that it runs last: after the close below,
+		// with the session's final byte totals and close cause.
+		defer func() {
+			s.reportEnd(sess.Context(), a.req, sess.Stats(), endReason(l, context.Cause(sess.Context())), time.Since(start))
+		}()
+	}
 	defer sess.CloseWithError(moqt.NoError, moqt.NoError.String())
-	if a := admissionFrom(sess.Context()); a != nil && a.grant != nil {
-		if l := startLease(sess.Context(), sess, s.Authorize, a.req, a.deadline, a.grant.Revalidate()); l != nil {
+	if checked {
+		if l = startLease(sess.Context(), sess, s.Authorize, a.req, a.deadline, a.grant.Revalidate()); l != nil {
 			defer l.stop()
 		}
 	}

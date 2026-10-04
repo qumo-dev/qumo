@@ -11,6 +11,7 @@ import (
 	"testing/synctest"
 	"time"
 
+	"github.com/qumo-dev/gomoqt/moqt"
 	"github.com/qumo-dev/qumo/internal/auth"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -205,4 +206,44 @@ func grantFrom(tb testing.TB, body string) *auth.Grant {
 	var g auth.Grant
 	require.NoError(tb, json.Unmarshal([]byte(body), &g))
 	return &g
+}
+
+func TestServer_ReportEnd(t *testing.T) {
+	stats := moqt.SessionStats{BytesSent: 9000, BytesReceived: 120}
+	tests := map[string]struct {
+		endErr     error
+		wantResult string
+	}{
+		"reported":       {wantResult: authOK},
+		"server failing": {endErr: errors.New("503"), wantResult: authError},
+	}
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			server := &fakeAuth{endErr: tt.endErr}
+			srv := &Server{End: server.end}
+			connect := auth.Request{ID: "00ff", Event: auth.EventConnect, Path: "/acme", Query: "jwt=h.p.s"}
+
+			delta := counterDelta(t, func() {
+				srv.reportEnd(context.Background(), connect, stats, endDropped, 42*time.Second+900*time.Millisecond)
+			}, metricAuthRequests.WithLabelValues(auth.EventEnd, tt.wantResult))
+
+			assert.Equal(t, 1.0, delta)
+			want := connect
+			want.Event = auth.EventEnd
+			want.Bytes = &auth.Bytes{Sent: 9000, Received: 120}
+			want.Reason = endDropped
+			want.Duration = 42
+			assert.Equal(t, []auth.Request{want}, server.ended())
+		})
+	}
+}
+
+// TestServer_ReportEnd_Off verifies a Server without End, as with auth off,
+// reports nothing.
+func TestServer_ReportEnd_Off(t *testing.T) {
+	delta := counterDelta(t, func() {
+		(&Server{}).reportEnd(context.Background(), auth.Request{ID: "00ff"}, moqt.SessionStats{}, endClosed, time.Second)
+	}, metricAuthRequests.WithLabelValues(auth.EventEnd, authOK))
+
+	assert.Zero(t, delta)
 }
