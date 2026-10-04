@@ -510,6 +510,11 @@ func (s *Server) serveSession(sess *moqt.Session) {
 		return
 	}
 	defer sess.CloseWithError(moqt.NoError, moqt.NoError.String())
+	if a := admissionFrom(sess.Context()); a != nil {
+		if t := endAtDeadline(sess, a.deadline); t != nil {
+			defer t.Stop()
+		}
+	}
 
 	metricSessionsActive.Inc()
 	defer metricSessionsActive.Dec()

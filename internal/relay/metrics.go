@@ -29,6 +29,14 @@ var (
 		[]string{"event", "result"},
 	)
 
+	// metricSessionsExpired counts sessions closed at their grant's expires.
+	metricSessionsExpired = promauto.NewCounter(prometheus.CounterOpts{
+		Namespace: "qumo",
+		Subsystem: "relay",
+		Name:      "sessions_expired_total",
+		Help:      "Sessions closed at their grant's expires.",
+	})
+
 	// metricAnnouncementsRefused counts announcements not routed because the
 	// session's grant doesn't cover their path.
 	metricAnnouncementsRefused = promauto.NewCounter(prometheus.CounterOpts{

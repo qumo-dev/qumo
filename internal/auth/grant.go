@@ -61,6 +61,12 @@ func (g *Grant) UnmarshalJSON(b []byte) error {
 	return nil
 }
 
+// Expires returns when the session must end, which the auth server sets to the
+// credential's expiry. The zero Time means the grant does not expire.
+func (g *Grant) Expires() time.Time {
+	return g.expires
+}
+
 // parseGrant decodes an auth server's grant and checks it can be enforced at
 // now. A grant that names nothing is a refusal.
 func parseGrant(raw []byte, now time.Time) (*Grant, error) {

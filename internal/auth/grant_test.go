@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"testing"
@@ -119,6 +120,24 @@ func TestParseGrant(t *testing.T) {
 			}
 			assert.Equal(t, tt.wantExpires, g.expires)
 			assert.Equal(t, tt.wantRevalidate, g.revalidate)
+		})
+	}
+}
+
+func TestGrant_Expires(t *testing.T) {
+	tests := map[string]struct {
+		body string
+		want time.Time
+	}{
+		"with expires":    {body: `{"publish":["**"],"expires":1000600}`, want: time.Unix(1_000_600, 0)},
+		"without expires": {body: `{"publish":["**"]}`},
+	}
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			var g Grant
+			require.NoError(t, json.Unmarshal([]byte(tt.body), &g))
+
+			assert.Equal(t, tt.want, g.Expires())
 		})
 	}
 }

@@ -43,6 +43,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **Removed:** `PEER_CIDRS` (network-based trust), `MTLS_REQUIRED` (a client certificate is now always optional, verified when given), `UPSTREAM_ADDR` (use `PEERS`).
   - **Migration:** a relay that relied on `PEER_CIDRS` needs a private CA, with a client certificate for each relay, before upgrading. Native-QUIC tools (ingest, HLS egress) don't: they connect with `?jwt=` and are admitted by the auth server.
 
+### Added
+
+- **Sessions end at their grant's `expires` (#423).** The auth server sets `expires` to the credential's `exp`. The relay closes the session then, publishers and subscribers alike, with `0x2` (Unauthorized) and reason `expired`. The client reconnects with a fresh credential.
+  - **The deadline** is taken on the monotonic clock when the grant is accepted, so a wall-clock jump doesn't move it. Expiry is exact: any leeway is the auth server's.
+  - **One timer per session,** stopped when the session ends first.
+  - **No deadline** for a grant without `expires`, a trusted peer, or a relay with auth off.
+  - New metric: `qumo_relay_sessions_expired_total`.
+  - Before this, a session outlived its credential indefinitely, and expiry is how an app cuts a user off (ADR 0035).
+
 ### Changed
 
 - **Bumped `github.com/qumo-dev/gomoqt` to v0.22.0.** No code change was needed. It brings:
