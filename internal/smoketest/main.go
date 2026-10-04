@@ -5,11 +5,14 @@ import (
 	"context"
 	"crypto/sha256"
 	"crypto/tls"
+	"errors"
 	"flag"
 	"fmt"
 	"log"
+	"net/url"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/qumo-dev/gomoqt/moqt"
@@ -20,11 +23,15 @@ import (
 const (
 	broadcastPath = "/smoke/test"
 	trackName     = "data"
+	// jwtEnv names the environment variable holding the credential for
+	// relays with an auth server. It is read from the environment, not a
+	// flag, so it stays out of the process list and shell history.
+	jwtEnv = "RELAY_JWT"
 )
 
 func main() {
-	pubURL := flag.String("pub", "", "publisher-side relay URL (e.g. moqt://localhost:9002)")
-	subURL := flag.String("sub", "", "subscriber-side relay URL (e.g. moqt://localhost:9006)")
+	pubURL := flag.String("pub", "", "publisher-side relay URL (e.g. moqt://localhost:9002); the credential comes from "+jwtEnv)
+	subURL := flag.String("sub", "", "subscriber-side relay URL (e.g. moqt://localhost:9006); the credential comes from "+jwtEnv)
 	caFile := flag.String("ca", "", "PEM file of the relays' TLS cert/CA to trust (required unless -insecure)")
 	insecure := flag.Bool("insecure", false, "skip TLS verification (dev; self-signed relays)")
 	timeout := flag.Duration("timeout", 30*time.Second, "overall test timeout")
@@ -45,6 +52,18 @@ func main() {
 		os.Exit(1)
 	}
 
+	jwt := os.Getenv(jwtEnv)
+	pub, err := parseRelayURL(*pubURL, jwt)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error: -pub:", err)
+		os.Exit(1)
+	}
+	sub, err := parseRelayURL(*subURL, jwt)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error: -sub:", err)
+		os.Exit(1)
+	}
+
 	tlsConf, err := smokeTLSConfig(*caFile, *insecure)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
@@ -54,7 +73,7 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), *timeout)
 	defer cancel()
 
-	os.Exit(run(ctx, *pubURL, *subURL, *numGroups, *numFrames, *frameSize, tlsConf))
+	os.Exit(run(ctx, pub, sub, *numGroups, *numFrames, *frameSize, tlsConf))
 }
 
 // printUsage writes the usage block to stderr.
@@ -65,6 +84,41 @@ func printUsage() {
 	fmt.Fprintln(os.Stderr)
 	fmt.Fprintln(os.Stderr, "Example:")
 	fmt.Fprintln(os.Stderr, "  smoketest -pub moqt://localhost:9002 -sub moqt://localhost:9006 -insecure")
+}
+
+// relayURL is a relay URL from the command line, safe to log, and the
+// credential added to it only when dialing.
+type relayURL struct {
+	u   *url.URL
+	jwt string
+}
+
+// parseRelayURL parses raw, a relay URL without a query, to be dialed with
+// jwt. A query is refused, since the credential comes from jwtEnv. It is
+// checked before parsing, whose error quotes the input.
+func parseRelayURL(raw, jwt string) (relayURL, error) {
+	if strings.Contains(raw, "?") {
+		return relayURL{}, errors.New("must not have a query; set the credential in " + jwtEnv)
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return relayURL{}, err
+	}
+	return relayURL{u: u, jwt: jwt}, nil
+}
+
+// String returns the URL without its credential.
+func (r relayURL) String() string {
+	return r.u.String()
+}
+
+// dialURL returns the URL with the credential as its query.
+func (r relayURL) dialURL() string {
+	u := *r.u
+	if r.jwt != "" {
+		u.RawQuery = url.Values{"jwt": {r.jwt}}.Encode()
+	}
+	return u.String()
 }
 
 // smokeTLSConfig builds the TLS config shared by both dialers: verify against
@@ -80,7 +134,7 @@ func smokeTLSConfig(caFile string, insecure bool) (*tls.Config, error) {
 	return tc, nil
 }
 
-func run(ctx context.Context, pubURL, subURL string, numGroups, numFrames, frameSize int, tlsConf *tls.Config) int {
+func run(ctx context.Context, pubURL, subURL relayURL, numGroups, numFrames, frameSize int, tlsConf *tls.Config) int {
 	testData := generateTestData(numGroups, numFrames, frameSize)
 	sentHash := hashAllFlat(testData, numGroups, numFrames)
 
@@ -117,7 +171,7 @@ func run(ctx context.Context, pubURL, subURL string, numGroups, numFrames, frame
 	})
 
 	pubDialer := &moqt.Dialer{TLSConfig: tlsConf}
-	pubSess, err := pubDialer.Dial(ctx, pubURL, pubMux)
+	pubSess, err := pubDialer.Dial(ctx, pubURL.dialURL(), pubMux)
 	if err != nil {
 		log.Printf("publish: dial %s: %v", pubURL, err)
 		return 1
@@ -136,7 +190,7 @@ func run(ctx context.Context, pubURL, subURL string, numGroups, numFrames, frame
 	// --- Subscriber ---
 	subMux := moqt.NewTrackMux(0)
 	subDialer := &moqt.Dialer{TLSConfig: tlsConf}
-	subSess, err := subDialer.Dial(ctx, subURL, subMux)
+	subSess, err := subDialer.Dial(ctx, subURL.dialURL(), subMux)
 	if err != nil {
 		log.Printf("subscribe: dial %s: %v", subURL, err)
 		return 1

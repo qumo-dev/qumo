@@ -31,6 +31,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -87,9 +88,15 @@ Run "qumo loadgen <subcommand> -h" for that subcommand's flags.
 
 // ---- shared dial config ----
 
+// jwtEnv names the environment variable holding the credential for a relay
+// with an auth server. It is read from the environment, not a flag, so it
+// stays out of the process list and shell history.
+const jwtEnv = "RELAY_JWT"
+
 // dialTarget holds the connection parameters shared by both subcommands.
 type dialTarget struct {
-	relay   string // moqt dial target, host:port
+	relay   string // the relay's host:port, safe to log
+	url     string // moqt:// URL dialed; may carry a credential, so never logged
 	metrics string // relay /metrics URL (subscribe only)
 	path    string
 	track   string
@@ -103,10 +110,18 @@ type dialTarget struct {
 // http://<relay>/metrics. The trust decision is shared across qumo's clients
 // via [tlsclient.Apply]; only the load generator's base config (MoQ ALPN, TLS
 // 1.3 floor) and the QUIC tuning are owned here.
-func newTarget(relay, metrics, path, track, caFile string, insecure bool, idle, keepalive time.Duration) (dialTarget, error) {
+//
+// relay is the relay's host:port, or a moqt:// URL naming the path to connect
+// at. jwt, when set, is the credential for a relay with an auth server. It is
+// added only to the URL that is dialed, which is never logged.
+func newTarget(relay, jwt, metrics, path, track, caFile string, insecure bool, idle, keepalive time.Duration) (dialTarget, error) {
+	u, err := parseRelay(relay)
+	if err != nil {
+		return dialTarget{}, fmt.Errorf("--relay: %w", err)
+	}
 	m := metrics
 	if m == "" {
-		m = "http://" + relay + "/metrics"
+		m = "http://" + u.Host + "/metrics"
 	}
 	tc := &tls.Config{
 		NextProtos: []string{moqt.NextProtoMOQ},
@@ -116,7 +131,8 @@ func newTarget(relay, metrics, path, track, caFile string, insecure bool, idle, 
 		return dialTarget{}, err
 	}
 	return dialTarget{
-		relay:   relay,
+		relay:   u.Host,
+		url:     withJWT(*u, jwt),
 		metrics: m,
 		path:    path,
 		track:   track,
@@ -129,10 +145,38 @@ func newTarget(relay, metrics, path, track, caFile string, insecure bool, idle, 
 	}, nil
 }
 
+// parseRelay parses --relay: a host:port, or a moqt:// URL naming the path to
+// connect at. A query is refused, since the credential comes from jwtEnv. It
+// is checked before parsing, whose error quotes the input.
+func parseRelay(relay string) (*url.URL, error) {
+	if strings.Contains(relay, "?") {
+		return nil, errors.New("must not have a query; set the credential in " + jwtEnv)
+	}
+	if !strings.Contains(relay, "://") {
+		relay = "moqt://" + relay
+	}
+	u, err := url.Parse(relay)
+	if err != nil {
+		return nil, err
+	}
+	if u.Scheme != "moqt" {
+		return nil, fmt.Errorf("want host:port or a moqt:// URL, got scheme %q", u.Scheme)
+	}
+	return u, nil
+}
+
+// withJWT returns u with jwt as its query, or u alone when jwt is empty.
+func withJWT(u url.URL, jwt string) string {
+	if jwt != "" {
+		u.RawQuery = url.Values{"jwt": {jwt}}.Encode()
+	}
+	return u.String()
+}
+
 // bindCommon registers the flags common to publish/subscribe on fs and returns a
 // finalizer that validates them and builds the TLS/QUIC config after Parse.
 func bindCommon(fs *flag.FlagSet) func() (dialTarget, error) {
-	relay := fs.String("relay", "127.0.0.1:4433", "relay moqt address (host:port)")
+	relay := fs.String("relay", "127.0.0.1:4433", "relay moqt address (host:port), or a moqt:// URL naming the path to connect at; the credential comes from "+jwtEnv)
 	metrics := fs.String("metrics", "", "relay /metrics URL (default http://<relay>/metrics)")
 	caFile := fs.String("ca", "", "PEM file of the relay's TLS cert/CA to trust (required unless --insecure)")
 	path := fs.String("path", "/bench/carry", "broadcast path")
@@ -144,7 +188,7 @@ func bindCommon(fs *flag.FlagSet) func() (dialTarget, error) {
 		if *caFile == "" && !*insecure {
 			return dialTarget{}, errors.New("--ca is required (or --insecure for a self-signed dev relay)")
 		}
-		return newTarget(*relay, *metrics, *path, *track, *caFile, *insecure, *idle, *keepalive)
+		return newTarget(*relay, os.Getenv(jwtEnv), *metrics, *path, *track, *caFile, *insecure, *idle, *keepalive)
 	}
 }
 
@@ -202,7 +246,7 @@ func publishTrickle(ctx context.Context, target dialTarget, gps float64, size in
 			}
 		}
 	})
-	sess, err := dialer(target).Dial(ctx, "moqt://"+target.relay, mux)
+	sess, err := dialer(target).Dial(ctx, target.url, mux)
 	if err != nil {
 		return fmt.Errorf("dial relay %s: %w", target.relay, err)
 	}
@@ -462,7 +506,7 @@ func dialWithRetry(ctx context.Context, target dialTarget) (*moqt.Session, error
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
 		}
-		sess, err := dialer(target).Dial(ctx, "moqt://"+target.relay, moqt.NewTrackMux(0))
+		sess, err := dialer(target).Dial(ctx, target.url, moqt.NewTrackMux(0))
 		if err == nil {
 			return sess, nil
 		}

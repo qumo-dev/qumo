@@ -21,6 +21,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **Every `connect` gets an `end`,** so the auth server's live-session count can't be inflated. A WebTransport session admitted at connect whose upgrade then fails reports `end` with reason `upgrade_failed` and zero bytes. A request from an `Origin` the relay refuses is no longer sent to the auth server at all.
   - **The end report is best effort:** one attempt with a 2 s timeout, sent after the close, so a slow or failing auth server can't hold a session open. A lost one costs at most one revalidate interval of usage.
   - `qumo_relay_auth_requests_total{event="end"}` counts reports, with `result` `ok` or `error`.
+- **The HLS egress connects as a trusted peer (#432, ADR 0035 Decision 7).** It is an HLS origin, and viewers are authorized in front of it, so it holds no credential.
+  - `RELAY_CERT_FILE` and `RELAY_KEY_FILE` set its client certificate from the private CA the relay trusts as `CA_FILE`. The relay then never asks its auth server about it, and the session never expires.
+  - Both settings need a `moqt://` `RELAY_URL`, since only native-QUIC sessions can be trusted peers; the egress refuses to start otherwise.
+  - The certificate is read again on every reconnect, so a renewed one is picked up without a restart.
+- **`qumo loadgen` and `smoketest` connect to a relay with an auth server (#432).** The credential comes from `RELAY_JWT`, an environment variable, and is added to the URL only when dialing. Neither refreshes it: they run for less than a credential's lifetime.
+  - `loadgen --relay` takes a `moqt://host:port/path` URL, naming the path to connect at, as well as `host:port`.
+
+### Security
+
+- **A relay URL never carries a credential, so it is safe to log (#432).** The HLS egress's `RELAY_URL`, `loadgen --relay` and `smoketest`'s `-pub` and `-sub` refuse a query, without quoting it. A credential comes only from `RELAY_JWT`.
 
 ### Changed (breaking)
 

@@ -130,3 +130,55 @@ func selfSignedCertPEM(tb testing.TB) []byte {
 	require.NoError(tb, err)
 	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
 }
+
+func TestApplyClientCert(t *testing.T) {
+	certFile, keyFile := writeKeyPair(t)
+	tests := map[string]struct {
+		certFile, keyFile string
+		wantCerts         int
+		wantErr           bool
+	}{
+		"none":             {},
+		"cert and key":     {certFile: certFile, keyFile: keyFile, wantCerts: 1},
+		"cert without key": {certFile: certFile, wantErr: true},
+		"key without cert": {keyFile: keyFile, wantErr: true},
+		"missing files":    {certFile: certFile + ".absent", keyFile: keyFile, wantErr: true},
+	}
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			tc := &tls.Config{}
+
+			err := ApplyClientCert(tc, tt.certFile, tt.keyFile)
+
+			if tt.wantErr {
+				assert.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+			assert.Len(t, tc.Certificates, tt.wantCerts)
+		})
+	}
+}
+
+// writeKeyPair writes a throwaway self-signed certificate and its key as PEM
+// files and returns their paths.
+func writeKeyPair(tb testing.TB) (certFile, keyFile string) {
+	tb.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	require.NoError(tb, err)
+	tmpl := &x509.Certificate{
+		SerialNumber: big.NewInt(1),
+		Subject:      pkix.Name{CommonName: "egress"},
+		NotBefore:    time.Now().Add(-time.Minute),
+		NotAfter:     time.Now().Add(time.Hour),
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	require.NoError(tb, err)
+	keyDER, err := x509.MarshalECPrivateKey(key)
+	require.NoError(tb, err)
+	dir := tb.TempDir()
+	certFile, keyFile = filepath.Join(dir, "client.crt"), filepath.Join(dir, "client.key")
+	require.NoError(tb, os.WriteFile(certFile, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}), 0o600))
+	require.NoError(tb, os.WriteFile(keyFile, pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER}), 0o600))
+	return certFile, keyFile
+}
