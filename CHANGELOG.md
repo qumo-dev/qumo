@@ -12,7 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Sessions are revalidated with the auth server (#419).** At the grant's `revalidate` cadence, the relay sends the session's connect request again as `event: "revalidate"`, with the same `id`. This is how key revocation, project suspension and spend limits reach live sessions; the auth server decides, and the relay doesn't know which it was.
   - **A 401 or 403** ends the session with `0x2` (Unauthorized) and reason `refused`.
   - **A grant that can't be enforced** ends it with reason `invalid`.
-  - **An admitted grant** keeps the session and moves its `expires` and cadence. Its patterns aren't compared, since they were fixed at connect.
+  - **An admitted grant** keeps the session and moves its `expires` and cadence. Its patterns aren't compared, since they were fixed at connect. A grant without `expires` keeps the deadline the session has: a revalidate never lifts it.
   - **No answer** (a timeout or a 5xx) is retried with jittered exponential backoff, from about 1 s up to 30 s. The session lives until its current `expires`, and a stalled request is cut off at that deadline.
   - **One timer per session** drives both expiry (#423) and revalidation, and is stopped when the session ends first.
 - **Session bytes and end reports (#424).** The auth server now sees each checked session's usage, so it can attribute it for billing and count live sessions.

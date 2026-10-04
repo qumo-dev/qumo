@@ -182,7 +182,11 @@ func (l *lease) check() string {
 		l.next = time.Now().Add(retryDelay(l.failures))
 	case authAdmitted:
 		l.failures = 0
-		l.deadline = deadlineOf(g)
+		// A reply without expires keeps the deadline the session has: a
+		// revalidate may move the deadline, never lift it.
+		if d := deadlineOf(g); !d.IsZero() {
+			l.deadline = d
+		}
 		l.cadence = g.Revalidate()
 		l.next = time.Now().Add(l.cadence)
 	case authUnchecked:

@@ -222,3 +222,20 @@ func TestEndReason(t *testing.T) {
 		})
 	}
 }
+// TestLease_RevalidateWithoutExpiresKeepsDeadline verifies an admitted
+// revalidate whose grant has no expires keeps the session's deadline rather
+// than lifting it.
+func TestLease_RevalidateWithoutExpiresKeepsDeadline(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		server := &fakeAuth{body: `{"subscribe":["**"]}`}
+		sess := &fakeLeasedSession{}
+		l := startLease(t.Context(), sess, server.authorize, leaseRequest, time.Now().Add(time.Minute), 30*time.Second)
+		defer l.stop()
+
+		time.Sleep(time.Minute)
+		synctest.Wait()
+
+		assert.Len(t, server.received(), 1, "the reply has no revalidate, so no more are sent")
+		assert.Equal(t, []sessionClose{{code: moqt.UnauthorizedSessionErrorCode, msg: endExpired}}, sess.closed())
+	})
+}
