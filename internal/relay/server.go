@@ -36,7 +36,8 @@ type Server struct {
 	// Authorize decides whether a client session may start, and returns its
 	// grant (admit.go). The relay command sets it to the auth server's
 	// client (QUMO_AUTH_URL), or, with auth off, to a function that admits
-	// every session unchecked. An application embedding the relay supplies
+	// every session unchecked. Other code in this module that builds a
+	// Server, such as the black-box tests in internal/integration, supplies
 	// its own. A nil grant with a nil error admits the session unchecked;
 	// an auth.RefusedError refuses it with its status; any other error
 	// refuses it as unavailable.

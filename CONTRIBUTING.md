@@ -109,7 +109,7 @@ go test -tags=integration ./internal/relay/... ./internal/integration/...
 
 Where an integration test lives depends on what it checks:
 
-- **The contract, through the public API** (`internal/integration`): what a client or an embedding application relies on. Examples are session admission, subscribe authorization, and RTMP/RTSP interop. These tests build components from exported fields and functions only, as a user would.
+- **The contract, through the public API** (`internal/integration`): what a client, or another package of this module, relies on. Examples are session admission, subscribe authorization, and RTMP/RTSP interop. These tests build components from exported fields and functions only, as a user would.
 - **Internals** (inside the package, for example `internal/relay`): white-box benchmarks and stress tests that measure or drive unexported state, such as route election, the relay-chain harness and peer discovery.
 
 When in doubt, prefer `internal/integration`. A test that needs an unexported symbol to check the contract usually means the contract isn't exposed yet.
