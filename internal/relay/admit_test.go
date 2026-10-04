@@ -11,7 +11,6 @@ import (
 	"testing/synctest"
 	"time"
 
-	"github.com/qumo-dev/gomoqt/moqt"
 	"github.com/qumo-dev/qumo/internal/auth"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
