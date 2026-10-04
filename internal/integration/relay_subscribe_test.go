@@ -137,6 +137,34 @@ func TestRelay_SubscribeAuth_TrustedPeerUnchecked(t *testing.T) {
 	assert.NoError(t, err, "a trusted peer subscribes outside any grant")
 }
 
+// A relay serves the SUBSCRIBEs of a peer it dialed (PEERS), which arrive over
+// the session it dialed. That session never passes through its ConnContext or
+// its auth server, so the subscribe check must treat it as a trusted peer.
+// Here relay a dials relay b, and a viewer on b watches a broadcast published
+// on a: b subscribes to a over a's dialed session.
+func TestRelay_SubscribeAuth_DialedPeerUnchecked(t *testing.T) {
+	const path = moqt.BroadcastPath("/acme/apple/live")
+	peerCert := loadTempCert(t)
+	// a's sessions may subscribe only under acme/app, which the path is not.
+	aAuth := &fakeAuth{body: `{"publish":["acme/**"],"subscribe":["acme/app/**"]}`}
+	aAddr, a := startAuthRelay(t, aAuth.authorize, nil)
+	bAuth := &fakeAuth{body: `{"publish":["acme/**"],"subscribe":["acme/**"]}`}
+	bAddr, b := startAuthRelay(t, bAuth.authorize, &peerCert)
+	// a presents peerCert, which b verifies: a is b's trusted peer.
+	a.MOQDialer.TLSConfig.Certificates = []tls.Certificate{peerCert}
+	a.Config.Peers = []relay.Peer{{Address: bAddr}}
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	go a.ConnectPeers(ctx)
+	publishOver(t, a, "https://"+aAddr+"/?jwt=a.b.c", path)
+	require.Eventually(t, routed(b, path), 5*time.Second, 25*time.Millisecond,
+		"a's broadcast should reach b over the peer link")
+
+	err := subscribe(t, "https://"+bAddr+"/?jwt=a.b.c", nil, path)
+
+	assert.NoError(t, err, "a serves b's SUBSCRIBE over the session a dialed, outside any grant")
+}
+
 func TestRelay_SubscribeAuth_FetchRejected(t *testing.T) {
 	server := &fakeAuth{body: `{"publish":["acme/**"],"subscribe":["acme/**"]}`}
 	addr, srv := startAuthRelay(t, server.authorize, nil)
