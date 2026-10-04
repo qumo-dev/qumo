@@ -12,7 +12,6 @@ import (
 	"net/url"
 	"os"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/qumo-dev/gomoqt/moqt"
@@ -23,15 +22,11 @@ import (
 const (
 	broadcastPath = "/smoke/test"
 	trackName     = "data"
-	// jwtEnv names the environment variable holding the credential for
-	// relays with an auth server. It is read from the environment, not a
-	// flag, so it stays out of the process list and shell history.
-	jwtEnv = "RELAY_JWT"
 )
 
 func main() {
-	pubURL := flag.String("pub", "", "publisher-side relay URL (e.g. moqt://localhost:9002); the credential comes from "+jwtEnv)
-	subURL := flag.String("sub", "", "subscriber-side relay URL (e.g. moqt://localhost:9006); the credential comes from "+jwtEnv)
+	pubURL := flag.String("pub", "", "publisher-side relay URL (e.g. moqt://localhost:9002); add ?jwt=… for a relay with an auth server")
+	subURL := flag.String("sub", "", "subscriber-side relay URL (e.g. moqt://localhost:9006); add ?jwt=… for a relay with an auth server")
 	caFile := flag.String("ca", "", "PEM file of the relays' TLS cert/CA to trust (required unless -insecure)")
 	insecure := flag.Bool("insecure", false, "skip TLS verification (dev; self-signed relays)")
 	timeout := flag.Duration("timeout", 30*time.Second, "overall test timeout")
@@ -52,13 +47,12 @@ func main() {
 		os.Exit(1)
 	}
 
-	jwt := os.Getenv(jwtEnv)
-	pub, err := parseRelayURL(*pubURL, jwt)
+	pub, err := parseRelayURL(*pubURL)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error: -pub:", err)
 		os.Exit(1)
 	}
-	sub, err := parseRelayURL(*subURL, jwt)
+	sub, err := parseRelayURL(*subURL)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error: -sub:", err)
 		os.Exit(1)
@@ -86,39 +80,33 @@ func printUsage() {
 	fmt.Fprintln(os.Stderr, "  smoketest -pub moqt://localhost:9002 -sub moqt://localhost:9006 -insecure")
 }
 
-// relayURL is a relay URL from the command line, safe to log, and the
-// credential added to it only when dialing.
+// relayURL is a relay URL from the command line, whose query may carry a
+// credential (?jwt=…). It prints without its query, so it is safe to log.
 type relayURL struct {
-	u   *url.URL
-	jwt string
+	u *url.URL
 }
 
-// parseRelayURL parses raw, a relay URL without a query, to be dialed with
-// jwt. A query is refused, since the credential comes from jwtEnv. It is
-// checked before parsing, whose error quotes the input.
-func parseRelayURL(raw, jwt string) (relayURL, error) {
-	if strings.Contains(raw, "?") {
-		return relayURL{}, errors.New("must not have a query; set the credential in " + jwtEnv)
-	}
+// parseRelayURL parses raw. A URL that doesn't parse is reported with only
+// the reason: url.Parse's *url.Error quotes the whole URL, credential and all.
+func parseRelayURL(raw string) (relayURL, error) {
 	u, err := url.Parse(raw)
 	if err != nil {
-		return relayURL{}, err
+		if ue, ok := errors.AsType[*url.Error](err); ok {
+			err = ue.Err
+		}
+		return relayURL{}, fmt.Errorf("invalid URL: %w", err)
 	}
-	return relayURL{u: u, jwt: jwt}, nil
+	return relayURL{u: u}, nil
 }
 
-// String returns the URL without its credential.
+// String returns the URL's scheme, host and path: everything but its query.
 func (r relayURL) String() string {
-	return r.u.String()
+	return r.u.Scheme + "://" + r.u.Host + r.u.Path
 }
 
-// dialURL returns the URL with the credential as its query.
+// dialURL returns the whole URL, credential included.
 func (r relayURL) dialURL() string {
-	u := *r.u
-	if r.jwt != "" {
-		u.RawQuery = url.Values{"jwt": {r.jwt}}.Encode()
-	}
-	return u.String()
+	return r.u.String()
 }
 
 // smokeTLSConfig builds the TLS config shared by both dialers: verify against
