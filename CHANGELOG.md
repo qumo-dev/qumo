@@ -25,11 +25,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `RELAY_CERT_FILE` and `RELAY_KEY_FILE` set its client certificate from the private CA the relay trusts as `CA_FILE`. The relay then never asks its auth server about it, and the session never expires.
   - Both settings need a `moqt://` `RELAY_URL`, since only native-QUIC sessions can be trusted peers; the egress refuses to start otherwise.
   - The certificate is read again on every reconnect, so a renewed one is picked up without a restart.
-- **`qumo loadgen --relay` takes a `moqt://` URL with a credential** (`moqt://host:port/path?jwt=…`) as well as `host:port`, to load a relay with an auth server. `smoketest`'s `-pub` and `-sub` URLs carry one the same way. Neither refreshes it: they run for less than a credential's lifetime.
+- **`qumo loadgen` and `smoketest` connect to a relay with an auth server (#432).** The credential comes from `RELAY_JWT`, an environment variable, and is added to the URL only when dialing. Neither refreshes it: they run for less than a credential's lifetime.
+  - `loadgen --relay` takes a `moqt://host:port/path` URL, naming the path to connect at, as well as `host:port`.
 
 ### Security
 
-- **A relay URL's credential is never logged (#432).** The HLS egress, `loadgen` and `smoketest` log a relay URL without its query, and remove it from dial and parse errors that quote the URL, including a URL too malformed to parse.
+- **A relay URL never carries a credential, so it is safe to log (#432).** The HLS egress's `RELAY_URL`, `loadgen --relay` and `smoketest`'s `-pub` and `-sub` refuse a query, without quoting it. A credential comes only from `RELAY_JWT`.
 
 ### Changed (breaking)
 

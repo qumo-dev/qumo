@@ -104,6 +104,7 @@ func TestFeedConfig_Validate(t *testing.T) {
 		wantErr string
 	}{
 		"no client certificate":               {cfg: feedConfig{relayURL: "https://relay:4433"}},
+		"a query":                             {cfg: feedConfig{relayURL: "https://relay:4433/live?jwt=h.p.s"}, wantErr: "query"},
 		"client certificate over native QUIC": {cfg: feedConfig{relayURL: "moqt://relay:4433", certFile: "c.pem", keyFile: "k.pem"}},
 		"client certificate over WebTransport": {
 			cfg:     feedConfig{relayURL: "https://relay:4433", certFile: "c.pem", keyFile: "k.pem"},
@@ -125,10 +126,10 @@ func TestFeedConfig_Validate(t *testing.T) {
 	}
 }
 
-// TestFeedConfig_Validate_MalformedURLHidesCredential verifies a RELAY_URL
-// that doesn't parse is reported without its query: url.Parse's error quotes
-// its whole input, credential included.
-func TestFeedConfig_Validate_MalformedURLHidesCredential(t *testing.T) {
+// TestFeedConfig_Validate_QueryNotQuoted verifies a RELAY_URL with a query is
+// refused without quoting it, even one too malformed to parse: url.Parse's
+// error would quote its whole input, credential included.
+func TestFeedConfig_Validate_QueryNotQuoted(t *testing.T) {
 	cfg := feedConfig{relayURL: "moqt://[bad/live?jwt=h.p.s", certFile: "c.pem", keyFile: "k.pem"}
 
 	err := cfg.validate()

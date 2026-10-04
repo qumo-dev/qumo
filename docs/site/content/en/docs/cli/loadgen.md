@@ -27,7 +27,7 @@ qumo loadgen <subcommand> [flags]
 |---|---|---|
 | `--ca <file>` | (required unless `--insecure`) | PEM file of the relay's TLS cert/CA to trust. |
 | `--insecure` | `false` | Skip relay TLS verification (dev; self-signed relay). |
-| `--relay <host:port>` | `127.0.0.1:4433` | Relay MoQT address to dial, or a `moqt://host:port/path?jwt=…` URL to connect with a credential to a relay with an auth server. Only the `host:port` is logged. |
+| `--relay <host:port>` | `127.0.0.1:4433` | Relay MoQT address to dial, or a `moqt://host:port/path` URL naming the path to connect at. It must not have a query: the credential comes from `RELAY_JWT`. |
 | `--path <path>` | `/bench/carry` | Broadcast path. |
 | `--track <name>` | `data` | Track name. |
 | `--gps <float>` | `0.5` | Groups per second (trickle rate). |
@@ -42,7 +42,7 @@ qumo loadgen <subcommand> [flags]
 |---|---|---|
 | `--ca <file>` | (required unless `--insecure`) | PEM file of the relay's TLS cert/CA to trust. |
 | `--insecure` | `false` | Skip relay TLS verification (dev; self-signed relay). |
-| `--relay <host:port>` | `127.0.0.1:4433` | Relay MoQT address to dial, or a `moqt://host:port/path?jwt=…` URL to connect with a credential to a relay with an auth server. Only the `host:port` is logged. |
+| `--relay <host:port>` | `127.0.0.1:4433` | Relay MoQT address to dial, or a `moqt://host:port/path` URL naming the path to connect at. It must not have a query: the credential comes from `RELAY_JWT`. |
 | `--path <path>` | `/bench/carry` | Broadcast path. |
 | `--track <name>` | `data` | Track name. |
 | `--hold <dur>` | `30s` | How long to hold sessions after establishment. |
@@ -87,8 +87,13 @@ ceiling.
 
 ## Configuration
 
-No environment variables — the flags above are the entire surface. The
-relay it measures is configured separately.
+| Variable | Default | Description |
+|---|---|---|
+| `RELAY_JWT` | _unset_ | Credential for a relay with an auth server (`QUMO_AUTH_URL`), sent as the connect URL's `?jwt=`. It is never logged, and isn't refreshed: a run is shorter than a credential's lifetime. |
+
+The credential is read from the environment rather than a flag, so it stays out
+of the process list and shell history. The relay it measures is configured
+separately.
 
 ## See also
 
