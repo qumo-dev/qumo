@@ -15,7 +15,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **In code:** the relay takes its check as a function field, `Authorize`. The relay command sets it to the auth client's `Connect`, or to `admitUnchecked` when auth is off; tests pass a plain function. Removed: the `admitter` interface, `publicGrant`, and `auth.Config.Public`.
   - **Fail-closed:** a `Server` built without `Authorize` refuses every client session (WebTransport gets 503) and logs an error. Turning auth off is a setting; forgetting `authorize` is a bug.
   - **Only an upgrade asks:** a request to the WebTransport endpoint that isn't an extended CONNECT goes straight to gomoqt's fallback (400), without asking the auth server.
-  - **No silent opening:** with `QUMO_AUTH_URL` unset, the relay refuses to start while a removed auth setting is still set (`QUMO_AUTH_PUBLIC`, or v0.8's `QUMO_CREDENTIAL_URL`, `QUMO_RELAY_TOKEN`, `QUMO_RELAY_AUDIENCE`, `QUMO_CREDENTIAL_ISSUER`). A deployment upgraded with its old auth settings would otherwise admit every session unchecked.
   - **Local tools, compose and the Nomad demo** run with auth off; they no longer set `QUMO_AUTH_PUBLIC`.
   - **Fixed:** `qumo playground` had no auth setting, so its relay stopped at startup. Auth off now applies.
 - **Subscriptions are checked against the session's grant (`internal/relay`, #418).** A SUBSCRIBE is served only if the grant's `subscribe` patterns cover its path; otherwise it's refused with `NotFound`, the same answer as a path that doesn't exist. The session stays up.

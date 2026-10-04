@@ -130,9 +130,6 @@ func Run(args []string) error {
 		}
 		authorize, authMode = authClient.Connect, authCfg.URL
 	} else {
-		if err := checkNoStaleAuthEnv(os.Getenv); err != nil {
-			return err
-		}
 		slog.Warn("relay: auth is off: QUMO_AUTH_URL is not set, so every session is admitted unchecked")
 	}
 
@@ -363,35 +360,6 @@ func serveComponents(ctx context.Context, relaySrv server, httpSrv server, shutd
 	<-shutdownDone
 
 	return err
-}
-
-// staleAuthEnv lists auth settings that earlier relays read and this one
-// doesn't. Each meant "check sessions", so one left set where QUMO_AUTH_URL
-// isn't is a deployment that expects auth and would otherwise start open.
-var staleAuthEnv = []string{
-	"QUMO_AUTH_PUBLIC",
-	"QUMO_CREDENTIAL_URL",
-	"QUMO_RELAY_TOKEN",
-	"QUMO_RELAY_AUDIENCE",
-	"QUMO_CREDENTIAL_ISSUER",
-}
-
-// checkNoStaleAuthEnv refuses to start with auth off while a removed auth
-// setting is still set: the operator meant to check sessions, so the relay
-// stops rather than admit every session unchecked.
-func checkNoStaleAuthEnv(getenv func(string) string) error {
-	var set []string
-	for _, key := range staleAuthEnv {
-		if getenv(key) != "" {
-			set = append(set, key)
-		}
-	}
-	if len(set) == 0 {
-		return nil
-	}
-	return fmt.Errorf("%s set but QUMO_AUTH_URL is not: these settings are removed, and without "+
-		"QUMO_AUTH_URL auth is off and every session is admitted unchecked; set QUMO_AUTH_URL to an "+
-		"auth server, or unset them to run with auth off", strings.Join(set, ", "))
 }
 
 func envInt(key string, defaultVal int) (int, error) {
