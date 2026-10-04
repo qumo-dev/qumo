@@ -46,6 +46,11 @@ type Server struct {
 	// never runs open by omission. Trusted peers are never asked.
 	Authorize func(ctx context.Context, req auth.Request) (*auth.Grant, error)
 
+	// End reports the end of a checked session, with its final byte totals:
+	// the auth client's End. Nil reports nothing, as with auth off. It is
+	// called after the session has closed, so it can't hold a session open.
+	End func(ctx context.Context, req auth.Request) error
+
 	// framePool recycles frame buffers for track distributors; sized from Config.FrameCapacity in init() (falling back to
 	// DefaultFramePool when unset, so a minimally-constructed Server still works).
 	framePool *FramePool
@@ -108,17 +113,27 @@ func (s *Server) HandleWebTransport(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusServiceUnavailable)
 		return
 	}
-	if r.Method != http.MethodConnect {
+	// A request gomoqt won't upgrade goes straight to it, unasked: not an
+	// extended CONNECT, or an Origin it refuses. Asking the auth server first
+	// would count a session that never starts.
+	if r.Method != http.MethodConnect || !s.webtransportHandler.CheckOrigin(r) {
 		s.webtransportHandler.ServeHTTP(w, r)
 		return
 	}
-	g, err := s.admit(r.Context(), s.webTransportRequest(r))
+	req := s.webTransportRequest(r)
+	g, err := s.admit(r.Context(), req)
 	if err != nil {
 		w.WriteHeader(auth.RefusalStatus(err))
 		return
 	}
-	r = r.WithContext(withAdmission(r.Context(), decidedAdmission(g)))
-	s.webtransportHandler.ServeHTTP(w, r)
+	a := decidedAdmission(g, req)
+	s.webtransportHandler.ServeHTTP(w, r.WithContext(withAdmission(r.Context(), a)))
+	// gomoqt serves the session within ServeHTTP. If the upgrade failed
+	// anyway, no session ran and none will report its end: report it here,
+	// so the auth server can close the session it counted at connect.
+	if g != nil && !a.served.Load() {
+		s.reportEnd(r.Context(), req, moqt.SessionStats{}, endUpgradeFailed, 0)
+	}
 }
 
 func (s *Server) init() {
@@ -476,17 +491,18 @@ func (s *Server) relayPeer(sess *moqt.Session) {
 		return
 	}
 	if s.trustedPeer(sess) {
-		a.decide(nil)
+		a.decide(nil, auth.Request{})
 		s.serveSession(sess)
 		return
 	}
-	g, err := s.admit(sess.Context(), s.nativeRequest(sess))
+	req := s.nativeRequest(sess)
+	g, err := s.admit(sess.Context(), req)
 	if err != nil {
-		a.decide(refusedGrant)
+		a.decide(refusedGrant, req)
 		_ = sess.CloseWithError(moqt.UnauthorizedSessionErrorCode, "refused")
 		return
 	}
-	a.decide(g)
+	a.decide(g, req)
 	s.serveSession(sess)
 }
 
@@ -509,10 +525,22 @@ func (s *Server) serveSession(sess *moqt.Session) {
 	if err != nil {
 		return
 	}
+	a := admissionFrom(sess.Context())
+	checked := a != nil && a.grant != nil
+	var l *lease
+	if checked {
+		a.served.Store(true)
+		start := time.Now()
+		// Registered first so that it runs last: after the close below,
+		// with the session's final byte totals and close cause.
+		defer func() {
+			s.reportEnd(sess.Context(), a.req, sess.Stats(), endReason(l, context.Cause(sess.Context())), time.Since(start))
+		}()
+	}
 	defer sess.CloseWithError(moqt.NoError, moqt.NoError.String())
-	if a := admissionFrom(sess.Context()); a != nil {
-		if t := endAtDeadline(sess, a.deadline); t != nil {
-			defer t.Stop()
+	if checked {
+		if l = startLease(sess.Context(), sess, s.Authorize, a.req, a.deadline, a.grant.Revalidate()); l != nil {
+			defer l.stop()
 		}
 	}
 

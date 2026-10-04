@@ -24,8 +24,8 @@ func TestSessionGrant(t *testing.T) {
 		want *auth.Grant
 	}{
 		"no admission is unchecked": {ctx: context.Background(), want: nil},
-		"decided with a grant":      {ctx: withAdmission(context.Background(), decidedAdmission(g)), want: g},
-		"decided unchecked":         {ctx: withAdmission(context.Background(), decidedAdmission(nil)), want: nil},
+		"decided with a grant":      {ctx: withAdmission(context.Background(), decidedAdmission(g, auth.Request{})), want: g},
+		"decided unchecked":         {ctx: withAdmission(context.Background(), decidedAdmission(nil, auth.Request{})), want: nil},
 	}
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
@@ -56,7 +56,7 @@ func TestSessionGrant_WaitsForPendingAdmission(t *testing.T) {
 			t.Fatal("sessionGrant returned before the admission was decided")
 		default:
 		}
-		a.decide(g)
+		a.decide(g, auth.Request{})
 		<-done
 
 		require.NoError(t, err)
@@ -189,7 +189,7 @@ func TestAdmission_Decide_Deadline(t *testing.T) {
 		}
 		// t.Run is unsupported inside a synctest bubble.
 		for _, tc := range cases {
-			a := decidedAdmission(tc.grant)
+			a := decidedAdmission(tc.grant, auth.Request{})
 
 			if tc.want == 0 {
 				assert.True(t, a.deadline.IsZero(), tc.name)
@@ -200,46 +200,97 @@ func TestAdmission_Decide_Deadline(t *testing.T) {
 	})
 }
 
-// TestEndAtDeadline verifies a session is closed with Unauthorized "expired"
-// at its deadline and not before, that a stopped timer never closes it, and
-// that a zero deadline arms nothing.
-func TestEndAtDeadline(t *testing.T) {
-	expired := []sessionClose{{code: moqt.UnauthorizedSessionErrorCode, msg: "expired"}}
-
-	t.Run("closes at the deadline, not before", func(t *testing.T) {
-		synctest.Test(t, func(t *testing.T) {
-			sess := &fakeSessionCloser{}
-			endAtDeadline(sess, time.Now().Add(time.Minute))
-
-			time.Sleep(time.Minute - time.Nanosecond)
-			synctest.Wait()
-			assert.Empty(t, sess.closed(), "closed before the deadline")
-
-			time.Sleep(time.Nanosecond)
-			synctest.Wait()
-			assert.Equal(t, expired, sess.closed())
-		})
-	})
-	t.Run("a session that ends first stops the timer", func(t *testing.T) {
-		synctest.Test(t, func(t *testing.T) {
-			sess := &fakeSessionCloser{}
-			timer := endAtDeadline(sess, time.Now().Add(time.Minute))
-
-			require.True(t, timer.Stop())
-			time.Sleep(2 * time.Minute)
-			synctest.Wait()
-			assert.Empty(t, sess.closed())
-		})
-	})
-	t.Run("no deadline arms nothing", func(t *testing.T) {
-		assert.Nil(t, endAtDeadline(&fakeSessionCloser{}, time.Time{}))
-	})
-}
-
 // grantFrom decodes a grant as the auth server sends it.
 func grantFrom(tb testing.TB, body string) *auth.Grant {
 	tb.Helper()
 	var g auth.Grant
 	require.NoError(tb, json.Unmarshal([]byte(body), &g))
 	return &g
+}
+
+func TestServer_ReportEnd(t *testing.T) {
+	stats := moqt.SessionStats{BytesSent: 9000, BytesReceived: 120}
+	tests := map[string]struct {
+		endErr     error
+		wantResult string
+	}{
+		"reported":       {wantResult: authOK},
+		"server failing": {endErr: errors.New("503"), wantResult: authError},
+	}
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			server := &fakeAuth{endErr: tt.endErr}
+			srv := &Server{End: server.end}
+			connect := auth.Request{ID: "00ff", Event: auth.EventConnect, Path: "/acme", Query: "jwt=h.p.s"}
+
+			delta := counterDelta(t, func() {
+				srv.reportEnd(context.Background(), connect, stats, endDropped, 42*time.Second+900*time.Millisecond)
+			}, metricAuthRequests.WithLabelValues(auth.EventEnd, tt.wantResult))
+
+			assert.Equal(t, 1.0, delta)
+			want := connect
+			want.Event = auth.EventEnd
+			want.Bytes = auth.Bytes{Sent: 9000, Received: 120}
+			want.Reason = endDropped
+			want.Duration = 42
+			assert.Equal(t, []auth.Request{want}, server.ended())
+		})
+	}
+}
+
+// TestServer_ReportEnd_Off verifies a Server without End, as with auth off,
+// reports nothing.
+func TestServer_ReportEnd_Off(t *testing.T) {
+	delta := counterDelta(t, func() {
+		(&Server{}).reportEnd(context.Background(), auth.Request{ID: "00ff"}, moqt.SessionStats{}, endClosed, time.Second)
+	}, metricAuthRequests.WithLabelValues(auth.EventEnd, authOK))
+
+	assert.Zero(t, delta)
+}
+
+// TestServer_HandleWebTransport_DisallowedOriginNotAsked verifies a request
+// from an Origin the upgrade refuses never reaches the auth server, which
+// would otherwise count a session that never starts.
+func TestServer_HandleWebTransport_DisallowedOriginNotAsked(t *testing.T) {
+	fake := &fakeAuth{body: `{"subscribe":["**"]}`}
+	srv := newTestServer("127.0.0.1:0")
+	srv.Authorize = fake.authorize
+	srv.End = fake.end
+	srv.AllowedOrigins = []string{"https://good.example"}
+	t.Cleanup(func() { _ = srv.Close() })
+	req := httptest.NewRequest(http.MethodGet, "https://relay.example/acme?jwt=a.b.c", nil)
+	req.Method = http.MethodConnect
+	req.Header.Set("Origin", "https://evil.example")
+	rec := httptest.NewRecorder()
+
+	srv.HandleWebTransport(rec, req)
+
+	assert.Empty(t, fake.received(), "a refused Origin never reaches the auth server")
+	assert.Empty(t, fake.ended())
+	assert.Equal(t, http.StatusBadRequest, rec.Code, "gomoqt refuses the upgrade as before")
+}
+
+// TestServer_HandleWebTransport_FailedUpgradeReportsEnd verifies an admitted
+// upgrade that fails anyway reports an end, so the auth server can close the
+// session it counted at connect.
+func TestServer_HandleWebTransport_FailedUpgradeReportsEnd(t *testing.T) {
+	fake := &fakeAuth{body: `{"subscribe":["**"]}`}
+	srv := newTestServer("127.0.0.1:0")
+	srv.Authorize = fake.authorize
+	srv.End = fake.end
+	t.Cleanup(func() { _ = srv.Close() })
+	// An extended CONNECT without the WebTransport headers: admitted, then
+	// refused by the upgrade.
+	req := httptest.NewRequest(http.MethodGet, "https://relay.example/acme?jwt=a.b.c", nil)
+	req.Method = http.MethodConnect
+	rec := httptest.NewRecorder()
+
+	srv.HandleWebTransport(rec, req)
+
+	require.Len(t, fake.received(), 1)
+	connect := fake.received()[0]
+	want := connect
+	want.Event = auth.EventEnd
+	want.Reason = endUpgradeFailed
+	assert.Equal(t, []auth.Request{want}, fake.ended())
 }

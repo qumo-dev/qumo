@@ -14,18 +14,39 @@ import (
 // relay.Server.Authorize takes: err when set, otherwise the grant in body
 // (JSON, as an auth server sends it). The zero value admits every session
 // with a grant that covers nothing. It records every request.
+// revalidateErr, when set, answers every revalidate instead.
 type fakeAuth struct {
-	body string
-	err  error
+	body          string
+	err           error
+	revalidateErr error
 
 	mu       sync.Mutex
 	requests []auth.Request
+	ends     []auth.Request
+}
+
+// end records an end report, which is what relay.Server.End takes.
+func (f *fakeAuth) end(_ context.Context, req auth.Request) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.ends = append(f.ends, req)
+	return nil
+}
+
+// ended returns a copy of the end reports seen so far.
+func (f *fakeAuth) ended() []auth.Request {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]auth.Request(nil), f.ends...)
 }
 
 func (f *fakeAuth) authorize(_ context.Context, req auth.Request) (*auth.Grant, error) {
 	f.mu.Lock()
 	f.requests = append(f.requests, req)
 	f.mu.Unlock()
+	if req.Event == auth.EventRevalidate && f.revalidateErr != nil {
+		return nil, f.revalidateErr
+	}
 	if f.err != nil {
 		return nil, f.err
 	}

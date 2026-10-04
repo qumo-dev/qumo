@@ -2,6 +2,7 @@ package auth
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -13,7 +14,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestClient_Connect(t *testing.T) {
+func TestClient_Authorize(t *testing.T) {
 	tests := map[string]struct {
 		server      *fakeAuthServer
 		wantStatus  int // the HTTP status a WebTransport client would get; 0 means admitted
@@ -36,7 +37,7 @@ func TestClient_Connect(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			auth := tt.server.start(t)
 
-			g, err := auth.Connect(context.Background(), Request{ID: "00ff", Event: EventConnect, Path: "/acme"})
+			g, err := auth.Authorize(context.Background(), Request{ID: "00ff", Event: EventConnect, Path: "/acme"})
 
 			if tt.wantStatus != 0 {
 				require.Error(t, err)
@@ -49,7 +50,7 @@ func TestClient_Connect(t *testing.T) {
 	}
 }
 
-func TestClient_Connect_SendsTheRequest(t *testing.T) {
+func TestClient_Authorize_SendsTheRequest(t *testing.T) {
 	server := fakeAuthServer{body: `{"publish":["**"]}`}
 	auth := server.start(t)
 	req := Request{
@@ -64,13 +65,13 @@ func TestClient_Connect_SendsTheRequest(t *testing.T) {
 		Query:      "jwt=a.b.c",
 	}
 
-	_, err := auth.Connect(context.Background(), req)
+	_, err := auth.Authorize(context.Background(), req)
 
 	require.NoError(t, err)
 	assert.Equal(t, []Request{req}, server.received())
 }
 
-func TestClient_Connect_DoesNotFollowRedirects(t *testing.T) {
+func TestClient_Authorize_DoesNotFollowRedirects(t *testing.T) {
 	elsewhere := &fakeAuthServer{body: `{"publish":["**"]}`}
 	elsewhereURL := elsewhere.start(t).endpoint.String()
 	for _, status := range []int{http.StatusTemporaryRedirect, http.StatusPermanentRedirect, http.StatusFound} {
@@ -82,7 +83,7 @@ func TestClient_Connect_DoesNotFollowRedirects(t *testing.T) {
 			c, err := NewClient(redirect.URL)
 			require.NoError(t, err)
 
-			_, err = c.Connect(context.Background(), Request{ID: "00ff", Event: EventConnect, Query: "jwt=a.b.c"})
+			_, err = c.Authorize(context.Background(), Request{ID: "00ff", Event: EventConnect, Query: "jwt=a.b.c"})
 
 			require.Error(t, err)
 			assert.Equal(t, http.StatusServiceUnavailable, RefusalStatus(err))
@@ -91,11 +92,11 @@ func TestClient_Connect_DoesNotFollowRedirects(t *testing.T) {
 	}
 }
 
-func TestClient_Connect_ServerDown(t *testing.T) {
+func TestClient_Authorize_ServerDown(t *testing.T) {
 	auth := (&fakeAuthServer{}).start(t)
 	auth.endpoint = &url.URL{Scheme: "http", Host: "127.0.0.1:1"} // nothing listens on port 1
 
-	_, err := auth.Connect(context.Background(), Request{ID: "00ff", Event: EventConnect})
+	_, err := auth.Authorize(context.Background(), Request{ID: "00ff", Event: EventConnect})
 
 	require.Error(t, err)
 	assert.Equal(t, http.StatusServiceUnavailable, RefusalStatus(err))
@@ -149,4 +150,77 @@ func TestRefusalStatus_UnknownError(t *testing.T) {
 	got := RefusalStatus(errors.New("boom"))
 
 	assert.Equal(t, http.StatusServiceUnavailable, got)
+}
+
+func TestClient_End(t *testing.T) {
+	req := Request{
+		ID:       "00ff",
+		Event:    EventEnd,
+		Path:     "/acme",
+		Bytes:    Bytes{Sent: 1500, Received: 300},
+		Reason:   "closed",
+		Duration: 42,
+	}
+	tests := map[string]struct {
+		server  *fakeAuthServer
+		wantErr bool
+	}{
+		"2xx":          {server: &fakeAuthServer{status: http.StatusNoContent}},
+		"server error": {server: &fakeAuthServer{status: http.StatusInternalServerError}, wantErr: true},
+	}
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			auth := tt.server.start(t)
+
+			err := auth.End(context.Background(), req)
+
+			if tt.wantErr {
+				assert.Error(t, err)
+			} else {
+				assert.NoError(t, err)
+			}
+			assert.Equal(t, []Request{req}, tt.server.received())
+		})
+	}
+}
+
+func TestClient_End_ServerDown(t *testing.T) {
+	auth := (&fakeAuthServer{}).start(t)
+	auth.endpoint = &url.URL{Scheme: "http", Host: "127.0.0.1:1"} // nothing listens on port 1
+
+	assert.Error(t, auth.End(context.Background(), Request{ID: "00ff", Event: EventEnd}))
+}
+
+// TestRequest_MarshalJSON verifies the end-only members are left out of a
+// connect request, and bytes is left out while both totals are zero.
+func TestRequest_MarshalJSON(t *testing.T) {
+	tests := map[string]struct {
+		req  Request
+		want string
+	}{
+		"connect": {
+			req:  Request{ID: "00ff", Event: EventConnect, Transport: TransportQUIC, Path: "/acme"},
+			want: `{"id":"00ff","event":"connect","transport":"quic","path":"/acme"}`,
+		},
+		"revalidate with no bytes yet": {
+			req:  Request{ID: "00ff", Event: EventRevalidate, Transport: TransportQUIC, Path: "/acme"},
+			want: `{"id":"00ff","event":"revalidate","transport":"quic","path":"/acme"}`,
+		},
+		"bytes in one direction": {
+			req:  Request{ID: "00ff", Event: EventRevalidate, Transport: TransportQUIC, Path: "/acme", Bytes: Bytes{Received: 7}},
+			want: `{"id":"00ff","event":"revalidate","transport":"quic","path":"/acme","bytes":{"sent":0,"received":7}}`,
+		},
+		"end": {
+			req:  Request{ID: "00ff", Event: EventEnd, Transport: TransportQUIC, Path: "/acme", Bytes: Bytes{Sent: 9, Received: 1}, Reason: "dropped", Duration: 3},
+			want: `{"id":"00ff","event":"end","transport":"quic","path":"/acme","bytes":{"sent":9,"received":1},"reason":"dropped","duration":3}`,
+		},
+	}
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			got, err := json.Marshal(tt.req)
+
+			require.NoError(t, err)
+			assert.JSONEq(t, tt.want, string(got))
+		})
+	}
 }

@@ -30,7 +30,9 @@ import (
 // HandleWebTransport). peerCA, when set, plays CA_FILE: a client certificate
 // it verifies makes the session a trusted peer. It returns the relay's
 // loopback address and the server.
-func startAuthRelay(t *testing.T, authorize func(context.Context, auth.Request) (*auth.Grant, error), peerCA *tls.Certificate) (string, *relay.Server) {
+// startAuthRelay starts a relay that admits sessions through authorize. opts
+// adjust the Server before it starts, such as setting End.
+func startAuthRelay(t *testing.T, authorize func(context.Context, auth.Request) (*auth.Grant, error), peerCA *tls.Certificate, opts ...func(*relay.Server)) (string, *relay.Server) {
 	t.Helper()
 	cert := loadTempCert(t)
 
@@ -67,6 +69,9 @@ func startAuthRelay(t *testing.T, authorize func(context.Context, auth.Request) 
 		// peered, it stops an announcement looping between them.
 		TrackMux:  moqt.NewTrackMux(moqt.NewHopID()),
 		Authorize: authorize,
+	}
+	for _, opt := range opts {
+		opt(srv)
 	}
 	httpMux.HandleFunc("/", srv.HandleWebTransport)
 	go func() { _ = srv.ListenAndServe() }()

@@ -67,6 +67,12 @@ func (g *Grant) Expires() time.Time {
 	return g.expires
 }
 
+// Revalidate returns how often the relay asks the auth server again about a
+// live session. Zero means never.
+func (g *Grant) Revalidate() time.Duration {
+	return g.revalidate
+}
+
 // parseGrant decodes an auth server's grant and checks it can be enforced at
 // now. A grant that names nothing is a refusal.
 func parseGrant(raw []byte, now time.Time) (*Grant, error) {
