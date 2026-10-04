@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [v0.10.261005] - 2026-10-05
+
+> **Breaking for operators.** `qumo_relay_sessions_expired_total` is replaced by `qumo_relay_sessions_ended_total{reason}` (use `reason="expired"` for the old count). Sessions are now revalidated with the auth server, which also receives each session's bytes and an `end` report. The HLS egress can connect as a trusted peer with a client certificate. **Not yet enforced:** which paths a session can discover through announce interest and TRACK_INFO (#450).
+
 ### Added
 
 - **Sessions are revalidated with the auth server (#419).** At the grant's `revalidate` cadence, the relay sends the session's connect request again as `event: "revalidate"`, with the same `id`. This is how key revocation, project suspension and spend limits reach live sessions; the auth server decides, and the relay doesn't know which it was.
