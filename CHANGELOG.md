@@ -12,12 +12,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Sessions are revalidated with the auth server (#419).** At the grant's `revalidate` cadence, the relay sends the session's connect request again as `event: "revalidate"`, with the same `id`. This is how key revocation, project suspension and spend limits reach live sessions; the auth server decides, and the relay doesn't know which it was.
   - **A 401 or 403** ends the session with `0x2` (Unauthorized) and reason `refused`.
   - **A grant that can't be enforced** ends it with reason `invalid`.
-  - **An admitted grant** keeps the session and moves its `expires` and cadence. Its patterns aren't compared, since they were fixed at connect.
+  - **An admitted grant** keeps the session and moves its `expires` and cadence. Its patterns aren't compared, since they were fixed at connect. A grant without `expires` keeps the deadline the session has: a revalidate never lifts it.
   - **No answer** (a timeout or a 5xx) is retried with jittered exponential backoff, from about 1 s up to 30 s. The session lives until its current `expires`, and a stalled request is cut off at that deadline.
   - **One timer per session** drives both expiry (#423) and revalidation, and is stopped when the session ends first.
 - **Session bytes and end reports (#424).** The auth server now sees each checked session's usage, so it can attribute it for billing and count live sessions.
   - **Every revalidate** carries the session's cumulative `bytes` (`sent` and `received`, from the relay's side). Sending them on revalidate as well as end is qumo's one extension of moq-auth, so billing sees a long session before it ends.
-  - **When a checked session closes,** the relay sends `event: "end"` with the connect request's `id`, the final `bytes`, `duration` in whole seconds and a `reason`: `expired`, `refused`, `invalid`, `closed` or `dropped` (an idle timeout or stateless reset).
+  - **When a checked session closes,** the relay sends `event: "end"` with the connect request's `id`, the final `bytes`, `duration` in whole seconds and a `reason`: `expired`, `refused`, `invalid`, `closed`, `dropped` (an idle timeout or stateless reset) or `upgrade_failed`.
+  - **Every `connect` gets an `end`,** so the auth server's live-session count can't be inflated. A WebTransport session admitted at connect whose upgrade then fails reports `end` with reason `upgrade_failed` and zero bytes. A request from an `Origin` the relay refuses is no longer sent to the auth server at all.
   - **The end report is best effort:** one attempt with a 2 s timeout, sent after the close, so a slow or failing auth server can't hold a session open. A lost one costs at most one revalidate interval of usage.
   - `qumo_relay_auth_requests_total{event="end"}` counts reports, with `result` `ok` or `error`.
 - **The HLS egress connects as a trusted peer (#432, ADR 0035 Decision 7).** It is an HLS origin, and viewers are authorized in front of it, so it holds no credential.

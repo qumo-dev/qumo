@@ -113,7 +113,10 @@ func (s *Server) HandleWebTransport(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusServiceUnavailable)
 		return
 	}
-	if r.Method != http.MethodConnect {
+	// A request gomoqt won't upgrade goes straight to it, unasked: not an
+	// extended CONNECT, or an Origin it refuses. Asking the auth server first
+	// would count a session that never starts.
+	if r.Method != http.MethodConnect || !s.webtransportHandler.CheckOrigin(r) {
 		s.webtransportHandler.ServeHTTP(w, r)
 		return
 	}
@@ -123,8 +126,14 @@ func (s *Server) HandleWebTransport(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(auth.RefusalStatus(err))
 		return
 	}
-	r = r.WithContext(withAdmission(r.Context(), decidedAdmission(g, req)))
-	s.webtransportHandler.ServeHTTP(w, r)
+	a := decidedAdmission(g, req)
+	s.webtransportHandler.ServeHTTP(w, r.WithContext(withAdmission(r.Context(), a)))
+	// gomoqt serves the session within ServeHTTP. If the upgrade failed
+	// anyway, no session ran and none will report its end: report it here,
+	// so the auth server can close the session it counted at connect.
+	if g != nil && !a.served.Load() {
+		s.reportEnd(r.Context(), req, moqt.SessionStats{}, endUpgradeFailed, 0)
+	}
 }
 
 func (s *Server) init() {
@@ -520,6 +529,7 @@ func (s *Server) serveSession(sess *moqt.Session) {
 	checked := a != nil && a.grant != nil
 	var l *lease
 	if checked {
+		a.served.Store(true)
 		start := time.Now()
 		// Registered first so that it runs last: after the close below,
 		// with the session's final byte totals and close cause.

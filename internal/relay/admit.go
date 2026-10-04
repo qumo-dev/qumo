@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"sync/atomic"
 	"time"
 
 	"github.com/qumo-dev/gomoqt/moqt"
@@ -31,6 +32,9 @@ type admission struct {
 	// deadline is when the session must end, set with grant: its expires,
 	// on the monotonic clock (see deadlineOf). Zero means never.
 	deadline time.Time
+	// served is set once serveSession runs the session, which then reports
+	// its end. An admitted upgrade that fails never sets it.
+	served atomic.Bool
 }
 
 type admissionKey struct{}

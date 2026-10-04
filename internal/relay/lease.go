@@ -35,6 +35,9 @@ const (
 	// endDropped is a session whose connection was lost: an idle timeout or
 	// a stateless reset.
 	endDropped = "dropped"
+	// endUpgradeFailed is a WebTransport session the auth server admitted
+	// but whose upgrade then failed, so it never started.
+	endUpgradeFailed = "upgrade_failed"
 )
 
 // leasedSession is the part of a session a lease uses: it reads its byte
@@ -182,7 +185,11 @@ func (l *lease) check() string {
 		l.next = time.Now().Add(retryDelay(l.failures))
 	case authAdmitted:
 		l.failures = 0
-		l.deadline = deadlineOf(g)
+		// A reply without expires keeps the deadline the session has: a
+		// revalidate may move the deadline, never lift it.
+		if d := deadlineOf(g); !d.IsZero() {
+			l.deadline = d
+		}
 		l.cadence = g.Revalidate()
 		l.next = time.Now().Add(l.cadence)
 	case authUnchecked:
