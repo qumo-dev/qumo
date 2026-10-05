@@ -33,6 +33,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **WebTransport clients see why the relay ended their session.** When the relay ends a session at its grant's `expires` or on a refused revalidate, `moqt.Cause` now gives the client Unauthorized with the reason `expired` or `refused` over WebTransport, as it already did over native QUIC. A client can reconnect with a fresh credential on `expired` and stop on `refused` (#423). The lease integration tests now check this on both transports.
   - **quic-go v0.63.0,** and webtransport-go `v0.13.0-okdaichi.2` (synced with upstream v0.13.0). Dependabot's quic-go bump (#420) is included.
 
+### Fixed
+
+- **RTMP and RTSP ingest no longer sends an old group in place of a new one.** A subscriber that asked for the newest group just as it was being opened could be handed the group eight sequences back, and never got the new one. With one audio frame per group this lost about one frame a minute, heard as a click.
+
 ### Security
 
 - **A relay URL's credential is never logged (#432).** `loadgen` logs only the relay's `host:port`, `smoketest` a URL without its query, and the HLS egress doesn't log `RELAY_URL`. A URL that doesn't parse is reported without quoting it.
