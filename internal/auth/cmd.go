@@ -1,51 +1,37 @@
 package auth
 
 import (
-	"context"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
-	"log/slog"
-	"maps"
-	"net/http"
 	"os"
-	"os/signal"
 	"path/filepath"
-	"slices"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/qumo-dev/qumo/token"
 )
 
-const (
-	defaultAddr     = "127.0.0.1:4440"
-	shutdownTimeout = 10 * time.Second
-	headerTimeout   = 5 * time.Second
-)
+const usage = `Usage: qumo auth <command>
 
-const usage = `Usage: qumo auth [command]
-
-With no command, runs the auth server a relay asks about every session
-(QUMO_AUTH_URL), configured by QUMO_AUTH_KEYS and QUMO_AUTH_ADDR. An app
-signs a capability token per client with its own Ed25519 key; the client
-connects with it (?jwt=…); the auth server verifies it.
+Sets up the credentials a relay verifies (QUMO_AUTH_KEYS). An app signs a
+capability token per client with its own Ed25519 key; the client connects
+with it (?jwt=…); the relay verifies it against the key set.
 
 Commands:
   keygen   Generate a signing key pair: the app's private key, and the public
-           key set the auth server trusts
+           key set the relay trusts
   token    Sign a token by hand, for testing
 
 Run "qumo auth <command> -h" for a command's flags.
 `
 
-// Run executes "qumo auth" with args, the arguments after "auth". With none,
-// it runs the auth server, as "qumo relay" runs the relay.
+// Run executes "qumo auth" with args, the arguments after "auth".
 func Run(args []string) error {
 	if len(args) == 0 {
-		return serve()
+		fmt.Fprint(os.Stderr, usage)
+		return errors.New("qumo auth: a command is needed")
 	}
 	switch cmd, rest := args[0], args[1:]; cmd {
 	case "keygen":
@@ -61,105 +47,6 @@ func Run(args []string) error {
 	}
 }
 
-// serveConfig is the auth server's configuration.
-type serveConfig struct {
-	addr     string
-	keysFile string
-}
-
-// loadServeConfig reads the environment:
-//
-//	QUMO_AUTH_KEYS - required: the JWK Set file of the trusted Ed25519
-//	                 public keys, each with an optional "prefix" member
-//	                 (qumo auth keygen writes one), as a path or a file://
-//	                 URL.
-//	QUMO_AUTH_ADDR - listen address (default 127.0.0.1:4440, loopback:
-//	                 the relay beside it is the only client)
-//
-// A session without a token is refused. For a relay open to everyone, leave
-// its QUMO_AUTH_URL unset instead.
-func loadServeConfig() (serveConfig, error) {
-	cfg := serveConfig{addr: os.Getenv("QUMO_AUTH_ADDR")}
-	if cfg.addr == "" {
-		cfg.addr = defaultAddr
-	}
-	keys := os.Getenv("QUMO_AUTH_KEYS")
-	if keys == "" {
-		return serveConfig{}, errors.New("QUMO_AUTH_KEYS is not set: set it to the key set " +
-			"\"qumo auth keygen\" wrote (keys.json)")
-	}
-	src, err := keySourceFor(keys, "", "")
-	if err != nil {
-		return serveConfig{}, fmt.Errorf("QUMO_AUTH_KEYS: %w", err)
-	}
-	file, ok := src.(*fileKeySource)
-	if !ok {
-		return serveConfig{}, errors.New("QUMO_AUTH_KEYS: the auth server reads a key set file, not a URL " +
-			"(a relay can download a key set itself)")
-	}
-	cfg.keysFile = file.path
-	return cfg, nil
-}
-
-// serve runs the auth server until SIGINT or SIGTERM. Like the relay, it is
-// configured by the environment (loadServeConfig).
-func serve() error {
-	cfg, err := loadServeConfig()
-	if err != nil {
-		return err
-	}
-	keys, err := token.LoadKeySet(cfg.keysFile)
-	if err != nil {
-		return fmt.Errorf("QUMO_AUTH_KEYS: %w", err)
-	}
-
-	mux := http.NewServeMux()
-	mux.Handle("/", &Handler{Keys: keys})
-	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	})
-	srv := &http.Server{Addr: cfg.addr, Handler: mux, ReadHeaderTimeout: headerTimeout}
-
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
-
-	serveErr := make(chan error, 1)
-	go func() { serveErr <- srv.ListenAndServe() }()
-	if err := writeBanner(os.Stderr, cfg, keys); err != nil {
-		return err
-	}
-	slog.Info("auth server: listening", "addr", cfg.addr, "keys", len(keys))
-
-	select {
-	case err := <-serveErr:
-		return fmt.Errorf("listen: %w", err)
-	case <-ctx.Done():
-	}
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
-	defer cancel()
-	if err := srv.Shutdown(shutdownCtx); err != nil && !errors.Is(err, http.ErrServerClosed) {
-		return fmt.Errorf("shutdown: %w", err)
-	}
-	return nil
-}
-
-// writeBanner prints what the server trusts and how a relay reaches it, as
-// the relay prints its endpoints at startup.
-func writeBanner(w io.Writer, cfg serveConfig, keys map[string]token.Key) error {
-	var b strings.Builder
-	url := "http://" + cfg.addr
-	fmt.Fprintf(&b, "qumo auth server\n")
-	fmt.Fprintf(&b, "  %-11s %s\n", "Listen:", url)
-	fmt.Fprintf(&b, "  %-11s QUMO_AUTH_URL=%s\n", "Relay:", url)
-	fmt.Fprintf(&b, "  %-11s %d from %s\n", "Keys:", len(keys), cfg.keysFile)
-	for _, kid := range slices.Sorted(maps.Keys(keys)) {
-		fmt.Fprintf(&b, "  %-11s   %s  %s\n", "", kid, prefixLabel(keys[kid].Prefix))
-	}
-	b.WriteString("\n")
-	_, err := io.WriteString(w, b.String())
-	return err
-}
-
 // prefixLabel describes what a key with prefix may grant, for the terminal.
 func prefixLabel(prefix string) string {
 	if prefix == "" {
@@ -169,7 +56,7 @@ func prefixLabel(prefix string) string {
 }
 
 // runKeygen writes a new signing key pair: the private key, for the app that
-// signs tokens, and a key set holding its public key, for the auth server.
+// signs tokens, and a key set holding its public key, for the relay.
 func runKeygen(args []string, out io.Writer) error {
 	fs := flag.NewFlagSet("qumo auth keygen", flag.ContinueOnError)
 	prefix := fs.String("prefix", "", "confine the key to this path prefix (e.g. acme/app); empty for none")
@@ -279,7 +166,7 @@ func runToken(args []string, out, info io.Writer) error {
 	if _, err := fmt.Fprintln(out, tok); err != nil {
 		return err
 	}
-	// Read the grant back as the auth server will: normalized, with its exp.
+	// Read the grant back as the relay will: normalized, with its exp.
 	c, err := token.Verify(tok, map[string]token.Key{key.ID: key.Public()}, time.Now())
 	if err != nil {
 		return fmt.Errorf("verify the signed token: %w", err)

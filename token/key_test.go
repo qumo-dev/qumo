@@ -100,7 +100,7 @@ func TestParseKeySet(t *testing.T) {
 	}
 }
 
-// What keygen writes, the auth server and the app read back: the public key
+// What keygen writes, the relay and the app read back: the public key
 // set and the private signing key agree on the kid and prefix.
 func TestSigningKey_MarshalJWK_RoundTrip(t *testing.T) {
 	key, err := GenerateKey("/acme/app/")

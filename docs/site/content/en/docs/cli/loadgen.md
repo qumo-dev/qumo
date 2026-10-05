@@ -27,7 +27,7 @@ qumo loadgen <subcommand> [flags]
 |---|---|---|
 | `--ca <file>` | (required unless `--insecure`) | PEM file of the relay's TLS cert/CA to trust. |
 | `--insecure` | `false` | Skip relay TLS verification (dev; self-signed relay). |
-| `--relay <host:port>` | `127.0.0.1:4433` | Relay MoQT address to dial, or a `moqt://host:port/path?jwt=…` URL to connect with a credential to a relay with an auth server. Only the `host:port` is logged. |
+| `--relay <host:port>` | `127.0.0.1:4433` | Relay MoQT address to dial, or a `moqt://host:port/path?jwt=…` URL to connect with a credential to a relay with auth on. Only the `host:port` is logged. |
 | `--path <path>` | `/bench/carry` | Broadcast path. |
 | `--track <name>` | `data` | Track name. |
 | `--gps <float>` | `0.5` | Groups per second (trickle rate). |
@@ -42,7 +42,7 @@ qumo loadgen <subcommand> [flags]
 |---|---|---|
 | `--ca <file>` | (required unless `--insecure`) | PEM file of the relay's TLS cert/CA to trust. |
 | `--insecure` | `false` | Skip relay TLS verification (dev; self-signed relay). |
-| `--relay <host:port>` | `127.0.0.1:4433` | Relay MoQT address to dial, or a `moqt://host:port/path?jwt=…` URL to connect with a credential to a relay with an auth server. Only the `host:port` is logged. |
+| `--relay <host:port>` | `127.0.0.1:4433` | Relay MoQT address to dial, or a `moqt://host:port/path?jwt=…` URL to connect with a credential to a relay with auth on. Only the `host:port` is logged. |
 | `--path <path>` | `/bench/carry` | Broadcast path. |
 | `--track <name>` | `data` | Track name. |
 | `--hold <dur>` | `30s` | How long to hold sessions after establishment. |

@@ -331,7 +331,7 @@ func Relay() error {
 // an advertised address (required for the wildcard bind), and CORS allowing the
 // `mage web` Vite origins. It logs which defaults it applied so the relaxation
 // is visible. These affect ONLY this dev wrapper, not the `qumo relay` binary.
-// With no QUMO_AUTH_URL the relay runs with auth off, admitting every session.
+// With no QUMO_AUTH_KEYS the relay runs with auth off, admitting every session.
 func relayDevEnv() []string {
 	defaults := map[string]string{
 		"RELAY_ADDR":           ":4433",

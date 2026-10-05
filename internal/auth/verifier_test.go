@@ -544,3 +544,11 @@ func writeKeySet(t *testing.T, keys ...token.SigningKey) string {
 	require.NoError(t, os.WriteFile(path, keySetJSON(t, keys), 0o600))
 	return path
 }
+
+// sign mints a 10-minute token granting g.
+func sign(tb testing.TB, key token.SigningKey, g token.Grant) string {
+	tb.Helper()
+	tok, err := token.Sign(key, g, 10*time.Minute)
+	require.NoError(tb, err)
+	return tok
+}

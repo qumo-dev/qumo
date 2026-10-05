@@ -2,7 +2,7 @@
 
 // Black-box tests of the relay's session admission, through its public API
 // (relay.Server with an Authorize function) on a real QUIC/MOQT relay: the
-// auth server is asked at connect, a refused WebTransport client never gets a
+// session is checked at connect, a refused WebTransport client never gets a
 // session, and an admitted one may announce only what its grant covers. Run
 // with `go test -tags=integration ./internal/integration/...`.
 package integration
@@ -154,17 +154,17 @@ func TestRelay_SessionAuth_WebTransport(t *testing.T) {
 		wantRoute bool
 	}{
 		"admitted, path granted": {
-			server:    &fakeAuth{body: `{"publish":["acme/app/**"]}`},
+			server:    &fakeAuth{grant: testGrant(t, "acme/app/**", "", time.Time{}, 0)},
 			wantDial:  true,
 			wantRoute: true,
 		},
 		"admitted, path not granted": {
-			server:   &fakeAuth{body: `{"publish":["acme/other/**"],"subscribe":["acme/**"]}`},
+			server:   &fakeAuth{grant: testGrant(t, "acme/other/**", "acme/**", time.Time{}, 0)},
 			wantDial: true,
 		},
-		"401":               {server: &fakeAuth{err: auth.RefusedError{Status: http.StatusUnauthorized}}},
-		"403":               {server: &fakeAuth{err: auth.RefusedError{Status: http.StatusForbidden}}},
-		"auth server error": {server: &fakeAuth{err: errors.New("auth server unavailable")}},
+		"401":              {server: &fakeAuth{err: auth.RefusedError{Status: http.StatusUnauthorized}}},
+		"403":              {server: &fakeAuth{err: auth.RefusedError{Status: http.StatusForbidden}}},
+		"can't be checked": {server: &fakeAuth{err: errors.New("no key set loaded yet")}},
 	}
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
@@ -214,7 +214,7 @@ func TestRelay_SessionAuth_NativeQUIC(t *testing.T) {
 		wantRequests bool
 	}{
 		"untrusted, admitted": {
-			server:       &fakeAuth{body: `{"publish":["acme/**"]}`},
+			server:       &fakeAuth{grant: testGrant(t, "acme/**", "", time.Time{}, 0)},
 			wantRoute:    true,
 			wantRequests: true,
 		},

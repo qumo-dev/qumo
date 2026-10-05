@@ -72,6 +72,13 @@ func Run(args []string) error {
 		return err
 	}
 
+	// A relay still configured to ask an auth server must not start with
+	// auth off instead.
+	if os.Getenv("QUMO_AUTH_URL") != "" {
+		return errors.New("QUMO_AUTH_URL is no longer supported: the relay verifies credentials itself; " +
+			"unset it, and set QUMO_AUTH_KEYS to the key set")
+	}
+
 	gctune.Apply()
 
 	addr := envconfig.String("RELAY_ADDR", ":4433")
@@ -118,25 +125,19 @@ func Run(args []string) error {
 		slog.Info("relay: peering off (no CA_FILE): every inbound session is admitted like a client")
 	}
 
-	// Session admission (admit.go), one of three: the relay verifies
-	// credentials itself against a key set (QUMO_AUTH_KEYS: a URL or a file),
-	// or asks an auth server (QUMO_AUTH_URL), or, with neither, runs with
-	// auth off.
-	authCfg := auth.LoadConfig()
+	// Session admission (admit.go): the relay verifies credentials itself
+	// against a key set (QUMO_AUTH_KEYS: a URL or a file), or, without one,
+	// runs with auth off.
 	verifierCfg := auth.VerifierConfig{
 		Keys:      os.Getenv("QUMO_AUTH_KEYS"),
 		KeysCache: os.Getenv("QUMO_AUTH_KEYS_CACHE"),
 		UsageURL:  os.Getenv("QUMO_USAGE_URL"),
 		Token:     os.Getenv("QUMO_RELAY_TOKEN"),
 	}
-	keysSet := verifierCfg.Keys != ""
 	authorize := admitUnchecked
 	var reportEnd func(context.Context, auth.Request) error // nil: auth off reports nothing
 	var verifier *auth.Verifier
-	switch {
-	case keysSet && authCfg.URL != "":
-		return errors.New("QUMO_AUTH_URL and QUMO_AUTH_KEYS are both set; the relay verifies one way: unset one")
-	case keysSet:
+	if verifierCfg.Keys != "" {
 		v, err := auth.NewVerifier(verifierCfg)
 		if err != nil {
 			return err
@@ -144,15 +145,8 @@ func Run(args []string) error {
 		verifier = v
 		authorize = v.Authorize
 		reportEnd = v.End
-	case authCfg.URL != "":
-		authClient, err := auth.NewClient(authCfg.URL)
-		if err != nil {
-			return fmt.Errorf("QUMO_AUTH_URL: %w", err)
-		}
-		authorize = authClient.Authorize
-		reportEnd = authClient.End
-	default:
-		slog.Warn("relay: auth is off: no key set and no QUMO_AUTH_URL, so every session is admitted unchecked")
+	} else {
+		slog.Warn("relay: auth is off: no key set (QUMO_AUTH_KEYS), so every session is admitted unchecked")
 	}
 	if verifierCfg.UsageURL != "" && verifier == nil {
 		return errors.New("QUMO_USAGE_URL needs QUMO_AUTH_KEYS: usage is reported for the sessions the relay verifies")
@@ -282,16 +276,13 @@ func Run(args []string) error {
 	for _, p := range relayCfg.Peers {
 		log.Printf("\t%-8s: %s\n", "Peer", sanitizeLog(p.Address))
 	}
-	switch {
-	case verifier != nil:
-		log.Printf("\t%-8s: verified here, key set %s\n", "Auth", sanitizeLog(verifier.Source()))
+	if verifier != nil {
+		log.Printf("\t%-8s: key set %s\n", "Auth", sanitizeLog(verifier.Source()))
 		if verifier.Reporting() {
 			log.Printf("\t%-8s: %s\n", "Usage", sanitizeLog(verifierCfg.UsageURL))
 		}
-	case authCfg.URL != "":
-		log.Printf("\t%-8s: %s\n", "Auth", sanitizeLog(authCfg.URL))
-	default:
-		log.Printf("\t%-8s: off (no key set or QUMO_AUTH_URL): every session is admitted unchecked\n", "Auth")
+	} else {
+		log.Printf("\t%-8s: off (no QUMO_AUTH_KEYS): every session is admitted unchecked\n", "Auth")
 	}
 
 	// The verifier refreshes its key set and sends usage until the relay has

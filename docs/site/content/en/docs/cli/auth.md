@@ -1,6 +1,6 @@
 ---
 title: auth
-description: Generate signing keys, sign test tokens, and run an auth server.
+description: Generate signing keys and sign test tokens.
 weight: 2
 ---
 
@@ -12,19 +12,15 @@ weight: 2
 3. **The client** connects with the token in the relay URL: `https://relay:4433/?jwt=<token>` (WebTransport), or `moqt://relay:4433/?jwt=<token>` (native QUIC).
 4. **The relay** verifies the token itself against the key set (`QUMO_AUTH_KEYS=keys.json qumo relay`) and enforces what it grants. A session ends when its token expires; the client reconnects with a fresh one.
 
-Running `qumo auth` as a server, which the relay then asks (`QUMO_AUTH_URL`), is the alternative to step 4, for when verification should run outside the relay process.
-
 ## Usage
 
 ```
-qumo auth [command] [flags]
+qumo auth <command> [flags]
 ```
-
-With no command, `qumo auth` runs the auth server, as `qumo relay` runs the relay. Most setups don't need it: the relay verifies against the key set itself.
 
 | Command | Description |
 |---|---|
-| `keygen` | Generate a signing key pair: the private key, and the public key set the auth server trusts. |
+| `keygen` | Generate a signing key pair: the private key, and the public key set the relay trusts. |
 | `token` | Sign a token by hand, for testing. |
 
 ### keygen
@@ -41,35 +37,13 @@ qumo auth keygen [-prefix acme/app] [-out signing-key.jwk] [-keys keys.json]
 
 It prints the key's `kid` (its RFC 7638 thumbprint), the paths it may grant, and the next steps. It refuses to overwrite an existing file, since replacing a key would invalidate every token signed with it; if it can't write the key set, it removes the private key it just wrote.
 
-### The server
-
-Configured by the environment:
-
-| Variable | Default | Description |
-|---|---|---|
-| `QUMO_AUTH_KEYS` | (required) | The trusted public keys (`keygen -keys`). Each may carry a `prefix`. |
-| `QUMO_AUTH_ADDR` | `127.0.0.1:4440` | Listen address. Loopback: the relay beside it is the only client. |
-
-Point the relay at it with `QUMO_AUTH_URL=http://127.0.0.1:4440`. A session without a token is refused; for a relay open to everyone, leave `QUMO_AUTH_URL` unset instead.
-
-**What it checks, in order:**
-1. A trusted `kid`, and `alg` EdDSA.
-2. The signature.
-3. Exactly the allowed claims: `path_auth`, `iat`, `nbf`, `exp`, and an optional `jti`.
-4. The time claims, with 60 s leeway and a lifetime of at most one hour.
-5. Every granted path lies within the key's prefix.
-
-A token it can't accept, or none, gets 401; a valid one that grants a path outside its key's prefix gets 403. A key set that lists a key twice is refused at startup.
-
-At startup it prints its address, the `QUMO_AUTH_URL` for the relay, and each trusted key with the paths it may grant. It logs every admitted session with its grant, every refusal with its reason, and every session end with its duration and bytes. The token is never logged.
-
 ### token
 
 ```
 qumo auth token [-key signing-key.jwk] [-publish PATH] [-subscribe PATH] [-ttl 1h]
 ```
 
-Signs a token granting publish at or beneath `-publish` and subscribe at or beneath `-subscribe` (either may be omitted, not both), valid for `-ttl`, at most one hour. The token alone goes to stdout, so `T=$(qumo auth token …)` captures it; what it grants and when it expires go to stderr. A path outside the key's prefix is refused here, as the server would refuse the token; `token.Sign` does the same.
+Signs a token granting publish at or beneath `-publish` and subscribe at or beneath `-subscribe` (either may be omitted, not both), valid for `-ttl`, at most one hour. The token alone goes to stdout, so `T=$(qumo auth token …)` captures it; what it grants and when it expires go to stderr. A path outside the key's prefix is refused here, as the relay would refuse the token; `token.Sign` does the same.
 
 ## Signing in your app (Go)
 

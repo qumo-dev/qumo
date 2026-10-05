@@ -25,12 +25,12 @@ type Key struct {
 }
 
 // SigningKey is an app's private signing key. Keep it on the app's server;
-// only its public half (Public) goes to the auth server.
+// only its public half (Public) goes to the relay.
 type SigningKey struct {
 	// ID is the key's RFC 7638 JWK thumbprint, set in every token's header.
 	ID      string
 	Private ed25519.PrivateKey
-	// Prefix is the prefix the auth server confines this key to; Sign
+	// Prefix is the prefix the relay confines this key to; Sign
 	// refuses a grant outside it.
 	Prefix string
 }
@@ -71,7 +71,7 @@ func (k Key) jwk() jwk {
 	return jwk{Kty: "OKP", Crv: "Ed25519", X: base64.RawURLEncoding.EncodeToString(k.Public), Kid: k.ID, Prefix: k.Prefix}
 }
 
-// MarshalKeySet encodes keys as a JWK Set, the file an auth server loads
+// MarshalKeySet encodes keys as a JWK Set, the file a relay loads
 // (LoadKeySet).
 func MarshalKeySet(keys ...Key) ([]byte, error) {
 	set := struct {

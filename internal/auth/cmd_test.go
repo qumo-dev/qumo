@@ -2,50 +2,19 @@ package auth
 
 import (
 	"bytes"
-	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
-	"github.com/qumo-dev/qumo/token"
+	"github.com/qumo-dev/gomoqt/moqt"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-func TestLoadServeConfig(t *testing.T) {
-	tests := map[string]struct {
-		addr        string
-		keys        string
-		want        serveConfig
-		wantErrText string
-	}{
-		"default address":    {keys: "keys.json", want: serveConfig{addr: defaultAddr, keysFile: "keys.json"}},
-		"address set":        {addr: ":9000", keys: "keys.json", want: serveConfig{addr: ":9000", keysFile: "keys.json"}},
-		"file URL":           {keys: "file:///etc/qumo/keys.json", want: serveConfig{addr: defaultAddr, keysFile: "/etc/qumo/keys.json"}},
-		"no key set":         {wantErrText: "QUMO_AUTH_KEYS is not set"},
-		"a URL isn't a file": {keys: "https://keys.example.com/set", wantErrText: "reads a key set file, not a URL"},
-	}
-	for name, tt := range tests {
-		t.Run(name, func(t *testing.T) {
-			t.Setenv("QUMO_AUTH_ADDR", tt.addr)
-			t.Setenv("QUMO_AUTH_KEYS", tt.keys)
-
-			got, err := loadServeConfig()
-
-			if tt.wantErrText != "" {
-				assert.ErrorContains(t, err, tt.wantErrText)
-				return
-			}
-			require.NoError(t, err)
-			assert.Equal(t, tt.want, got)
-		})
-	}
-}
-
 // The whole developer flow: keygen writes the two files, token signs with the
-// private one, and an auth server loading the public one admits the token.
-func TestRunKeygen_TokenAndServeAgree(t *testing.T) {
+// private one, and a relay loading the public one admits the token.
+func TestRunKeygen_TokenAndVerifierAgree(t *testing.T) {
 	dir := t.TempDir()
 	priv, pub := filepath.Join(dir, "signing-key.jwk"), filepath.Join(dir, "keys.json")
 	var out bytes.Buffer
@@ -57,14 +26,22 @@ func TestRunKeygen_TokenAndServeAgree(t *testing.T) {
 	require.NoError(t, runToken([]string{"-key", priv, "-publish", "acme/app/alice", "-subscribe", "acme/app", "-ttl", "5m"}, &out, &info))
 	tok := strings.TrimSpace(out.String())
 	assert.Equal(t, 2, strings.Count(tok, "."), "stdout carries the token alone, so it can be captured")
-	assert.Contains(t, info.String(), "acme/app/alice/**", "the summary shows the grant as the server will")
-	keys, err := token.LoadKeySet(pub)
+	assert.Contains(t, info.String(), "acme/app/alice/**", "the summary shows the grant as the relay will")
+	v, err := NewVerifier(VerifierConfig{Keys: pub})
 	require.NoError(t, err)
 
-	rec := post(t, &Handler{Keys: keys}, event(t, EventConnect, tok))
+	g, err := v.Authorize(t.Context(), Request{ID: "s1", Event: EventConnect, Query: "jwt=" + tok})
 
-	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
-	assert.Contains(t, rec.Body.String(), `"publish":["acme/app/alice/**"]`)
+	require.NoError(t, err)
+	assert.True(t, g.Publish.Contains(moqt.BroadcastPath("/acme/app/alice/cam")))
+	assert.False(t, g.Publish.Contains(moqt.BroadcastPath("/acme/app/bob")))
+	assert.True(t, g.Subscribe.Contains(moqt.BroadcastPath("/acme/app/bob")))
+}
+
+func TestRun_NoCommand(t *testing.T) {
+	err := Run(nil)
+
+	assert.ErrorContains(t, err, "a command is needed")
 }
 
 func TestRunKeygen_RefusesToOverwrite(t *testing.T) {
