@@ -37,7 +37,7 @@ qumo auth keygen [-prefix acme/app] [-out signing-key.jwk] [-keys keys.json]
 | `-out` | `signing-key.jwk` | The private signing key (an Ed25519 JWK). Keep it on your app's server. |
 | `-keys` | `keys.json` | The public key set (a JWK Set) for `QUMO_AUTH_KEYS_FILE`. |
 
-It refuses to overwrite an existing file, since replacing a key would invalidate every token signed with it. The key's `kid` is its RFC 7638 thumbprint.
+It prints the key's `kid` (its RFC 7638 thumbprint), the paths it may grant, and the next steps. It refuses to overwrite an existing file, since replacing a key would invalidate every token signed with it; if it can't write the key set, it removes the private key it just wrote.
 
 ### The server
 
@@ -57,7 +57,9 @@ Point the relay at it with `QUMO_AUTH_URL=http://127.0.0.1:4440`. A session with
 4. The time claims, with 60 s leeway and a lifetime of at most one hour.
 5. Every granted path lies within the key's prefix.
 
-A token it can't accept gets 401; a valid one that grants nothing usable gets 403. The token is never logged.
+A token it can't accept, or none, gets 401; a valid one that grants a path outside its key's prefix gets 403. A key set that lists a key twice is refused at startup.
+
+At startup it prints its address, the `QUMO_AUTH_URL` for the relay, and each trusted key with the paths it may grant. It logs every admitted session with its grant, every refusal with its reason, and every session end with its duration and bytes. The token is never logged.
 
 ### token
 
@@ -65,7 +67,7 @@ A token it can't accept gets 401; a valid one that grants nothing usable gets 40
 qumo auth token [-key signing-key.jwk] [-publish PATH] [-subscribe PATH] [-ttl 1h]
 ```
 
-Prints a token granting publish at or beneath `-publish` and subscribe at or beneath `-subscribe` (either may be omitted, not both), valid for `-ttl`, at most one hour. A path outside the key's prefix is refused here, as the server would refuse the token; `token.Sign` does the same.
+Signs a token granting publish at or beneath `-publish` and subscribe at or beneath `-subscribe` (either may be omitted, not both), valid for `-ttl`, at most one hour. The token alone goes to stdout, so `T=$(qumo auth token …)` captures it; what it grants and when it expires go to stderr. A path outside the key's prefix is refused here, as the server would refuse the token; `token.Sign` does the same.
 
 ## Signing in your app (Go)
 
