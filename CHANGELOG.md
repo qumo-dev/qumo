@@ -25,7 +25,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     It answers with the grant's subtree patterns and `expires`: 401 for a token it can't accept, 403 for one that grants a path outside its key's prefix. It prints a startup banner and logs each admitted, refused and ended session; the token is never logged.
   - **`qumo auth token -publish … -subscribe … -ttl …`** signs a token by hand, for testing: the token on stdout, what it grants on stderr.
   - **The Go package `github.com/qumo-dev/qumo/token`** is what an app's backend signs with: `token.Sign(key, token.Grant{Publish: …, Subscribe: …}, time.Hour)`. It refuses to sign a path outside the key's prefix, and it is standard-library only.
-  - Ported from qumo-deploy's `qumo-auth` (foalk-inc/qumo-deploy#1249). qumo's managed relays add their key source in qumo-deploy, built on the `token` package (foalk-inc/qumo-deploy#1248).
 
 - **Sessions are revalidated with the auth server (#419).** At the grant's `revalidate` cadence, the relay sends the session's connect request again as `event: "revalidate"`, with the same `id`. This is how key revocation, project suspension and spend limits reach live sessions; the auth server decides, and the relay doesn't know which it was.
   - **A 401 or 403** ends the session with `0x2` (Unauthorized) and reason `refused`.
@@ -96,7 +95,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **Unchanged:** trusted peers and dialed peers are never checked. FETCH stays rejected: the relay registers no fetch handler.
   - **Still open on #418:** path names and metadata are still discoverable, never media. Announce interest lists every path under the requested prefix, and a TRACK request returns a track's publisher properties (TRACK_INFO) for any path. gomoqt answers both inside the shared `TrackMux`, and `TrackInfoProvider.TrackInfo` has no context to tell which session is asking.
   - **New metric:** `qumo_relay_subscribe_authorizations_total{result}` (`admitted`, `not_covered`).
-- **Relays ask an auth server when a session connects; introspection is removed (`internal/relay`).** First step of the relay side of qumo-deploy ADR 0035, as revised on 2026-10-02 (#417, epic #426).
+- **Relays ask an auth server when a session connects; introspection is removed (`internal/relay`).** First step of the relay side of the auth redesign (#417, epic #426).
   - **Setting:** `QUMO_AUTH_URL`, the auth server. (This change first also required one of `QUMO_AUTH_URL` or `QUMO_AUTH_PUBLIC`; auth has since become optional and `QUMO_AUTH_PUBLIC` was removed before release, see #441 above.)
   - **The contract** is a subset of `moq-auth`. The relay POSTs a `connect` request with the session's path and raw `query`, and enforces the grant's `publish` patterns on announcements. The relay never parses the credential, which clients put in the connect URL (`?jwt=`).
   - **Refusal:** a WebTransport client gets 401, 403 or 503 before the upgrade; a native-QUIC session is closed with `0x2`.
@@ -139,10 +138,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - **Local credential verification for self-hosted relays (`internal/credential`, `internal/relay`).**
-  - **What it does:** with `QUMO_RELAY_AUDIENCE` set, the relay verifies publisher credentials itself against the control plane's JWKS instead of calling `POST /v1/credentials/introspect`. It checks the EdDSA signature by `kid`, `exp`/`nbf`/`iat` with 60 s leeway, `iss`, `aud`, and that `path_auth` covers the announced path, matching qumo-deploy's rule.
+  - **What it does:** with `QUMO_RELAY_AUDIENCE` set, the relay verifies publisher credentials itself against the control plane's JWKS instead of calling `POST /v1/credentials/introspect`. It checks the EdDSA signature by `kid`, `exp`/`nbf`/`iat` with 60 s leeway, `iss`, `aud`, and that `path_auth` covers the announced path, matching the control plane's rule.
   - **Key set:** fetched at start (nothing is admitted until it succeeds), refreshed every 5 minutes, and refetched on an unknown `kid` at most every 30 s. It stays fail-static for up to 6 hours if refreshes fail.
-  - **Intended use:** a relay a customer runs for a qumo-deploy dev project (`QUMO_RELAY_AUDIENCE=qumo-relay-dev`). No relay token needed, no revocation feed (a revoked credential stops working at its expiry), no usage reporting.
-  - **Managed relays are unchanged.** `qumo-relay` is refused until they consume the revocation feed (#419). qumo-deploy ADR 0034.
+  - **Intended use:** a relay a customer runs for a dev project (`QUMO_RELAY_AUDIENCE=qumo-relay-dev`). No relay token needed, no revocation feed (a revoked credential stops working at its expiry), no usage reporting.
+  - **Managed relays are unchanged.** `qumo-relay` is refused until they consume the revocation feed (#419).
 
 - **Ramped session admission for capacity probes (`internal/loadgen`, `tools/capacity`).**
   `qumo loadgen subscribe` gains `--ramp R` (sessions/second; the `tools/capacity`
