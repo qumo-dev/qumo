@@ -11,6 +11,7 @@ export type AudioLoss = "starved" | "gaps" | "late" | "overflowed" | "trimmed";
 
 export type LogEvent =
 	| { readonly kind: "started" }
+	| { readonly kind: "stopped" }
 	/** The playback delay was set, or changed from `from`. Milliseconds. */
 	| { readonly kind: "delay"; readonly from: number | undefined; readonly to: number }
 	/** `count` groups of `track`, from sequence `first` to `last`, ended the same way. */
@@ -59,6 +60,9 @@ export class EventLog {
 		for (let i = this.#entries.length - 1; i >= 0; i--) {
 			const entry = this.#entries[i];
 			if (entry === undefined || at - entry.until > MERGE_MS) break;
+			// A run does not carry on across a start or a stop: what follows
+			// belongs to the next stretch of playback.
+			if (entry.event.kind === "started" || entry.event.kind === "stopped") break;
 			const merged = merge(entry.event, event);
 			if (merged === undefined) continue;
 			this.#entries[i] = { at: entry.at, until: at, event: merged };
@@ -117,6 +121,7 @@ export type Severity = "info" | "warn" | "bad";
 export function severity(event: LogEvent): Severity {
 	switch (event.kind) {
 		case "started":
+		case "stopped":
 		case "delay":
 			return "info";
 		case "ranDry":
@@ -155,6 +160,8 @@ export function describe(event: LogEvent): string {
 	switch (event.kind) {
 		case "started":
 			return "Playback started";
+		case "stopped":
+			return "Playback stopped";
 		case "delay":
 			return event.from === undefined
 				? `Playback delay set to ${ms(event.to)}`
@@ -335,8 +342,10 @@ const HEALTH_WINDOW_MS = 10_000;
  * last few seconds, or that there was none.
  */
 export function health(entries: readonly LogEntry[], now: number): Health {
-	const started = entries.findLast((e) => e.event.kind === "started");
-	if (started === undefined) return { level: "idle", summary: "Not playing" };
+	const started = entries.findLast((e) =>
+		e.event.kind === "started" || e.event.kind === "stopped"
+	);
+	if (started?.event.kind !== "started") return { level: "idle", summary: "Not playing" };
 
 	const latest = incidents(entries.filter((e) => e.at >= started.at)).findLast((item) =>
 		item.kind === "incident" && item.incident.until >= now - HEALTH_WINDOW_MS

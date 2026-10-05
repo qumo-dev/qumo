@@ -211,6 +211,25 @@ Deno.test("logs a group the player skipped, and not one that completed", () => {
 	]);
 });
 
+Deno.test("does not log a group that a sent track gave up", () => {
+	const { recorder } = recording();
+	recorder.markSent("video sent #1");
+	recorder.groupArrived("video sent #1", 3);
+
+	recorder.groupEnded("video sent #1", 3, "aborted");
+
+	assertEquals(recorder.log(), []);
+});
+
+Deno.test("logs playback starting and stopping", () => {
+	const { recorder } = recording();
+
+	recorder.playbackStarted();
+	recorder.playbackStopped();
+
+	assertEquals(recorder.log().map((e) => e.event.kind), ["started", "stopped"]);
+});
+
 Deno.test("logs what the audio buffer lost between two reports", () => {
 	const { recorder, clock } = recording();
 	recorder.audioBuffer(QUIET);

@@ -411,7 +411,10 @@ export function withBands(lane: Lane, bands: readonly Band[], now: number, span:
 	}));
 	const behind = shapes.filter((shape) => shape.style !== "marker");
 	const over = shapes.filter((shape) => shape.style === "marker");
-	return { ...lane, shapes: [...behind, ...lane.shapes, ...over] };
+	// A lane's own backgrounds are opaque, so the bands go on top of those.
+	const backgrounds = lane.shapes.filter((shape) => shape.style === "track");
+	const marks = lane.shapes.filter((shape) => shape.style !== "track");
+	return { ...lane, shapes: [...backgrounds, ...behind, ...marks, ...over] };
 }
 
 /** The topmost shape with something to say under a point, if any. */

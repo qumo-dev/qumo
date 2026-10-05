@@ -99,6 +99,7 @@ Deno.test("forgets the oldest entries past five hundred", () => {
 Deno.test("describes each event as a sentence", () => {
 	const cases: readonly { event: LogEvent; want: string }[] = [
 		{ event: { kind: "started" }, want: "Playback started" },
+		{ event: { kind: "stopped" }, want: "Playback stopped" },
 		{
 			event: { kind: "delay", from: undefined, to: 104.4 },
 			want: "Playback delay set to 104 ms",
@@ -144,6 +145,27 @@ Deno.test("ranks what is heard as a break above what only hints at trouble", () 
 
 Deno.test("health is idle until playback has started", () => {
 	assertEquals(health([], 1000), { level: "idle", summary: "Not playing" });
+});
+
+Deno.test("health is idle again once playback has stopped, whatever happens after", () => {
+	const log = entries(
+		0,
+		{ kind: "started" },
+		{ kind: "stopped" },
+		{ kind: "stall", ms: 80, count: 1 },
+	);
+
+	assertEquals(health(log, 5000), { level: "idle", summary: "Not playing" });
+});
+
+Deno.test("a run of trouble does not carry on across a start", () => {
+	const log = new EventLog();
+
+	log.add(0, { kind: "stall", ms: 80, count: 1 });
+	log.add(100, { kind: "started" });
+	log.add(200, { kind: "stall", ms: 90, count: 1 });
+
+	assertEquals(log.entries().map((e) => e.event.kind), ["stall", "started", "stall"]);
 });
 
 Deno.test("health is ok when nothing has gone wrong lately", () => {

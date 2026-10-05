@@ -445,7 +445,9 @@ function EventList(props: {
 	const shown = createMemo(() => incidents(props.log).slice(-LOG_SHOWN).reverse());
 
 	const copy = () => {
-		navigator.clipboard.writeText(formatLog(props.log, wallClock)).then(() => {
+		// The clipboard is absent outside a secure context, such as plain http
+		// on a LAN address.
+		navigator.clipboard?.writeText(formatLog(props.log, wallClock)).then(() => {
 			setCopied(true);
 			setTimeout(() => setCopied(false), COPIED_MS);
 			// reason: without clipboard access the log can still be selected and copied by hand.

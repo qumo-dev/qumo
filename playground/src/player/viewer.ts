@@ -39,6 +39,8 @@ export interface PlaybackObserver {
 	 * from what was reported before.
 	 */
 	playbackStarted?(): void;
+	/** The stretch of playback last reported as starting has ended. */
+	playbackStopped?(): void;
 }
 
 export interface PlaybackTiming {
@@ -76,6 +78,8 @@ export class Viewer {
 	readonly #audio: AudioOutput;
 	// Cancels the current run; undefined while stopped.
 	#cancel: (() => void) | undefined;
+	// Whether the observer has been told of a start it has not been told the end of.
+	#reportedStart = false;
 
 	constructor(init: ViewerInit) {
 		this.#init = init;
@@ -128,6 +132,10 @@ export class Viewer {
 	stop(): void {
 		this.#cancel?.();
 		this.#cancel = undefined;
+		if (this.#reportedStart) {
+			this.#reportedStart = false;
+			this.#init.observer?.playbackStopped?.();
+		}
 		this.#video.hold = undefined;
 		this.#video.flush();
 
@@ -160,6 +168,7 @@ export class Viewer {
 		};
 		const audio = this.#audio;
 		audio.reset(delay);
+		this.#reportedStart = true;
 		run.observer?.playbackStarted?.();
 		const raise = (to: number, why: string) => {
 			if (to <= delay) return;

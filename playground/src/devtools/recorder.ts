@@ -191,7 +191,16 @@ export class Recorder {
 
 		const now = this.#now();
 		if (t.arrivedAt !== undefined && now - t.arrivedAt >= ARRIVAL_GAP_MS) {
-			this.#delayed({ track, kind: "arrival", at: now, duration: now - t.arrivedAt });
+			const delay: DelayRecord = {
+				track,
+				kind: "arrival",
+				at: now,
+				duration: now - t.arrivedAt,
+			};
+			this.#delayed(delay);
+			if (t.renders) {
+				this.#log.add(now, { kind: "arrival", track, ms: delay.duration, count: 1 });
+			}
 		}
 		t.arrivedAt = now;
 
@@ -210,7 +219,9 @@ export class Recorder {
 		// group that already failed) changes nothing.
 		if (record !== undefined && record.state !== "receiving") return;
 		t.ended[outcome]++;
-		if (outcome === "skipped" || outcome === "aborted" || outcome === "late") {
+		// The log is about what is played. A track this side sends is drawn
+		// on the timeline, but a group it gives up is not a break in playback.
+		if (t.renders && (outcome === "skipped" || outcome === "aborted" || outcome === "late")) {
 			this.#log.add(this.#now(), {
 				kind: "group",
 				track,
@@ -252,6 +263,11 @@ export class Recorder {
 		for (const track of this.#tracks.values()) {
 			if (track.renders) track.arrivedAt = undefined;
 		}
+	}
+
+	/** Playback has stopped, by request or because the broadcast could not be played. */
+	playbackStopped(): void {
+		this.#log.add(this.#now(), { kind: "stopped" });
 	}
 
 	audioBuffer(stats: AudioBufferRecord): void {
@@ -298,16 +314,6 @@ export class Recorder {
 	}
 
 	#delayed(delay: DelayRecord): void {
-		// A frame held for an earlier group is the player working as meant;
-		// nothing arriving at all is worth a line.
-		if (delay.kind === "arrival") {
-			this.#log.add(delay.at, {
-				kind: "arrival",
-				track: delay.track,
-				ms: delay.duration,
-				count: 1,
-			});
-		}
 		this.#delays.push(delay);
 		const cutoff = delay.at - WINDOW_MS;
 		let stale = 0;

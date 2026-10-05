@@ -325,6 +325,20 @@ Deno.test("withBands draws a stop behind the lane's marks and the marker over th
 	]);
 });
 
+Deno.test("withBands draws a stop over the lane's own background", () => {
+	const lane = {
+		height: 20,
+		shapes: [
+			{ x0: 0, x1: 1, y: 14, height: 6, style: "track" },
+			{ x0: 0.5, x1: 0.6, y: 0, height: 10, style: "complete" },
+		],
+	} as const;
+
+	const banded = withBands(lane, [{ from: 0, to: 1000, style: "stall" }], 4000, 4000);
+
+	assertEquals(banded.shapes.map((s) => s.style), ["track", "stall", "complete"]);
+});
+
 Deno.test("withBands leaves out a band that ended before the span and cuts one that began before it", () => {
 	const lane = { height: 10, shapes: [] };
 
