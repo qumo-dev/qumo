@@ -10,8 +10,6 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
-	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -29,8 +27,8 @@ func genKey(t *testing.T, prefix string) token.SigningKey {
 	return k
 }
 
-// keySetJSON is a JWK Set of keys, with "admit": false on those in noAdmit.
-func keySetJSON(t *testing.T, keys []token.SigningKey, noAdmit ...token.SigningKey) []byte {
+// keySetJSON is a JWK Set of keys, with "publish": false on those in noPublish.
+func keySetJSON(t *testing.T, keys []token.SigningKey, noPublish ...token.SigningKey) []byte {
 	t.Helper()
 	public := make([]token.Key, len(keys))
 	for i, k := range keys {
@@ -38,7 +36,7 @@ func keySetJSON(t *testing.T, keys []token.SigningKey, noAdmit ...token.SigningK
 	}
 	raw, err := token.MarshalKeySet(public...)
 	require.NoError(t, err)
-	if len(noAdmit) == 0 {
+	if len(noPublish) == 0 {
 		return raw
 	}
 	var set struct {
@@ -46,9 +44,9 @@ func keySetJSON(t *testing.T, keys []token.SigningKey, noAdmit ...token.SigningK
 	}
 	require.NoError(t, json.Unmarshal(raw, &set))
 	for _, entry := range set.Keys {
-		for _, k := range noAdmit {
+		for _, k := range noPublish {
 			if entry["kid"] == k.ID {
-				entry["admit"] = false
+				entry["publish"] = false
 			}
 		}
 	}
@@ -58,14 +56,14 @@ func keySetJSON(t *testing.T, keys []token.SigningKey, noAdmit ...token.SigningK
 }
 
 func TestParseKeySet(t *testing.T) {
-	active, retired := genKey(t, "acme/app"), genKey(t, "acme/app")
+	active, limited := genKey(t, "acme/app"), genKey(t, "acme/app")
 
-	set, err := parseKeySet(keySetJSON(t, []token.SigningKey{active, retired}, retired))
+	set, err := parseKeySet(keySetJSON(t, []token.SigningKey{active, limited}, limited))
 	require.NoError(t, err)
 	assert.Len(t, set.keys, 2)
 	assert.Equal(t, "acme/app", set.keys[active.ID].Prefix)
-	assert.False(t, set.noAdmit[active.ID])
-	assert.True(t, set.noAdmit[retired.ID])
+	assert.False(t, set.noPublish[active.ID])
+	assert.True(t, set.noPublish[limited.ID])
 
 	empty, err := parseKeySet([]byte(`{"keys":[]}`))
 	require.NoError(t, err, "an empty set is valid: it admits nothing")
@@ -130,8 +128,8 @@ func TestVerifier_Grant(t *testing.T) {
 }
 
 func TestVerifier_Decisions(t *testing.T) {
-	active, retired, other := genKey(t, "acme/app"), genKey(t, "acme/app"), genKey(t, "")
-	v := verifierWith(t, keySetJSON(t, []token.SigningKey{active, retired}, retired), time.Now())
+	active, other := genKey(t, "acme/app"), genKey(t, "")
+	v := verifierWith(t, keySetJSON(t, []token.SigningKey{active}), time.Now())
 	unconfined := active
 	unconfined.Prefix = "" // the app's copy of the key, unconfined: the relay's set confines it
 
@@ -141,7 +139,6 @@ func TestVerifier_Decisions(t *testing.T) {
 		wantRevalidate int
 	}{
 		"active key":              {jwt: sign(t, active, token.Grant{Subscribe: "acme/app"}), wantConnect: 200, wantRevalidate: 200},
-		"key that admits no new":  {jwt: sign(t, retired, token.Grant{Subscribe: "acme/app"}), wantConnect: 403, wantRevalidate: 200},
 		"key not in the set":      {jwt: sign(t, other, token.Grant{Subscribe: "acme/app"}), wantConnect: 401, wantRevalidate: 401},
 		"path outside the prefix": {jwt: sign(t, unconfined, token.Grant{Publish: "globex/app"}), wantConnect: 403, wantRevalidate: 403},
 		"prefix's sibling":        {jwt: sign(t, unconfined, token.Grant{Publish: "acme/application"}), wantConnect: 403, wantRevalidate: 403},
@@ -192,17 +189,24 @@ func TestVerifier_WithdrawnKeyEndsSessions(t *testing.T) {
 }
 
 func TestNewVerifier(t *testing.T) {
+	keysFile := writeKeySet(t, genKey(t, "acme/app"))
+	badFile := filepath.Join(t.TempDir(), "bad.json")
+	require.NoError(t, os.WriteFile(badFile, []byte("{"), 0o600))
 	tests := map[string]struct {
 		cfg     VerifierConfig
 		wantErr string
 	}{
-		"file":            {cfg: VerifierConfig{Keys: "keys.json"}},
-		"url":             {cfg: VerifierConfig{Keys: "https://keys.example.com/set", UsageURL: "https://usage.example.com", Token: "t"}},
-		"loopback http":   {cfg: VerifierConfig{Keys: "http://127.0.0.1:8080/keys"}},
-		"unset":           {cfg: VerifierConfig{}, wantErr: "QUMO_AUTH_KEYS: not set"},
-		"remote http":     {cfg: VerifierConfig{Keys: "http://keys.example.com"}, wantErr: "loopback"},
-		"other scheme":    {cfg: VerifierConfig{Keys: "ftp://keys.example.com/set"}, wantErr: "want an https URL or a file path"},
-		"usage over http": {cfg: VerifierConfig{Keys: "k", UsageURL: "http://usage.example.com"}, wantErr: "QUMO_USAGE_URL"},
+		"file":                      {cfg: VerifierConfig{Keys: keysFile}},
+		"missing file":              {cfg: VerifierConfig{Keys: filepath.Join(t.TempDir(), "nope.json")}, wantErr: "QUMO_AUTH_KEYS: key set"},
+		"file that isn't a key set": {cfg: VerifierConfig{Keys: badFile}, wantErr: "QUMO_AUTH_KEYS"},
+		"cache with a file":         {cfg: VerifierConfig{Keys: keysFile, KeysCache: "c.json"}, wantErr: "QUMO_AUTH_KEYS_CACHE"},
+		"url with a cache":          {cfg: VerifierConfig{Keys: "https://keys.example.com/set", KeysCache: filepath.Join(t.TempDir(), "c.json")}},
+		"url":                       {cfg: VerifierConfig{Keys: "https://keys.example.com/set", UsageURL: "https://usage.example.com", Token: "t"}},
+		"loopback http":             {cfg: VerifierConfig{Keys: "http://127.0.0.1:8080/keys"}},
+		"unset":                     {cfg: VerifierConfig{}, wantErr: "QUMO_AUTH_KEYS: not set"},
+		"remote http":               {cfg: VerifierConfig{Keys: "http://keys.example.com"}, wantErr: "loopback"},
+		"other scheme":              {cfg: VerifierConfig{Keys: "ftp://keys.example.com/set"}, wantErr: "want an https URL or a file path"},
+		"usage over http":           {cfg: VerifierConfig{Keys: keysFile, UsageURL: "http://usage.example.com"}, wantErr: "QUMO_USAGE_URL"},
 	}
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
@@ -214,46 +218,6 @@ func TestNewVerifier(t *testing.T) {
 			assert.NoError(t, err)
 		})
 	}
-}
-
-// fakeKeyServer serves a key set with an ETag and records what it was sent.
-// A zero value answers 200 with an empty set.
-type fakeKeyServer struct {
-	mu       sync.Mutex
-	body     []byte
-	etag     string
-	status   int
-	gotAuth  string
-	gotMatch []string
-}
-
-func (f *fakeKeyServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.gotAuth = r.Header.Get("Authorization")
-	f.gotMatch = append(f.gotMatch, r.Header.Get("If-None-Match"))
-	if f.status != 0 {
-		w.WriteHeader(f.status)
-		return
-	}
-	if f.etag != "" {
-		w.Header().Set("ETag", f.etag)
-		if r.Header.Get("If-None-Match") == f.etag {
-			w.WriteHeader(http.StatusNotModified)
-			return
-		}
-	}
-	body := f.body
-	if body == nil {
-		body = []byte(`{"keys":[]}`)
-	}
-	_, _ = w.Write(body)
-}
-
-func (f *fakeKeyServer) set(status int, body []byte, etag string) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.status, f.body, f.etag = status, body, etag
 }
 
 func TestURLKeySource(t *testing.T) {
@@ -337,11 +301,8 @@ func TestVerifier_ReportsUsage(t *testing.T) {
 	sink := &fakeUsageSink{}
 	srv := httptest.NewServer(sink)
 	defer srv.Close()
-	v, err := NewVerifier(VerifierConfig{Keys: "unused", UsageURL: srv.URL, Token: "t"})
+	v, err := NewVerifier(VerifierConfig{Keys: writeKeySet(t, k), UsageURL: srv.URL, Token: "t"})
 	require.NoError(t, err)
-	set, err := parseKeySet(keySetJSON(t, []token.SigningKey{k}))
-	require.NoError(t, err)
-	v.store.replace(set, time.Now())
 	jwt := sign(t, k, token.Grant{Publish: "acme/app/live", Subscribe: "acme/app"})
 
 	_, err = v.Authorize(context.Background(), sessionReq(EventConnect, jwt))
@@ -362,45 +323,11 @@ func TestVerifier_ReportsUsage(t *testing.T) {
 		types = append(types, r.Type)
 		assert.Equal(t, k.ID, r.KID)
 		assert.Equal(t, roleBoth, r.Role)
-		assert.NotEmpty(t, r.JTI)
 	}
 	assert.Equal(t, []string{recordSessionOpen, recordSessionClose}, types, "the close supersedes the pending usage")
 	assert.Equal(t, map[string]int64{"gateway.ingress_bytes": 40, "gateway.egress_bytes": 30}, batches[0][1].Metrics,
 		"what the relay received is ingress, what it sent egress")
 	assert.Equal(t, "Bearer t", sink.gotAuth)
-}
-
-// fakeUsageSink records the batches POSTed to it and answers from a status
-// queue: in order, the last repeating; empty means 200.
-type fakeUsageSink struct {
-	mu       sync.Mutex
-	statuses []int
-	batches  [][]usageRecord
-	gotAuth  string
-}
-
-func (f *fakeUsageSink) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.gotAuth = r.Header.Get("Authorization")
-	var batch []usageRecord
-	if err := json.NewDecoder(r.Body).Decode(&batch); err == nil {
-		f.batches = append(f.batches, batch)
-	}
-	status := http.StatusOK
-	if len(f.statuses) > 0 {
-		status = f.statuses[0]
-		if len(f.statuses) > 1 {
-			f.statuses = f.statuses[1:]
-		}
-	}
-	w.WriteHeader(status)
-}
-
-func (f *fakeUsageSink) received() [][]usageRecord {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return append([][]usageRecord(nil), f.batches...)
 }
 
 func newTestUsage(t *testing.T, sink *fakeUsageSink) *usageReporter {
@@ -412,7 +339,7 @@ func newTestUsage(t *testing.T, sink *fakeUsageSink) *usageReporter {
 	return r
 }
 
-var testUsageSession = usageSession{kid: "k1", jti: "user-42", role: rolePublish, expires: time.Now().Add(time.Hour)}
+var testUsageSession = usageSession{kid: "k1", role: rolePublish, expires: time.Now().Add(time.Hour)}
 
 func TestUsageReporter(t *testing.T) {
 	t.Run("usage is coalesced to the latest report", func(t *testing.T) {
@@ -523,8 +450,7 @@ func TestUsageRecordWire(t *testing.T) {
 		Metrics: map[string]int64{"gateway.ingress_bytes": 1}, TS: "2026-10-05T00:00:00Z"})
 	require.NoError(t, err)
 	assert.JSONEq(t, `{"type":"usage","session_id":"s1","kid":"k1","role":"subscribe",`+
-		`"metrics":{"gateway.ingress_bytes":1},"ts":"2026-10-05T00:00:00Z"}`, string(raw), "no jti or reason when empty")
-	assert.False(t, strings.Contains(string(raw), "jti"))
+		`"metrics":{"gateway.ingress_bytes":1},"ts":"2026-10-05T00:00:00Z"}`, string(raw), "no reason member when empty")
 }
 
 func TestNextRefresh(t *testing.T) {
@@ -561,7 +487,7 @@ func TestKeySourceFor(t *testing.T) {
 	}
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
-			src, err := keySourceFor(tt.value, "t")
+			src, err := keySourceFor(tt.value, "t", "")
 			if tt.wantErr != "" {
 				assert.ErrorContains(t, err, tt.wantErr)
 				return
@@ -588,12 +514,9 @@ func TestVerifier_RevalidateAfterEnd(t *testing.T) {
 	sink := &fakeUsageSink{}
 	srv := httptest.NewServer(sink)
 	defer srv.Close()
-	v, err := NewVerifier(VerifierConfig{Keys: "unused", UsageURL: srv.URL})
+	v, err := NewVerifier(VerifierConfig{Keys: writeKeySet(t, k), UsageURL: srv.URL})
 	require.NoError(t, err)
-	set, err := parseKeySet(keySetJSON(t, []token.SigningKey{k}))
-	require.NoError(t, err)
-	v.store.replace(set, time.Now())
-	jwt := sign(t, k, token.Grant{Subscribe: "acme/app"})
+	jwt := sign(t, k, token.Grant{Publish: "acme/app/live"})
 
 	_, err = v.Authorize(context.Background(), sessionReq(EventConnect, jwt))
 	require.NoError(t, err)
@@ -612,4 +535,12 @@ func TestVerifier_RevalidateAfterEnd(t *testing.T) {
 	}
 	assert.Equal(t, []string{recordSessionOpen, recordSessionClose}, types)
 	assert.False(t, v.usage.close(late.ID, Bytes{}, ""), "the session isn't known again")
+}
+
+// writeKeySet writes a key set file holding keys and returns its path.
+func writeKeySet(t *testing.T, keys ...token.SigningKey) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "keys.json")
+	require.NoError(t, os.WriteFile(path, keySetJSON(t, keys), 0o600))
+	return path
 }

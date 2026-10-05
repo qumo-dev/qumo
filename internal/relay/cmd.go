@@ -124,9 +124,10 @@ func Run(args []string) error {
 	// auth off.
 	authCfg := auth.LoadConfig()
 	verifierCfg := auth.VerifierConfig{
-		Keys:     os.Getenv("QUMO_AUTH_KEYS"),
-		UsageURL: os.Getenv("QUMO_USAGE_URL"),
-		Token:    os.Getenv("QUMO_RELAY_TOKEN"),
+		Keys:      os.Getenv("QUMO_AUTH_KEYS"),
+		KeysCache: os.Getenv("QUMO_AUTH_KEYS_CACHE"),
+		UsageURL:  os.Getenv("QUMO_USAGE_URL"),
+		Token:     os.Getenv("QUMO_RELAY_TOKEN"),
 	}
 	keysSet := verifierCfg.Keys != ""
 	authorize := admitUnchecked

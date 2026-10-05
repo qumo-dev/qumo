@@ -108,6 +108,7 @@ With neither, auth is off: the relay admits every session unchecked and logs a w
 | Variable | Default | Description |
 |---|---|---|
 | `QUMO_AUTH_KEYS` | (unset) | The key set: a JWK Set of Ed25519 public keys, what [`qumo auth keygen`](../cli/auth/#keygen) writes. Its form says where it is: an `https://` URL (or `http://` on a loopback host only) is downloaded about every 30 s (±10%, so relays restarted together spread out) with `If-None-Match`; a path or a `file://` URL is a file, re-read when it changes. Any other scheme is refused at startup. |
+| `QUMO_AUTH_KEYS_CACHE` | (unset: no cache) | A file the relay keeps the last downloaded key set in, and loads at startup, so a relay that restarts while the key-set URL can't be reached still has its keys. For a key-set URL only. |
 | `QUMO_RELAY_TOKEN` | (unset) | Sent as a bearer token to a key-set URL and to `QUMO_USAGE_URL`. |
 | `QUMO_USAGE_URL` | (unset: no reports) | Where the relay reports each verified session's usage (below). Needs a key set. |
 | `QUMO_AUTH_URL` | (unset) | An auth server the relay asks when each client session connects. `https://`, or `http://` on a loopback host only. |
@@ -120,26 +121,32 @@ A credential is a token your app signs with its own key, using the Go package [`
 Each key in the set may carry two members besides the standard JWK ones:
 
 ```json
-{"keys": [{"kty": "OKP", "crv": "Ed25519", "x": "…", "kid": "…", "prefix": "acme/app", "admit": false}]}
+{"keys": [{"kty": "OKP", "crv": "Ed25519", "x": "…", "kid": "…", "prefix": "acme/app", "publish": false}]}
 ```
 
 - **`prefix`** confines the key: a token signed with it may grant only paths at or beneath it.
-- **`"admit": false`** keeps the key's live sessions and starts no new ones, for example while rotating away from it.
+- **`"publish": false`** starts no new sessions that may publish, for example while the key's owner is at a limit on broadcasts. Sessions that only subscribe still start, and live sessions continue.
 
-**Live sessions are re-checked every 30 s** against the current set: a session whose key has left the set ends, with MoQ `0x2` (Unauthorized), so removing a key cuts its sessions off within about a minute at worst (one refresh plus one re-check), about 30 s on average. If the set can't be refreshed, the relay keeps the last one and logs an error; after 6 hours without a refresh it admits no new sessions, while live ones run to their expiry. Before the first successful load it admits nothing.
+**Live sessions are re-checked every 30 s** against the current set: a session whose key has left the set ends, with MoQ `0x2` (Unauthorized), so removing a key cuts its sessions off within about a minute at worst (one refresh plus one re-check), about 30 s on average. If the set can't be refreshed, the relay keeps the last one and logs an error; after 6 hours without a refresh it admits no new sessions, while live ones run to their expiry. Before the first successful load it admits nothing. With `QUMO_AUTH_KEYS_CACHE` set, the last downloaded set is loaded at startup, and its age counts toward the 6 hours, so a restart doesn't extend how long an old set is trusted. A key set *file* that can't be read stops the relay at startup, rather than leaving it running and refusing everyone.
 
 ### Usage reports
 With `QUMO_USAGE_URL` set, the relay POSTs a JSON array of records to it every 10 s:
 
 ```json
-[{"type": "session_open", "session_id": "…", "kid": "…", "role": "publish", "jti": "…", "ts": "…"},
+[{"type": "session_open", "session_id": "…", "kid": "…", "role": "publish", "ts": "…"},
  {"type": "usage", "session_id": "…", "kid": "…", "role": "publish",
   "metrics": {"gateway.ingress_bytes": 10162, "gateway.egress_bytes": 9223}, "ts": "…"},
  {"type": "session_close", "session_id": "…", "kid": "…", "role": "publish",
   "metrics": {"gateway.ingress_bytes": 10438, "gateway.egress_bytes": 9165}, "reason": "closed", "ts": "…"}]
 ```
 
-`role` is `publish`, `subscribe` or `both`, from what the token grants; `jti` is the token's, when it has one. Byte counts are cumulative and from the relay's point of view (what it received is ingress), so a receiver can take a resent record without counting it twice. Usage is reported every 30 s per live session; records go out in batches of at most 500; a failed send, a 401, 403, 408, 413 or 429 included, keeps the records and retries them, and only a batch the receiver can't read (400 or 422) is dropped. When the relay shuts down, it waits up to 5 s for its last sessions to record their end before the final send.
+`role` is `publish`, `subscribe` or `both`, from what the token grants. Byte counts are cumulative and from the relay's point of view (what it received is ingress), so a receiver can take a resent record without counting it twice.
+
+**Sessions that may publish are reported one by one,** as above: an open, usage every 30 s, and a close.
+
+**Sessions that only subscribe are reported together.** Viewers outnumber publishers by orders of magnitude, and a record per viewer would make the receiver's load grow with the audience. Their bytes are added up per key into one running total since the relay started, sent as a `usage` record whose `session_id` is `viewers.<run>.<kid>`, where `<run>` is new each time the relay starts (so a restart begins new totals rather than lowering old ones). There is no open or close for them, and a total is sent only when it has changed.
+
+Records go out in batches of at most 500. A failed send, a 401, 403, 408, 413 or 429 included, keeps the records and retries them (logged once, then again when it recovers); only a batch the receiver can't read (400 or 422) is dropped. When the relay shuts down, it waits up to 5 s for its last sessions to record their end before the final send.
 
 ### Asking an auth server
 The auth server holds the policy: which credentials it accepts, and what a session that presents none may do. [`qumo auth`](../cli/auth/) is one; any server that speaks the contract below works too.

@@ -11,12 +11,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **The relay verifies credentials itself, against a key set (`QUMO_AUTH_KEYS`).** No auth server is needed: `QUMO_AUTH_KEYS=keys.json qumo relay` with the key set `qumo auth keygen` writes. The value's form says where the set is: an `https://` URL (or `http://` on a loopback host) is downloaded, a path or `file://` URL is read, and any other scheme is refused at startup.
   - **The checks** are the `token` package's, the same as `qumo auth`'s: a known `kid`, the EdDSA signature, exactly the allowed claims, the times (60 s leeway, at most an hour), and every granted path within the key's `prefix`. A session may publish and subscribe where its token says and ends when the token expires.
-  - **The key set** is a file, re-read when it changes, or a URL, downloaded every 30 s (±10% jitter, so relays restarted together don't poll in step) with `If-None-Match` and `QUMO_RELAY_TOKEN` as a bearer token (https, or http on a loopback host). A key may carry `"admit": false`: it keeps its live sessions and starts no new ones.
+  - **The key set** is a file, re-read when it changes, or a URL, downloaded every 30 s (±10% jitter, so relays restarted together don't poll in step) with `If-None-Match` and `QUMO_RELAY_TOKEN` as a bearer token (https, or http on a loopback host).
   - **Live sessions are re-checked every 30 s:** one whose key has left the set ends with `0x2` (Unauthorized), so removing a key cuts its sessions off within about a minute.
   - **Fail-static:** a failed refresh keeps the last set; after 6 h without one, new sessions are refused while live ones run to their expiry. Nothing is admitted before the first load.
   - **Usage reports (`QUMO_USAGE_URL`):** each verified session's open, its cumulative bytes every 30 s, and its close with the final totals and reason, POSTed as JSON every 10 s with the same bearer token. Usage is coalesced per session and sent in batches of at most 500. A failed send, a 401, 403, 408, 413 or 429 included, keeps the records for the next try; only a batch the receiver can't read (400 or 422) is dropped. At shutdown the relay waits up to 5 s for its last sessions to record their end before the final send.
   - **One way at a time:** a key set and `QUMO_AUTH_URL` together are refused at startup. The auth server remains for policy beyond keys and paths. The startup banner says which is in use.
   - `qumo auth keygen`'s next steps now point the relay at the key set directly.
+  - **Viewers are reported together.** Sessions that only subscribe no longer send a record each: their bytes are added up per key into one running total per relay run (`session_id` `viewers.<run>.<kid>`), so a usage receiver's load follows the number of keys, not the size of the audience. Sessions that may publish are still reported one by one.
+  - **`"publish": false`** on a key starts no new sessions that may publish, while viewers still connect and live sessions continue: for a limit on broadcasts that must not lock the audience out.
+  - **`QUMO_AUTH_KEYS_CACHE`:** a file the last downloaded key set is kept in and loaded from at startup, so a relay restarted while the key-set URL is unreachable still admits sessions. The file's age counts toward the 6 h limit.
+  - **A key set file that can't be read stops the relay at startup.** It used to start and refuse every session.
+  - **A usage outage is logged once,** and once more when sends recover, not every 10 s.
 
 - **The playground's DevTools panel says how playback is going, and keeps a log in words (`playground/src/devtools/log.ts`).**
   - **Status:** one line at the top, "Playing normally" or what is wrong and why, from the last ten seconds.

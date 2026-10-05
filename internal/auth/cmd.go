@@ -88,7 +88,7 @@ func loadServeConfig() (serveConfig, error) {
 		return serveConfig{}, errors.New("QUMO_AUTH_KEYS is not set: set it to the key set " +
 			"\"qumo auth keygen\" wrote (keys.json)")
 	}
-	src, err := keySourceFor(keys, "")
+	src, err := keySourceFor(keys, "", "")
 	if err != nil {
 		return serveConfig{}, fmt.Errorf("QUMO_AUTH_KEYS: %w", err)
 	}
