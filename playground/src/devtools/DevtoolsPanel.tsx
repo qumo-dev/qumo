@@ -259,12 +259,12 @@ function SessionRow(props: {
 
 	return (
 		<dl class="devtools-session">
-			<div title="How often, and for how long at most, the page's main thread stopped in the last minute. Media passes through it, so a stop longer than the audio buffer is a gap in the sound.">
-				<dt>Main thread stops</dt>
+			<div title="How often, and for how long at most, the page itself stopped (its main thread was busy) in the last minute. All media passes through it, so a stop longer than the audio buffer is a gap in the sound.">
+				<dt>Page stops</dt>
 				<dd>
 					{props.stalls.length === 0
-						? "none"
-						: `${props.stalls.length}, longest ${Math.round(longest())} ms`}
+						? "never"
+						: `${times(props.stalls.length)}, ${Math.round(longest())} ms at most`}
 				</dd>
 			</div>
 			<Show when={(props.reading?.rtt ?? 0) > 0}>
@@ -318,49 +318,53 @@ function AudioBufferRow(props: {
 	// the last minute, in one of the two ways the player can see.
 	const delayed = (kind: DelayRecord["kind"]) => {
 		const found = props.delays.filter((d) => d.track === "audio" && d.kind === kind);
-		if (found.length === 0) return "none";
+		if (found.length === 0) return "never";
 		const longest = found.reduce((most, d) => Math.max(most, d.duration), 0);
-		return `${found.length}, longest ${Math.round(longest)} ms`;
+		return `${times(found.length)}, ${Math.round(longest)} ms at most`;
 	};
 	const percent = (rate: number) => `${(rate * 100).toFixed(1)}%`;
 
 	return (
 		<dl class="devtools-session">
-			<div title="Times the audio buffer emptied since the page loaded, and the silence played while it refilled. Each one is a break in the sound.">
-				<dt>Ran dry</dt>
-				<dd>
-					{`${props.audio.underruns}× (${Math.round(props.audio.starved)} ms silent)`}
-				</dd>
+			<div title="Times the audio buffer emptied, so far. Each one is a break in the sound.">
+				<dt>Audio buffer ran dry</dt>
+				<dd>{props.audio.underruns === 0 ? "never" : times(props.audio.underruns)}</dd>
 			</div>
-			<div title="Silence played, since the page loaded, where a frame of audio never arrived.">
-				<dt>Missing</dt>
+			<div title="Silence played, so far, while the audio buffer filled back up: after it ran dry, or after the playback delay was raised.">
+				<dt>Silence while refilling</dt>
+				<dd>{Math.round(props.audio.starved)} ms</dd>
+			</div>
+			<div title="Silence played, so far, where a frame of audio never arrived.">
+				<dt>Audio that never arrived</dt>
 				<dd>{Math.round(props.audio.gaps)} ms</dd>
 			</div>
-			<div title="Audio, since the page loaded, that arrived after its time had already been played.">
-				<dt>Too late</dt>
+			<div title="Audio, so far, that arrived after its time had already been played.">
+				<dt>Audio that arrived too late</dt>
 				<dd>{Math.round(props.audio.late)} ms</dd>
 			</div>
-			<div title="Audio dropped, since the page loaded, because more arrived at once than the buffer holds. A backlog passed over as playback starts is not counted.">
-				<dt>Overflowed</dt>
+			<div title="Audio dropped, so far, because more arrived at once than the buffer holds. A backlog passed over as playback starts is not counted.">
+				<dt>Audio dropped (too much at once)</dt>
 				<dd>{Math.round(props.audio.overflowed)} ms</dd>
 			</div>
-			<div title="Audio skipped, since the page loaded, to bring the delay back down after the buffer had held more than it needed.">
-				<dt>Trimmed</dt>
+			<div title="Audio skipped, so far, to bring the delay back down after the buffer had held more than it needed.">
+				<dt>Audio skipped to catch up</dt>
 				<dd>{Math.round(props.audio.trimmed)} ms</dd>
 			</div>
 			<div title="Stretches of 120 ms or more, in the last minute, in which no audio came off the connection.">
-				<dt>Not arriving</dt>
+				<dt>Nothing arriving</dt>
 				<dd>{delayed("arrival")}</dd>
 			</div>
 			<div title="Times, in the last minute, audio that had arrived waited 20 ms or more in the player for an earlier group.">
-				<dt>Held back</dt>
+				<dt>Waited</dt>
 				<dd>{delayed("held")}</dd>
 			</div>
 			<Show when={rates()}>
 				{(r) => (
-					<div title="How fast each end of the audio buffer runs, against real time. They should match.">
-						<dt>Clocks</dt>
-						<dd>{`media ${percent(r().media)}, output ${percent(r().output)}`}</dd>
+					<div title="How fast audio arrives and how fast it is played, against real time. Both should be 100%. Arriving faster than playing fills the buffer until some is dropped; slower empties it.">
+						<dt>Audio speed</dt>
+						<dd>
+							{`arriving at ${percent(r().media)}, playing at ${percent(r().output)}`}
+						</dd>
 					</div>
 				)}
 			</Show>
@@ -411,13 +415,13 @@ function KeyFigures(props: {
 			</Show>
 			<Show when={props.audio}>
 				{(audio) => (
-					<div title="Audio waiting to be played, against the delay it aims to hold. It should stay near the aim; at zero the sound breaks.">
+					<div title="How much audio is waiting to be played, and how much it aims to keep waiting (the playback delay). It swings around the aim; at zero the sound breaks.">
 						<dt>Audio buffer</dt>
 						<dd>
-							{`${Math.round(audio().buffered)} ms of ${
+							{`${Math.round(audio().buffered)} ms (aims for ${
 								Math.round(audio().latency)
-							} ms`}
-							{audio().stalled ? " (refilling)" : ""}
+							} ms)`}
+							{audio().stalled ? ", refilling" : ""}
 						</dd>
 					</div>
 				)}
@@ -591,19 +595,21 @@ function TrackTable(props: { reading: Reading }) {
 						>
 							Latest group
 						</th>
-						<th scope="col" title="Groups received in full, since the page loaded.">
-							Complete
+						<th scope="col" title="Groups received in full, so far.">
+							Received
 						</th>
 						<th
 							scope="col"
-							title="Groups the player moved on from before they had finished arriving."
+							title="Groups, so far, that the player moved on from before they had finished arriving."
 						>
 							Skipped
 						</th>
-						<th scope="col" title="Groups the sender gave up part-way.">Aborted</th>
+						<th scope="col" title="Groups, so far, that the sender gave up part-way.">
+							Aborted
+						</th>
 						<th
 							scope="col"
-							title="Groups that arrived after playback had already passed them."
+							title="Groups, so far, that arrived after playback had already passed them."
 						>
 							Late
 						</th>
@@ -1103,6 +1109,11 @@ function ratesSince(
 		});
 	}
 	return rates;
+}
+
+// A count of occurrences, in words: "once", "3 times".
+function times(count: number): string {
+	return count === 1 ? "once" : `${count} times`;
 }
 
 function formatBitrate(bitsPerSecond: number): string {

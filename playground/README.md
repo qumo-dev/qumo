@@ -182,7 +182,7 @@ browser-trusted for every origin; in the self-signed fallback a single
   why. Under it are the playback delay, arrival jitter and audio buffer level
   (the other counters are under "More figures"; every label explains itself
   when pointed at), a table of tracks (bitrate, frame rate, latest
-  group, and how many groups ended complete, skipped, aborted or late), and a
+  group, and how many groups were received in full, skipped, aborted or late), and a
   timeline of each track's groups: when each arrived, how it ended, and below
   that what was played. An "audio buffer" lane shows the audio buffer's level
   and marks each moment sound was lost; a stop of the page is a band across
