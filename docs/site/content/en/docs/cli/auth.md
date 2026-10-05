@@ -45,11 +45,10 @@ Configured by the environment:
 
 | Variable | Default | Description |
 |---|---|---|
+| `QUMO_AUTH_KEYS_FILE` | (required) | The trusted public keys (`keygen -keys`). Each may carry a `prefix`. |
 | `QUMO_AUTH_ADDR` | `127.0.0.1:4440` | Listen address. Loopback: the relay beside it is the only client. |
-| `QUMO_AUTH_KEYS_FILE` | | The trusted public keys (`keygen -keys`). Each may carry a `prefix`. |
-| `QUMO_AUTH_ANONYMOUS` | | Comma-separated subtree patterns (`anon/**`) a session with no token may publish and subscribe to. `**` opens everything, for development only. A session that presents a token is always verified. |
 
-At least one of `QUMO_AUTH_KEYS_FILE` and `QUMO_AUTH_ANONYMOUS` must be set. Point the relay at it with `QUMO_AUTH_URL=http://127.0.0.1:4440`.
+Point the relay at it with `QUMO_AUTH_URL=http://127.0.0.1:4440`. A session without a token is refused; for a relay open to everyone, leave `QUMO_AUTH_URL` unset instead.
 
 **What it checks, in order:**
 1. A trusted `kid`, and `alg` EdDSA.

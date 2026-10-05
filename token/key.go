@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/json/jsontext"
 	"encoding/json/v2"
 	"errors"
 	"fmt"
@@ -79,7 +80,7 @@ func MarshalKeySet(keys ...Key) ([]byte, error) {
 	for _, k := range keys {
 		set.Keys = append(set.Keys, k.jwk())
 	}
-	return json.Marshal(set)
+	return json.Marshal(set, jsontext.WithIndent("  "))
 }
 
 // MarshalJWK encodes k as a private JWK, the file an app signs with
@@ -87,7 +88,7 @@ func MarshalKeySet(keys ...Key) ([]byte, error) {
 func (k SigningKey) MarshalJWK() ([]byte, error) {
 	j := k.Public().jwk()
 	j.D = base64.RawURLEncoding.EncodeToString(k.Private.Seed())
-	return json.Marshal(j)
+	return json.Marshal(j, jsontext.WithIndent("  "))
 }
 
 // ParseSigningKey decodes a private Ed25519 JWK.

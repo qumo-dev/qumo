@@ -7,10 +7,12 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"maps"
 	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"slices"
 	"strings"
 	"syscall"
 	"time"
@@ -27,9 +29,9 @@ const (
 const usage = `Usage: qumo auth [command]
 
 With no command, runs the auth server a relay asks about every session
-(QUMO_AUTH_URL), configured by QUMO_AUTH_ADDR, QUMO_AUTH_KEYS_FILE and
-QUMO_AUTH_ANONYMOUS. An app signs a capability token per client with its own
-Ed25519 key; the client connects with it (?jwt=…); the auth server verifies it.
+(QUMO_AUTH_URL), configured by QUMO_AUTH_KEYS_FILE and QUMO_AUTH_ADDR. An app
+signs a capability token per client with its own Ed25519 key; the client
+connects with it (?jwt=…); the auth server verifies it.
 
 Commands:
   keygen   Generate a signing key pair: the app's private key, and the public
@@ -49,7 +51,7 @@ func Run(args []string) error {
 	case "keygen":
 		return runKeygen(rest, os.Stdout)
 	case "token":
-		return runToken(rest, os.Stdout)
+		return runToken(rest, os.Stdout, os.Stderr)
 	case "-h", "--help", "help":
 		_, err := fmt.Fprint(os.Stdout, usage)
 		return err
@@ -61,23 +63,20 @@ func Run(args []string) error {
 
 // serveConfig is the auth server's configuration.
 type serveConfig struct {
-	addr      string
-	keysFile  string
-	anonymous []string
+	addr     string
+	keysFile string
 }
 
 // loadServeConfig reads the environment:
 //
+//	QUMO_AUTH_KEYS_FILE - required: JWK Set of the trusted Ed25519 public
+//	                      keys, each with an optional "prefix" member (qumo
+//	                      auth keygen writes one)
 //	QUMO_AUTH_ADDR      - listen address (default 127.0.0.1:4440, loopback:
 //	                      the relay beside it is the only client)
-//	QUMO_AUTH_KEYS_FILE - JWK Set of the trusted Ed25519 public keys, each
-//	                      with an optional "prefix" member (qumo auth keygen
-//	                      writes one)
-//	QUMO_AUTH_ANONYMOUS - comma-separated subtree patterns ("anon/**") that a
-//	                      session with no credential may publish and subscribe
-//	                      to; "**" opens everything, for development only
 //
-// At least one of QUMO_AUTH_KEYS_FILE and QUMO_AUTH_ANONYMOUS must be set.
+// A session without a token is refused. For a relay open to everyone, leave
+// its QUMO_AUTH_URL unset instead.
 func loadServeConfig() (serveConfig, error) {
 	cfg := serveConfig{
 		addr:     os.Getenv("QUMO_AUTH_ADDR"),
@@ -86,33 +85,11 @@ func loadServeConfig() (serveConfig, error) {
 	if cfg.addr == "" {
 		cfg.addr = defaultAddr
 	}
-	if raw := os.Getenv("QUMO_AUTH_ANONYMOUS"); raw != "" {
-		anonymous, err := parsePatternList(raw)
-		if err != nil {
-			return serveConfig{}, fmt.Errorf("QUMO_AUTH_ANONYMOUS: %w", err)
-		}
-		cfg.anonymous = anonymous
-	}
-	if cfg.keysFile == "" && len(cfg.anonymous) == 0 {
-		return serveConfig{}, errors.New("neither QUMO_AUTH_KEYS_FILE nor QUMO_AUTH_ANONYMOUS is set: " +
-			"set QUMO_AUTH_KEYS_FILE to the trusted signing keys, QUMO_AUTH_ANONYMOUS to what sessions " +
-			"without a credential may use, or both")
+	if cfg.keysFile == "" {
+		return serveConfig{}, errors.New("QUMO_AUTH_KEYS_FILE is not set: set it to the key set " +
+			"\"qumo auth keygen\" wrote (keys.json)")
 	}
 	return cfg, nil
-}
-
-// parsePatternList parses comma-separated subtree patterns, as a grant
-// carries them, and returns them trimmed.
-func parsePatternList(raw string) ([]string, error) {
-	var patterns []string
-	for s := range strings.SplitSeq(raw, ",") {
-		s = strings.TrimSpace(s)
-		if _, err := parsePattern(s); err != nil {
-			return nil, err
-		}
-		patterns = append(patterns, s)
-	}
-	return patterns, nil
 }
 
 // serve runs the auth server until SIGINT or SIGTERM. Like the relay, it is
@@ -122,15 +99,13 @@ func serve() error {
 	if err != nil {
 		return err
 	}
-	var keys map[string]token.Key
-	if cfg.keysFile != "" {
-		if keys, err = token.LoadKeySet(cfg.keysFile); err != nil {
-			return fmt.Errorf("QUMO_AUTH_KEYS_FILE: %w", err)
-		}
+	keys, err := token.LoadKeySet(cfg.keysFile)
+	if err != nil {
+		return fmt.Errorf("QUMO_AUTH_KEYS_FILE: %w", err)
 	}
 
 	mux := http.NewServeMux()
-	mux.Handle("/", &Handler{Keys: keys, Anonymous: cfg.anonymous})
+	mux.Handle("/", &Handler{Keys: keys})
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
@@ -141,8 +116,10 @@ func serve() error {
 
 	serveErr := make(chan error, 1)
 	go func() { serveErr <- srv.ListenAndServe() }()
-	slog.Info("auth server: listening", "addr", cfg.addr, "keys", len(keys), "keys_file", cfg.keysFile,
-		"anonymous", cfg.anonymous)
+	if err := writeBanner(os.Stderr, cfg, keys); err != nil {
+		return err
+	}
+	slog.Info("auth server: listening", "addr", cfg.addr, "keys", len(keys))
 
 	select {
 	case err := <-serveErr:
@@ -155,6 +132,31 @@ func serve() error {
 		return fmt.Errorf("shutdown: %w", err)
 	}
 	return nil
+}
+
+// writeBanner prints what the server trusts and how a relay reaches it, as
+// the relay prints its endpoints at startup.
+func writeBanner(w io.Writer, cfg serveConfig, keys map[string]token.Key) error {
+	var b strings.Builder
+	url := "http://" + cfg.addr
+	fmt.Fprintf(&b, "qumo auth server\n")
+	fmt.Fprintf(&b, "  %-11s %s\n", "Listen:", url)
+	fmt.Fprintf(&b, "  %-11s QUMO_AUTH_URL=%s\n", "Relay:", url)
+	fmt.Fprintf(&b, "  %-11s %d from %s\n", "Keys:", len(keys), cfg.keysFile)
+	for _, kid := range slices.Sorted(maps.Keys(keys)) {
+		fmt.Fprintf(&b, "  %-11s   %s  %s\n", "", kid, prefixLabel(keys[kid].Prefix))
+	}
+	b.WriteString("\n")
+	_, err := io.WriteString(w, b.String())
+	return err
+}
+
+// prefixLabel describes what a key with prefix may grant, for the terminal.
+func prefixLabel(prefix string) string {
+	if prefix == "" {
+		return "any path (no prefix)"
+	}
+	return prefix + "/**"
 }
 
 // runKeygen writes a new signing key pair: the private key, for the app that
@@ -189,9 +191,26 @@ func runKeygen(args []string, out io.Writer) error {
 		// a key whose public half was never saved.
 		return errors.Join(err, removeFile(*privPath))
 	}
-	_, err = fmt.Fprintf(out, "kid:        %s\nprefix:      %q\nsigning key: %s (private: keep it on the app's server)\nkey set:     %s (set QUMO_AUTH_KEYS_FILE to it)\n",
-		key.ID, key.Prefix, *privPath, *pubPath)
+	var b strings.Builder
+	fmt.Fprintf(&b, "Generated an Ed25519 signing key.\n\n")
+	fmt.Fprintf(&b, "  %-13s %s\n", "Key ID:", key.ID)
+	fmt.Fprintf(&b, "  %-13s %s\n", "Grants:", prefixLabel(key.Prefix))
+	fmt.Fprintf(&b, "  %-13s %s  (private: keep it on your app's server)\n", "Signing key:", *privPath)
+	fmt.Fprintf(&b, "  %-13s %s  (public: for the auth server)\n", "Key set:", *pubPath)
+	fmt.Fprintf(&b, "\nNext:\n")
+	fmt.Fprintf(&b, "  1. Run the auth server:   QUMO_AUTH_KEYS_FILE=%s qumo auth\n", *pubPath)
+	fmt.Fprintf(&b, "  2. Point the relay at it: QUMO_AUTH_URL=http://%s qumo relay\n", defaultAddr)
+	fmt.Fprintf(&b, "  3. Sign a test token:     qumo auth token -key %s -publish %s\n", *privPath, examplePath(key.Prefix))
+	_, err = io.WriteString(out, b.String())
 	return err
+}
+
+// examplePath is a path a key with prefix may grant, for a usage example.
+func examplePath(prefix string) string {
+	if prefix == "" {
+		return "demo"
+	}
+	return prefix + "/demo"
 }
 
 // writeNew writes data to a new file at path, refusing to replace one. It
@@ -230,8 +249,9 @@ func removeFile(path string) error {
 	return nil
 }
 
-// runToken signs a token with a signing key, for testing a relay by hand.
-func runToken(args []string, out io.Writer) error {
+// runToken signs a token with a signing key, for testing a relay by hand. The
+// token alone goes to out, so it can be captured; what it grants goes to info.
+func runToken(args []string, out, info io.Writer) error {
 	fs := flag.NewFlagSet("qumo auth token", flag.ContinueOnError)
 	keyPath := fs.String("key", "signing-key.jwk", "the private signing key (qumo auth keygen)")
 	publish := fs.String("publish", "", "the path the bearer may publish at or beneath")
@@ -248,6 +268,28 @@ func runToken(args []string, out io.Writer) error {
 	if err != nil {
 		return err
 	}
-	_, err = fmt.Fprintln(out, tok)
+	if _, err := fmt.Fprintln(out, tok); err != nil {
+		return err
+	}
+	// Read the grant back as the auth server will: normalized, with its exp.
+	c, err := token.Verify(tok, map[string]token.Key{key.ID: key.Public()}, time.Now())
+	if err != nil {
+		return fmt.Errorf("verify the signed token: %w", err)
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "\n  %-11s %s\n", "Publish:", grantLabel(c.Publish))
+	fmt.Fprintf(&b, "  %-11s %s\n", "Subscribe:", grantLabel(c.Subscribe))
+	fmt.Fprintf(&b, "  %-11s %s (in %s)\n", "Expires:", c.ExpiresAt.Format(time.DateTime), time.Until(c.ExpiresAt).Round(time.Second))
+	fmt.Fprintf(&b, "  %-11s %s\n", "Key:", key.ID)
+	fmt.Fprintf(&b, "  %-11s https://<relay>/?jwt=<token>\n", "Connect:")
+	_, err = io.WriteString(info, b.String())
 	return err
+}
+
+// grantLabel describes one role of a grant for the terminal.
+func grantLabel(path string) string {
+	if path == "" {
+		return "-"
+	}
+	return path + "/**"
 }

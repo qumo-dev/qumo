@@ -15,22 +15,19 @@ import (
 
 func TestLoadServeConfig(t *testing.T) {
 	tests := map[string]struct {
+		addr        string
 		keysFile    string
-		anonymous   string
 		want        serveConfig
 		wantErrText string
 	}{
-		"keys only":      {keysFile: "keys.json", want: serveConfig{addr: defaultAddr, keysFile: "keys.json"}},
-		"anonymous only": {anonymous: "anon/**", want: serveConfig{addr: defaultAddr, anonymous: []string{"anon/**"}}},
-		"both":           {keysFile: "keys.json", anonymous: "**", want: serveConfig{addr: defaultAddr, keysFile: "keys.json", anonymous: []string{"**"}}},
-		"neither":        {wantErrText: "neither"},
-		"bad pattern":    {anonymous: "anon", wantErrText: "QUMO_AUTH_ANONYMOUS"},
+		"default address": {keysFile: "keys.json", want: serveConfig{addr: defaultAddr, keysFile: "keys.json"}},
+		"address set":     {addr: ":9000", keysFile: "keys.json", want: serveConfig{addr: ":9000", keysFile: "keys.json"}},
+		"no key set":      {wantErrText: "QUMO_AUTH_KEYS_FILE"},
 	}
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
-			t.Setenv("QUMO_AUTH_ADDR", "")
+			t.Setenv("QUMO_AUTH_ADDR", tt.addr)
 			t.Setenv("QUMO_AUTH_KEYS_FILE", tt.keysFile)
-			t.Setenv("QUMO_AUTH_ANONYMOUS", tt.anonymous)
 
 			got, err := loadServeConfig()
 
@@ -52,10 +49,13 @@ func TestRunKeygen_TokenAndServeAgree(t *testing.T) {
 	var out bytes.Buffer
 
 	require.NoError(t, runKeygen([]string{"-prefix", "acme/app", "-out", priv, "-keys", pub}, &out))
-	assert.Contains(t, out.String(), "kid:")
+	assert.Contains(t, out.String(), "Key ID:")
 	out.Reset()
-	require.NoError(t, runToken([]string{"-key", priv, "-publish", "acme/app/alice", "-subscribe", "acme/app", "-ttl", "5m"}, &out))
+	var info bytes.Buffer
+	require.NoError(t, runToken([]string{"-key", priv, "-publish", "acme/app/alice", "-subscribe", "acme/app", "-ttl", "5m"}, &out, &info))
 	tok := strings.TrimSpace(out.String())
+	assert.Equal(t, 2, strings.Count(tok, "."), "stdout carries the token alone, so it can be captured")
+	assert.Contains(t, info.String(), "acme/app/alice/**", "the summary shows the grant as the server will")
 	keys, err := token.LoadKeySet(pub)
 	require.NoError(t, err)
 

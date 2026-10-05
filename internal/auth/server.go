@@ -21,10 +21,9 @@ type grantResponse struct {
 	Publish   []string `json:"publish,omitempty"`
 	Subscribe []string `json:"subscribe,omitempty"`
 	// Expires is when the relay ends the session, in unix seconds: the
-	// token's exp plus the leeway it was accepted within. Omitted for an
-	// anonymous session, which has no token to expire. No revalidate is
+	// token's exp plus the leeway it was accepted within. No revalidate is
 	// sent: static keys can't change the answer before then.
-	Expires int64 `json:"expires,omitzero"`
+	Expires int64 `json:"expires"`
 }
 
 // Handler answers a relay's session events: connect and revalidate get a
@@ -32,11 +31,6 @@ type grantResponse struct {
 type Handler struct {
 	// Keys are the trusted signing keys, by kid.
 	Keys map[string]token.Key
-	// Anonymous is the grant for a session that presents no credential: the
-	// subtree patterns ("anon/**", or "**" in development) it may publish and
-	// subscribe to. Empty refuses such sessions. A session that presents a
-	// credential is always verified, never granted Anonymous instead.
-	Anonymous []string
 }
 
 // ServeHTTP answers one session event POSTed by a relay.
@@ -80,6 +74,8 @@ func (h *Handler) answer(w http.ResponseWriter, req Request) {
 		writeError(w, status, err.Error())
 		return
 	}
+	slog.Info("auth server: session admitted", "id", req.ID, "event", req.Event, "transport", req.Transport,
+		"remote", req.Remote, "path", req.Path, "publish", g.Publish, "subscribe", g.Subscribe)
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.MarshalWrite(w, g); err != nil {
 		slog.Warn("auth server: write grant", "id", req.ID, "error", err)
@@ -92,10 +88,7 @@ func (h *Handler) grantFor(req Request) (grantResponse, error) {
 		return grantResponse{}, fmt.Errorf("%w: query: %v", token.ErrInvalid, err)
 	}
 	if !query.Has("jwt") {
-		if len(h.Anonymous) == 0 {
-			return grantResponse{}, fmt.Errorf("%w: no credential: the client must connect with ?jwt=", token.ErrInvalid)
-		}
-		return grantResponse{Publish: h.Anonymous, Subscribe: h.Anonymous}, nil
+		return grantResponse{}, fmt.Errorf("%w: no credential: the client must connect with ?jwt=", token.ErrInvalid)
 	}
 	c, err := token.Verify(query.Get("jwt"), h.Keys, time.Now())
 	if err != nil {
