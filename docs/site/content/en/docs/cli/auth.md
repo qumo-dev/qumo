@@ -65,7 +65,7 @@ A token it can't accept gets 401; a valid one that grants nothing usable gets 40
 qumo auth token [-key signing-key.jwk] [-publish PATH] [-subscribe PATH] [-ttl 1h]
 ```
 
-Prints a token granting publish at or beneath `-publish` and subscribe at or beneath `-subscribe` (either may be omitted, not both), valid for `-ttl`, at most one hour.
+Prints a token granting publish at or beneath `-publish` and subscribe at or beneath `-subscribe` (either may be omitted, not both), valid for `-ttl`, at most one hour. A path outside the key's prefix is refused here, as `serve` would refuse the token; `token.Sign` does the same.
 
 ## Signing in your app (Go)
 

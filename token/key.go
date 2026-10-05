@@ -29,8 +29,8 @@ type SigningKey struct {
 	// ID is the key's RFC 7638 JWK thumbprint, set in every token's header.
 	ID      string
 	Private ed25519.PrivateKey
-	// Prefix is the prefix the auth server confines this key to. Sign
-	// doesn't enforce it; it is recorded so Public carries it.
+	// Prefix is the prefix the auth server confines this key to; Sign
+	// refuses a grant outside it.
 	Prefix string
 }
 
@@ -125,8 +125,8 @@ func LoadSigningKey(path string) (SigningKey, error) {
 }
 
 // ParseKeySet decodes a JWK Set of Ed25519 public keys, by kid. A key without
-// a kid gets its RFC 7638 thumbprint; a key whose kid differs from it is
-// refused. Any key that can't be used is an error, not skipped: the set is
+// a kid gets its RFC 7638 thumbprint; a key whose kid differs from it, or that
+// is listed twice, is refused. Any key that can't be used is an error, not skipped: the set is
 // configuration.
 func ParseKeySet(raw []byte) (map[string]Key, error) {
 	var set struct {
@@ -153,6 +153,10 @@ func ParseKeySet(raw []byte) (map[string]Key, error) {
 		kid := thumbprint(x)
 		if k.Kid != "" && k.Kid != kid {
 			return nil, fmt.Errorf("token: key %d: kid %q is not the key's RFC 7638 thumbprint %q", i, k.Kid, kid)
+		}
+		if _, dup := keys[kid]; dup {
+			// Two entries could give one key two prefixes; neither may win.
+			return nil, fmt.Errorf("token: key %d: key %q is listed twice", i, kid)
 		}
 		prefix, err := normalizePath(k.Prefix)
 		if err != nil {

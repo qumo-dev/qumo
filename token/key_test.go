@@ -73,6 +73,12 @@ func TestParseKeySet(t *testing.T) {
 			raw:         `{"keys":[{"kty":"OKP","crv":"Ed25519","x":"` + rfc8037X + `","prefix":"acme/../other"}]}`,
 			wantErrText: "prefix",
 		},
+		// A second entry could give the key a wider prefix; neither may win.
+		"a key listed twice": {
+			raw: `{"keys":[{"kty":"OKP","crv":"Ed25519","x":"` + rfc8037X + `","prefix":"acme"},` +
+				`{"kty":"OKP","crv":"Ed25519","x":"` + rfc8037X + `"}]}`,
+			wantErrText: "listed twice",
+		},
 		"no keys":  {raw: `{"keys":[]}`, wantErr: errNoKeys},
 		"not JSON": {raw: `keys`, wantErrText: "decode"},
 	}
@@ -96,7 +102,7 @@ func TestParseKeySet(t *testing.T) {
 
 // What keygen writes, the auth server and the app read back: the public key
 // set and the private signing key agree on the kid and prefix.
-func TestKeyFiles_RoundTrip(t *testing.T) {
+func TestSigningKey_MarshalJWK_RoundTrip(t *testing.T) {
 	key, err := GenerateKey("/acme/app/")
 	require.NoError(t, err)
 	dir := t.TempDir()

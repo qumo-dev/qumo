@@ -3,6 +3,7 @@ package auth
 import (
 	"bytes"
 	"net/http"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -45,7 +46,7 @@ func TestLoadServeConfig(t *testing.T) {
 
 // The whole developer flow: keygen writes the two files, token signs with the
 // private one, and an auth server loading the public one admits the token.
-func TestKeygenTokenServe_EndToEnd(t *testing.T) {
+func TestRunKeygen_TokenAndServeAgree(t *testing.T) {
 	dir := t.TempDir()
 	priv, pub := filepath.Join(dir, "signing-key.jwk"), filepath.Join(dir, "keys.json")
 	var out bytes.Buffer
@@ -72,6 +73,19 @@ func TestRunKeygen_RefusesToOverwrite(t *testing.T) {
 	err := runKeygen(args, &bytes.Buffer{})
 
 	assert.Error(t, err, "a second keygen must not replace the key every token was signed with")
+}
+
+// A keygen that can't write the key set leaves no private key behind, so a
+// retry isn't refused by a key whose public half was never saved.
+func TestRunKeygen_KeySetFailureRemovesThePrivateKey(t *testing.T) {
+	dir := t.TempDir()
+	priv, pub := filepath.Join(dir, "signing-key.jwk"), filepath.Join(dir, "keys.json")
+	require.NoError(t, os.WriteFile(pub, []byte("{}"), 0o600))
+
+	err := runKeygen([]string{"-out", priv, "-keys", pub}, &bytes.Buffer{})
+
+	require.Error(t, err)
+	assert.NoFileExists(t, priv)
 }
 
 func TestRun_UnknownCommand(t *testing.T) {

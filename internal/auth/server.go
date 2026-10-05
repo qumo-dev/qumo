@@ -22,11 +22,9 @@ type grantResponse struct {
 	Subscribe []string `json:"subscribe,omitempty"`
 	// Expires is when the relay ends the session, in unix seconds: the
 	// token's exp plus the leeway it was accepted within. Omitted for an
-	// anonymous session, which has no token to expire.
+	// anonymous session, which has no token to expire. No revalidate is
+	// sent: static keys can't change the answer before then.
 	Expires int64 `json:"expires,omitzero"`
-	// Revalidate is how often the relay asks again, in seconds; omitted when
-	// nothing could change the answer (static keys).
-	Revalidate int64 `json:"revalidate,omitzero"`
 }
 
 // Handler answers a relay's session events: connect and revalidate get a
@@ -39,13 +37,9 @@ type Handler struct {
 	// subscribe to. Empty refuses such sessions. A session that presents a
 	// credential is always verified, never granted Anonymous instead.
 	Anonymous []string
-	// Revalidate is how often a relay should ask again; zero tells it not
-	// to (static keys never change).
-	Revalidate time.Duration
-
-	now func() time.Time // nil is time.Now
 }
 
+// ServeHTTP answers one session event POSTed by a relay.
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		w.Header().Set("Allow", http.MethodPost)
@@ -103,18 +97,11 @@ func (h *Handler) grantFor(req Request) (grantResponse, error) {
 		}
 		return grantResponse{Publish: h.Anonymous, Subscribe: h.Anonymous}, nil
 	}
-	now := time.Now
-	if h.now != nil {
-		now = h.now
-	}
-	c, err := token.Verify(query.Get("jwt"), h.Keys, now())
+	c, err := token.Verify(query.Get("jwt"), h.Keys, time.Now())
 	if err != nil {
 		return grantResponse{}, err
 	}
-	g := grantResponse{
-		Expires:    c.ExpiresAt.Add(token.Leeway).Unix(),
-		Revalidate: int64(h.Revalidate / time.Second),
-	}
+	g := grantResponse{Expires: c.ExpiresAt.Add(token.Leeway).Unix()}
 	if c.Publish != "" {
 		g.Publish = []string{c.Publish + "/**"}
 	}

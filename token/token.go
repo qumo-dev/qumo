@@ -14,7 +14,6 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/base64"
-	"encoding/hex"
 	"encoding/json/jsontext"
 	"encoding/json/v2"
 	"errors"
@@ -83,7 +82,8 @@ type claims struct {
 }
 
 // Sign returns a token signed by key that grants g for ttl from now, at most
-// MaxLifetime. It carries a random jti.
+// MaxLifetime. It carries a random jti. A grant outside key's prefix is
+// refused here, since a verifier would refuse the token.
 func Sign(key SigningKey, g Grant, ttl time.Duration) (string, error) {
 	return signAt(key, g, ttl, time.Now())
 }
@@ -107,13 +107,14 @@ func signAt(key SigningKey, g Grant, ttl time.Duration, now time.Time) (string, 
 		if err != nil || norm == "" {
 			return "", fmt.Errorf("token: grant path %q: want a path with no \".\", \"..\" or \"*\" segments", role.path)
 		}
+		if !within(norm, key.Prefix) {
+			return "", fmt.Errorf("token: grant path %q lies outside the signing key's prefix %q", norm, key.Prefix)
+		}
 		*role.into = &norm
 	}
-	jti := make([]byte, 16)
-	_, _ = rand.Read(jti) // crypto/rand.Read never fails
 	iat := float64(now.Unix())
 	exp := float64(now.Add(ttl).Unix())
-	c := claims{PathAuth: pa, IssuedAt: &iat, NotBefore: &iat, ExpiresAt: &exp, ID: hex.EncodeToString(jti)}
+	c := claims{PathAuth: pa, IssuedAt: &iat, NotBefore: &iat, ExpiresAt: &exp, ID: rand.Text()}
 
 	header, err := json.Marshal(map[string]string{"alg": "EdDSA", "kid": key.ID, "typ": "JWT"})
 	if err != nil {

@@ -137,7 +137,6 @@ func runServe(args []string) error {
 	}
 
 	mux := http.NewServeMux()
-	// Static keys never change, so a relay has no reason to revalidate.
 	mux.Handle("/", &Handler{Keys: keys, Anonymous: cfg.anonymous})
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -193,7 +192,9 @@ func runKeygen(args []string, out io.Writer) error {
 		return err
 	}
 	if err := writeNew(*pubPath, set, 0o644); err != nil {
-		return err
+		// Remove the private key just written, so a retry isn't refused by
+		// a key whose public half was never saved.
+		return errors.Join(err, removeFile(*privPath))
 	}
 	_, err = fmt.Fprintf(out, "kid:        %s\nprefix:      %q\nsigning key: %s (private: keep it on the app's server)\nkey set:     %s (set QUMO_AUTH_KEYS_FILE to it)\n",
 		key.ID, key.Prefix, *privPath, *pubPath)
@@ -218,6 +219,20 @@ func writeNew(path string, data []byte, perm os.FileMode) error {
 	}
 	if err := f.Close(); err != nil {
 		return fmt.Errorf("write %s: %w", path, err)
+	}
+	return nil
+}
+
+// removeFile removes path through an os.Root on its directory, as writeNew
+// creates it.
+func removeFile(path string) error {
+	root, err := os.OpenRoot(filepath.Dir(path))
+	if err != nil {
+		return fmt.Errorf("remove %s: %w", path, err)
+	}
+	defer func() { _ = root.Close() }() // not actionable: the removal is checked below
+	if err := root.Remove(filepath.Base(path)); err != nil {
+		return fmt.Errorf("remove %s: %w", path, err)
 	}
 	return nil
 }

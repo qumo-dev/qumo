@@ -1,6 +1,7 @@
 package token
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 )
@@ -37,7 +38,7 @@ func scopeOf(root, suffix string) (string, error) {
 	}
 	scope := strings.Trim(r+"/"+s, "/")
 	if scope == "" {
-		return "", fmt.Errorf("root and suffix name no path")
+		return "", errors.New("root and suffix name no path")
 	}
 	return scope, nil
 }

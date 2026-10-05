@@ -8,16 +8,16 @@ import (
 	"time"
 )
 
-// fakeSigner mints tokens whose header and claims a test sets freely, to
+// rawSigner mints tokens whose header and claims a test sets freely, to
 // exercise Verify's refusals. The zero value is usable: its key pair is
 // generated on first use, and prefix is what the trusted key is confined to.
-type fakeSigner struct {
+type rawSigner struct {
 	prefix  string
 	private ed25519.PrivateKey
 }
 
 // trusted is the Key a verifier holds for this signer.
-func (s *fakeSigner) trusted(tb testing.TB) Key {
+func (s *rawSigner) trusted(tb testing.TB) Key {
 	tb.Helper()
 	if s.private == nil {
 		_, priv, err := ed25519.GenerateKey(nil)
@@ -31,21 +31,21 @@ func (s *fakeSigner) trusted(tb testing.TB) Key {
 }
 
 // keys is a trusted key set holding only this signer's key.
-func (s *fakeSigner) keys(tb testing.TB) map[string]Key {
+func (s *rawSigner) keys(tb testing.TB) map[string]Key {
 	tb.Helper()
 	k := s.trusted(tb)
 	return map[string]Key{k.ID: k}
 }
 
 // sign mints a token with this signer's kid and the given claims.
-func (s *fakeSigner) sign(tb testing.TB, claims map[string]any) string {
+func (s *rawSigner) sign(tb testing.TB, claims map[string]any) string {
 	tb.Helper()
 	return s.signWithHeader(tb, map[string]any{"alg": "EdDSA", "kid": s.trusted(tb).ID, "typ": "JWT"}, claims)
 }
 
 // signWithHeader mints a token with an arbitrary header, signed by this
 // signer's key whatever the header claims.
-func (s *fakeSigner) signWithHeader(tb testing.TB, header, claims map[string]any) string {
+func (s *rawSigner) signWithHeader(tb testing.TB, header, claims map[string]any) string {
 	tb.Helper()
 	s.trusted(tb)
 	enc := func(v any) string {
@@ -62,7 +62,7 @@ func (s *fakeSigner) signWithHeader(tb testing.TB, header, claims map[string]any
 // signWithRawClaims mints a token whose claims segment is rawClaims, already
 // base64url-encoded, so a test can sign JSON a map can't express (a duplicate
 // member).
-func (s *fakeSigner) signWithRawClaims(tb testing.TB, rawClaims string) string {
+func (s *rawSigner) signWithRawClaims(tb testing.TB, rawClaims string) string {
 	tb.Helper()
 	header, err := json.Marshal(map[string]any{"alg": "EdDSA", "kid": s.trusted(tb).ID})
 	if err != nil {

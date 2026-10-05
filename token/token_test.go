@@ -11,7 +11,7 @@ import (
 
 func TestVerify_AcceptsAValidToken(t *testing.T) {
 	now := time.Unix(1_800_000_000, 0)
-	signer := &fakeSigner{}
+	signer := &rawSigner{}
 
 	c, err := Verify(signer.sign(t, validClaims(now)), signer.keys(t), now)
 
@@ -24,8 +24,8 @@ func TestVerify_AcceptsAValidToken(t *testing.T) {
 
 func TestVerify_Invalid(t *testing.T) {
 	now := time.Unix(1_800_000_000, 0)
-	signer := &fakeSigner{}
-	other := &fakeSigner{}
+	signer := &rawSigner{}
+	other := &rawSigner{}
 	with := func(edit func(map[string]any)) map[string]any {
 		c := validClaims(now)
 		edit(c)
@@ -106,7 +106,7 @@ func TestVerify_Invalid(t *testing.T) {
 
 func TestVerify_DuplicateClaimIsInvalid(t *testing.T) {
 	now := time.Unix(1_800_000_000, 0)
-	signer := &fakeSigner{}
+	signer := &rawSigner{}
 	// A second exp, after the one a lenient decoder would read, must not pass.
 	forged := signer.signWithRawClaims(t, encodeRaw(t,
 		`{"path_auth":{"root":"acme","pub":""},"iat":1800000000,"nbf":1800000000,"exp":1800000600,"exp":1900000000}`))
@@ -118,7 +118,7 @@ func TestVerify_DuplicateClaimIsInvalid(t *testing.T) {
 
 func TestVerify_LeewayAdmitsSmallSkew(t *testing.T) {
 	now := time.Unix(1_800_000_000, 0)
-	signer := &fakeSigner{}
+	signer := &rawSigner{}
 	c := validClaims(now)
 	// Not valid for another 30 s, and expired 30 s ago: both within 60 s.
 	c["iat"] = now.Add(-10 * time.Minute).Unix()
@@ -171,7 +171,7 @@ func TestVerify_PathConfinement(t *testing.T) {
 	}
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
-			signer := &fakeSigner{prefix: tt.prefix}
+			signer := &rawSigner{prefix: tt.prefix}
 			c := validClaims(now)
 			c["path_auth"] = tt.pathAuth
 
@@ -199,41 +199,34 @@ func TestSign_RoundTrip(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, Grant{Publish: "acme/app/rooms/42/alice", Subscribe: "acme/app/rooms/42"}, c.Grant)
 	assert.Equal(t, now.Add(30*time.Minute), c.ExpiresAt)
-	assert.Len(t, c.ID, 32, "a random jti")
+	assert.Len(t, c.ID, 26, "a random jti (rand.Text)")
 }
 
 func TestSign_Refusals(t *testing.T) {
-	key, err := GenerateKey("")
-	require.NoError(t, err)
 	tests := map[string]struct {
-		grant Grant
-		ttl   time.Duration
+		prefix      string
+		grant       Grant
+		ttl         time.Duration
+		wantErrText string
 	}{
-		"zero ttl":        {grant: Grant{Publish: "a"}, ttl: 0},
-		"ttl over 1 h":    {grant: Grant{Publish: "a"}, ttl: 61 * time.Minute},
-		"grants nothing":  {grant: Grant{}, ttl: time.Minute},
-		"dot-dot path":    {grant: Grant{Publish: "a/../b"}, ttl: time.Minute},
-		"wildcard path":   {grant: Grant{Subscribe: "a/*"}, ttl: time.Minute},
-		"path of slashes": {grant: Grant{Publish: "//"}, ttl: time.Minute},
+		"zero ttl":        {grant: Grant{Publish: "a"}, ttl: 0, wantErrText: "ttl"},
+		"ttl over 1 h":    {grant: Grant{Publish: "a"}, ttl: 61 * time.Minute, wantErrText: "ttl"},
+		"grants nothing":  {grant: Grant{}, ttl: time.Minute, wantErrText: "neither"},
+		"dot-dot path":    {grant: Grant{Publish: "a/../b"}, ttl: time.Minute, wantErrText: "segments"},
+		"wildcard path":   {grant: Grant{Subscribe: "a/*"}, ttl: time.Minute, wantErrText: "segments"},
+		"path of slashes": {grant: Grant{Publish: "//"}, ttl: time.Minute, wantErrText: "segments"},
+		// A verifier would refuse it, so it is never signed.
+		"publish outside the key's prefix":   {prefix: "acme/app", grant: Grant{Publish: "other/app"}, ttl: time.Minute, wantErrText: "outside"},
+		"subscribe outside the key's prefix": {prefix: "acme/app", grant: Grant{Subscribe: "acme/application"}, ttl: time.Minute, wantErrText: "outside"},
 	}
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
-			_, err := Sign(key, tt.grant, tt.ttl)
+			key, err := GenerateKey(tt.prefix)
+			require.NoError(t, err)
 
-			assert.Error(t, err)
+			_, err = Sign(key, tt.grant, tt.ttl)
+
+			assert.ErrorContains(t, err, tt.wantErrText)
 		})
 	}
-}
-
-// A token signed for a path outside the key's prefix is signed, but refused
-// by the verifier: Sign doesn't police the app, the auth server does.
-func TestSign_OutsidePrefixIsRefusedByVerify(t *testing.T) {
-	key, err := GenerateKey("acme/app")
-	require.NoError(t, err)
-
-	tok, err := Sign(key, Grant{Publish: "other/app"}, time.Minute)
-	require.NoError(t, err)
-	_, err = Verify(tok, map[string]Key{key.ID: key.Public()}, time.Now())
-
-	assert.ErrorIs(t, err, ErrForbidden)
 }

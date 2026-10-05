@@ -56,7 +56,7 @@ func sign(tb testing.TB, key token.SigningKey, g token.Grant) string {
 
 func TestHandler_ServeHTTP_ConnectAndRevalidateGrant(t *testing.T) {
 	key, keys := newKey(t, "acme/app")
-	h := &Handler{Keys: keys, Revalidate: 30 * time.Second}
+	h := &Handler{Keys: keys}
 	tok := sign(t, key, token.Grant{Publish: "acme/app/alice", Subscribe: "acme/app"})
 
 	for _, name := range []string{EventConnect, EventRevalidate} {
@@ -68,7 +68,6 @@ func TestHandler_ServeHTTP_ConnectAndRevalidateGrant(t *testing.T) {
 			require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &g))
 			assert.Equal(t, []string{"acme/app/alice/**"}, g.Publish)
 			assert.Equal(t, []string{"acme/app/**"}, g.Subscribe)
-			assert.Equal(t, int64(30), g.Revalidate)
 			assert.InDelta(t, time.Now().Add(10*time.Minute+token.Leeway).Unix(), g.Expires, 2, "exp plus the leeway")
 		})
 	}
@@ -94,6 +93,11 @@ func TestHandler_ServeHTTP_GrantParsesOnTheRelay(t *testing.T) {
 func TestHandler_ServeHTTP_Refusals(t *testing.T) {
 	key, keys := newKey(t, "acme/app")
 	stranger, _ := newKey(t, "")
+	// The same key without its prefix, as an app whose key file lacks the
+	// prefix the auth server confines it to: Sign can't refuse what the
+	// server does.
+	unconfined := key
+	unconfined.Prefix = ""
 	h := &Handler{Keys: keys}
 
 	tests := map[string]struct {
@@ -103,7 +107,7 @@ func TestHandler_ServeHTTP_Refusals(t *testing.T) {
 		"no credential":            {body: event(t, EventConnect, ""), wantStatus: http.StatusUnauthorized},
 		"garbage credential":       {body: event(t, EventConnect, "not-a-token"), wantStatus: http.StatusUnauthorized},
 		"an untrusted key":         {body: event(t, EventConnect, sign(t, stranger, token.Grant{Publish: "acme/app"})), wantStatus: http.StatusUnauthorized},
-		"outside the key's prefix": {body: event(t, EventConnect, sign(t, key, token.Grant{Publish: "other/app"})), wantStatus: http.StatusForbidden},
+		"outside the key's prefix": {body: event(t, EventConnect, sign(t, unconfined, token.Grant{Publish: "other/app"})), wantStatus: http.StatusForbidden},
 		"unknown event":            {body: `{"id":"00ff","event":"announce"}`, wantStatus: http.StatusBadRequest},
 		"not JSON":                 {body: `{`, wantStatus: http.StatusBadRequest},
 	}
