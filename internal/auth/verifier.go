@@ -18,15 +18,14 @@ const revalidateEvery = 30 * time.Second
 
 // VerifierConfig configures a relay that verifies credentials itself.
 type VerifierConfig struct {
-	// KeysFile is a JWK Set on disk (QUMO_AUTH_KEYS_FILE), re-read when it
-	// changes. KeysURL is one to download (QUMO_AUTH_KEYS_URL), every 30 s.
-	// Exactly one is set.
-	KeysFile string
-	KeysURL  string
+	// Keys is where the key set is (QUMO_AUTH_KEYS): an https URL (or http
+	// on a loopback host) to download about every 30 s, or a file, as a path
+	// or a file:// URL, re-read when it changes.
+	Keys string
 	// UsageURL receives the sessions' usage records (QUMO_USAGE_URL);
 	// empty reports nothing.
 	UsageURL string
-	// Token is sent as a bearer token to KeysURL and UsageURL
+	// Token is sent as a bearer token to a key-set URL and UsageURL
 	// (QUMO_RELAY_TOKEN).
 	Token string
 }
@@ -51,21 +50,11 @@ type Verifier struct {
 // NewVerifier returns a Verifier for cfg. Run starts its key-set refresh
 // and usage reporting.
 func NewVerifier(cfg VerifierConfig) (*Verifier, error) {
-	v := &Verifier{now: time.Now}
-	switch {
-	case cfg.KeysFile != "" && cfg.KeysURL != "":
-		return nil, errors.New("QUMO_AUTH_KEYS_FILE and QUMO_AUTH_KEYS_URL are both set; set one")
-	case cfg.KeysFile != "":
-		v.source = &fileKeySource{path: cfg.KeysFile}
-	case cfg.KeysURL != "":
-		src, err := newURLKeySource(cfg.KeysURL, cfg.Token)
-		if err != nil {
-			return nil, fmt.Errorf("QUMO_AUTH_KEYS_URL: %w", err)
-		}
-		v.source = src
-	default:
-		return nil, errors.New("no key set: set QUMO_AUTH_KEYS_FILE or QUMO_AUTH_KEYS_URL")
+	src, err := keySourceFor(cfg.Keys, cfg.Token)
+	if err != nil {
+		return nil, fmt.Errorf("QUMO_AUTH_KEYS: %w", err)
 	}
+	v := &Verifier{source: src, now: time.Now}
 	if cfg.UsageURL != "" {
 		u, err := newUsageReporter(cfg.UsageURL, cfg.Token)
 		if err != nil {
@@ -118,8 +107,11 @@ func refuse(status int, format string, args ...any) error {
 func (v *Verifier) Authorize(_ context.Context, req Request) (*Grant, error) {
 	g, s, err := v.decide(req)
 	if v.usage != nil {
-		if err == nil {
-			v.usage.open(req.ID, s, req.Event == EventConnect)
+		// A session is learned only when it is admitted at connect. A
+		// revalidate never adds one: it can finish after the session's end
+		// was recorded, and must not bring it back.
+		if err == nil && req.Event == EventConnect {
+			v.usage.open(req.ID, s)
 		}
 		if req.Event == EventRevalidate && (req.Bytes.Sent > 0 || req.Bytes.Received > 0) {
 			v.usage.reportUsage(req.ID, req.Bytes)

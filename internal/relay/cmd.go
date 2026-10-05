@@ -119,23 +119,22 @@ func Run(args []string) error {
 	}
 
 	// Session admission (admit.go), one of three: the relay verifies
-	// credentials itself against a key set (QUMO_AUTH_KEYS_FILE or
-	// QUMO_AUTH_KEYS_URL), or asks an auth server (QUMO_AUTH_URL), or, with
-	// neither, runs with auth off.
+	// credentials itself against a key set (QUMO_AUTH_KEYS: a URL or a file),
+	// or asks an auth server (QUMO_AUTH_URL), or, with neither, runs with
+	// auth off.
 	authCfg := auth.LoadConfig()
 	verifierCfg := auth.VerifierConfig{
-		KeysFile: os.Getenv("QUMO_AUTH_KEYS_FILE"),
-		KeysURL:  os.Getenv("QUMO_AUTH_KEYS_URL"),
+		Keys:     os.Getenv("QUMO_AUTH_KEYS"),
 		UsageURL: os.Getenv("QUMO_USAGE_URL"),
 		Token:    os.Getenv("QUMO_RELAY_TOKEN"),
 	}
-	keysSet := verifierCfg.KeysFile != "" || verifierCfg.KeysURL != ""
+	keysSet := verifierCfg.Keys != ""
 	authorize := admitUnchecked
 	var reportEnd func(context.Context, auth.Request) error // nil: auth off reports nothing
 	var verifier *auth.Verifier
 	switch {
 	case keysSet && authCfg.URL != "":
-		return errors.New("QUMO_AUTH_URL and a key set (QUMO_AUTH_KEYS_FILE or QUMO_AUTH_KEYS_URL) are both set; the relay verifies one way: unset one")
+		return errors.New("QUMO_AUTH_URL and QUMO_AUTH_KEYS are both set; the relay verifies one way: unset one")
 	case keysSet:
 		v, err := auth.NewVerifier(verifierCfg)
 		if err != nil {
@@ -155,7 +154,7 @@ func Run(args []string) error {
 		slog.Warn("relay: auth is off: no key set and no QUMO_AUTH_URL, so every session is admitted unchecked")
 	}
 	if verifierCfg.UsageURL != "" && verifier == nil {
-		return errors.New("QUMO_USAGE_URL needs a key set (QUMO_AUTH_KEYS_FILE or QUMO_AUTH_KEYS_URL): usage is reported for the sessions the relay verifies")
+		return errors.New("QUMO_USAGE_URL needs QUMO_AUTH_KEYS: usage is reported for the sessions the relay verifies")
 	}
 
 	relayCfg := Config{
@@ -307,6 +306,10 @@ func Run(args []string) error {
 		}()
 	}
 	defer stopVerifier()
+	// Deferred after stopVerifier, so it runs before it: sessions report
+	// their end after their connection closes, which can be after the
+	// servers have shut down, and the last usage send must include them.
+	defer relayServer.waitSessionEnds(endReportGrace)
 
 	// Start peer connections in background
 	go relayServer.ConnectPeers(ctx)
@@ -320,6 +323,10 @@ func Run(args []string) error {
 
 	return nil
 }
+
+// endReportGrace bounds how long shutdown waits for closed sessions to report
+// their end before the verifier's last usage send.
+const endReportGrace = 5 * time.Second
 
 // server is a minimal interface implemented by both *Server and
 // *http.Server so we can unit-test the run/shutdown flow with fakes.

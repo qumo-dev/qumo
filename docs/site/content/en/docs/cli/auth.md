@@ -10,7 +10,7 @@ weight: 2
 1. **Once:** generate a signing key pair (`qumo auth keygen`). The private key stays on your app's server; the relay gets the public one, in a key set.
 2. **Per client:** your server signs a token naming the paths that client may publish to or subscribe to. Use the Go package `github.com/qumo-dev/qumo/token`, or `qumo auth token` while testing.
 3. **The client** connects with the token in the relay URL: `https://relay:4433/?jwt=<token>` (WebTransport), or `moqt://relay:4433/?jwt=<token>` (native QUIC).
-4. **The relay** verifies the token itself against the key set (`QUMO_AUTH_KEYS_FILE=keys.json qumo relay`) and enforces what it grants. A session ends when its token expires; the client reconnects with a fresh one.
+4. **The relay** verifies the token itself against the key set (`QUMO_AUTH_KEYS=keys.json qumo relay`) and enforces what it grants. A session ends when its token expires; the client reconnects with a fresh one.
 
 Running `qumo auth` as a server, which the relay then asks (`QUMO_AUTH_URL`), is the alternative to step 4, for when verification should run outside the relay process.
 
@@ -37,7 +37,7 @@ qumo auth keygen [-prefix acme/app] [-out signing-key.jwk] [-keys keys.json]
 |---|---|---|
 | `-prefix` | (none) | Confine the key: every path a token signed with it may grant must lie at or beneath this prefix. |
 | `-out` | `signing-key.jwk` | The private signing key (an Ed25519 JWK). Keep it on your app's server. |
-| `-keys` | `keys.json` | The public key set (a JWK Set) for the relay's `QUMO_AUTH_KEYS_FILE`. |
+| `-keys` | `keys.json` | The public key set (a JWK Set) for `QUMO_AUTH_KEYS`. |
 
 It prints the key's `kid` (its RFC 7638 thumbprint), the paths it may grant, and the next steps. It refuses to overwrite an existing file, since replacing a key would invalidate every token signed with it; if it can't write the key set, it removes the private key it just wrote.
 
@@ -47,7 +47,7 @@ Configured by the environment:
 
 | Variable | Default | Description |
 |---|---|---|
-| `QUMO_AUTH_KEYS_FILE` | (required) | The trusted public keys (`keygen -keys`). Each may carry a `prefix`. |
+| `QUMO_AUTH_KEYS` | (required) | The trusted public keys (`keygen -keys`). Each may carry a `prefix`. |
 | `QUMO_AUTH_ADDR` | `127.0.0.1:4440` | Listen address. Loopback: the relay beside it is the only client. |
 
 Point the relay at it with `QUMO_AUTH_URL=http://127.0.0.1:4440`. A session without a token is refused; for a relay open to everyone, leave `QUMO_AUTH_URL` unset instead.

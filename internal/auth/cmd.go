@@ -29,7 +29,7 @@ const (
 const usage = `Usage: qumo auth [command]
 
 With no command, runs the auth server a relay asks about every session
-(QUMO_AUTH_URL), configured by QUMO_AUTH_KEYS_FILE and QUMO_AUTH_ADDR. An app
+(QUMO_AUTH_URL), configured by QUMO_AUTH_KEYS and QUMO_AUTH_ADDR. An app
 signs a capability token per client with its own Ed25519 key; the client
 connects with it (?jwt=…); the auth server verifies it.
 
@@ -69,26 +69,35 @@ type serveConfig struct {
 
 // loadServeConfig reads the environment:
 //
-//	QUMO_AUTH_KEYS_FILE - required: JWK Set of the trusted Ed25519 public
-//	                      keys, each with an optional "prefix" member (qumo
-//	                      auth keygen writes one)
-//	QUMO_AUTH_ADDR      - listen address (default 127.0.0.1:4440, loopback:
-//	                      the relay beside it is the only client)
+//	QUMO_AUTH_KEYS - required: the JWK Set file of the trusted Ed25519
+//	                 public keys, each with an optional "prefix" member
+//	                 (qumo auth keygen writes one), as a path or a file://
+//	                 URL.
+//	QUMO_AUTH_ADDR - listen address (default 127.0.0.1:4440, loopback:
+//	                 the relay beside it is the only client)
 //
 // A session without a token is refused. For a relay open to everyone, leave
 // its QUMO_AUTH_URL unset instead.
 func loadServeConfig() (serveConfig, error) {
-	cfg := serveConfig{
-		addr:     os.Getenv("QUMO_AUTH_ADDR"),
-		keysFile: os.Getenv("QUMO_AUTH_KEYS_FILE"),
-	}
+	cfg := serveConfig{addr: os.Getenv("QUMO_AUTH_ADDR")}
 	if cfg.addr == "" {
 		cfg.addr = defaultAddr
 	}
-	if cfg.keysFile == "" {
-		return serveConfig{}, errors.New("QUMO_AUTH_KEYS_FILE is not set: set it to the key set " +
+	keys := os.Getenv("QUMO_AUTH_KEYS")
+	if keys == "" {
+		return serveConfig{}, errors.New("QUMO_AUTH_KEYS is not set: set it to the key set " +
 			"\"qumo auth keygen\" wrote (keys.json)")
 	}
+	src, err := keySourceFor(keys, "")
+	if err != nil {
+		return serveConfig{}, fmt.Errorf("QUMO_AUTH_KEYS: %w", err)
+	}
+	file, ok := src.(*fileKeySource)
+	if !ok {
+		return serveConfig{}, errors.New("QUMO_AUTH_KEYS: the auth server reads a key set file, not a URL " +
+			"(a relay can download a key set itself)")
+	}
+	cfg.keysFile = file.path
 	return cfg, nil
 }
 
@@ -101,7 +110,7 @@ func serve() error {
 	}
 	keys, err := token.LoadKeySet(cfg.keysFile)
 	if err != nil {
-		return fmt.Errorf("QUMO_AUTH_KEYS_FILE: %w", err)
+		return fmt.Errorf("QUMO_AUTH_KEYS: %w", err)
 	}
 
 	mux := http.NewServeMux()
@@ -165,7 +174,7 @@ func runKeygen(args []string, out io.Writer) error {
 	fs := flag.NewFlagSet("qumo auth keygen", flag.ContinueOnError)
 	prefix := fs.String("prefix", "", "confine the key to this path prefix (e.g. acme/app); empty for none")
 	privPath := fs.String("out", "signing-key.jwk", "where to write the private signing key (keep it on the app's server)")
-	pubPath := fs.String("keys", "keys.json", "where to write the public key set (QUMO_AUTH_KEYS_FILE)")
+	pubPath := fs.String("keys", "keys.json", "where to write the public key set (QUMO_AUTH_KEYS)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -198,7 +207,7 @@ func runKeygen(args []string, out io.Writer) error {
 	fmt.Fprintf(&b, "  %-13s %s  (private: keep it on your app's server)\n", "Signing key:", *privPath)
 	fmt.Fprintf(&b, "  %-13s %s  (public: for the relay)\n", "Key set:", *pubPath)
 	fmt.Fprintf(&b, "\nNext:\n")
-	fmt.Fprintf(&b, "  1. Run the relay with it: QUMO_AUTH_KEYS_FILE=%s qumo relay\n", *pubPath)
+	fmt.Fprintf(&b, "  1. Run the relay with it: QUMO_AUTH_KEYS=%s qumo relay\n", *pubPath)
 	fmt.Fprintf(&b, "  2. Sign a test token:      qumo auth token -key %s -publish %s\n", *privPath, examplePath(key.Prefix))
 	_, err = io.WriteString(out, b.String())
 	return err

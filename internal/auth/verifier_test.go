@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -195,13 +196,13 @@ func TestNewVerifier(t *testing.T) {
 		cfg     VerifierConfig
 		wantErr string
 	}{
-		"file":            {cfg: VerifierConfig{KeysFile: "keys.json"}},
-		"url":             {cfg: VerifierConfig{KeysURL: "https://keys.example.com/set", UsageURL: "https://usage.example.com", Token: "t"}},
-		"loopback http":   {cfg: VerifierConfig{KeysURL: "http://127.0.0.1:8080/keys"}},
-		"both":            {cfg: VerifierConfig{KeysFile: "k", KeysURL: "https://x"}, wantErr: "both set"},
-		"neither":         {cfg: VerifierConfig{}, wantErr: "no key set"},
-		"remote http":     {cfg: VerifierConfig{KeysURL: "http://keys.example.com"}, wantErr: "loopback"},
-		"usage over http": {cfg: VerifierConfig{KeysFile: "k", UsageURL: "http://usage.example.com"}, wantErr: "QUMO_USAGE_URL"},
+		"file":            {cfg: VerifierConfig{Keys: "keys.json"}},
+		"url":             {cfg: VerifierConfig{Keys: "https://keys.example.com/set", UsageURL: "https://usage.example.com", Token: "t"}},
+		"loopback http":   {cfg: VerifierConfig{Keys: "http://127.0.0.1:8080/keys"}},
+		"unset":           {cfg: VerifierConfig{}, wantErr: "QUMO_AUTH_KEYS: not set"},
+		"remote http":     {cfg: VerifierConfig{Keys: "http://keys.example.com"}, wantErr: "loopback"},
+		"other scheme":    {cfg: VerifierConfig{Keys: "ftp://keys.example.com/set"}, wantErr: "want an https URL or a file path"},
+		"usage over http": {cfg: VerifierConfig{Keys: "k", UsageURL: "http://usage.example.com"}, wantErr: "QUMO_USAGE_URL"},
 	}
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
@@ -336,7 +337,7 @@ func TestVerifier_ReportsUsage(t *testing.T) {
 	sink := &fakeUsageSink{}
 	srv := httptest.NewServer(sink)
 	defer srv.Close()
-	v, err := NewVerifier(VerifierConfig{KeysFile: "unused", UsageURL: srv.URL, Token: "t"})
+	v, err := NewVerifier(VerifierConfig{Keys: "unused", UsageURL: srv.URL, Token: "t"})
 	require.NoError(t, err)
 	set, err := parseKeySet(keySetJSON(t, []token.SigningKey{k}))
 	require.NoError(t, err)
@@ -417,8 +418,7 @@ func TestUsageReporter(t *testing.T) {
 	t.Run("usage is coalesced to the latest report", func(t *testing.T) {
 		sink := &fakeUsageSink{}
 		r := newTestUsage(t, sink)
-		r.open("s1", testUsageSession, true)
-		r.open("s1", testUsageSession, false) // a revalidate re-learning it: no second open
+		r.open("s1", testUsageSession)
 		r.reportUsage("s1", Bytes{Sent: 1, Received: 10})
 		r.reportUsage("s1", Bytes{Sent: 2, Received: 20})
 		require.NoError(t, r.flush(context.Background()))
@@ -432,7 +432,7 @@ func TestUsageReporter(t *testing.T) {
 	t.Run("a failed send is retried with newer usage", func(t *testing.T) {
 		sink := &fakeUsageSink{statuses: []int{http.StatusBadGateway, http.StatusOK}}
 		r := newTestUsage(t, sink)
-		r.open("s1", testUsageSession, true)
+		r.open("s1", testUsageSession)
 		r.reportUsage("s1", Bytes{Received: 10})
 		assert.Error(t, r.flush(context.Background()))
 		r.reportUsage("s1", Bytes{Received: 20})
@@ -443,22 +443,60 @@ func TestUsageReporter(t *testing.T) {
 		assert.Equal(t, int64(20), retry[1].Metrics["gateway.ingress_bytes"], "the newer report wins")
 	})
 
-	t.Run("a rejected batch is dropped", func(t *testing.T) {
-		sink := &fakeUsageSink{statuses: []int{http.StatusBadRequest, http.StatusOK}}
+	for _, status := range []int{http.StatusBadRequest, http.StatusUnprocessableEntity} {
+		t.Run(fmt.Sprintf("a malformed batch (%d) is dropped", status), func(t *testing.T) {
+			sink := &fakeUsageSink{statuses: []int{status, http.StatusOK}}
+			r := newTestUsage(t, sink)
+			r.open("s1", testUsageSession)
+			require.NoError(t, r.flush(context.Background()))
+			require.NoError(t, r.flush(context.Background()))
+			assert.Len(t, sink.received(), 1)
+		})
+	}
+
+	// A rotated token (401, 403), a body over the receiver's limit (413), a
+	// timeout (408) or throttling (429) lose nothing: the records are kept.
+	for _, status := range []int{http.StatusUnauthorized, http.StatusForbidden, http.StatusRequestTimeout,
+		http.StatusRequestEntityTooLarge, http.StatusTooManyRequests, http.StatusBadGateway} {
+		t.Run(fmt.Sprintf("%d keeps the records", status), func(t *testing.T) {
+			sink := &fakeUsageSink{statuses: []int{status, http.StatusOK}}
+			r := newTestUsage(t, sink)
+			r.open("s1", testUsageSession)
+			assert.Error(t, r.flush(context.Background()))
+			require.NoError(t, r.flush(context.Background()))
+			batches := sink.received()
+			require.Len(t, batches, 2)
+			assert.Equal(t, batches[0], batches[1], "the same records again")
+		})
+	}
+
+	t.Run("a backlog goes out in batches", func(t *testing.T) {
+		sink := &fakeUsageSink{}
 		r := newTestUsage(t, sink)
-		r.open("s1", testUsageSession, true)
+		for i := range 1200 {
+			r.open(fmt.Sprintf("s%d", i), testUsageSession)
+		}
 		require.NoError(t, r.flush(context.Background()))
-		require.NoError(t, r.flush(context.Background()))
-		assert.Len(t, sink.received(), 1)
+		var sizes []int
+		for _, b := range sink.received() {
+			sizes = append(sizes, len(b))
+		}
+		assert.Equal(t, []int{500, 500, 200}, sizes)
 	})
 
-	t.Run("429 is retried", func(t *testing.T) {
-		sink := &fakeUsageSink{statuses: []int{http.StatusTooManyRequests, http.StatusOK}}
+	t.Run("a failure mid-backlog resends only what wasn't sent", func(t *testing.T) {
+		sink := &fakeUsageSink{statuses: []int{http.StatusOK, http.StatusServiceUnavailable, http.StatusOK}}
 		r := newTestUsage(t, sink)
-		r.open("s1", testUsageSession, true)
+		for i := range 700 {
+			r.open(fmt.Sprintf("s%d", i), testUsageSession)
+		}
 		assert.Error(t, r.flush(context.Background()))
 		require.NoError(t, r.flush(context.Background()))
-		assert.Len(t, sink.received(), 2)
+		var sizes []int
+		for _, b := range sink.received() {
+			sizes = append(sizes, len(b))
+		}
+		assert.Equal(t, []int{500, 200, 200}, sizes, "the first 500 went through; the next 200 are resent once")
 	})
 
 	t.Run("an unknown session's end and usage are ignored", func(t *testing.T) {
@@ -472,8 +510,8 @@ func TestUsageReporter(t *testing.T) {
 
 	t.Run("sessions whose end never came are forgotten after their expiry", func(t *testing.T) {
 		r := newTestUsage(t, &fakeUsageSink{})
-		r.open("old", usageSession{kid: "k1", role: rolePublish, expires: time.Now().Add(-sessionGrace - time.Second)}, true)
-		r.open("live", testUsageSession, true)
+		r.open("old", usageSession{kid: "k1", role: rolePublish, expires: time.Now().Add(-sessionGrace - time.Second)})
+		r.open("live", testUsageSession)
 		r.forgetExpired()
 		assert.False(t, r.close("old", Bytes{}, ""))
 		assert.True(t, r.close("live", Bytes{}, ""))
@@ -498,4 +536,80 @@ func TestNextRefresh(t *testing.T) {
 		seen[d] = true
 	}
 	assert.Greater(t, len(seen), 1, "the wait varies, so relays drift apart")
+}
+
+func TestKeySourceFor(t *testing.T) {
+	tests := map[string]struct {
+		value    string
+		wantFile string
+		wantURL  string
+		wantErr  string
+	}{
+		"relative path":      {value: "keys.json", wantFile: "keys.json"},
+		"absolute path":      {value: "/etc/qumo/keys.json", wantFile: "/etc/qumo/keys.json"},
+		"windows path":       {value: `C:\qumo\keys.json`, wantFile: `C:\qumo\keys.json`},
+		"file URL":           {value: "file:///etc/qumo/keys.json", wantFile: "/etc/qumo/keys.json"},
+		"windows file URL":   {value: "file:///C:/qumo/keys.json", wantFile: "C:/qumo/keys.json"},
+		"localhost file URL": {value: "file://localhost/etc/keys.json", wantFile: "/etc/keys.json"},
+		"https":              {value: "https://keys.example.com/set", wantURL: "https://keys.example.com/set"},
+		"uppercase scheme":   {value: "HTTPS://keys.example.com/set", wantURL: "HTTPS://keys.example.com/set"},
+		"loopback http":      {value: "http://localhost:8080/keys", wantURL: "http://localhost:8080/keys"},
+		"remote http":        {value: "http://keys.example.com/set", wantErr: "loopback"},
+		"remote file host":   {value: "file://server/keys.json", wantErr: "local file"},
+		"other scheme":       {value: "s3://bucket/keys.json", wantErr: `scheme "s3"`},
+		"empty":              {value: "", wantErr: "not set"},
+	}
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			src, err := keySourceFor(tt.value, "t")
+			if tt.wantErr != "" {
+				assert.ErrorContains(t, err, tt.wantErr)
+				return
+			}
+			require.NoError(t, err)
+			switch s := src.(type) {
+			case *fileKeySource:
+				assert.Equal(t, tt.wantFile, s.path)
+				assert.Empty(t, tt.wantURL)
+			case *urlKeySource:
+				assert.Equal(t, tt.wantURL, s.url)
+				assert.Equal(t, "t", s.token)
+				assert.Empty(t, tt.wantFile)
+			}
+		})
+	}
+}
+
+// TestVerifier_RevalidateAfterEnd pins the review's zombie case: a revalidate
+// that finishes after the session's end was recorded must not bring the
+// session back, nor send usage after its close.
+func TestVerifier_RevalidateAfterEnd(t *testing.T) {
+	k := genKey(t, "acme/app")
+	sink := &fakeUsageSink{}
+	srv := httptest.NewServer(sink)
+	defer srv.Close()
+	v, err := NewVerifier(VerifierConfig{Keys: "unused", UsageURL: srv.URL})
+	require.NoError(t, err)
+	set, err := parseKeySet(keySetJSON(t, []token.SigningKey{k}))
+	require.NoError(t, err)
+	v.store.replace(set, time.Now())
+	jwt := sign(t, k, token.Grant{Subscribe: "acme/app"})
+
+	_, err = v.Authorize(context.Background(), sessionReq(EventConnect, jwt))
+	require.NoError(t, err)
+	end := sessionReq(EventEnd, jwt)
+	end.Bytes = Bytes{Sent: 5}
+	require.NoError(t, v.End(context.Background(), end))
+	late := sessionReq(EventRevalidate, jwt)
+	late.Bytes = Bytes{Sent: 9}
+	_, err = v.Authorize(context.Background(), late)
+	require.NoError(t, err)
+	require.NoError(t, v.usage.flush(context.Background()))
+
+	var types []string
+	for _, rec := range sink.received()[0] {
+		types = append(types, rec.Type)
+	}
+	assert.Equal(t, []string{recordSessionOpen, recordSessionClose}, types)
+	assert.False(t, v.usage.close(late.ID, Bytes{}, ""), "the session isn't known again")
 }

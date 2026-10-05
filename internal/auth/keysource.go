@@ -9,7 +9,9 @@ import (
 	"log/slog"
 	"math/big"
 	"net/http"
+	"net/url"
 	"os"
+	"strings"
 	"sync"
 	"time"
 )
@@ -106,6 +108,44 @@ func runKeySource(ctx context.Context, src keySource, store *keyStore, now func(
 		case <-timer.C:
 			timer.Reset(nextRefresh())
 		}
+	}
+}
+
+// keySourceFor returns the key source a QUMO_AUTH_KEYS value names, by its
+// form: an https URL (or http on a loopback host) is downloaded; a file://
+// URL or anything without a scheme, a Windows path included, is a file. Any
+// other scheme is refused rather than guessed at.
+func keySourceFor(value, bearer string) (keySource, error) {
+	if value == "" {
+		return nil, errors.New("not set")
+	}
+	scheme, rest, hasScheme := strings.Cut(value, "://")
+	if !hasScheme {
+		return &fileKeySource{path: value}, nil
+	}
+	switch strings.ToLower(scheme) {
+	case "https", "http":
+		return newURLKeySource(value, bearer)
+	case "file":
+		u, err := url.Parse(value)
+		if err != nil {
+			return nil, err
+		}
+		if u.Host != "" && u.Host != "localhost" {
+			return nil, fmt.Errorf("a file:// URL names a local file, not one on %q", u.Host)
+		}
+		path := u.Path
+		if path == "" {
+			path = rest
+		}
+		// file:///C:/keys.json has the path /C:/keys.json; drop the slash
+		// before a drive letter.
+		if len(path) >= 3 && path[0] == '/' && path[2] == ':' {
+			path = path[1:]
+		}
+		return &fileKeySource{path: path}, nil
+	default:
+		return nil, fmt.Errorf("want an https URL or a file path, got scheme %q", scheme)
 	}
 }
 

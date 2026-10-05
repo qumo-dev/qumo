@@ -19,6 +19,9 @@ const (
 	usageFlushInterval = 10 * time.Second
 	// usageSendTimeout bounds one send, and the last send at shutdown.
 	usageSendTimeout = 10 * time.Second
+	// maxBatchRecords bounds one POST, so a backlog after an outage goes out
+	// in pieces a receiver's body limit accepts.
+	maxBatchRecords = 500
 	// maxPendingEvents caps the opens and closes waiting while the usage
 	// receiver can't be reached; the oldest are dropped past it. Usage needs
 	// no cap: it is one cumulative record per live session.
@@ -94,18 +97,12 @@ func newUsageReporter(rawURL, bearer string) (*usageReporter, error) {
 	}, nil
 }
 
-// open records a verified session. A revalidate re-learns a session the
-// reporter forgot (after a restart) the same way, without a second open.
-func (r *usageReporter) open(id string, s usageSession, isNew bool) {
+// open records a session admitted at connect.
+func (r *usageReporter) open(id string, s usageSession) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if _, known := r.sessions[id]; known && !isNew {
-		return
-	}
 	r.sessions[id] = s
-	if isNew {
-		r.appendEvent(r.record(recordSessionOpen, id, s))
-	}
+	r.appendEvent(r.record(recordSessionOpen, id, s))
 }
 
 // reportUsage records a session's cumulative bytes, if it knows the session.
@@ -199,12 +196,15 @@ func (r *usageReporter) forgetExpired() {
 	}
 }
 
-// errRejected is a 4xx answer to a usage batch: resending it can't succeed.
-var errRejected = errors.New("usage batch rejected")
+// errMalformed is a 400 or 422 answer to a usage batch: the receiver can't
+// read it, so resending it can't succeed.
+var errMalformed = errors.New("usage batch malformed")
 
-// flush sends every pending record in one batch: opens, then usage, then
-// closes. On failure the records go back, unless newer ones replaced them; a
-// batch the receiver rejects is dropped, so it can't block later records.
+// flush sends every pending record: opens, then usage, then closes, in
+// batches of at most maxBatchRecords. A batch the receiver can't read (400,
+// 422) is dropped, so it can't block later records. Any other failure, a
+// 401 or 413 included, stops the flush and puts the unsent records back,
+// unless newer ones replaced them, to try again next time.
 func (r *usageReporter) flush(ctx context.Context) error {
 	r.mu.Lock()
 	events, usage := r.events, r.usage
@@ -214,44 +214,60 @@ func (r *usageReporter) flush(ctx context.Context) error {
 		return nil
 	}
 
-	batch := make([]usageRecord, 0, len(events)+len(usage))
+	all := make([]usageRecord, 0, len(events)+len(usage))
 	for _, e := range events {
 		if e.Type == recordSessionOpen {
-			batch = append(batch, e)
+			all = append(all, e)
 		}
 	}
 	for _, u := range usage {
-		batch = append(batch, u)
+		all = append(all, u)
 	}
 	for _, e := range events {
 		if e.Type == recordSessionClose {
-			batch = append(batch, e)
+			all = append(all, e)
 		}
 	}
 
-	err := r.send(ctx, batch)
-	if err == nil {
-		return nil
+	for start := 0; start < len(all); start += maxBatchRecords {
+		batch := all[start:min(start+maxBatchRecords, len(all))]
+		err := r.send(ctx, batch)
+		switch {
+		case err == nil:
+		case errors.Is(err, errMalformed):
+			slog.Error("relay: usage batch refused as malformed; dropped", "records", len(batch), "error", err)
+		default:
+			r.requeue(all[start:])
+			return err
+		}
 	}
-	if errors.Is(err, errRejected) {
-		slog.Error("relay: usage batch rejected; dropped", "records", len(batch), "error", err)
-		return nil
-	}
+	return nil
+}
+
+// requeue puts unsent records back before anything recorded since: opens
+// and closes in order, and a usage record only if its session is still live
+// and has no newer one.
+func (r *usageReporter) requeue(unsent []usageRecord) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	var events []usageRecord
+	for _, rec := range unsent {
+		if rec.Type != recordUsage {
+			events = append(events, rec)
+			continue
+		}
+		if _, newer := r.usage[rec.SessionID]; newer {
+			continue
+		}
+		if _, live := r.sessions[rec.SessionID]; live {
+			r.usage[rec.SessionID] = rec
+		}
+	}
 	r.events = append(events, r.events...)
 	if over := len(r.events) - maxPendingEvents; over > 0 {
 		slog.Warn("relay: usage backlog full; dropping the oldest session events", "dropped", over)
 		r.events = r.events[over:]
 	}
-	for id, u := range usage {
-		if _, newer := r.usage[id]; !newer {
-			if _, live := r.sessions[id]; live {
-				r.usage[id] = u
-			}
-		}
-	}
-	return err
 }
 
 func (r *usageReporter) send(ctx context.Context, batch []usageRecord) error {
@@ -276,8 +292,8 @@ func (r *usageReporter) send(ctx context.Context, batch []usageRecord) error {
 	switch {
 	case resp.StatusCode >= 200 && resp.StatusCode < 300:
 		return nil
-	case resp.StatusCode >= 400 && resp.StatusCode < 500 && resp.StatusCode != http.StatusTooManyRequests:
-		return fmt.Errorf("%w: status %d", errRejected, resp.StatusCode)
+	case resp.StatusCode == http.StatusBadRequest || resp.StatusCode == http.StatusUnprocessableEntity:
+		return fmt.Errorf("%w: status %d", errMalformed, resp.StatusCode)
 	default:
 		return fmt.Errorf("status %d", resp.StatusCode)
 	}

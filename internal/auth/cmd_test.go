@@ -16,18 +16,20 @@ import (
 func TestLoadServeConfig(t *testing.T) {
 	tests := map[string]struct {
 		addr        string
-		keysFile    string
+		keys        string
 		want        serveConfig
 		wantErrText string
 	}{
-		"default address": {keysFile: "keys.json", want: serveConfig{addr: defaultAddr, keysFile: "keys.json"}},
-		"address set":     {addr: ":9000", keysFile: "keys.json", want: serveConfig{addr: ":9000", keysFile: "keys.json"}},
-		"no key set":      {wantErrText: "QUMO_AUTH_KEYS_FILE"},
+		"default address":    {keys: "keys.json", want: serveConfig{addr: defaultAddr, keysFile: "keys.json"}},
+		"address set":        {addr: ":9000", keys: "keys.json", want: serveConfig{addr: ":9000", keysFile: "keys.json"}},
+		"file URL":           {keys: "file:///etc/qumo/keys.json", want: serveConfig{addr: defaultAddr, keysFile: "/etc/qumo/keys.json"}},
+		"no key set":         {wantErrText: "QUMO_AUTH_KEYS is not set"},
+		"a URL isn't a file": {keys: "https://keys.example.com/set", wantErrText: "reads a key set file, not a URL"},
 	}
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
 			t.Setenv("QUMO_AUTH_ADDR", tt.addr)
-			t.Setenv("QUMO_AUTH_KEYS_FILE", tt.keysFile)
+			t.Setenv("QUMO_AUTH_KEYS", tt.keys)
 
 			got, err := loadServeConfig()
 
