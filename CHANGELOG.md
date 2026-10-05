@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [v0.10.261005] - 2026-10-05
+
+> **Breaking for operators.** `qumo_relay_sessions_expired_total` is replaced by `qumo_relay_sessions_ended_total{reason}` (use `reason="expired"` for the old count). Sessions are now revalidated with the auth server, which also receives each session's bytes and an `end` report. The HLS egress can connect as a trusted peer with a client certificate. New: `qumo auth`, a ready-to-run auth server with a key generator and token tool, and the `token` package apps sign with. WebTransport clients now see why the relay ended their session. **Not yet enforced:** which paths a session can discover through announce interest and TRACK_INFO (#450).
+
 ### Added
 
 - **`qumo auth`: a ready-to-run auth server, key generator and token tool (#460).** A relay with `QUMO_AUTH_URL` asks an auth server about every session; until now qumo shipped none, so a relay ran either with auth off or against an auth server you wrote yourself. An app now decides only what each client may do, and signs it:
