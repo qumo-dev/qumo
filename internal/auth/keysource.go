@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -63,8 +64,12 @@ func (s *keyStore) confirm(now time.Time) {
 	s.lastSuccess = now
 }
 
-// keySource refreshes a keyStore once.
+// keySource fills a keyStore.
 type keySource interface {
+	// start loads what the source can give without waiting, before the
+	// relay takes sessions. An error stops the relay from starting.
+	start(store *keyStore, now time.Time) error
+	// refresh brings the store up to date once.
 	refresh(ctx context.Context, store *keyStore, now time.Time) error
 	// String names the source in logs.
 	String() string
@@ -115,17 +120,29 @@ func runKeySource(ctx context.Context, src keySource, store *keyStore, now func(
 // form: an https URL (or http on a loopback host) is downloaded; a file://
 // URL or anything without a scheme, a Windows path included, is a file. Any
 // other scheme is refused rather than guessed at.
-func keySourceFor(value, bearer string) (keySource, error) {
+//
+// cache is where a downloaded key set is kept between runs
+// (QUMO_AUTH_KEYS_CACHE); it applies to a URL only.
+func keySourceFor(value, bearer, cache string) (keySource, error) {
 	if value == "" {
 		return nil, errors.New("not set")
 	}
 	scheme, rest, hasScheme := strings.Cut(value, "://")
+	isURL := hasScheme && (strings.EqualFold(scheme, "https") || strings.EqualFold(scheme, "http"))
+	if cache != "" && !isURL {
+		return nil, errors.New("QUMO_AUTH_KEYS_CACHE keeps a downloaded key set; it has no use with a key set file")
+	}
 	if !hasScheme {
 		return &fileKeySource{path: value}, nil
 	}
 	switch strings.ToLower(scheme) {
 	case "https", "http":
-		return newURLKeySource(value, bearer)
+		src, err := newURLKeySource(value, bearer)
+		if err != nil {
+			return nil, err
+		}
+		src.cache = cache
+		return src, nil
 	case "file":
 		u, err := url.Parse(value)
 		if err != nil {
@@ -156,7 +173,18 @@ type fileKeySource struct {
 	modTime time.Time
 }
 
+var (
+	_ keySource = (*fileKeySource)(nil)
+	_ keySource = (*urlKeySource)(nil)
+)
+
 func (f *fileKeySource) String() string { return f.path }
+
+// start reads the file. A file that can't be read or parsed stops the relay
+// from starting: it would otherwise run and refuse every session.
+func (f *fileKeySource) start(store *keyStore, now time.Time) error {
+	return f.refresh(context.Background(), store, now)
+}
 
 func (f *fileKeySource) refresh(_ context.Context, store *keyStore, now time.Time) error {
 	info, err := os.Stat(f.path)
@@ -188,6 +216,80 @@ type urlKeySource struct {
 	token  string
 	client *http.Client
 	etag   string
+	// cache is a file the last downloaded key set is kept in, so a relay
+	// that restarts while the URL can't be reached still has its keys. Its
+	// modification time is when the set was last confirmed, so the
+	// fail-static limit holds across restarts. Empty keeps none.
+	cache string
+}
+
+// start loads the cached key set, if there is one. It never fails: a missing
+// or unreadable cache only means the relay waits for its first download.
+func (u *urlKeySource) start(store *keyStore, now time.Time) error {
+	if u.cache == "" {
+		return nil
+	}
+	info, err := os.Stat(u.cache)
+	if err != nil {
+		if !errors.Is(err, os.ErrNotExist) {
+			slog.Warn("relay: key set cache can't be read", "cache", u.cache, "error", err)
+		}
+		return nil
+	}
+	raw, err := os.ReadFile(u.cache)
+	if err != nil {
+		slog.Warn("relay: key set cache can't be read", "cache", u.cache, "error", err)
+		return nil
+	}
+	set, err := parseKeySet(raw)
+	if err != nil {
+		slog.Warn("relay: key set cache is not a key set; ignored", "cache", u.cache, "error", err)
+		return nil
+	}
+	// The cache is as old as its last confirmation, not as new as now.
+	confirmed := info.ModTime()
+	if confirmed.After(now) {
+		confirmed = now
+	}
+	store.replace(set, confirmed)
+	slog.Info("relay: key set loaded from cache", "cache", u.cache, "keys", len(set.keys),
+		"age", now.Sub(confirmed).Round(time.Second))
+	return nil
+}
+
+// saveCache writes a downloaded key set to the cache, through a temporary
+// file so a crash can't leave half of one. A failure is logged, not returned:
+// the relay has the set in memory either way.
+func (u *urlKeySource) saveCache(raw []byte) {
+	if u.cache == "" {
+		return
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(u.cache), filepath.Base(u.cache)+".*.tmp")
+	if err != nil {
+		slog.Warn("relay: key set cache can't be written", "cache", u.cache, "error", err)
+		return
+	}
+	_, werr := tmp.Write(raw)
+	cerr := tmp.Close()
+	if err := errors.Join(werr, cerr); err != nil {
+		slog.Warn("relay: key set cache can't be written", "cache", u.cache, "error", err)
+		_ = os.Remove(tmp.Name()) // not actionable: a leftover temp file
+		return
+	}
+	if err := os.Rename(tmp.Name(), u.cache); err != nil {
+		slog.Warn("relay: key set cache can't be written", "cache", u.cache, "error", err)
+		_ = os.Remove(tmp.Name()) // not actionable: a leftover temp file
+	}
+}
+
+// touchCache marks the cached key set as confirmed at now.
+func (u *urlKeySource) touchCache(now time.Time) {
+	if u.cache == "" {
+		return
+	}
+	if err := os.Chtimes(u.cache, now, now); err != nil && !errors.Is(err, os.ErrNotExist) {
+		slog.Debug("relay: key set cache can't be touched", "cache", u.cache, "error", err)
+	}
 }
 
 func newURLKeySource(rawURL, bearer string) (*urlKeySource, error) {
@@ -218,6 +320,7 @@ func (u *urlKeySource) refresh(ctx context.Context, store *keyStore, now time.Ti
 	switch resp.StatusCode {
 	case http.StatusNotModified:
 		store.confirm(now)
+		u.touchCache(now)
 		return nil
 	case http.StatusOK:
 	default:
@@ -237,6 +340,7 @@ func (u *urlKeySource) refresh(ctx context.Context, store *keyStore, now time.Ti
 	}
 	store.replace(set, now)
 	u.etag = resp.Header.Get("ETag")
+	u.saveCache(raw)
 	slog.Info("relay: key set updated", "source", u.url, "keys", len(set.keys))
 	return nil
 }

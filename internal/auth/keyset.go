@@ -8,15 +8,19 @@ import (
 )
 
 // keySet is what a relay verifying credentials itself trusts: the keys by
-// kid, and the kids that verify live sessions but start no new ones.
+// kid, and which of them start no new publishing sessions.
 type keySet struct {
-	keys    map[string]token.Key
-	noAdmit map[string]bool
+	keys map[string]token.Key
+	// noPublish holds the kids that start no new sessions that may publish
+	// ("publish": false), such as a key whose owner is at a limit on
+	// broadcasts. Sessions that only subscribe still start, and live
+	// sessions continue.
+	noPublish map[string]bool
 }
 
 // parseKeySet decodes a JWK Set of Ed25519 public keys as the relay reads it:
 // the set token.ParseKeySet takes (each key with its prefix), where a key may
-// also carry "admit": false. An empty set is valid and admits nothing, so a
+// also carry "publish": false. An empty set is valid and admits nothing, so a
 // key-set server with no keys yet is not mistaken for a failing one.
 func parseKeySet(raw []byte) (*keySet, error) {
 	var set struct {
@@ -25,7 +29,7 @@ func parseKeySet(raw []byte) (*keySet, error) {
 	if err := json.Unmarshal(raw, &set); err != nil {
 		return nil, fmt.Errorf("decode key set: %w", err)
 	}
-	ks := &keySet{keys: map[string]token.Key{}, noAdmit: map[string]bool{}}
+	ks := &keySet{keys: map[string]token.Key{}, noPublish: map[string]bool{}}
 	if len(set.Keys) == 0 {
 		return ks, nil
 	}
@@ -37,12 +41,12 @@ func parseKeySet(raw []byte) (*keySet, error) {
 	ks.keys = keys
 	for i, entry := range set.Keys {
 		var flags struct {
-			Admit *bool `json:"admit"`
+			Publish *bool `json:"publish"`
 		}
 		if err := json.Unmarshal(entry, &flags); err != nil {
 			return nil, fmt.Errorf("key %d: %w", i, err)
 		}
-		if flags.Admit == nil || *flags.Admit {
+		if flags.Publish == nil || *flags.Publish {
 			continue
 		}
 		// The entry's kid is its thumbprint, which ParseKeySet computes;
@@ -52,7 +56,7 @@ func parseKeySet(raw []byte) (*keySet, error) {
 			return nil, fmt.Errorf("key %d: %w", i, err)
 		}
 		for kid := range one {
-			ks.noAdmit[kid] = true
+			ks.noPublish[kid] = true
 		}
 	}
 	return ks, nil

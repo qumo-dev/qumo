@@ -22,6 +22,10 @@ type VerifierConfig struct {
 	// on a loopback host) to download about every 30 s, or a file, as a path
 	// or a file:// URL, re-read when it changes.
 	Keys string
+	// KeysCache is a file a downloaded key set is kept in between runs
+	// (QUMO_AUTH_KEYS_CACHE), so a relay that restarts while the URL can't
+	// be reached still has its keys. Empty keeps none. For a URL only.
+	KeysCache string
 	// UsageURL receives the sessions' usage records (QUMO_USAGE_URL);
 	// empty reports nothing.
 	UsageURL string
@@ -37,8 +41,8 @@ type VerifierConfig struct {
 // A session's credential (the jwt query parameter of its connect URL) must be
 // signed by a key in the set and grant only paths within the key's prefix
 // (token.Verify). A live session is re-checked every 30 s: a key that has left
-// the set ends its sessions, while a key marked "admit": false keeps them and
-// starts no new ones. The key set is kept when a refresh fails (fail-static);
+// the set ends its sessions. A key marked "publish": false starts no new
+// sessions that may publish. The key set is kept when a refresh fails (fail-static);
 // after 6 h without one, new sessions are refused.
 type Verifier struct {
 	source keySource
@@ -47,10 +51,12 @@ type Verifier struct {
 	now    func() time.Time
 }
 
-// NewVerifier returns a Verifier for cfg. Run starts its key-set refresh
+// NewVerifier returns a Verifier for cfg, with the key set a file or a cache
+// already holds loaded. A key set file that can't be read is an error: the
+// relay would run and refuse every session. Run starts the key-set refresh
 // and usage reporting.
 func NewVerifier(cfg VerifierConfig) (*Verifier, error) {
-	src, err := keySourceFor(cfg.Keys, cfg.Token)
+	src, err := keySourceFor(cfg.Keys, cfg.Token, cfg.KeysCache)
 	if err != nil {
 		return nil, fmt.Errorf("QUMO_AUTH_KEYS: %w", err)
 	}
@@ -61,6 +67,10 @@ func NewVerifier(cfg VerifierConfig) (*Verifier, error) {
 			return nil, fmt.Errorf("QUMO_USAGE_URL: %w", err)
 		}
 		v.usage = u
+	}
+	// Last, once the rest of the configuration is known to be good.
+	if err := src.start(&v.store, v.now()); err != nil {
+		return nil, fmt.Errorf("QUMO_AUTH_KEYS: %w", err)
 	}
 	return v, nil
 }
@@ -100,9 +110,8 @@ func refuse(status int, format string, args ...any) error {
 }
 
 // Authorize verifies a connect or revalidate. A new session needs a key set
-// no older than the fail-static limit, and a key that admits; a live one
-// keeps going on a stale set or a non-admitting key, and ends when its key
-// has left the set. The bytes of a revalidate are reported whatever it
+// no older than the fail-static limit; a live one keeps going on a stale
+// set, and ends when its key has left the set. The bytes of a revalidate are reported whatever it
 // decides, since they were sent.
 func (v *Verifier) Authorize(_ context.Context, req Request) (*Grant, error) {
 	g, s, err := v.decide(req)
@@ -148,13 +157,14 @@ func (v *Verifier) decide(req Request) (*Grant, usageSession, error) {
 		}
 		return nil, usageSession{}, refuse(status, "%v", err)
 	}
-	if connect && set.noAdmit[c.Key.ID] {
-		return nil, usageSession{}, refuse(http.StatusForbidden, "signing key %s starts no new sessions", c.Key.ID)
+	if connect && c.Publish != "" && set.noPublish[c.Key.ID] {
+		return nil, usageSession{}, refuse(http.StatusForbidden,
+			"signing key %s starts no new publishing sessions", c.Key.ID)
 	}
 
 	expires := c.ExpiresAt.Add(token.Leeway)
 	g := &Grant{expires: expires, revalidate: revalidateEvery}
-	s := usageSession{kid: c.Key.ID, jti: c.ID, expires: expires}
+	s := usageSession{kid: c.Key.ID, expires: expires}
 	if c.Publish != "" {
 		g.Publish = Patterns{{base: c.Publish}}
 		s.role = rolePublish
