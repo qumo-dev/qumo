@@ -6,7 +6,7 @@ import (
 	"io/fs"
 	"os"
 
-	"github.com/qumo-dev/qumo/internal/authserver"
+	"github.com/qumo-dev/qumo/internal/auth"
 	"github.com/qumo-dev/qumo/internal/doctor"
 	"github.com/qumo-dev/qumo/internal/hls"
 	"github.com/qumo-dev/qumo/internal/ingest"
@@ -24,7 +24,7 @@ var (
 	runRTMP       = ingest.RunRTMP
 	runRTSP       = ingest.RunRTSP     // push server (ANNOUNCE/RECORD)
 	runRTSPPull   = ingest.RunRTSPPull // pull client (DESCRIBE/SETUP/PLAY, camera ingest)
-	runAuth       = authserver.Run
+	runAuth       = auth.Run
 	runDoctor     = doctor.Run
 	runLoadgen    = loadgen.Run
 	runUpdate     = update.Run

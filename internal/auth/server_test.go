@@ -1,4 +1,4 @@
-package authserver
+package auth
 
 import (
 	"encoding/json/v2"
@@ -9,7 +9,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/qumo-dev/qumo/internal/auth"
 	"github.com/qumo-dev/qumo/token"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -30,8 +29,8 @@ func event(tb testing.TB, name, tok string) string {
 	if tok != "" {
 		q = url.Values{"jwt": {tok}}.Encode()
 	}
-	b, err := json.Marshal(auth.Request{
-		ID: "00ff", Event: name, Node: "relay-1", Transport: auth.TransportWebTransport,
+	b, err := json.Marshal(Request{
+		ID: "00ff", Event: name, Node: "relay-1", Transport: TransportWebTransport,
 		Remote: "192.0.2.1:5000", Path: "/acme/app", Query: q,
 	})
 	require.NoError(tb, err)
@@ -60,12 +59,12 @@ func TestHandler_ServeHTTP_ConnectAndRevalidateGrant(t *testing.T) {
 	h := &Handler{Keys: keys, Revalidate: 30 * time.Second}
 	tok := sign(t, key, token.Grant{Publish: "acme/app/alice", Subscribe: "acme/app"})
 
-	for _, name := range []string{auth.EventConnect, auth.EventRevalidate} {
+	for _, name := range []string{EventConnect, EventRevalidate} {
 		t.Run(name, func(t *testing.T) {
 			rec := post(t, h, event(t, name, tok))
 
 			require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
-			var g grant
+			var g grantResponse
 			require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &g))
 			assert.Equal(t, []string{"acme/app/alice/**"}, g.Publish)
 			assert.Equal(t, []string{"acme/app/**"}, g.Subscribe)
@@ -81,9 +80,9 @@ func TestHandler_ServeHTTP_GrantParsesOnTheRelay(t *testing.T) {
 	key, keys := newKey(t, "acme/app")
 	h := &Handler{Keys: keys}
 
-	rec := post(t, h, event(t, auth.EventConnect, sign(t, key, token.Grant{Publish: "acme/app/alice", Subscribe: "acme/app"})))
+	rec := post(t, h, event(t, EventConnect, sign(t, key, token.Grant{Publish: "acme/app/alice", Subscribe: "acme/app"})))
 	require.Equal(t, http.StatusOK, rec.Code)
-	var g auth.Grant
+	var g Grant
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &g))
 
 	assert.True(t, g.Publish.Contains("/acme/app/alice/cam"))
@@ -101,10 +100,10 @@ func TestHandler_ServeHTTP_Refusals(t *testing.T) {
 		body       string
 		wantStatus int
 	}{
-		"no credential":            {body: event(t, auth.EventConnect, ""), wantStatus: http.StatusUnauthorized},
-		"garbage credential":       {body: event(t, auth.EventConnect, "not-a-token"), wantStatus: http.StatusUnauthorized},
-		"an untrusted key":         {body: event(t, auth.EventConnect, sign(t, stranger, token.Grant{Publish: "acme/app"})), wantStatus: http.StatusUnauthorized},
-		"outside the key's prefix": {body: event(t, auth.EventConnect, sign(t, key, token.Grant{Publish: "other/app"})), wantStatus: http.StatusForbidden},
+		"no credential":            {body: event(t, EventConnect, ""), wantStatus: http.StatusUnauthorized},
+		"garbage credential":       {body: event(t, EventConnect, "not-a-token"), wantStatus: http.StatusUnauthorized},
+		"an untrusted key":         {body: event(t, EventConnect, sign(t, stranger, token.Grant{Publish: "acme/app"})), wantStatus: http.StatusUnauthorized},
+		"outside the key's prefix": {body: event(t, EventConnect, sign(t, key, token.Grant{Publish: "other/app"})), wantStatus: http.StatusForbidden},
 		"unknown event":            {body: `{"id":"00ff","event":"announce"}`, wantStatus: http.StatusBadRequest},
 		"not JSON":                 {body: `{`, wantStatus: http.StatusBadRequest},
 	}
@@ -141,7 +140,7 @@ func TestHandler_ServeHTTP_RefusalDoesNotEchoTheCredential(t *testing.T) {
 	tok := sign(t, stranger, token.Grant{Publish: "acme/app"})
 	h := &Handler{Keys: keys}
 
-	rec := post(t, h, event(t, auth.EventConnect, tok))
+	rec := post(t, h, event(t, EventConnect, tok))
 
 	require.Equal(t, http.StatusUnauthorized, rec.Code)
 	assert.NotContains(t, rec.Body.String(), tok)
@@ -154,19 +153,19 @@ func TestHandler_ServeHTTP_Anonymous(t *testing.T) {
 	tests := map[string]struct {
 		body       string
 		wantStatus int
-		wantGrant  grant
+		wantGrant  grantResponse
 	}{
 		"no credential gets the anonymous grant": {
-			body:       event(t, auth.EventConnect, ""),
+			body:       event(t, EventConnect, ""),
 			wantStatus: http.StatusOK,
-			wantGrant:  grant{Publish: []string{"anon/**"}, Subscribe: []string{"anon/**"}},
+			wantGrant:  grantResponse{Publish: []string{"anon/**"}, Subscribe: []string{"anon/**"}},
 		},
 		"a valid credential gets its own grant": {
-			body:       event(t, auth.EventConnect, sign(t, key, token.Grant{Publish: "acme/app"})),
+			body:       event(t, EventConnect, sign(t, key, token.Grant{Publish: "acme/app"})),
 			wantStatus: http.StatusOK,
 		},
 		"an invalid credential is refused, not granted anonymous": {
-			body:       event(t, auth.EventConnect, sign(t, stranger, token.Grant{Publish: "acme/app"})),
+			body:       event(t, EventConnect, sign(t, stranger, token.Grant{Publish: "acme/app"})),
 			wantStatus: http.StatusUnauthorized,
 		},
 	}
@@ -176,7 +175,7 @@ func TestHandler_ServeHTTP_Anonymous(t *testing.T) {
 
 			require.Equal(t, tt.wantStatus, rec.Code, rec.Body.String())
 			if tt.wantGrant.Publish != nil {
-				var g grant
+				var g grantResponse
 				require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &g))
 				assert.Equal(t, tt.wantGrant, g)
 				assert.NotContains(t, rec.Body.String(), "expires", "an anonymous grant has no expiry")
@@ -188,12 +187,12 @@ func TestHandler_ServeHTTP_Anonymous(t *testing.T) {
 func TestHandler_ServeHTTP_NoAnonymousRefusesNoCredential(t *testing.T) {
 	h := &Handler{}
 
-	rec := post(t, h, event(t, auth.EventConnect, ""))
+	rec := post(t, h, event(t, EventConnect, ""))
 
 	assert.Equal(t, http.StatusUnauthorized, rec.Code)
 }
 
-func TestParsePatterns(t *testing.T) {
+func TestParsePatternList(t *testing.T) {
 	tests := map[string]struct {
 		raw     string
 		want    []string
@@ -210,7 +209,7 @@ func TestParsePatterns(t *testing.T) {
 	}
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
-			got, err := ParsePatterns(tt.raw)
+			got, err := parsePatternList(tt.raw)
 
 			if tt.wantErr {
 				assert.Error(t, err)

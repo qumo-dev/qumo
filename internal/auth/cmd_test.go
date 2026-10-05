@@ -1,4 +1,4 @@
-package authserver
+package auth
 
 import (
 	"bytes"
@@ -7,7 +7,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/qumo-dev/qumo/internal/auth"
 	"github.com/qumo-dev/qumo/token"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -59,7 +58,7 @@ func TestKeygenTokenServe_EndToEnd(t *testing.T) {
 	keys, err := token.LoadKeySet(pub)
 	require.NoError(t, err)
 
-	rec := post(t, &Handler{Keys: keys}, event(t, auth.EventConnect, tok))
+	rec := post(t, &Handler{Keys: keys}, event(t, EventConnect, tok))
 
 	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
 	assert.Contains(t, rec.Body.String(), `"publish":["acme/app/alice/**"]`)

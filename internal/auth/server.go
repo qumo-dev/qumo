@@ -1,9 +1,4 @@
-// Package authserver is qumo's auth server: it answers a relay's session
-// events (QUMO_AUTH_URL on the relay) by verifying the capability token a
-// client presented in its connect URL, and turning the token's grant into the
-// publish and subscribe patterns the relay enforces. It also holds the
-// "qumo auth" command: serve, keygen and token.
-package authserver
+package auth
 
 import (
 	"encoding/json/v2"
@@ -12,19 +7,17 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
-	"strings"
 	"time"
 
-	"github.com/qumo-dev/qumo/internal/auth"
 	"github.com/qumo-dev/qumo/token"
 )
 
 // maxRequestBytes bounds a relay's session-event body.
 const maxRequestBytes = 64 << 10
 
-// grant is what a session may do, as the relay receives it (auth.Grant on the
-// relay's side): subtree patterns, and when the session ends.
-type grant struct {
+// grantResponse is a Grant as the auth server writes it: subtree patterns,
+// and when the session ends.
+type grantResponse struct {
 	Publish   []string `json:"publish,omitempty"`
 	Subscribe []string `json:"subscribe,omitempty"`
 	// Expires is when the relay ends the session, in unix seconds: the
@@ -59,17 +52,17 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusMethodNotAllowed, "POST a session event")
 		return
 	}
-	var req auth.Request
+	var req Request
 	if err := json.UnmarshalRead(http.MaxBytesReader(w, r.Body, maxRequestBytes), &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid session event")
 		return
 	}
 
 	switch req.Event {
-	case auth.EventConnect, auth.EventRevalidate:
+	case EventConnect, EventRevalidate:
 		h.answer(w, req)
-	case auth.EventEnd:
-		slog.Info("authserver: session ended", "id", req.ID, "reason", req.Reason, "duration_s", req.Duration,
+	case EventEnd:
+		slog.Info("auth server: session ended", "id", req.ID, "reason", req.Reason, "duration_s", req.Duration,
 			"bytes_sent", req.Bytes.Sent, "bytes_received", req.Bytes.Received)
 		w.WriteHeader(http.StatusNoContent)
 	default:
@@ -80,7 +73,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // answer verifies the token in the request's query and writes its grant, or
 // a refusal: 401 for a token that can't be accepted, 403 for a valid one that
 // grants nothing usable.
-func (h *Handler) answer(w http.ResponseWriter, req auth.Request) {
+func (h *Handler) answer(w http.ResponseWriter, req Request) {
 	g, err := h.grantFor(req)
 	if err != nil {
 		status := http.StatusUnauthorized
@@ -88,27 +81,27 @@ func (h *Handler) answer(w http.ResponseWriter, req auth.Request) {
 			status = http.StatusForbidden
 		}
 		// The query carries the credential; it is never logged.
-		slog.Info("authserver: session refused", "id", req.ID, "event", req.Event,
+		slog.Info("auth server: session refused", "id", req.ID, "event", req.Event,
 			"transport", req.Transport, "remote", req.Remote, "path", req.Path, "reason", err)
 		writeError(w, status, err.Error())
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.MarshalWrite(w, g); err != nil {
-		slog.Warn("authserver: write grant", "id", req.ID, "error", err)
+		slog.Warn("auth server: write grant", "id", req.ID, "error", err)
 	}
 }
 
-func (h *Handler) grantFor(req auth.Request) (grant, error) {
+func (h *Handler) grantFor(req Request) (grantResponse, error) {
 	query, err := url.ParseQuery(req.Query)
 	if err != nil {
-		return grant{}, fmt.Errorf("%w: query: %v", token.ErrInvalid, err)
+		return grantResponse{}, fmt.Errorf("%w: query: %v", token.ErrInvalid, err)
 	}
 	if !query.Has("jwt") {
 		if len(h.Anonymous) == 0 {
-			return grant{}, fmt.Errorf("%w: no credential: the client must connect with ?jwt=", token.ErrInvalid)
+			return grantResponse{}, fmt.Errorf("%w: no credential: the client must connect with ?jwt=", token.ErrInvalid)
 		}
-		return grant{Publish: h.Anonymous, Subscribe: h.Anonymous}, nil
+		return grantResponse{Publish: h.Anonymous, Subscribe: h.Anonymous}, nil
 	}
 	now := time.Now
 	if h.now != nil {
@@ -116,9 +109,9 @@ func (h *Handler) grantFor(req auth.Request) (grant, error) {
 	}
 	c, err := token.Verify(query.Get("jwt"), h.Keys, now())
 	if err != nil {
-		return grant{}, err
+		return grantResponse{}, err
 	}
-	g := grant{
+	g := grantResponse{
 		Expires:    c.ExpiresAt.Add(token.Leeway).Unix(),
 		Revalidate: int64(h.Revalidate / time.Second),
 	}
@@ -129,38 +122,6 @@ func (h *Handler) grantFor(req auth.Request) (grant, error) {
 		g.Subscribe = []string{c.Subscribe + "/**"}
 	}
 	return g, nil
-}
-
-// ParsePatterns parses comma-separated subtree patterns, each "**" or a path
-// followed by "/**", as the relay accepts them.
-func ParsePatterns(raw string) ([]string, error) {
-	var patterns []string
-	for p := range strings.SplitSeq(raw, ",") {
-		p = strings.TrimSpace(p)
-		if !validPattern(p) {
-			return nil, fmt.Errorf("pattern %q: want \"**\" or a path followed by \"/**\"", p)
-		}
-		patterns = append(patterns, p)
-	}
-	return patterns, nil
-}
-
-// validPattern reports whether s is a subtree pattern the relay accepts: "**",
-// or a path with no empty, ".", ".." or "*" segments followed by "/**".
-func validPattern(s string) bool {
-	if s == "**" {
-		return true
-	}
-	base, ok := strings.CutSuffix(s, "/**")
-	if !ok || base == "" {
-		return false
-	}
-	for seg := range strings.SplitSeq(base, "/") {
-		if seg == "" || seg == "." || seg == ".." || strings.Contains(seg, "*") {
-			return false
-		}
-	}
-	return true
 }
 
 func writeError(w http.ResponseWriter, status int, msg string) {

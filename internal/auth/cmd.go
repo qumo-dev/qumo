@@ -1,4 +1,4 @@
-package authserver
+package auth
 
 import (
 	"context"
@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -89,7 +90,7 @@ func loadServeConfig() (serveConfig, error) {
 		cfg.addr = defaultAddr
 	}
 	if raw := os.Getenv("QUMO_AUTH_ANONYMOUS"); raw != "" {
-		anonymous, err := ParsePatterns(raw)
+		anonymous, err := parsePatternList(raw)
 		if err != nil {
 			return serveConfig{}, fmt.Errorf("QUMO_AUTH_ANONYMOUS: %w", err)
 		}
@@ -101,6 +102,20 @@ func loadServeConfig() (serveConfig, error) {
 			"without a credential may use, or both")
 	}
 	return cfg, nil
+}
+
+// parsePatternList parses comma-separated subtree patterns, as a grant
+// carries them, and returns them trimmed.
+func parsePatternList(raw string) ([]string, error) {
+	var patterns []string
+	for s := range strings.SplitSeq(raw, ",") {
+		s = strings.TrimSpace(s)
+		if _, err := parsePattern(s); err != nil {
+			return nil, err
+		}
+		patterns = append(patterns, s)
+	}
+	return patterns, nil
 }
 
 func runServe(args []string) error {
@@ -134,7 +149,7 @@ func runServe(args []string) error {
 
 	serveErr := make(chan error, 1)
 	go func() { serveErr <- srv.ListenAndServe() }()
-	slog.Info("qumo auth: listening", "addr", cfg.addr, "keys", len(keys), "keys_file", cfg.keysFile,
+	slog.Info("auth server: listening", "addr", cfg.addr, "keys", len(keys), "keys_file", cfg.keysFile,
 		"anonymous", cfg.anonymous)
 
 	select {
