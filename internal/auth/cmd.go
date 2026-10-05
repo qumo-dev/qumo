@@ -196,11 +196,10 @@ func runKeygen(args []string, out io.Writer) error {
 	fmt.Fprintf(&b, "  %-13s %s\n", "Key ID:", key.ID)
 	fmt.Fprintf(&b, "  %-13s %s\n", "Grants:", prefixLabel(key.Prefix))
 	fmt.Fprintf(&b, "  %-13s %s  (private: keep it on your app's server)\n", "Signing key:", *privPath)
-	fmt.Fprintf(&b, "  %-13s %s  (public: for the auth server)\n", "Key set:", *pubPath)
+	fmt.Fprintf(&b, "  %-13s %s  (public: for the relay)\n", "Key set:", *pubPath)
 	fmt.Fprintf(&b, "\nNext:\n")
-	fmt.Fprintf(&b, "  1. Run the auth server:   QUMO_AUTH_KEYS_FILE=%s qumo auth\n", *pubPath)
-	fmt.Fprintf(&b, "  2. Point the relay at it: QUMO_AUTH_URL=http://%s qumo relay\n", defaultAddr)
-	fmt.Fprintf(&b, "  3. Sign a test token:     qumo auth token -key %s -publish %s\n", *privPath, examplePath(key.Prefix))
+	fmt.Fprintf(&b, "  1. Run the relay with it: QUMO_AUTH_KEYS_FILE=%s qumo relay\n", *pubPath)
+	fmt.Fprintf(&b, "  2. Sign a test token:      qumo auth token -key %s -publish %s\n", *privPath, examplePath(key.Prefix))
 	_, err = io.WriteString(out, b.String())
 	return err
 }

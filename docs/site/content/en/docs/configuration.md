@@ -98,17 +98,54 @@ relay's HTTP port.
 
 ## Session auth (optional)
 
-Auth is off unless `QUMO_AUTH_URL` is set. Off, the relay admits every session unchecked and logs a warning at startup: the right setting for local development and for a relay that is open on purpose. On, the relay asks its auth server about every client session.
+A client puts its credential in the connect URL: `https://relay.example.com/…?jwt=…` over WebTransport, or `moqt://relay.example.com/…?jwt=…` over native QUIC. The relay checks it in one of two ways:
+
+- **It verifies the credential itself, against a key set** (`QUMO_AUTH_KEYS_FILE` or `QUMO_AUTH_KEYS_URL`). This is the usual setup: no other process is involved.
+- **It asks an auth server** (`QUMO_AUTH_URL`), for policy beyond keys and paths.
+
+With neither, auth is off: the relay admits every session unchecked and logs a warning at startup, the right setting for local development and for a relay that is open on purpose. Setting both is an error.
 
 | Variable | Default | Description |
 |---|---|---|
-| `QUMO_AUTH_URL` | (unset: auth off) | The auth server the relay asks when each client session connects. `https://`, or `http://` on a loopback host only. |
+| `QUMO_AUTH_KEYS_FILE` | (unset) | The key set on disk: a JWK Set of Ed25519 public keys, what [`qumo auth keygen`](../cli/auth/#keygen) writes. Re-read when the file changes. |
+| `QUMO_AUTH_KEYS_URL` | (unset) | The key set at a URL, downloaded every 30 s with `If-None-Match`. `https://`, or `http://` on a loopback host only. |
+| `QUMO_RELAY_TOKEN` | (unset) | Sent as a bearer token to `QUMO_AUTH_KEYS_URL` and `QUMO_USAGE_URL`. |
+| `QUMO_USAGE_URL` | (unset: no reports) | Where the relay reports each verified session's usage (below). Needs a key set. |
+| `QUMO_AUTH_URL` | (unset) | An auth server the relay asks when each client session connects. `https://`, or `http://` on a loopback host only. |
 
-The auth server holds the policy: which credentials it accepts, and what a session that presents none may do. qumo ships one, [`qumo auth`](../cli/auth/), which verifies tokens your app signs with its own key; any server that speaks the contract below works too.
+**Trusted peers are never checked:** sessions with a client certificate verified against `CA_FILE`, and peers this relay dials (`PEERS`).
 
-**Trusted peers are never asked:** sessions with a client certificate verified against `CA_FILE`, and peers this relay dials (`PEERS`).
+### Verifying against a key set
+A credential is a token your app signs with its own key, using the Go package [`github.com/qumo-dev/qumo/token`](../cli/auth/) (or `qumo auth token` while testing). The relay admits a session when, in order: the token's `kid` is in the key set and its `alg` is EdDSA; the signature verifies; its claims are exactly `path_auth`, `iat`, `nbf`, `exp` and an optional `jti`; the times hold, with 60 s leeway and a lifetime of at most an hour; and **every path it grants lies within its key's `prefix`**. The session may then publish and subscribe where the token says, and ends when the token expires.
 
-### The auth server contract
+Each key in the set may carry two members besides the standard JWK ones:
+
+```json
+{"keys": [{"kty": "OKP", "crv": "Ed25519", "x": "…", "kid": "…", "prefix": "acme/app", "admit": false}]}
+```
+
+- **`prefix`** confines the key: a token signed with it may grant only paths at or beneath it.
+- **`"admit": false`** keeps the key's live sessions and starts no new ones, for example while rotating away from it.
+
+**Live sessions are re-checked every 30 s** against the current set: a session whose key has left the set ends, with MoQ `0x2` (Unauthorized), so removing a key cuts its sessions off within about a minute. If the set can't be refreshed, the relay keeps the last one and logs an error; after 6 hours without a refresh it admits no new sessions, while live ones run to their expiry. Before the first successful load it admits nothing.
+
+### Usage reports
+With `QUMO_USAGE_URL` set, the relay POSTs a JSON array of records to it every 10 s:
+
+```json
+[{"type": "session_open", "session_id": "…", "kid": "…", "role": "publish", "jti": "…", "ts": "…"},
+ {"type": "usage", "session_id": "…", "kid": "…", "role": "publish",
+  "metrics": {"gateway.ingress_bytes": 10162, "gateway.egress_bytes": 9223}, "ts": "…"},
+ {"type": "session_close", "session_id": "…", "kid": "…", "role": "publish",
+  "metrics": {"gateway.ingress_bytes": 10438, "gateway.egress_bytes": 9165}, "reason": "closed", "ts": "…"}]
+```
+
+`role` is `publish`, `subscribe` or `both`, from what the token grants; `jti` is the token's, when it has one. Byte counts are cumulative and from the relay's point of view (what it received is ingress), so a receiver can take a resent record without counting it twice. Usage is reported every 30 s per live session; a failed send is retried, and a batch the receiver rejects with a 4xx (other than 429) is dropped.
+
+### Asking an auth server
+The auth server holds the policy: which credentials it accepts, and what a session that presents none may do. [`qumo auth`](../cli/auth/) is one; any server that speaks the contract below works too.
+
+#### The auth server contract
 A subset of [`moq-auth`](https://github.com/kixelated/moq/blob/main/doc/bin/relay/auth.md). When a client connects, the relay POSTs JSON:
 
 ```json

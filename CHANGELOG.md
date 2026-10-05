@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **The relay verifies credentials itself, against a key set (`QUMO_AUTH_KEYS_FILE` or `QUMO_AUTH_KEYS_URL`).** No auth server is needed: `QUMO_AUTH_KEYS_FILE=keys.json qumo relay` with the key set `qumo auth keygen` writes.
+  - **The checks** are the `token` package's, the same as `qumo auth`'s: a known `kid`, the EdDSA signature, exactly the allowed claims, the times (60 s leeway, at most an hour), and every granted path within the key's `prefix`. A session may publish and subscribe where its token says and ends when the token expires.
+  - **The key set** is a file, re-read when it changes, or a URL, downloaded every 30 s with `If-None-Match` and `QUMO_RELAY_TOKEN` as a bearer token (https, or http on a loopback host). A key may carry `"admit": false`: it keeps its live sessions and starts no new ones.
+  - **Live sessions are re-checked every 30 s:** one whose key has left the set ends with `0x2` (Unauthorized), so removing a key cuts its sessions off within about a minute.
+  - **Fail-static:** a failed refresh keeps the last set; after 6 h without one, new sessions are refused while live ones run to their expiry. Nothing is admitted before the first load.
+  - **Usage reports (`QUMO_USAGE_URL`):** each verified session's open, its cumulative bytes every 30 s, and its close with the final totals and reason, POSTed as JSON every 10 s with the same bearer token. Usage is coalesced per session and resent after a failure; a batch rejected with a 4xx (other than 429) is dropped.
+  - **One way at a time:** a key set and `QUMO_AUTH_URL` together are refused at startup. The auth server remains for policy beyond keys and paths. The startup banner says which is in use.
+  - `qumo auth keygen`'s next steps now point the relay at the key set directly.
+
 - **The playground's DevTools panel says how playback is going, and keeps a log in words (`playground/src/devtools/log.ts`).**
   - **Status:** one line at the top, "Playing normally" or what is wrong and why, from the last ten seconds.
   - **Log:** what happened, each with its time: the delay set or raised, groups skipped, aborted or late, sound lost and why, the page stopping, nothing arriving. It can be copied as text.

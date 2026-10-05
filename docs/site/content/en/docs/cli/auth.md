@@ -1,16 +1,18 @@
 ---
 title: auth
-description: Run the auth server a relay asks, generate signing keys, and sign test tokens.
+description: Generate signing keys, sign test tokens, and run an auth server.
 weight: 2
 ---
 
-A relay with `QUMO_AUTH_URL` asks an auth server about every client session ([configuration](../../configuration/#session-auth-optional)). `qumo auth` is one, ready to run, with the tools to set it up. Your app keeps the only decision that is really yours: **who may publish or watch what**, which it states by what it signs. The key format, signing, verification and path confinement are done for you.
+`qumo auth` sets up session auth for a relay ([configuration](../../configuration/#session-auth-optional)). Your app keeps the only decision that is really yours: **who may publish or watch what**, which it states by what it signs. The key format, signing, verification and path confinement are done for you.
 
 **How it fits together:**
-1. **Once:** generate a signing key pair. The private key stays on your app's server; the auth server gets the public one.
+1. **Once:** generate a signing key pair (`qumo auth keygen`). The private key stays on your app's server; the relay gets the public one, in a key set.
 2. **Per client:** your server signs a token naming the paths that client may publish to or subscribe to. Use the Go package `github.com/qumo-dev/qumo/token`, or `qumo auth token` while testing.
 3. **The client** connects with the token in the relay URL: `https://relay:4433/?jwt=<token>` (WebTransport), or `moqt://relay:4433/?jwt=<token>` (native QUIC).
-4. **The relay** asks `qumo auth`, which verifies the token, and enforces what it grants. A session ends when its token expires; the client reconnects with a fresh one.
+4. **The relay** verifies the token itself against the key set (`QUMO_AUTH_KEYS_FILE=keys.json qumo relay`) and enforces what it grants. A session ends when its token expires; the client reconnects with a fresh one.
+
+Running `qumo auth` as a server, which the relay then asks (`QUMO_AUTH_URL`), is the alternative to step 4, for when verification should run outside the relay process.
 
 ## Usage
 
@@ -18,7 +20,7 @@ A relay with `QUMO_AUTH_URL` asks an auth server about every client session ([co
 qumo auth [command] [flags]
 ```
 
-With no command, `qumo auth` runs the auth server, as `qumo relay` runs the relay.
+With no command, `qumo auth` runs the auth server, as `qumo relay` runs the relay. Most setups don't need it: the relay verifies against the key set itself.
 
 | Command | Description |
 |---|---|
@@ -35,7 +37,7 @@ qumo auth keygen [-prefix acme/app] [-out signing-key.jwk] [-keys keys.json]
 |---|---|---|
 | `-prefix` | (none) | Confine the key: every path a token signed with it may grant must lie at or beneath this prefix. |
 | `-out` | `signing-key.jwk` | The private signing key (an Ed25519 JWK). Keep it on your app's server. |
-| `-keys` | `keys.json` | The public key set (a JWK Set) for `QUMO_AUTH_KEYS_FILE`. |
+| `-keys` | `keys.json` | The public key set (a JWK Set) for the relay's `QUMO_AUTH_KEYS_FILE`. |
 
 It prints the key's `kid` (its RFC 7638 thumbprint), the paths it may grant, and the next steps. It refuses to overwrite an existing file, since replacing a key would invalidate every token signed with it; if it can't write the key set, it removes the private key it just wrote.
 
