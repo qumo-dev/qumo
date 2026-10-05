@@ -48,7 +48,9 @@ func sanitizeLog(s string) string {
 //	CA_FILE                      - PEM CA certificate (optional). A session
 //	                               whose client certificate it verifies is a
 //	                               trusted relay peer; relays this one dials are
-//	                               also verified against it. Unset: no peers.
+//	                               also verified against it. Unset: a session
+//	                               that presents this relay's own certificate
+//	                               is a peer, so relays sharing one are peers.
 //	RELAY_NAME                   - node ID (default: "relay-" + hostname)
 //	GROUP_CACHE_SIZE             - completed groups retained per track (default: 8)
 //	FRAME_CAPACITY               - frame buffer size in bytes (default: 1500)
@@ -107,9 +109,11 @@ func Run(args []string) error {
 		return fmt.Errorf("failed to setup TLS: %w", err)
 	}
 
-	// Peer trust: with CA_FILE, a client certificate is optional for everyone
-	// (browsers present none) and verified when given; a verified one makes the
-	// session a trusted relay peer. Without CA_FILE no session is a peer.
+	// Peer trust is mutual TLS (peer_trust.go). With CA_FILE, a client
+	// certificate is optional for everyone (browsers present none) and
+	// verified when given; a verified one makes the session a trusted relay
+	// peer. Without CA_FILE, a session that presents this relay's own
+	// certificate is one (TrustSharedCertificate, below).
 	caPEM, err := readCAFile(os.Getenv("CA_FILE"))
 	if err != nil {
 		return fmt.Errorf("failed to load CA_FILE: %w", err)
@@ -121,8 +125,6 @@ func Run(args []string) error {
 		tlsConfig.ClientCAs = clientCAs
 		slog.Info("relay: peering on: sessions with a client certificate verified against CA_FILE are trusted peers",
 			"ca_file", os.Getenv("CA_FILE"))
-	} else {
-		slog.Info("relay: peering off (no CA_FILE): every inbound session is admitted like a client")
 	}
 
 	// Session admission (admit.go): the relay verifies credentials itself
@@ -233,6 +235,13 @@ func Run(args []string) error {
 		AllowedOrigins: cors.LoadAllowed(),
 		Authorize:      authorize,
 		End:            reportEnd,
+	}
+
+	if caPEM == nil {
+		if err := relayServer.TrustSharedCertificate(); err != nil {
+			return err
+		}
+		slog.Info("relay: peering by shared certificate (no CA_FILE): a session that presents this relay's own certificate is a trusted peer")
 	}
 
 	httpMux.HandleFunc("/", relayServer.HandleWebTransport)

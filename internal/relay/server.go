@@ -2,7 +2,6 @@ package relay
 
 import (
 	"context"
-	"crypto/tls"
 	"log/slog"
 	"net"
 	"net/http"
@@ -50,6 +49,10 @@ type Server struct {
 	// the Verifier's End. Nil reports nothing, as with auth off. It is
 	// called after the session has closed, so it can't hold a session open.
 	End func(ctx context.Context, req auth.Request) error
+
+	// peerCertificate is this relay's own leaf certificate (DER) when relays
+	// that share it are peers; nil otherwise. TrustSharedCertificate sets it.
+	peerCertificate []byte
 
 	// framePool recycles frame buffers for track distributors; sized from Config.FrameCapacity in init() (falling back to
 	// DefaultFramePool when unset, so a minimally-constructed Server still works).
@@ -541,8 +544,8 @@ func (s *Server) Relay(sess *moqt.Session) {
 }
 
 // relayPeer handles inbound native QUIC sessions. A trusted relay peer, one
-// that presented a client certificate verified against CA_FILE, is served
-// without asking. Any other native-QUIC session is admitted exactly like a
+// that presented a client certificate verified against CA_FILE or this
+// relay's own certificate (peer_trust.go), is served without asking. Any other native-QUIC session is admitted exactly like a
 // WebTransport client: speaking the native protocol is not itself proof of
 // being a peer.
 func (s *Server) relayPeer(sess *moqt.Session) {
@@ -569,14 +572,7 @@ func (s *Server) relayPeer(sess *moqt.Session) {
 }
 
 func (s *Server) trustedPeer(sess *moqt.Session) bool {
-	return isTrustedPeer(sess.ConnectionState().TLS)
-}
-
-// isTrustedPeer reports whether a native-QUIC session is a relay peer: its TLS
-// handshake verified a client certificate chain against CA_FILE. Without
-// CA_FILE the relay verifies no client certificates, so no session is a peer.
-func isTrustedPeer(state *tls.ConnectionState) bool {
-	return state != nil && len(state.VerifiedChains) > 0
+	return isTrustedPeer(sess.ConnectionState().TLS, s.peerCertificate)
 }
 
 // serveSession is the shared core for Relay, relayPeer and maintainPeer. The

@@ -271,3 +271,61 @@ func TestRelay_SessionAuth_NativeQUIC(t *testing.T) {
 		})
 	}
 }
+
+// Relays that share a certificate are peers, with no CA: on a real relay, a
+// native-QUIC session that presents the relay's own certificate is served
+// without a credential, and any other session is asked like a client.
+// WebTransport is untouched: a browser is never a peer, whatever it presents.
+func TestRelay_SharedCertificatePeers(t *testing.T) {
+	const path = moqt.BroadcastPath("/acme/app/live")
+	other := loadTempCert(t)
+	refuse := func() *fakeAuth { return &fakeAuth{err: auth.RefusedError{Status: http.StatusUnauthorized}} }
+	tests := map[string]struct {
+		server       *fakeAuth
+		webTransport bool
+		present      string // "own", "other" or "" for no client certificate
+		wantRoute    bool
+		wantAsked    bool
+	}{
+		"the relay's own certificate":             {server: refuse(), present: "own", wantRoute: true},
+		"another certificate":                     {server: refuse(), present: "other", wantAsked: true},
+		"no certificate":                          {server: refuse(), wantAsked: true},
+		"WebTransport with the own certificate":   {server: refuse(), webTransport: true, present: "own", wantAsked: true},
+		"WebTransport with a credential still in": {server: &fakeAuth{grant: testGrant(t, "acme/**", "", time.Time{}, 0)}, webTransport: true, wantRoute: true, wantAsked: true},
+	}
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			addr, srv := startAuthRelay(t, tt.server.authorize, nil, func(s *relay.Server) {
+				require.NoError(t, s.TrustSharedCertificate())
+			})
+			var clientCert *tls.Certificate
+			switch tt.present {
+			case "own":
+				clientCert = &srv.MOQServer.TLSConfig.Certificates[0]
+			case "other":
+				clientCert = &other
+			}
+			url, protos := nativeURL(addr)+"/acme?jwt=header.payload.signature", []string{moqt.NextProtoMOQ}
+			if tt.webTransport {
+				url, protos = "https://"+addr+"/acme?jwt=header.payload.signature", nil
+			}
+
+			// A refused session may fail at the dial (WebTransport) or just
+			// after SETUP (native QUIC); what the relay did is asserted below.
+			_ = announceOver(t, url, protos, clientCert, path)
+
+			if tt.wantRoute {
+				require.Eventually(t, routed(srv, path), 3*time.Second, 25*time.Millisecond)
+			} else {
+				assert.Never(t, routed(srv, path), 1500*time.Millisecond, 25*time.Millisecond)
+			}
+			// startAuthRelay's readiness probes dial "/"; this session is the
+			// only one at /acme.
+			asked := false
+			for _, req := range tt.server.received() {
+				asked = asked || req.Path == "/acme"
+			}
+			assert.Equal(t, tt.wantAsked, asked, "only a session that is not a trusted peer is asked for a credential")
+		})
+	}
+}

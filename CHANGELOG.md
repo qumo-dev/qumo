@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Relays that share a certificate are peers, with no CA (`internal/relay/peer_trust.go`).** Peer trust is mutual TLS: a relay that dials another presents its `CERT_FILE`, and until now the dialed relay trusted it only when a private CA (`CA_FILE`) verified it. A relay serving a publicly issued certificate, such as a Let's Encrypt wildcard for browsers, could not be verified that way, so a fleet needed a private CA and a second certificate per relay.
+  - **Without `CA_FILE`, a session that presents this relay's own certificate is a trusted peer.** TLS proves the other side holds the certificate's private key, and whoever holds it can already stand in for this relay, so no one new is trusted. A fleet behind one certificate now peers with `PEERS` alone.
+  - **Only native-QUIC clients are asked for a certificate.** A client that offers `h3` is never asked, so a browser holding client certificates does not prompt its user.
+  - **`CA_FILE` is unchanged,** for relays with a certificate each.
+  - **Changed default:** "no `CA_FILE`" used to mean no session is a peer. A relay is affected only if another party holds its certificate and private key.
+
 ## [v0.11.261005] - 2026-10-05
 
 > **Breaking for operators.** The auth server is removed: the relay no longer asks one (`QUMO_AUTH_URL`), and `qumo auth` no longer runs one. The relay verifies credentials itself against a key set. To move over, unset `QUMO_AUTH_URL`, set `QUMO_AUTH_KEYS` to the key set the auth server was reading, and stop the `qumo auth` process; tokens and signing keys are unchanged. A relay with `QUMO_AUTH_URL` still set refuses to start. See **Removed** below.

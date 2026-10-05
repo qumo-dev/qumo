@@ -24,7 +24,19 @@ certificate automatically.)
 
 ## Trusted peers (optional)
 
-Setting `CA_FILE` makes the relay's peers identify themselves by certificate:
+Relays authenticate each other with mutual TLS: a relay that dials another
+(`PEERS`) presents its `CERT_FILE` as its client certificate.
+
+**Relays that share a certificate are peers,** with nothing more to set. A
+session that presents the dialed relay's own certificate is a trusted peer,
+whose credential is never checked. Only a holder of the certificate's private
+key can do that. For a fleet behind one wildcard certificate, list the other
+relays in `PEERS` by names the certificate covers, and they peer. While a
+certificate is being replaced, relays on the old and the new one are not
+peers of each other until both run the new one.
+
+Setting `CA_FILE` trusts a private CA instead, for relays with a certificate
+each:
 
 - a session presenting a client certificate signed by this CA is a trusted
   peer, whose credential is never checked;
@@ -33,5 +45,5 @@ Setting `CA_FILE` makes the relay's peers identify themselves by certificate:
 - the dialer presents this node's `CERT_FILE` cert to the relays in `PEERS` and
   verifies theirs against the system roots plus this CA.
 
-Without `CA_FILE`, no session is a peer. See
+See
 [Configuration → Peer trust]({{< relref "../configuration" >}}#peer-trust-optional).

@@ -52,9 +52,16 @@ for a worked example of giving relays stable addresses on Nomad.
 
 ## Peer trust (optional)
 
+Relays authenticate each other with mutual TLS on native QUIC: a relay that dials another (`PEERS`) presents its `CERT_FILE` as its client certificate, and the dialed relay serves a session it trusts as a peer without a credential.
+
+- **Relays that share a certificate are peers.** With nothing set here, a session is a trusted peer when it presents this relay's own certificate. TLS proves the other side holds that certificate's private key, and whoever holds it can already stand in for this relay. This fits a fleet that serves one certificate, such as a wildcard, and needs no setting besides `PEERS`.
+- **Or trust a private CA** (`CA_FILE`), for relays with a certificate each.
+
+Only native-QUIC clients are asked for a certificate; a browser never is.
+
 | Variable | Default | Description |
 |---|---|---|
-| `CA_FILE` | (empty) | PEM CA certificate. A session whose client certificate it verifies is a **trusted relay peer**: its credential is never checked. Client certificates stay optional for everyone else (browsers present none). Relays this one dials are verified against the system roots plus this CA, and this relay presents its `CERT_FILE` as its client certificate. Unset: no session is a peer. |
+| `CA_FILE` | (empty) | PEM CA certificate. A session whose client certificate it verifies is a **trusted relay peer**: its credential is never checked. Client certificates stay optional for everyone else (browsers present none). Relays this one dials are verified against the system roots plus this CA, and this relay presents its `CERT_FILE` as its client certificate. Unset: a session that presents this relay's own certificate is a peer (above). |
 
 See [Deployment → TLS & mTLS]({{< relref "deployment/tls" >}}).
 
@@ -109,7 +116,7 @@ Without a key set, auth is off: the relay admits every session unchecked and log
 | `QUMO_RELAY_TOKEN` | (unset) | Sent as a bearer token to a key-set URL and to `QUMO_USAGE_URL`. |
 | `QUMO_USAGE_URL` | (unset: no reports) | Where the relay reports each verified session's usage (below). Needs a key set. |
 
-**Trusted peers are never checked:** sessions with a client certificate verified against `CA_FILE`, and peers this relay dials (`PEERS`).
+**Trusted peers are never checked:** sessions that present this relay's own certificate or one verified against `CA_FILE`, and peers this relay dials (`PEERS`).
 
 ### Verifying against a key set
 A credential is a token your app signs with its own key, using the Go package [`github.com/qumo-dev/qumo/token`](../cli/auth/) (or `qumo auth token` while testing). The relay admits a session when, in order: the token's `kid` is in the key set and its `alg` is EdDSA; the signature verifies; its claims are exactly `path_auth`, `iat`, `nbf`, `exp` and an optional `jti`; the times hold, with 60 s leeway and a lifetime of at most an hour; and **every path it grants lies within its key's `prefix`**. The session may then publish and subscribe where the token says, and ends when the token expires.
