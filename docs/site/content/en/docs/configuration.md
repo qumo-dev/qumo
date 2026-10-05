@@ -108,7 +108,7 @@ With neither, auth is off: the relay admits every session unchecked and logs a w
 | Variable | Default | Description |
 |---|---|---|
 | `QUMO_AUTH_KEYS_FILE` | (unset) | The key set on disk: a JWK Set of Ed25519 public keys, what [`qumo auth keygen`](../cli/auth/#keygen) writes. Re-read when the file changes. |
-| `QUMO_AUTH_KEYS_URL` | (unset) | The key set at a URL, downloaded every 30 s with `If-None-Match`. `https://`, or `http://` on a loopback host only. |
+| `QUMO_AUTH_KEYS_URL` | (unset) | The key set at a URL, downloaded about every 30 s (±10%, so relays restarted together spread out) with `If-None-Match`. `https://`, or `http://` on a loopback host only. |
 | `QUMO_RELAY_TOKEN` | (unset) | Sent as a bearer token to `QUMO_AUTH_KEYS_URL` and `QUMO_USAGE_URL`. |
 | `QUMO_USAGE_URL` | (unset: no reports) | Where the relay reports each verified session's usage (below). Needs a key set. |
 | `QUMO_AUTH_URL` | (unset) | An auth server the relay asks when each client session connects. `https://`, or `http://` on a loopback host only. |
@@ -127,7 +127,7 @@ Each key in the set may carry two members besides the standard JWK ones:
 - **`prefix`** confines the key: a token signed with it may grant only paths at or beneath it.
 - **`"admit": false`** keeps the key's live sessions and starts no new ones, for example while rotating away from it.
 
-**Live sessions are re-checked every 30 s** against the current set: a session whose key has left the set ends, with MoQ `0x2` (Unauthorized), so removing a key cuts its sessions off within about a minute. If the set can't be refreshed, the relay keeps the last one and logs an error; after 6 hours without a refresh it admits no new sessions, while live ones run to their expiry. Before the first successful load it admits nothing.
+**Live sessions are re-checked every 30 s** against the current set: a session whose key has left the set ends, with MoQ `0x2` (Unauthorized), so removing a key cuts its sessions off within about a minute at worst (one refresh plus one re-check), about 30 s on average. If the set can't be refreshed, the relay keeps the last one and logs an error; after 6 hours without a refresh it admits no new sessions, while live ones run to their expiry. Before the first successful load it admits nothing.
 
 ### Usage reports
 With `QUMO_USAGE_URL` set, the relay POSTs a JSON array of records to it every 10 s:

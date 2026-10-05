@@ -2,10 +2,12 @@ package auth
 
 import (
 	"context"
+	"crypto/rand"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
+	"math/big"
 	"net/http"
 	"os"
 	"sync"
@@ -14,8 +16,13 @@ import (
 
 const (
 	// keysRefresh is how often the key set is refreshed: a new key works,
-	// and a withdrawn one stops, within one refresh.
+	// and a withdrawn one stops, within one refresh. With the 30 s re-check
+	// of live sessions, a withdrawn key's sessions end within about a minute
+	// at worst, half that on average.
 	keysRefresh = 30 * time.Second
+	// keysRefreshJitter spreads each refresh by up to ±10%, so relays
+	// restarted together (a deploy) don't poll the key-set server in step.
+	keysRefreshJitter = keysRefresh / 10
 	// keysMaxStale is how long the relay admits new sessions on its last key
 	// set while it can't refresh it (fail-static). Live sessions aren't
 	// affected: they run to their expiry either way.
@@ -61,12 +68,23 @@ type keySource interface {
 	String() string
 }
 
-// runKeySource refreshes store from src now and then every keysRefresh until
-// ctx ends. The first failure after a success is logged as an error, repeats
+// nextRefresh returns the wait before the next refresh: keysRefresh, give or
+// take up to keysRefreshJitter. The jitter comes from crypto/rand, which at
+// one draw per refresh costs nothing; if it fails, the wait is keysRefresh.
+func nextRefresh() time.Duration {
+	n, err := rand.Int(rand.Reader, big.NewInt(int64(2*keysRefreshJitter)+1))
+	if err != nil {
+		return keysRefresh
+	}
+	return keysRefresh - keysRefreshJitter + time.Duration(n.Int64())
+}
+
+// runKeySource refreshes store from src now and then about every keysRefresh
+// (nextRefresh) until ctx ends. The first failure after a success is logged as an error, repeats
 // quietly, and the recovery as info: the last set stays in use throughout.
 func runKeySource(ctx context.Context, src keySource, store *keyStore, now func() time.Time) {
-	ticker := time.NewTicker(keysRefresh)
-	defer ticker.Stop()
+	timer := time.NewTimer(nextRefresh())
+	defer timer.Stop()
 	failing := false
 	for {
 		err := src.refresh(ctx, store, now())
@@ -85,7 +103,8 @@ func runKeySource(ctx context.Context, src keySource, store *keyStore, now func(
 		select {
 		case <-ctx.Done():
 			return
-		case <-ticker.C:
+		case <-timer.C:
+			timer.Reset(nextRefresh())
 		}
 	}
 }

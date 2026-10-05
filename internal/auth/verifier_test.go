@@ -488,3 +488,14 @@ func TestUsageRecordWire(t *testing.T) {
 		`"metrics":{"gateway.ingress_bytes":1},"ts":"2026-10-05T00:00:00Z"}`, string(raw), "no jti or reason when empty")
 	assert.False(t, strings.Contains(string(raw), "jti"))
 }
+
+func TestNextRefresh(t *testing.T) {
+	seen := map[time.Duration]bool{}
+	for range 200 {
+		d := nextRefresh()
+		assert.GreaterOrEqual(t, d, 27*time.Second)
+		assert.LessOrEqual(t, d, 33*time.Second)
+		seen[d] = true
+	}
+	assert.Greater(t, len(seen), 1, "the wait varies, so relays drift apart")
+}
