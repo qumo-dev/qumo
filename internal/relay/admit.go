@@ -127,7 +127,7 @@ func newSessionID() string {
 	return hex.EncodeToString(b[:])
 }
 
-// webTransportRequest describes a WebTransport upgrade for the auth server.
+// webTransportRequest describes a WebTransport upgrade for Authorize.
 func (s *Server) webTransportRequest(r *http.Request) auth.Request {
 	req := auth.Request{
 		ID:        newSessionID(),
@@ -147,7 +147,7 @@ func (s *Server) webTransportRequest(r *http.Request) auth.Request {
 	return req
 }
 
-// nativeRequest describes a native-QUIC session for the auth server. Its path
+// nativeRequest describes a native-QUIC session for Authorize. Its path
 // and query come from the SETUP Path parameter (gomoqt's Session.RequestURI),
 // decoded the same way a WebTransport request's are.
 func (s *Server) nativeRequest(sess *moqt.Session) auth.Request {
@@ -181,7 +181,7 @@ func (s *Server) nodeID() string {
 }
 
 // admitUnchecked admits every session without asking anyone: the relay runs
-// with auth off (QUMO_AUTH_URL unset). Its sessions are unchecked, like a
+// with auth off (QUMO_AUTH_KEYS unset). Its sessions are unchecked, like a
 // trusted peer's.
 func admitUnchecked(context.Context, auth.Request) (*auth.Grant, error) {
 	return nil, nil
@@ -189,7 +189,7 @@ func admitUnchecked(context.Context, auth.Request) (*auth.Grant, error) {
 
 // errNoAuthorize refuses every client session of a Server whose Authorize is
 // unset, rather than running it open.
-var errNoAuthorize = errors.New("relay: no auth server configured")
+var errNoAuthorize = errors.New("relay: no Authorize configured")
 
 // Outcomes of an auth request, the result label of metricAuthRequests. An
 // end report is ok or error.
@@ -197,7 +197,6 @@ const (
 	authUnchecked = "unchecked"
 	authAdmitted  = "admitted"
 	authRefused   = "refused"
-	authInvalid   = "invalid"
 	authError     = "error"
 	authOK        = "ok"
 )
@@ -212,8 +211,6 @@ func authOutcome(g *auth.Grant, err error) string {
 		return authAdmitted
 	case refused:
 		return authRefused
-	case errors.Is(err, auth.ErrInvalidGrant):
-		return authInvalid
 	}
 	return authError
 }
@@ -222,7 +219,7 @@ func authOutcome(g *auth.Grant, err error) string {
 func (s *Server) admit(ctx context.Context, req auth.Request) (*auth.Grant, error) {
 	if s.Authorize == nil {
 		metricAuthRequests.WithLabelValues(auth.EventConnect, authError).Inc()
-		slog.Error("relay: session refused: no auth server configured (Server.Authorize is nil)",
+		slog.Error("relay: session refused: Server.Authorize is nil",
 			"transport", req.Transport, "remote", req.Remote, "path", req.Path)
 		return nil, errNoAuthorize
 	}
@@ -233,11 +230,8 @@ func (s *Server) admit(ctx context.Context, req auth.Request) (*auth.Grant, erro
 	case authRefused:
 		slog.Info("relay: session refused", "transport", req.Transport, "remote", req.Remote,
 			"path", req.Path, "reason", err)
-	case authInvalid:
-		slog.Error("relay: session refused: the auth server's grant can't be enforced", "transport", req.Transport,
-			"remote", req.Remote, "path", req.Path, "error", err)
 	case authError:
-		slog.Error("relay: session refused: auth server unavailable", "transport", req.Transport,
+		slog.Error("relay: session refused: it could not be checked", "transport", req.Transport,
 			"remote", req.Remote, "path", req.Path, "error", err)
 	}
 	return g, err

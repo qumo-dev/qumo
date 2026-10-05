@@ -94,7 +94,7 @@ func subscribe(t *testing.T, url string, clientCert *tls.Certificate, path moqt.
 func TestRelay_SubscribeAuth(t *testing.T) {
 	// One grant for every session: publish anywhere under acme, subscribe
 	// only under acme/app.
-	server := &fakeAuth{body: `{"publish":["acme/**"],"subscribe":["acme/app/**"]}`}
+	server := &fakeAuth{grant: testGrant(t, "acme/**", "acme/app/**", time.Time{}, 0)}
 	addr, srv := startAuthRelay(t, server.authorize, nil)
 	publishOver(t, srv, "https://"+addr+"/?jwt=a.b.c", "/acme/app", "/acme/app/live", "/acme/apple/live")
 	transports := map[string]string{
@@ -128,7 +128,7 @@ func TestRelay_SubscribeAuth(t *testing.T) {
 
 func TestRelay_SubscribeAuth_TrustedPeerUnchecked(t *testing.T) {
 	peerCert := loadTempCert(t)
-	server := &fakeAuth{body: `{"publish":["acme/**"],"subscribe":["acme/app/**"]}`}
+	server := &fakeAuth{grant: testGrant(t, "acme/**", "acme/app/**", time.Time{}, 0)}
 	addr, srv := startAuthRelay(t, server.authorize, &peerCert)
 	publishOver(t, srv, "https://"+addr+"/?jwt=a.b.c", "/acme/apple/live")
 
@@ -139,16 +139,16 @@ func TestRelay_SubscribeAuth_TrustedPeerUnchecked(t *testing.T) {
 
 // A relay serves the SUBSCRIBEs of a peer it dialed (PEERS), which arrive over
 // the session it dialed. That session never passes through its ConnContext or
-// its auth server, so the subscribe check must treat it as a trusted peer.
+// Authorize, so the subscribe check must treat it as a trusted peer.
 // Here relay a dials relay b, and a viewer on b watches a broadcast published
 // on a: b subscribes to a over a's dialed session.
 func TestRelay_SubscribeAuth_DialedPeerUnchecked(t *testing.T) {
 	const path = moqt.BroadcastPath("/acme/apple/live")
 	peerCert := loadTempCert(t)
-	bAuth := &fakeAuth{body: `{"publish":["acme/**"],"subscribe":["acme/**"]}`}
+	bAuth := &fakeAuth{grant: testGrant(t, "acme/**", "acme/**", time.Time{}, 0)}
 	bAddr, b := startAuthRelay(t, bAuth.authorize, &peerCert)
 	// a's sessions may subscribe only under acme/app, which the path is not.
-	aAuth := &fakeAuth{body: `{"publish":["acme/**"],"subscribe":["acme/app/**"]}`}
+	aAuth := &fakeAuth{grant: testGrant(t, "acme/**", "acme/app/**", time.Time{}, 0)}
 	aAddr, a := startAuthRelay(t, aAuth.authorize, nil, func(s *relay.Server) {
 		// a dials b presenting peerCert, which b verifies: a is b's
 		// trusted peer.
@@ -166,7 +166,7 @@ func TestRelay_SubscribeAuth_DialedPeerUnchecked(t *testing.T) {
 }
 
 func TestRelay_SubscribeAuth_FetchRejected(t *testing.T) {
-	server := &fakeAuth{body: `{"publish":["acme/**"],"subscribe":["acme/**"]}`}
+	server := &fakeAuth{grant: testGrant(t, "acme/**", "acme/**", time.Time{}, 0)}
 	addr, srv := startAuthRelay(t, server.authorize, nil)
 	publishOver(t, srv, "https://"+addr+"/?jwt=a.b.c", "/acme/app/live")
 	sess := dialOver(t, nativeURL(addr)+"/?jwt=a.b.c", nil, moqt.NewTrackMux(0))

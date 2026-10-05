@@ -1,9 +1,7 @@
 package auth
 
 import (
-	"encoding/json"
 	"fmt"
-	"net/http"
 	"testing"
 	"time"
 
@@ -58,86 +56,41 @@ func TestParsePattern_RefusesUnsupported(t *testing.T) {
 	}
 }
 
-func TestParseGrant(t *testing.T) {
-	now := time.Unix(1_000_000, 0)
-	tests := map[string]struct {
-		body           string
-		wantErr        error
-		wantRefused    bool
-		wantPublish    string // a path the grant must let publish, if set
-		wantNotPublish string // a path it must not, if set
-		wantExpires    time.Time
-		wantRevalidate time.Duration
-	}{
-		"publish and subscribe with expiry": {
-			body:           `{"publish":["acme/app/**"],"subscribe":["acme/**"],"expires":1000600,"revalidate":30}`,
-			wantPublish:    "/acme/app/live",
-			wantNotPublish: "/acme/other",
-			wantExpires:    time.Unix(1_000_600, 0),
-			wantRevalidate: 30 * time.Second,
-		},
-		"subscribe only": {
-			body:           `{"subscribe":["**"]}`,
-			wantNotPublish: "/acme/app",
-		},
-		"tier is ignored": {
-			body:        `{"publish":["**"],"tier":"gold"}`,
-			wantPublish: "/x",
-		},
-		"empty mounts are allowed":  {body: `{"publish":["**"],"mounts":{}}`, wantPublish: "/x"},
-		"names nothing":             {body: `{"publish":[],"subscribe":[]}`, wantRefused: true},
-		"no fields at all":          {body: `{}`, wantRefused: true},
-		"expires already past":      {body: `{"publish":["**"],"expires":999999}`, wantErr: ErrInvalidGrant},
-		"expires exactly now":       {body: `{"publish":["**"],"expires":1000000}`, wantErr: ErrInvalidGrant},
-		"revalidate without expiry": {body: `{"publish":["**"],"revalidate":30}`, wantErr: ErrInvalidGrant},
-		"zero revalidate":           {body: `{"publish":["**"],"expires":1000600,"revalidate":0}`, wantErr: ErrInvalidGrant},
-		"root rewriting":            {body: `{"publish":["**"],"root":"acme"}`, wantErr: ErrInvalidGrant},
-		"mounts":                    {body: `{"publish":["**"],"mounts":{".svc":".svc/p"}}`, wantErr: ErrInvalidGrant},
-		"peer flag":                 {body: `{"publish":["**"],"peer":true}`, wantErr: ErrInvalidGrant},
-		"non-subtree pattern":       {body: `{"publish":["acme/live"]}`, wantErr: ErrInvalidGrant},
-		"not JSON":                  {body: `<html>`, wantErr: ErrInvalidGrant},
-	}
-	for name, tt := range tests {
-		t.Run(name, func(t *testing.T) {
-			g, err := parseGrant([]byte(tt.body), now)
+func TestNewGrant(t *testing.T) {
+	expires := time.Unix(1_000_600, 0)
 
-			if tt.wantRefused {
-				var refused RefusedError
-				require.ErrorAs(t, err, &refused)
-				assert.Equal(t, http.StatusForbidden, refused.Status)
-				return
-			}
-			if tt.wantErr != nil {
-				assert.ErrorIs(t, err, tt.wantErr)
-				return
-			}
-			require.NoError(t, err)
-			if tt.wantPublish != "" {
-				assert.True(t, g.Publish.Contains(moqt.BroadcastPath(tt.wantPublish)))
-			}
-			if tt.wantNotPublish != "" {
-				assert.False(t, g.Publish.Contains(moqt.BroadcastPath(tt.wantNotPublish)))
-			}
-			assert.Equal(t, tt.wantExpires, g.expires)
-			assert.Equal(t, tt.wantRevalidate, g.revalidate)
-		})
-	}
+	g, err := NewGrant([]string{"acme/app/**"}, []string{"**"}, expires, 30*time.Second)
+
+	require.NoError(t, err)
+	assert.True(t, g.Publish.Contains(moqt.BroadcastPath("/acme/app/live")))
+	assert.False(t, g.Publish.Contains(moqt.BroadcastPath("/acme/other")))
+	assert.True(t, g.Subscribe.Contains(moqt.BroadcastPath("/anything")))
+	assert.Equal(t, expires, g.Expires())
+	assert.Equal(t, 30*time.Second, g.Revalidate())
 }
 
-func TestGrant_Expires(t *testing.T) {
+func TestNewGrant_Empty(t *testing.T) {
+	g, err := NewGrant(nil, nil, time.Time{}, 0)
+
+	require.NoError(t, err)
+	assert.False(t, g.Publish.Contains(moqt.BroadcastPath("/x")))
+	assert.False(t, g.Subscribe.Contains(moqt.BroadcastPath("/x")))
+	assert.True(t, g.Expires().IsZero())
+}
+
+func TestNewGrant_RefusesABadPattern(t *testing.T) {
 	tests := map[string]struct {
-		body string
-		want time.Time
+		publish, subscribe []string
+		wantErrText        string
 	}{
-		"with expires":    {body: `{"publish":["**"],"expires":1000600}`, want: time.Unix(1_000_600, 0)},
-		"without expires": {body: `{"publish":["**"]}`},
+		"publish":   {publish: []string{"acme/live"}, wantErrText: "publish"},
+		"subscribe": {subscribe: []string{"acme/*"}, wantErrText: "subscribe"},
 	}
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
-			var g Grant
-			require.NoError(t, json.Unmarshal([]byte(tt.body), &g))
+			_, err := NewGrant(tt.publish, tt.subscribe, time.Time{}, 0)
 
-			assert.Equal(t, tt.want, g.Expires())
+			assert.ErrorContains(t, err, tt.wantErrText)
 		})
 	}
 }

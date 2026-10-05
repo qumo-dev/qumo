@@ -34,9 +34,9 @@ type Server struct {
 	AllowedOrigins []string
 
 	// Authorize decides whether a client session may start, and returns its
-	// grant (admit.go). The relay command sets it to the auth server's
-	// client (QUMO_AUTH_URL), or, with auth off, to a function that admits
-	// every session unchecked. Other code in this module that builds a
+	// grant (admit.go). The relay command sets it to the Verifier's
+	// (QUMO_AUTH_KEYS), or, with auth off, to a function that admits every
+	// session unchecked. Other code in this module that builds a
 	// Server, such as the black-box tests in internal/integration, supplies
 	// its own. A nil grant with a nil error admits the session unchecked;
 	// an auth.RefusedError refuses it with its status; any other error
@@ -47,7 +47,7 @@ type Server struct {
 	Authorize func(ctx context.Context, req auth.Request) (*auth.Grant, error)
 
 	// End reports the end of a checked session, with its final byte totals:
-	// the auth client's End. Nil reports nothing, as with auth off. It is
+	// the Verifier's End. Nil reports nothing, as with auth off. It is
 	// called after the session has closed, so it can't hold a session open.
 	End func(ctx context.Context, req auth.Request) error
 
@@ -106,10 +106,10 @@ func (s *Server) ServeStatus(w http.ResponseWriter, r *http.Request) {
 }
 
 // HandleWebTransport admits a WebTransport upgrade before it happens: a
-// refused client gets the HTTP status (401 or 403, or 503 when the auth
-// server can't answer), and an admitted one carries its grant into the
-// session through the request context. Only an upgrade (an extended
-// CONNECT) asks the auth server; any other request falls through to the
+// refused client gets the HTTP status (401 or 403, or 503 when it can't be
+// checked), and an admitted one carries its grant into the session through
+// the request context. Only an upgrade (an extended CONNECT) is checked;
+// any other request falls through to the
 // WebTransport handler, which answers it without a session.
 func (s *Server) HandleWebTransport(w http.ResponseWriter, r *http.Request) {
 	s.init()
@@ -118,8 +118,8 @@ func (s *Server) HandleWebTransport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// A request gomoqt won't upgrade goes straight to it, unasked: not an
-	// extended CONNECT, or an Origin it refuses. Asking the auth server first
-	// would count a session that never starts.
+	// extended CONNECT, or an Origin it refuses. Checking it first would
+	// count a session that never starts.
 	if r.Method != http.MethodConnect || !s.webtransportHandler.CheckOrigin(r) {
 		s.webtransportHandler.ServeHTTP(w, r)
 		return
@@ -134,7 +134,7 @@ func (s *Server) HandleWebTransport(w http.ResponseWriter, r *http.Request) {
 	s.webtransportHandler.ServeHTTP(w, r.WithContext(withAdmission(r.Context(), a)))
 	// gomoqt serves the session within ServeHTTP. If the upgrade failed
 	// anyway, no session ran and none will report its end: report it here,
-	// so the auth server can close the session it counted at connect.
+	// so the session counted at connect is closed.
 	if g != nil && !a.served.Load() {
 		s.sessionEnds.add()
 		s.reportEnd(r.Context(), req, moqt.SessionStats{}, endUpgradeFailed, 0)

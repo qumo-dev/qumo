@@ -9,13 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **The relay verifies credentials itself, against a key set (`QUMO_AUTH_KEYS`).** No auth server is needed: `QUMO_AUTH_KEYS=keys.json qumo relay` with the key set `qumo auth keygen` writes. The value's form says where the set is: an `https://` URL (or `http://` on a loopback host) is downloaded, a path or `file://` URL is read, and any other scheme is refused at startup.
-  - **The checks** are the `token` package's, the same as `qumo auth`'s: a known `kid`, the EdDSA signature, exactly the allowed claims, the times (60 s leeway, at most an hour), and every granted path within the key's `prefix`. A session may publish and subscribe where its token says and ends when the token expires.
+- **The relay verifies credentials itself, against a key set (`QUMO_AUTH_KEYS`).** No other process is needed: `QUMO_AUTH_KEYS=keys.json qumo relay` with the key set `qumo auth keygen` writes. The value's form says where the set is: an `https://` URL (or `http://` on a loopback host) is downloaded, a path or `file://` URL is read, and any other scheme is refused at startup.
+  - **The checks** are the `token` package's: a known `kid`, the EdDSA signature, exactly the allowed claims, the times (60 s leeway, at most an hour), and every granted path within the key's `prefix`. A session may publish and subscribe where its token says and ends when the token expires.
   - **The key set** is a file, re-read when it changes, or a URL, downloaded every 30 s (±10% jitter, so relays restarted together don't poll in step) with `If-None-Match` and `QUMO_RELAY_TOKEN` as a bearer token (https, or http on a loopback host).
   - **Live sessions are re-checked every 30 s:** one whose key has left the set ends with `0x2` (Unauthorized), so removing a key cuts its sessions off within about a minute.
   - **Fail-static:** a failed refresh keeps the last set; after 6 h without one, new sessions are refused while live ones run to their expiry. Nothing is admitted before the first load.
   - **Usage reports (`QUMO_USAGE_URL`):** each verified session's open, its cumulative bytes every 30 s, and its close with the final totals and reason, POSTed as JSON every 10 s with the same bearer token. Usage is coalesced per session and sent in batches of at most 500. A failed send, a 401, 403, 408, 413 or 429 included, keeps the records for the next try; only a batch the receiver can't read (400 or 422) is dropped. At shutdown the relay waits up to 5 s for its last sessions to record their end before the final send.
-  - **One way at a time:** a key set and `QUMO_AUTH_URL` together are refused at startup. The auth server remains for policy beyond keys and paths. The startup banner says which is in use.
   - `qumo auth keygen`'s next steps now point the relay at the key set directly.
   - **Viewers are reported together.** Sessions that only subscribe no longer send a record each: their bytes are added up per key into one running total per relay run (`session_id` `viewers.<run>.<kid>`), so a usage receiver's load follows the number of keys, not the size of the audience. Sessions that may publish are still reported one by one.
   - **`"publish": false`** on a key starts no new sessions that may publish, while viewers still connect and live sessions continue: for a limit on broadcasts that must not lock the audience out.
@@ -39,9 +38,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **The playground's viewer no longer drops seconds of audio as it starts.** The audio output is started before the audio track is subscribed to: starting it can take seconds the first time, and everything that arrived meanwhile was handed over at once and thrown away. A backlog passed over before anything has played is no longer counted as lost audio, and silence before playback begins is no longer counted as starvation.
 - **Raising the playback delay interrupts the sound less often.** Every raise holds playback while the buffer fills, and the delay used to creep up a few milliseconds at a time, a short silence each. It now moves only for a raise of 10 ms or more, and then a little further.
 
+### Removed
+
+- **Breaking: the auth server is gone: the relay no longer asks one (`QUMO_AUTH_URL`), and `qumo auth` no longer runs one.** The relay verifies credentials itself against a key set (`QUMO_AUTH_KEYS`), which does the same checks in the relay process.
+  - **To move over:** unset `QUMO_AUTH_URL` on the relay, set `QUMO_AUTH_KEYS` to the key set the auth server was reading, and stop the `qumo auth` process. Tokens and signing keys are unchanged.
+  - **A relay with `QUMO_AUTH_URL` still set refuses to start,** rather than starting with auth off.
+  - `qumo auth` needs a command (`keygen` or `token`); `QUMO_AUTH_ADDR` and `QUMO_AUTH_KEYS_FILE` are no longer read.
+  - Metrics: the `invalid` result of `qumo_relay_auth_requests_total` and the `invalid` reason of `qumo_relay_sessions_ended_total` are gone; only an auth server's reply could cause them.
+
 ### Changed
 
-- **Breaking: `qumo auth` reads its key set from `QUMO_AUTH_KEYS`, not `QUMO_AUTH_KEYS_FILE`,** the same setting the relay now uses. It takes a path or a `file://` URL; the old name is no longer read.
 - **The playground's viewer decodes and plays by itself; it no longer uses `@okdaichi/av-nodes` (`playground/src/player/audio`, `playground/src/player/video`).** The publish board still does.
   - **Audio** is decoded with WebCodecs and played through the viewer's own jitter buffer, a ring of PCM indexed by media time on the audio thread. It holds playback back until the playback delay is buffered, and holds back again after running dry instead of stuttering on an empty buffer. Blocks whose timestamps are a few samples off the end of the last one (RTMP timestamps are whole milliseconds) are joined to it rather than leaving a hole or an overlap at every block.
   - **The playback delay follows how the audio arrives.** It is sized from the measured arrival jitter (how late audio arrives against its fastest arrival), and raised by half if the buffer runs dry anyway, up to 500 ms; it stays raised for the rest of the run. An audio group that is late is waited for only 40% of the delay, since giving up one frame costs far less than emptying the buffer waiting for it. The buffer also returns to its target after a burst instead of staying full, and skips audio it has held for two seconds without needing.

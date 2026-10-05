@@ -111,8 +111,8 @@ func (c feedConfig) validate() error {
 		return errors.New("RELAY_CERT_FILE and RELAY_KEY_FILE must be set together")
 	}
 	if u.Scheme != "moqt" {
-		// A WebTransport session is never a trusted peer: the relay asks its
-		// auth server about every one.
+		// A WebTransport session is never a trusted peer: the relay checks
+		// the credential of every one.
 		return fmt.Errorf("RELAY_CERT_FILE needs a native-QUIC RELAY_URL (moqt://), got %q", u.Scheme)
 	}
 	return nil

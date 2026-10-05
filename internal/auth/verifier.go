@@ -34,9 +34,8 @@ type VerifierConfig struct {
 	Token string
 }
 
-// Verifier is the relay's session auth when it verifies credentials itself,
-// against a key set, rather than asking an auth server. Its Authorize and End
-// take the place of the Client's.
+// Verifier is the relay's session auth: it verifies credentials against a
+// key set. Its Authorize and End are what the relay's Server takes.
 //
 // A session's credential (the jwt query parameter of its connect URL) must be
 // signed by a key in the set and grant only paths within the key's prefix

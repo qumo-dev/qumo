@@ -153,6 +153,16 @@ func TestRun_InvalidGroupCacheSize(t *testing.T) {
 	assert.Contains(t, err.Error(), "GROUP_CACHE_SIZE")
 }
 
+// A relay still pointed at an auth server refuses to start, rather than
+// starting with auth off.
+func TestRun_RefusesQUMOAuthURL(t *testing.T) {
+	t.Setenv("QUMO_AUTH_URL", "http://127.0.0.1:4440/")
+
+	err := Run(nil)
+
+	assert.ErrorContains(t, err, "QUMO_AUTH_URL is no longer supported")
+}
+
 // TestParseRelayArgs covers the --role flag: it is the only execution-mode
 // flag (secrets/deployment config stay env), and it is flag-only — there is no
 // ROLE env fallback to misconfigure against.
