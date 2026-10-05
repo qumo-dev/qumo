@@ -208,7 +208,11 @@ export class VideoInput {
 			return;
 		}
 
-		if (this.#encoder.state === "configured" && this.encodeQueueSize <= MAX_ENCODE_QUEUE) {
+		if (this.encodeQueueSize > MAX_ENCODE_QUEUE) {
+			log.warn("video frame dropped: the encoder is behind", {
+				queue: this.encodeQueueSize,
+			});
+		} else if (this.#encoder.state === "configured") {
 			const timed = new VideoFrame(frame, { timestamp });
 			try {
 				this.#encoder.encode(timed, { keyFrame: this.#cadence.isKey(timestamp) });
@@ -229,17 +233,29 @@ export class VideoInput {
 			this.#pending = undefined;
 			if (due === undefined) return;
 			try {
-				// The canvas is sized to the picture, so it is drawn whole.
-				this.#canvas.getContext("2d")?.drawImage(
-					due,
-					0,
-					0,
-					this.#canvas.width,
-					this.#canvas.height,
-				);
+				this.#draw(due);
 			} finally {
 				due.close();
 			}
 		});
+	}
+
+	// Draws the frame as large as fits the canvas, centred, keeping its shape.
+	// The canvas is given the picture's size once the run has started; the
+	// frames before that must not be stretched to whatever it was.
+	#draw(frame: VideoFrame): void {
+		const context = this.#canvas.getContext("2d");
+		if (context === null) return;
+		const { width, height } = this.#canvas;
+		const scale = Math.min(width / frame.displayWidth, height / frame.displayHeight);
+		const drawn = { width: frame.displayWidth * scale, height: frame.displayHeight * scale };
+		context.clearRect(0, 0, width, height);
+		context.drawImage(
+			frame,
+			(width - drawn.width) / 2,
+			(height - drawn.height) / 2,
+			drawn.width,
+			drawn.height,
+		);
 	}
 }

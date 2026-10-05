@@ -110,9 +110,13 @@ export class AudioInput {
 
 		try {
 			const node = await this.#node;
-			await this.#context.resume();
 			// Stopped, or started again, while the worklet loaded.
 			if (this.#capture !== capture) return;
+			// Not waited for: without a user gesture it never settles, and
+			// the capture simply begins when the context does run.
+			this.#context.resume().catch((err: unknown) => {
+				log.warn("audio capture could not be resumed", { err });
+			});
 
 			const reset: CaptureMessage = { type: "reset" };
 			node.port.postMessage(reset);
@@ -158,7 +162,12 @@ export class AudioInput {
 		// block leaves its gap in the timestamps.
 		capture.samples += frames;
 
-		if (capture.encoder.encodeQueueSize > MAX_ENCODE_QUEUE) return;
+		if (capture.encoder.encodeQueueSize > MAX_ENCODE_QUEUE) {
+			log.warn("audio block dropped: the encoder is behind", {
+				queue: capture.encoder.encodeQueueSize,
+			});
+			return;
+		}
 
 		const data = new AudioData({
 			format: "f32-planar",

@@ -137,6 +137,7 @@ export class Publisher {
 				return undefined;
 			}
 			run.video = video;
+			log.info("publish: video encoder", { config: video.config });
 			video.onended = () => {
 				this.#end(run);
 				this.onended?.();
@@ -286,6 +287,7 @@ export class Publisher {
 			const config = await pickAudioConfig(audio.sampleRate, audio.channels);
 			if (run.stopped) return undefined;
 			await audio.start(run.stream, config, clock);
+			log.info("publish: audio encoder", { config });
 			return {
 				name: "audio",
 				role: "audio",

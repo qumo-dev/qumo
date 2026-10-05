@@ -12,14 +12,26 @@ export class NoAudioCodecError extends Error {
 // Bits per second: enough for stereo music, which a shared tab may be.
 const BITRATE = 64_000;
 
+// What Opus is told about its input. Chrome takes both; the DOM typings do
+// not list them yet.
+interface OpusTuning extends OpusEncoderConfig {
+	application?: "voip" | "audio" | "lowdelay";
+	signal?: "auto" | "music" | "voice";
+}
+
 /** The Opus encoder config asked for, before the browser normalises it. */
 export function opusConfig(sampleRate: number, channels: number): AudioEncoderConfig {
+	// One channel is taken to be a voice; two may be music, as a shared tab is.
+	const opus: OpusTuning = channels === 1
+		? { application: "voip", signal: "voice" }
+		: { application: "audio", signal: "music" };
 	return {
 		codec: "opus",
 		sampleRate,
 		numberOfChannels: channels,
 		bitrate: BITRATE,
 		bitrateMode: "variable",
+		opus,
 	};
 }
 
