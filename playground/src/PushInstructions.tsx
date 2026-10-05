@@ -3,12 +3,17 @@ import { pushCommandFor, pushTargetFor, type ScenarioId } from "./scenarios.ts";
 
 // Copy-pasteable ffmpeg push command for ingest scenarios (RTMP/RTSP). The
 // target URL embeds the current broadcast path — which is unique per session —
-// so the external push and the subscriber always agree on the stream.
-export function PushInstructions(props: { scenario: ScenarioId; path: Accessor<string> }) {
+// so the external push and the subscriber always agree on the stream. `host`
+// is where the ingest origin is reached, as the runtime config names it.
+export function PushInstructions(props: {
+	scenario: ScenarioId;
+	path: Accessor<string>;
+	host: string;
+}) {
 	const [copied, setCopied] = createSignal(false);
 
-	const target = () => pushTargetFor(props.scenario, props.path());
-	const cmd = () => pushCommandFor(props.scenario, props.path());
+	const target = () => pushTargetFor(props.scenario, props.path(), props.host);
+	const cmd = () => pushCommandFor(props.scenario, props.path(), props.host);
 
 	const copy = () => {
 		const c = cmd();

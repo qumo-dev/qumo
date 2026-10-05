@@ -7,7 +7,7 @@ import { HlsPlayer } from "./HlsPlayer.tsx";
 import { type ConnectionState, ConnectionStatus, friendlyConnError } from "./ConnectionStatus.tsx";
 import { sanitizeReason } from "./errors.ts";
 import { buildTransportOptions, type CertHashProblem } from "./cert.ts";
-import { getConfig } from "./config.ts";
+import { getConfig, relayHost } from "./config.ts";
 import { relayUrlFor, type ScenarioId, SCENARIOS } from "./scenarios.ts";
 import { PushInstructions } from "./PushInstructions.tsx";
 import { CameraPullForm, type PullState } from "./CameraPullForm.tsx";
@@ -35,7 +35,9 @@ export function ScenarioView(props: {
 	const showsSubscriber = () => !isHls && (isCamera ? pullActive() : true);
 
 	const mux = DefaultTrackMux;
-	const relayUrl = relayUrlFor(props.scenario);
+	// Where the relay and the ingest origins are reached; unknown until the
+	// runtime config has been read.
+	const [host, setHost] = createSignal<string>();
 
 	const [connState, setConnState] = createSignal<ConnectionState>("connecting");
 	const [connError, setConnError] = createSignal<string | null>(null);
@@ -56,9 +58,13 @@ export function ScenarioView(props: {
 	// the pull is active. For non-camera scenarios it fires immediately in
 	// onMount.
 	const doDial = () => {
-		if (!certReady) return;
+		const to = host();
+		if (!certReady || to === undefined) return;
 		setConnState("connecting");
-		const connected = connect(relayUrl, { mux, transportOptions: cachedTransportOptions! });
+		const connected = connect(relayUrlFor(props.scenario, to), {
+			mux,
+			transportOptions: cachedTransportOptions!,
+		});
 		dialSession(connected);
 		connected.then(
 			(s) => {
@@ -95,6 +101,7 @@ export function ScenarioView(props: {
 		cachedProblem = problem;
 		certReady = true;
 		setCertHashProblem(problem);
+		setHost(relayHost(cfg));
 
 		// Non-camera scenarios connect immediately. Camera waits for pullActive.
 		if (!isCamera) {
@@ -129,12 +136,15 @@ export function ScenarioView(props: {
 					onStateChange={(s: PullState) => setPullActive(s === "active")}
 				/>
 			)}
-			{ingest && !isCamera && (
-				<PushInstructions
-					scenario={props.scenario}
-					path={props.path}
-				/>
-			)}
+			<Show when={ingest && !isCamera ? host() : undefined}>
+				{(reached) => (
+					<PushInstructions
+						scenario={props.scenario}
+						path={props.path}
+						host={reached()}
+					/>
+				)}
+			</Show>
 
 			<div class={ingest ? "boards single" : "boards"}>
 				{!ingest && (

@@ -17,6 +17,37 @@ export interface ResolvedConfig {
 	certHash?: string;
 }
 
+const DEFAULT_RELAY_URL = "https://localhost:4433";
+
+/**
+ * The host the relay and the ingest origins are reached on: the one the UI
+ * was opened at when `qumo playground` serves it, VITE_RELAY_URL's under Vite.
+ */
+export function relayHost(config: ResolvedConfig): string {
+	return new URL(config.relayUrl).hostname;
+}
+
+/**
+ * Reads what `/config` answered. Anything it leaves out, or that is not what
+ * it should be, takes the default: the UI then dials localhost, as it does
+ * when run on its own machine.
+ */
+export function parseConfig(raw: unknown): ResolvedConfig {
+	const fields: { relayUrl?: unknown; certHash?: unknown } =
+		typeof raw === "object" && raw !== null ? raw : {};
+	const relayUrl = typeof fields.relayUrl === "string" && isHttps(fields.relayUrl)
+		? fields.relayUrl
+		: DEFAULT_RELAY_URL;
+	const certHash = typeof fields.certHash === "string" ? fields.certHash : undefined;
+	return { relayUrl, certHash };
+}
+
+// "example.com:4433" parses too, as a URL whose scheme is "example.com:", so
+// parsing alone does not show there is a host to dial.
+function isHttps(url: string): boolean {
+	return URL.parse(url)?.protocol === "https:";
+}
+
 let pending: Promise<ResolvedConfig> | null = null;
 
 /** getConfig resolves the runtime config once and caches it for the session. */
@@ -38,11 +69,8 @@ async function resolveConfig(): Promise<ResolvedConfig> {
 				headers: { Accept: "application/json" },
 			});
 			if (res.ok) {
-				const cfg = (await res.json()) as Partial<ResolvedConfig>;
-				return {
-					relayUrl: cfg.relayUrl ?? "https://localhost:4433",
-					certHash: cfg.certHash,
-				};
+				const raw: unknown = await res.json();
+				return parseConfig(raw);
 			}
 		} catch {
 			// Built binary not serving /config (unexpected) — fall through.
@@ -53,7 +81,7 @@ async function resolveConfig(): Promise<ResolvedConfig> {
 
 function envFallback(): ResolvedConfig {
 	return {
-		relayUrl: import.meta.env.VITE_RELAY_URL ?? "https://localhost:4433",
+		relayUrl: import.meta.env.VITE_RELAY_URL ?? DEFAULT_RELAY_URL,
 		certHash: import.meta.env.VITE_CERT_HASH,
 	};
 }
