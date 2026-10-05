@@ -10,18 +10,19 @@ A relay with `QUMO_AUTH_URL` asks an auth server about every client session ([co
 1. **Once:** generate a signing key pair. The private key stays on your app's server; the auth server gets the public one.
 2. **Per client:** your server signs a token naming the paths that client may publish to or subscribe to. Use the Go package `github.com/qumo-dev/qumo/token`, or `qumo auth token` while testing.
 3. **The client** connects with the token in the relay URL: `https://relay:4433/?jwt=<token>` (WebTransport), or `moqt://relay:4433/?jwt=<token>` (native QUIC).
-4. **The relay** asks `qumo auth serve`, which verifies the token, and enforces what it grants. A session ends when its token expires; the client reconnects with a fresh one.
+4. **The relay** asks `qumo auth`, which verifies the token, and enforces what it grants. A session ends when its token expires; the client reconnects with a fresh one.
 
 ## Usage
 
 ```
-qumo auth <command> [flags]
+qumo auth [command] [flags]
 ```
+
+With no command, `qumo auth` runs the auth server, as `qumo relay` runs the relay.
 
 | Command | Description |
 |---|---|
 | `keygen` | Generate a signing key pair: the private key, and the public key set the auth server trusts. |
-| `serve` | Run the auth server. |
 | `token` | Sign a token by hand, for testing. |
 
 ### keygen
@@ -38,7 +39,7 @@ qumo auth keygen [-prefix acme/app] [-out signing-key.jwk] [-keys keys.json]
 
 It refuses to overwrite an existing file, since replacing a key would invalidate every token signed with it. The key's `kid` is its RFC 7638 thumbprint.
 
-### serve
+### The server
 
 Configured by the environment:
 
@@ -65,7 +66,7 @@ A token it can't accept gets 401; a valid one that grants nothing usable gets 40
 qumo auth token [-key signing-key.jwk] [-publish PATH] [-subscribe PATH] [-ttl 1h]
 ```
 
-Prints a token granting publish at or beneath `-publish` and subscribe at or beneath `-subscribe` (either may be omitted, not both), valid for `-ttl`, at most one hour. A path outside the key's prefix is refused here, as `serve` would refuse the token; `token.Sign` does the same.
+Prints a token granting publish at or beneath `-publish` and subscribe at or beneath `-subscribe` (either may be omitted, not both), valid for `-ttl`, at most one hour. A path outside the key's prefix is refused here, as the server would refuse the token; `token.Sign` does the same.
 
 ## Signing in your app (Go)
 

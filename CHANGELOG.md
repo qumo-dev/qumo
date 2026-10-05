@@ -11,7 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **`qumo auth`: a ready-to-run auth server, key generator and token tool (#460).** A relay with `QUMO_AUTH_URL` asks an auth server about every session; until now qumo shipped none, so a relay ran either with auth off or against an auth server you wrote yourself. An app now decides only what each client may do, and signs it:
   - **`qumo auth keygen [-prefix acme/app]`** writes an Ed25519 signing key (private JWK; it stays on the app's server) and the public key set the server trusts. The `kid` is the key's RFC 7638 thumbprint. It never overwrites an existing key.
-  - **`qumo auth serve`** answers the relay (`QUMO_AUTH_ADDR`, default `127.0.0.1:4440`; `QUMO_AUTH_KEYS_FILE`; `QUMO_AUTH_ANONYMOUS` for sessions without a token). It checks, in order:
+  - **`qumo auth`** runs the server that answers the relay (`QUMO_AUTH_ADDR`, default `127.0.0.1:4440`; `QUMO_AUTH_KEYS_FILE`; `QUMO_AUTH_ANONYMOUS` for sessions without a token). It checks, in order:
     1. a trusted `kid` and EdDSA;
     2. the signature;
     3. exactly the allowed claims (`path_auth`, `iat`, `nbf`, `exp`, an optional `jti`);

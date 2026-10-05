@@ -4,7 +4,7 @@
 //
 // An app's backend signs one per client with Sign and hands it to the client,
 // which connects with it in the relay URL (?jwt=…). The auth server the relay
-// asks (qumo auth serve) checks it with Verify. The app decides who may do
+// asks (qumo auth) checks it with Verify. The app decides who may do
 // what; this package is the machinery: the key format, the signature, the
 // time claims and confining every path to the key's prefix.
 package token

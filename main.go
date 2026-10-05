@@ -120,7 +120,7 @@ func printUsage() {
 	fmt.Fprintf(os.Stderr, "Usage: qumo <command>  (%s)\n", version.Short())
 	fmt.Fprintln(os.Stderr, "")
 	fmt.Fprintln(os.Stderr, "Commands:")
-	fmt.Fprintln(os.Stderr, "  auth       Run the auth server a relay asks, generate keys, sign test tokens")
+	fmt.Fprintln(os.Stderr, "  auth       Run the auth server a relay asks (keygen, token: set it up)")
 	fmt.Fprintln(os.Stderr, "  hls        Start the HLS/DASH egress server")
 	fmt.Fprintln(os.Stderr, "  relay      Start the MoQ relay server (--role hub|edge; default flat)")
 	fmt.Fprintln(os.Stderr, "  rtmp       Start the RTMP ingest server")

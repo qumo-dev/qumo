@@ -24,31 +24,28 @@ const (
 	headerTimeout   = 5 * time.Second
 )
 
-const usage = `Usage: qumo auth <command>
+const usage = `Usage: qumo auth [command]
 
-The auth server a relay asks about every session (QUMO_AUTH_URL), and the
-tools to set one up. An app signs a capability token per client with its own
+With no command, runs the auth server a relay asks about every session
+(QUMO_AUTH_URL), configured by QUMO_AUTH_ADDR, QUMO_AUTH_KEYS_FILE and
+QUMO_AUTH_ANONYMOUS. An app signs a capability token per client with its own
 Ed25519 key; the client connects with it (?jwt=…); the auth server verifies it.
 
 Commands:
   keygen   Generate a signing key pair: the app's private key, and the public
            key set the auth server trusts
-  serve    Run the auth server, configured by QUMO_AUTH_ADDR,
-           QUMO_AUTH_KEYS_FILE and QUMO_AUTH_ANONYMOUS
   token    Sign a token by hand, for testing
 
 Run "qumo auth <command> -h" for a command's flags.
 `
 
-// Run executes "qumo auth" with args, the arguments after "auth".
+// Run executes "qumo auth" with args, the arguments after "auth". With none,
+// it runs the auth server, as "qumo relay" runs the relay.
 func Run(args []string) error {
 	if len(args) == 0 {
-		fmt.Fprint(os.Stderr, usage)
-		return errors.New("qumo auth: a command is required")
+		return serve()
 	}
 	switch cmd, rest := args[0], args[1:]; cmd {
-	case "serve":
-		return runServe(rest)
 	case "keygen":
 		return runKeygen(rest, os.Stdout)
 	case "token":
@@ -118,13 +115,9 @@ func parsePatternList(raw string) ([]string, error) {
 	return patterns, nil
 }
 
-func runServe(args []string) error {
-	// serve takes no flags: like the relay, it is configured by the
-	// environment (loadServeConfig).
-	fs := flag.NewFlagSet("qumo auth serve", flag.ContinueOnError)
-	if err := fs.Parse(args); err != nil {
-		return err
-	}
+// serve runs the auth server until SIGINT or SIGTERM. Like the relay, it is
+// configured by the environment (loadServeConfig).
+func serve() error {
 	cfg, err := loadServeConfig()
 	if err != nil {
 		return err
