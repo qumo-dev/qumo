@@ -219,7 +219,11 @@ src/
   ConnectionStatus.tsx WebTransport lifecycle indicator (#134)
   scenarios.ts         Scenario registry (ports, modes, push commands)
   cert.ts              VITE_CERT_HASH parsing + transport options
-  publish/             Publish board: capture → encode → MoQ
+  publish/             Publish board, and the publisher behind it (publisher.ts):
+                       capture → encode → MoQ, with no UI of its own.
+                       fanout.ts sends a track's frames to each subscriber
+    audio/             Capture on the audio thread + WebCodecs encode
+    video/             Track frames → preview canvas + WebCodecs encode
   subscribe/           Subscribe board: start/stop, controls, stats overlay
   player/              Viewer: MoQ → decode → canvas, with no UI of its own.
                        Reads tracks through its own small interface

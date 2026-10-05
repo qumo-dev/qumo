@@ -1,7 +1,6 @@
 {
   "version": "5",
   "specifiers": {
-    "jsr:@okdaichi/av-nodes@0.10.4": "0.10.4",
     "jsr:@okdaichi/golikejs@0.10.0": "0.10.0",
     "jsr:@okdaichi/media-log@0.1": "0.1.0",
     "jsr:@qumo/moq@0.20": "0.20.0",
@@ -26,12 +25,6 @@
     "npm:zod@^4.4.3": "4.6.5"
   },
   "jsr": {
-    "@okdaichi/av-nodes@0.10.4": {
-      "integrity": "0a0952393baf4118792aff9bc823c80d6096a88c4301f2a575dc02642dac1d23",
-      "dependencies": [
-        "jsr:@okdaichi/golikejs"
-      ]
-    },
     "@okdaichi/golikejs@0.10.0": {
       "integrity": "761440b50ff8bc21df1061e3361c6542208e0f4f434da4b1494a9b1bb5ab73d3"
     },
@@ -803,7 +796,6 @@
   },
   "workspace": {
     "dependencies": [
-      "jsr:@okdaichi/av-nodes@0.10.4",
       "jsr:@okdaichi/golikejs@0.10.0",
       "jsr:@okdaichi/media-log@0.1",
       "jsr:@qumo/moq@0.20",
