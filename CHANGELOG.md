@@ -27,6 +27,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - The certificate is read again on every reconnect, so a renewed one is picked up without a restart.
 - **`qumo loadgen --relay` takes a `moqt://` URL with a credential** (`moqt://host:port/path?jwt=…`) as well as `host:port`, to load a relay with an auth server. `smoketest`'s `-pub` and `-sub` URLs carry one the same way. Neither refreshes it: they run for less than a credential's lifetime.
 
+### Changed
+
+- **Bumped `github.com/qumo-dev/gomoqt` to v0.22.1.** No relay code change was needed. It brings:
+  - **WebTransport clients see why the relay ended their session.** When the relay ends a session at its grant's `expires` or on a refused revalidate, `moqt.Cause` now gives the client Unauthorized with the reason `expired` or `refused` over WebTransport, as it already did over native QUIC. A client can reconnect with a fresh credential on `expired` and stop on `refused` (#423). The lease integration tests now check this on both transports.
+  - **quic-go v0.63.0,** and webtransport-go `v0.13.0-okdaichi.2` (synced with upstream v0.13.0). Dependabot's quic-go bump (#420) is included.
+
 ### Security
 
 - **A relay URL's credential is never logged (#432).** `loadgen` logs only the relay's `host:port`, `smoketest` a URL without its query, and the HLS egress doesn't log `RELAY_URL`. A URL that doesn't parse is reported without quoting it.
