@@ -66,7 +66,7 @@ Each conclusion was attacked as if it were another engineer's work:
 2. *"GOGC=1000 might hide a relay-controllable GC wall."* GC scans the same heap
    regardless of GOGC; a GOGC 100→800 A/B cut GC CPU 12 %→2 % but moved
    connections ±4 %. GC is not the relay's lever.
-3. *"Enterprise auth/metering per-frame cost not profiled."* Metering reports
+3. *"Auth/metering per-frame cost not profiled."* Metering reports
    every 30 s; auth is at connect — both sub-Hz, off the per-frame path.
 4. *"WSL is noisy; real Linux differs."* The bottleneck *class* is portable:
    `sendmsg` is the irreducible egress syscall and the relay is thin over it.

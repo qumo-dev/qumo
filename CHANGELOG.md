@@ -708,8 +708,8 @@ Deferred validation (estimates/hypotheses, **not yet measured**):
 
 - **Bootstrap server removed (`internal/bootstrap`):** The bootstrap discovery server
   and client (`qumo bootstrap` command) have been removed from this repository.
-  Bootstrap functionality with traffic engineering is being migrated to the
-  qumo-enterprise repository as a control plane service.
+  Bootstrap functionality with traffic engineering is being migrated to a
+  separate control plane service.
 - **Removed stale `examples/web-demo/`:** An orphan README pointing at a defunct JSR-based demo; the live web demo lives in `playground/` (formerly `solid-deno/`), where all `mage web` targets already pointed.
 
 ### Security
