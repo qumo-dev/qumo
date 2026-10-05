@@ -684,51 +684,6 @@ input[type="range"] {
 	width: 100%;
 }
 
-/* Pointing at a group dims the rest, leaving its bar and its rendered span. */
-.devtools-plot.has-focus .devtools-mark:not(.is-linked) {
-	opacity: 0.2;
-}
-
-.devtools-render-track {
-	fill: var(--surface-2);
-}
-
-.devtools-mark.is-complete {
-	fill: var(--group-complete);
-	opacity: 0.55;
-}
-
-.devtools-mark.is-receiving {
-	fill: var(--group-receiving);
-}
-
-.devtools-mark.is-aborted {
-	fill: var(--group-aborted);
-}
-
-.devtools-mark.is-late {
-	fill: none;
-	stroke: var(--group-late);
-	stroke-width: 1;
-}
-
-.devtools-mark.is-stopped {
-	fill: var(--group-stopped);
-	opacity: 0.25;
-}
-
-.devtools-mark.is-unrendered {
-	fill: var(--group-skipped);
-}
-
-.devtools-mark.is-rendered {
-	fill: var(--group-rendered);
-}
-
-.devtools-hatch-fill {
-	fill: var(--group-skipped);
-}
-
 .devtools-axis > div {
 	display: flex;
 	justify-content: space-between;
@@ -787,6 +742,29 @@ input[type="range"] {
 .devtools-swatch.is-stopped {
 	background: var(--group-stopped);
 	opacity: 0.25;
+}
+
+.devtools-swatch.is-glitch {
+	width: 3px;
+	background: var(--group-aborted);
+}
+
+.devtools-swatch.is-stall {
+	background: var(--group-skipped);
+}
+
+.devtools-swatch.is-arrival {
+	height: 4px;
+	background: var(--group-late);
+}
+
+.devtools-swatch.is-held {
+	height: 4px;
+	background: repeating-linear-gradient(
+		45deg,
+		var(--group-skipped) 0 2px,
+		transparent 2px 4px
+	);
 }
 
 .devtools-swatch.is-rendered {

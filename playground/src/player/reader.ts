@@ -15,6 +15,12 @@ export interface TrackFrame {
 	/** Media timestamp in microseconds. */
 	readonly timestamp: number;
 	readonly data: Uint8Array;
+	/**
+	 * Milliseconds the frame waited in the reader between being read and
+	 * being delivered: the time spent on an earlier group that had not
+	 * arrived or had stalled.
+	 */
+	readonly held: number;
 }
 
 /** How a group's reading ended. */
@@ -46,8 +52,9 @@ export interface ReadOptions {
 	 * a later group has a frame ready. The wait also has to be worth ending:
 	 * the later media must be more than this far ahead, in media time, of the
 	 * last delivered frame. 0 skips as soon as any newer frame exists.
+	 * A function is asked each time, for a wait that changes during the read.
 	 */
-	maxAge?: number;
+	maxAge?: number | (() => number);
 	/** A monotonic clock in milliseconds. Defaults to `performance.now()`. */
 	now?: () => number;
 	/**
@@ -116,7 +123,7 @@ export async function* readFrames(
 interface Buffered {
 	readonly group: Group;
 	/** Frames read but not yet delivered, in order. */
-	readonly frames: TrackFrame[];
+	readonly frames: (Omit<TrackFrame, "held"> & { readAt: number })[];
 	/** Timestamp of the first frame read from the group. */
 	first: number | undefined;
 	/** Newest timestamp read from the group so far. */
@@ -139,8 +146,7 @@ class Reader {
 	readonly #unpack: Unpack;
 	readonly #observer: GroupObserver | undefined;
 	readonly #now: () => number;
-	readonly #maxAgeMs: number;
-	readonly #maxAge: number; // microseconds
+	readonly #maxAgeOf: () => number;
 	readonly #lateness: ((timestamp: number) => number) | undefined;
 
 	// Groups being read, ascending by sequence. The head is the next to deliver.
@@ -156,14 +162,19 @@ class Reader {
 	#wake: (() => void) | undefined;
 	#timer: number | undefined;
 
+	// Milliseconds.
+	get #maxAgeMs(): number {
+		return this.#maxAgeOf();
+	}
+
 	constructor(track: Track, done: Promise<void>, options: ReadOptions) {
 		this.#track = track;
 		this.#done = done;
 		this.#unpack = options.unpack;
 		this.#observer = options.observer;
 		this.#now = options.now ?? (() => performance.now());
-		this.#maxAgeMs = options.maxAge ?? DEFAULT_MAX_AGE_MS;
-		this.#maxAge = this.#maxAgeMs * 1000;
+		const maxAge = options.maxAge ?? DEFAULT_MAX_AGE_MS;
+		this.#maxAgeOf = typeof maxAge === "function" ? maxAge : () => maxAge;
 		this.#lateness = options.lateness;
 
 		void done.then(() => {
@@ -187,10 +198,11 @@ class Reader {
 					this.#moveOn(head, "skipped");
 					continue;
 				}
-				const frame = head.frames.shift();
-				if (frame !== undefined) {
-					this.#delivered = frame.timestamp;
-					return frame;
+				const read = head.frames.shift();
+				if (read !== undefined) {
+					this.#delivered = read.timestamp;
+					const { readAt, ...frame } = read;
+					return { ...frame, held: this.#now() - readAt };
 				}
 				if (head.done) {
 					this.#groups.shift();
@@ -289,10 +301,15 @@ class Reader {
 					this.#failure = toError(err);
 					return;
 				}
-				buffered.frames.push({ group: sequence, index, ...unpacked });
-				index++;
 				buffered.touched = this.#now();
 				buffered.readyAt ??= buffered.touched;
+				buffered.frames.push({
+					group: sequence,
+					index,
+					...unpacked,
+					readAt: buffered.touched,
+				});
+				index++;
 				this.#observer?.frameArrived(
 					sequence,
 					unpacked.timestamp,
@@ -402,7 +419,8 @@ class Reader {
 		// measure from the oldest frame waiting instead. Groups reaching a new
 		// subscriber together are then all played, and a first group that
 		// never produces a frame is still given up on.
-		return newest - (this.#delivered ?? this.#oldestBuffered() ?? newest) > this.#maxAge;
+		return newest - (this.#delivered ?? this.#oldestBuffered() ?? newest) >
+			this.#maxAgeMs * 1000;
 	}
 
 	// Timestamp of the oldest frame read but not yet delivered.

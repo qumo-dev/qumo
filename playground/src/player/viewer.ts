@@ -1,6 +1,6 @@
-import { AudioDecodeNode, VideoContext, VideoDecodeNode } from "@okdaichi/av-nodes";
 import { background, withCancel } from "@okdaichi/golikejs/context";
 import { createLogger, MediaTags } from "@okdaichi/media-log";
+import { type AudioBufferStats, AudioOutput } from "./audio/output.ts";
 import { decoderConfigs } from "./catalog.ts";
 import {
 	type GroupObserver,
@@ -11,8 +11,8 @@ import {
 	type Unpack,
 } from "./reader.ts";
 import type { Track, TrackSource } from "./source.ts";
-import { delayFor, Sync } from "./sync.ts";
-import { VideoPaceNode } from "./video_pace_node.ts";
+import { delayFor, delayForJitter, raisedDelay, Sync, waitBudget } from "./sync.ts";
+import { VideoOutput } from "./video/output.ts";
 
 const log = createLogger("subscribe");
 const videoLog = createLogger(MediaTags.decoder);
@@ -23,8 +23,31 @@ export interface PlaybackObserver {
 	groupArrived(track: string, group: number): void;
 	frameArrived(track: string, group: number, timestamp: number, bytes: number): void;
 	groupEnded(track: string, group: number, outcome: GroupOutcome): void;
-	/** A frame reached its output: the canvas for video, the decoder for audio. */
+	/** A frame reached its output: drawn on the canvas, or handed to the audio decoder. */
 	frameRendered(track: string, timestamp: number): void;
+	/**
+	 * A frame was handed on after waiting `held` milliseconds in the reader
+	 * for an earlier group.
+	 */
+	frameHeld?(track: string, held: number): void;
+	/** The audio jitter buffer's state, several times a second while playing. */
+	audioBuffer?(stats: AudioBufferStats): void;
+	/** The playback delay and the arrival jitter it is sized from, in milliseconds. */
+	playbackTiming?(timing: PlaybackTiming): void;
+	/**
+	 * A new stretch of playback is starting: what comes next does not carry on
+	 * from what was reported before.
+	 */
+	playbackStarted?(): void;
+}
+
+export interface PlaybackTiming {
+	/** How far playback trails the live edge. */
+	delay: number;
+	/** How late audio has recently arrived against its fastest arrival. */
+	audioJitter: number;
+	/** The same for video. */
+	videoJitter: number;
 }
 
 export interface ViewerInit {
@@ -46,34 +69,28 @@ export interface ViewerInit {
  */
 export class Viewer {
 	readonly #init: ViewerInit;
-	readonly #video: VideoDecodeNode;
-	readonly #pace: VideoPaceNode;
-	#volume = 1;
-	// Audio output of the current run; undefined while stopped.
-	#audio: AudioOutput | undefined;
+	readonly #video: VideoOutput;
+	// Made with the viewer, not with each run: opening an audio output and
+	// loading its worklet takes a few hundred milliseconds, during which audio
+	// that has already arrived would have nowhere to go.
+	readonly #audio: AudioOutput;
 	// Cancels the current run; undefined while stopped.
 	#cancel: (() => void) | undefined;
 
 	constructor(init: ViewerInit) {
 		this.#init = init;
-
-		// Decoded frames are held by the pace node until they are due.
-		const videoContext = new VideoContext({ canvas: init.canvas });
-		this.#video = new VideoDecodeNode(videoContext);
-		this.#pace = new VideoPaceNode();
-		this.#video.connect(this.#pace);
-		this.#pace.connect(videoContext.destination);
+		this.#video = new VideoOutput(init.canvas);
+		this.#audio = new AudioOutput(delayFor(undefined));
 
 		const { observer } = init;
 		if (observer) {
-			this.#pace.onpresent = (timestamp) => observer.frameRendered("video", timestamp);
+			this.#video.onpresent = (timestamp) => observer.frameRendered("video", timestamp);
 		}
 	}
 
 	/** Playback level, 0 to 1. Client-side only; no effect on the stream. */
 	set volume(value: number) {
-		this.#volume = value;
-		if (this.#audio) this.#audio.node.gain.value = value;
+		this.#audio.volume = value;
 	}
 
 	get decodeQueueSize(): number {
@@ -101,25 +118,33 @@ export class Viewer {
 		});
 	}
 
+	/** Stops playback and releases the decoders and the audio output for good. */
+	close(): void {
+		this.stop();
+		this.#video.close();
+		this.#audio.close();
+	}
+
 	stop(): void {
 		this.#cancel?.();
 		this.#cancel = undefined;
-		this.#pace.hold = undefined;
-		this.#pace.flush();
+		this.#video.hold = undefined;
+		this.#video.flush();
 
-		const audio = this.#audio;
-		this.#audio = undefined;
-		if (audio) {
-			audio.node.dispose();
-			// reason: close only rejects on an already-closed context.
-			audio.context.close().catch(() => {});
-		}
+		this.#audio.onstats = undefined;
+		this.#audio.suspend();
 	}
 
 	async #play(run: Run): Promise<void> {
-		// Audio and video trail the live edge by the same delay, sized once
-		// per run: the audio cushion cannot be resized while it plays.
-		const delay = delayFor(await run.source.rtt());
+		// Audio and video trail the live edge by the same delay. It starts
+		// from the connection's round-trip time and follows how unevenly the
+		// audio actually arrives: a source that sends several frames at once,
+		// or a reader that was briefly busy, needs more than the network
+		// alone says. It is not lowered again during the run: shortening it
+		// means skipping audio, and a delay that hunts up and down is worse
+		// to listen to than one that settles a little long.
+		const floor = delayFor(await run.source.rtt());
+		let delay = floor;
 		if (!run.playing()) return;
 		log.info("playback delay", { ms: Math.round(delay) });
 
@@ -129,34 +154,57 @@ export class Viewer {
 		// one clock the track with the older origin would look permanently
 		// late. What the tracks share is the delay.
 		const clocks = { video: new Sync(delay), audio: new Sync(delay) };
-		this.#pace.hold = (timestamp) => {
+		this.#video.hold = (timestamp) => {
 			const due = clocks.video.due(timestamp);
 			return due === undefined ? 0 : due - performance.now();
 		};
-		const audio = this.#openAudio(delay);
-		const playback: Playback = { ...run, clocks, audio };
+		const audio = this.#audio;
+		audio.reset(delay);
+		run.observer?.playbackStarted?.();
+		const raise = (to: number, why: string) => {
+			if (to <= delay) return;
+			delay = to;
+			audio.setLatency(delay);
+			clocks.video.delay = delay;
+			clocks.audio.delay = delay;
+			log.info(`playback delay raised: ${why}`, { ms: Math.round(delay) });
+		};
+
+		// The output counts underruns since it was made, across runs.
+		let underruns: number | undefined;
+		audio.onstats = (stats) => {
+			run.observer?.audioBuffer?.(stats);
+			underruns ??= stats.underruns;
+
+			// Ahead of trouble: the arrivals show how long a wait the buffer
+			// has to bridge, before it has had to bridge one.
+			const jitter = clocks.audio.jitter;
+			raise(delayForJitter(jitter, floor), "audio arrives unevenly");
+
+			// And after it: running dry anyway means something held the audio
+			// up after it had arrived, which the arrivals cannot show.
+			if (stats.underruns > underruns) {
+				underruns = stats.underruns;
+				raise(raisedDelay(delay), "the audio buffer ran dry");
+			}
+
+			run.observer?.playbackTiming?.({
+				delay,
+				audioJitter: jitter,
+				videoJitter: clocks.video.jitter,
+			});
+		};
+		const playback: Playback = {
+			...run,
+			clocks,
+			audio,
+			configs: {},
+			keyframe: { needed: true },
+		};
 
 		void this.#playCatalog(playback);
 		void this.#playVideo(playback);
 		void this.#playAudio(playback);
-	}
-
-	#openAudio(delay: number): AudioOutput {
-		// Match the source rate (AAC 48 kHz). av-nodes' worklet converts frame
-		// PTS -> sample offset using context.sampleRate; if the context runs at
-		// the system default (e.g. 44100) every 1024-sample block is scheduled
-		// at the wrong offset under timestamp scheduling. The publisher pins
-		// 48000 too.
-		const context = new AudioContext({ sampleRate: 48000 });
-		// The node's latency is its jitter cushion, fixed at construction, and
-		// a context can register the worklet only once: hence one context and
-		// one node per run.
-		const node = new AudioDecodeNode(context, { latency: delay });
-		node.connect(context.destination);
-		node.gain.value = this.#volume;
-
-		this.#audio = { context, node };
-		return this.#audio;
 	}
 
 	#fail(run: Run, err: Error): void {
@@ -198,16 +246,25 @@ export class Viewer {
 	}
 
 	#configure(run: Playback, catalog: Uint8Array): void {
+		// A catalog is sent again whenever anything in it changes. Configuring
+		// a decoder makes it start over, a video decoder from a keyframe it
+		// will not see until the next group, so one whose configuration is
+		// unchanged is left alone.
 		const configs = decoderConfigs(catalog);
-		if (configs.video) {
+		const videoKey = configs.video && configKey(configs.video);
+		if (configs.video && videoKey !== run.configs.video) {
+			run.configs.video = videoKey;
 			this.#video.configure(configs.video);
+			run.keyframe.needed = true;
 			log.info("video decoder configured", { codec: configs.video.codec });
 			this.#init.onVideoConfig?.(configs.video);
 			log.info("catalog received", { videoCodec: configs.video.codec });
 			run.configured.open();
 		}
-		if (configs.audio) {
-			run.audio.node.configure(configs.audio);
+		const audioKey = configs.audio && configKey(configs.audio);
+		if (configs.audio && audioKey !== run.configs.audio) {
+			run.configs.audio = audioKey;
+			run.audio.configure(configs.audio);
 			audioLog.info("audio decoder configured", { codec: configs.audio.codec });
 		}
 	}
@@ -221,16 +278,28 @@ export class Viewer {
 			return;
 		}
 
-		const { unpack, onVideoChunk } = this.#init;
-		this.#video.decodeFrom(chunkStream(run, track, unpack, videoLog, "video", (frame) => {
+		const video = this.#video;
+		const { onVideoChunk } = this.#init;
+		await this.#pump(run, track, "video", videoLog, async (frame) => {
+			// Feed the decoder no faster than it decodes, so a burst is held
+			// back here rather than piling up as decoded frames.
+			await video.ready();
+			// A decoder configured in the middle of a group cannot take the
+			// rest of it: it starts again at the next group's keyframe.
+			if (run.keyframe.needed) {
+				if (frame.index !== 0) return;
+				run.keyframe.needed = false;
+			}
 			onVideoChunk?.(frame.data.byteLength);
-			return new EncodedVideoChunk({
-				// Each group opens on a keyframe.
-				type: frame.index === 0 ? "key" : "delta",
-				timestamp: frame.timestamp,
-				data: frame.data,
-			});
-		}, () => videoLog.info("catalog ready, starting decode loop")));
+			video.decode(
+				new EncodedVideoChunk({
+					// Each group opens on a keyframe.
+					type: frame.index === 0 ? "key" : "delta",
+					timestamp: frame.timestamp,
+					data: frame.data,
+				}),
+			);
+		});
 	}
 
 	// Audio is optional: a broadcast without an audio track plays video only.
@@ -243,7 +312,7 @@ export class Viewer {
 		}
 
 		try {
-			await run.audio.context.resume();
+			await run.audio.resume();
 		} catch {
 			// reason: resume rejects once stop() has closed the context; the
 			// check below then ends the subscription.
@@ -253,25 +322,84 @@ export class Viewer {
 			return;
 		}
 
-		const { unpack, observer } = this.#init;
-		run.audio.node.decodeFrom(chunkStream(run, track, unpack, audioLog, "audio", (frame) => {
-			// Decoded audio goes straight into the output graph, so handing
-			// a frame to the decoder is the last point it can be observed.
+		const { observer } = this.#init;
+		await this.#pump(run, track, "audio", audioLog, (frame) => {
+			// Decoded audio goes straight to the output thread, so handing a
+			// frame to the decoder is the last point it can be observed here.
 			observer?.frameRendered("audio", frame.timestamp);
-			// Audio frames are all independently decodable.
-			return new EncodedAudioChunk({
-				type: "key",
-				timestamp: frame.timestamp,
-				data: frame.data,
-			});
-		}));
+			run.audio.decode(
+				new EncodedAudioChunk({
+					// Audio frames are all independently decodable.
+					type: "key",
+					timestamp: frame.timestamp,
+					data: frame.data,
+				}),
+			);
+		});
+	}
+
+	// Reads a track's frames and hands each to `deliver`, until playback
+	// stops or the track ends. The subscription is ended either way.
+	async #pump(
+		run: Playback,
+		track: Track,
+		label: "video" | "audio",
+		logger: ReturnType<typeof createLogger>,
+		deliver: (frame: TrackFrame) => void | Promise<void>,
+	): Promise<void> {
+		// Arrivals drive the track's playback clock, so they are observed
+		// here, before the reader decides what to skip, whether or not anyone
+		// else is watching.
+		const sync = run.clocks[label];
+		const watcher = run.observer && groupObserver(run.observer, label);
+		const observer: GroupObserver = {
+			groupArrived: (group) => watcher?.groupArrived(group),
+			frameArrived(group, timestamp, bytes) {
+				sync.observe(timestamp, performance.now());
+				watcher?.frameArrived(group, timestamp, bytes);
+			},
+			groupEnded: (group, outcome) => watcher?.groupEnded(group, outcome),
+		};
+		// How far past its due time a frame would be if it were delivered now.
+		const lateness = (timestamp: number) => {
+			const due = sync.due(timestamp);
+			return due === undefined ? 0 : performance.now() - due;
+		};
+
+		try {
+			// No frame goes to a decoder before the first catalog has
+			// configured it. A stop before then must still reach the finally
+			// below, so the wait gives way to it.
+			await Promise.race([run.configured.promise, run.done]);
+			if (run.playing()) logger.info("catalog ready, starting decode loop");
+
+			const options = {
+				unpack: this.#init.unpack,
+				// Asked each time: the delay can be raised during the run.
+				maxAge: () => waitBudget(label, sync.delay),
+				observer,
+				lateness,
+			};
+			for await (const frame of readFrames(track, run.done, options)) {
+				if (frame.held >= MIN_HOLD_MS) run.observer?.frameHeld?.(label, frame.held);
+				await deliver(frame);
+			}
+		} catch (err) {
+			if (!run.playing()) return;
+			if (err instanceof TrackEndedError) {
+				logger.error("track ended", { err: err.cause });
+			} else {
+				logger.error(`${label} track error`, { err });
+			}
+		} finally {
+			track.close();
+		}
 	}
 }
 
-interface AudioOutput {
-	readonly context: AudioContext;
-	readonly node: AudioDecodeNode;
-}
+// A frame held in the reader for less than this was not kept waiting in any
+// sense worth reporting.
+const MIN_HOLD_MS = 20;
 
 // One start()-to-stop() span of playback.
 interface Run {
@@ -298,6 +426,23 @@ function groupObserver(observer: PlaybackObserver, track: string): GroupObserver
 interface Playback extends Run {
 	readonly clocks: Readonly<Record<"video" | "audio", Sync>>;
 	readonly audio: AudioOutput;
+	/** The {@link configKey} of each decoder's configuration in use. */
+	readonly configs: { video?: string; audio?: string };
+	/** Whether the video decoder has to be given a keyframe next. */
+	readonly keyframe: { needed: boolean };
+}
+
+// A string that is the same for two decoder configurations exactly when they
+// are the same, codec description bytes included.
+function configKey(config: VideoDecoderConfig | AudioDecoderConfig): string {
+	return JSON.stringify(
+		config,
+		(_, value: unknown) => ArrayBuffer.isView(value) ? Array.from(bytesOf(value)) : value,
+	);
+}
+
+function bytesOf(view: ArrayBufferView): Uint8Array {
+	return new Uint8Array(view.buffer, view.byteOffset, view.byteLength);
 }
 
 interface Gate {
@@ -313,64 +458,4 @@ function gate(): Gate {
 		open = resolve;
 	});
 	return { promise, open };
-}
-
-// Turns a track into the stream of encoded chunks a decode node reads from.
-// The subscription is ended when the stream finishes, however it finishes.
-function chunkStream<T>(
-	run: Playback,
-	track: Track,
-	unpack: Unpack,
-	logger: ReturnType<typeof createLogger>,
-	label: "video" | "audio",
-	toChunk: (frame: TrackFrame) => T,
-	onReady?: () => void,
-): ReadableStream<T> {
-	// Arrivals drive the track's playback clock, so they are observed here,
-	// before the reader decides what to skip, whether or not anyone else is
-	// watching.
-	const sync = run.clocks[label];
-	const watcher = run.observer && groupObserver(run.observer, label);
-	const observer: GroupObserver = {
-		groupArrived: (group) => watcher?.groupArrived(group),
-		frameArrived(group, timestamp, bytes) {
-			sync.observe(timestamp, performance.now());
-			watcher?.frameArrived(group, timestamp, bytes);
-		},
-		groupEnded: (group, outcome) => watcher?.groupEnded(group, outcome),
-	};
-	// How far past its due time a frame would be if it were delivered now.
-	const lateness = (timestamp: number) => {
-		const due = sync.due(timestamp);
-		return due === undefined ? 0 : performance.now() - due;
-	};
-	return new ReadableStream<T>({
-		async start(controller) {
-			try {
-				// A stop before the first catalog must still reach the finally
-				// below, so the wait gives way to it.
-				await Promise.race([run.configured.promise, run.done]);
-				if (run.playing()) onReady?.();
-
-				// A group is waited for no longer than playback trails the
-				// live edge: past that its frames could not be shown anyway.
-				const options = { unpack, maxAge: sync.delay, observer, lateness };
-				for await (const frame of readFrames(track, run.done, options)) {
-					controller.enqueue(toChunk(frame));
-				}
-			} catch (err) {
-				if (err instanceof TrackEndedError) {
-					if (run.playing()) logger.error("track ended", { err: err.cause });
-					controller.close();
-				} else if (run.playing()) {
-					logger.error(`${label} track error`, { err });
-					controller.error(err);
-				} else {
-					controller.close();
-				}
-			} finally {
-				track.close();
-			}
-		},
-	});
 }

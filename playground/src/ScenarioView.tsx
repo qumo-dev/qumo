@@ -13,6 +13,7 @@ import { PushInstructions } from "./PushInstructions.tsx";
 import { CameraPullForm, type PullState } from "./CameraPullForm.tsx";
 import { DevtoolsPanel } from "./devtools/DevtoolsPanel.tsx";
 import { Recorder } from "./devtools/recorder.ts";
+import { watchMainThread } from "./devtools/stall_monitor.ts";
 
 // Owns one WebTransport session for the active scenario. Each scenario is a
 // different origin, so the parent <Show> remounts this component (tearing down
@@ -30,6 +31,7 @@ export function ScenarioView(props: {
 	// Records what the session's tracks do, for the DevTools panel.
 	// It lives and dies with this component, like the session itself.
 	const recorder = new Recorder();
+	onCleanup(watchMainThread((duration) => recorder.mainThreadStalled(duration)));
 	const showsSubscriber = () => !isHls && (isCamera ? pullActive() : true);
 
 	const mux = DefaultTrackMux;

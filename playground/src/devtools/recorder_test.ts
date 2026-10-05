@@ -127,6 +127,104 @@ Deno.test("a track renders unless it is marked as sent", () => {
 	assertEquals(tracks.map((t) => [t.name, t.renders]), [["video", true], ["video sent", false]]);
 });
 
+const QUIET = {
+	buffered: 100,
+	low: 100,
+	latency: 100,
+	stalled: false,
+	underruns: 0,
+	starved: 0,
+	gaps: 0,
+	late: 0,
+	overflowed: 0,
+	trimmed: 0,
+	written: 0,
+	played: 0,
+};
+
+Deno.test("keeps the audio buffer's reports with the time each came in", () => {
+	const { recorder, clock } = recording();
+	clock.now = 100;
+	recorder.audioBuffer(QUIET);
+	clock.now = 200;
+	recorder.audioBuffer({ ...QUIET, buffered: 80 });
+
+	const history = recorder.audio();
+
+	assertEquals(history.map((s) => [s.at, s.buffered]), [[100, 100], [200, 80]]);
+});
+
+Deno.test("forgets audio buffer reports older than a minute", () => {
+	const { recorder, clock } = recording();
+	recorder.audioBuffer(QUIET);
+	clock.now = 60_001;
+
+	recorder.audioBuffer(QUIET);
+
+	assertEquals(recorder.audio().map((s) => s.at), [60_001]);
+});
+
+Deno.test("records a stretch in which nothing of a track arrived", () => {
+	const { recorder, clock } = recording();
+	recorder.groupArrived("audio", 0);
+	recorder.frameArrived("audio", 0, 0, 100);
+	clock.now = 119;
+	recorder.frameArrived("audio", 0, 21_000, 100);
+	clock.now = 300;
+
+	recorder.frameArrived("audio", 0, 42_000, 100);
+
+	assertEquals(recorder.delays(), [{ track: "audio", kind: "arrival", at: 300, duration: 181 }]);
+});
+
+Deno.test("the time spent stopped is not media that failed to arrive", () => {
+	const { recorder, clock } = recording();
+	recorder.groupArrived("audio", 0);
+	recorder.frameArrived("audio", 0, 0, 100);
+	clock.now = 5000;
+
+	recorder.playbackStarted();
+	recorder.frameArrived("audio", 0, 21_000, 100);
+
+	assertEquals(recorder.delays(), []);
+});
+
+Deno.test("the audio buffer's history starts again with each playback", () => {
+	const { recorder } = recording();
+	recorder.audioBuffer(QUIET);
+
+	recorder.playbackStarted();
+
+	assertEquals(recorder.audio(), []);
+});
+
+Deno.test("records a frame held back in the player", () => {
+	const { recorder, clock } = recording();
+	clock.now = 700;
+
+	recorder.frameHeld("audio", 85);
+
+	assertEquals(recorder.delays(), [{ track: "audio", kind: "held", at: 700, duration: 85 }]);
+});
+
+Deno.test("keeps the main thread's stops with the time each ended", () => {
+	const { recorder, clock } = recording();
+	clock.now = 500;
+	recorder.mainThreadStalled(120);
+
+	assertEquals(recorder.stalls(), [{ at: 500, duration: 120 }]);
+});
+
+Deno.test("forgets main thread stops older than a minute", () => {
+	const { recorder, clock } = recording();
+	recorder.mainThreadStalled(120);
+	clock.now = 60_001;
+
+	recorder.mainThreadStalled(40);
+
+	assertEquals(recorder.stalls().map((s) => s.duration), [40]);
+});
+
 Deno.test("tracks are kept apart", () => {
 	const { recorder } = recording();
 	recorder.groupArrived("video", 0);

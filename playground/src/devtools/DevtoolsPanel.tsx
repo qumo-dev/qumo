@@ -1,7 +1,33 @@
-import { createEffect, createMemo, createSignal, For, onCleanup, Show } from "solid-js";
+import {
+	createEffect,
+	createMemo,
+	createSignal,
+	For,
+	Index,
+	onCleanup,
+	onMount,
+	Show,
+} from "solid-js";
 import type { Session } from "@qumo/moq";
-import type { GroupRecord, GroupState, Recorder, TrackRecord } from "./recorder.ts";
-import { BAR_LIMIT, columns, packLanes } from "./timeline.ts";
+import type {
+	AudioBufferRecord,
+	AudioBufferSample,
+	DelayRecord,
+	PlaybackTimingRecord,
+	Recorder,
+	StallRecord,
+	TrackRecord,
+} from "./recorder.ts";
+import {
+	audioLane,
+	clockRates,
+	formatBytes,
+	type Lane,
+	shapeAt,
+	type ShapeStyle,
+	stallLane,
+	trackLane,
+} from "./timeline.ts";
 
 const STORAGE_KEY = "qumo.devtools.open";
 
@@ -14,41 +40,6 @@ const SPANS = [60_000, 10_000, 2_000] as const;
 type Span = typeof SPANS[number];
 // A short span scrolls too fast to follow at one redraw a second.
 const TICK_MS: Record<Span, number> = { 60_000: 1000, 10_000: 250, 2_000: 100 };
-
-// Timeline geometry, in SVG user units. Horizontally the span is always WIDTH
-// units and the drawing stretches to the panel's width; vertically one unit is
-// one pixel.
-const WIDTH = 600;
-const COLUMNS = 60;
-const LANE_HEIGHT = 10;
-const LANE_GAP = 2;
-const MAX_LANES = 4;
-const RENDER_HEIGHT = 6;
-const RENDER_GAP = 5;
-const COLUMN_HEIGHT = 22;
-// Narrowest a mark is drawn, so a 20 ms group is still visible.
-const MIN_WIDTH = 1.5;
-// Shaved off each mark so neighbours are separated by the surface, not a stroke.
-const GAP = 0.8;
-
-const STATE_LABELS: Record<GroupState, string> = {
-	receiving: "Receiving",
-	complete: "Complete",
-	skipped: "Skipped",
-	aborted: "Aborted",
-	late: "Late",
-	stopped: "Stopped",
-};
-// Bottom-to-top order of a stacked column: the ordinary state first, so the
-// exceptions sit on top of it.
-const STACK_ORDER: readonly GroupState[] = [
-	"complete",
-	"receiving",
-	"stopped",
-	"skipped",
-	"aborted",
-	"late",
-];
 
 interface TrackRates {
 	/** Received media, in bits per second. */
@@ -70,6 +61,13 @@ interface Reading {
 	readonly now: number;
 	readonly tracks: readonly TrackRecord[];
 	readonly rates: ReadonlyMap<string, TrackRates>;
+	/** The audio jitter buffer's reports, oldest first; empty until audio has played. */
+	readonly audio: readonly AudioBufferSample[];
+	readonly timing: PlaybackTimingRecord | undefined;
+	/** The main thread's recent stops, oldest first. */
+	readonly stalls: readonly StallRecord[];
+	/** Recent stretches in which a track's media was not moving, oldest first. */
+	readonly delays: readonly DelayRecord[];
 }
 
 // The group the pointer is on, so its received bar and its rendered span can
@@ -86,7 +84,15 @@ interface Focus {
  */
 export function DevtoolsPanel(props: { recorder: Recorder; session: Promise<Session> }) {
 	const [open, setOpen] = createSignal(readOpen());
-	const [reading, setReading] = createSignal<Reading>({ now: 0, tracks: [], rates: new Map() });
+	const [reading, setReading] = createSignal<Reading>({
+		now: 0,
+		tracks: [],
+		rates: new Map(),
+		audio: [],
+		timing: undefined,
+		stalls: [],
+		delays: [],
+	});
 	const [session, setSession] = createSignal<SessionReading>();
 	const [span, setSpan] = createSignal<Span>(60_000);
 	const [paused, setPaused] = createSignal(false);
@@ -114,7 +120,15 @@ export function DevtoolsPanel(props: { recorder: Recorder; session: Promise<Sess
 			const tracks = props.recorder.snapshot();
 			const due = baseline === undefined || now - baseline.now >= RATE_MS;
 			if (due) rates = ratesSince(baseline, now, tracks);
-			const next = { now, tracks, rates };
+			const next = {
+				now,
+				tracks,
+				rates,
+				audio: props.recorder.audio(),
+				timing: props.recorder.timing(),
+				stalls: props.recorder.stalls(),
+				delays: props.recorder.delays(),
+			};
 			if (due) baseline = next;
 			setReading(next);
 			if (!due) return;
@@ -161,7 +175,21 @@ export function DevtoolsPanel(props: { recorder: Recorder; session: Promise<Sess
 
 			<Show when={open()}>
 				<div class="devtools-body">
-					<SessionRow reading={session()} media={mediaRate(reading())} />
+					<SessionRow
+						reading={session()}
+						media={mediaRate(reading())}
+						timing={reading().timing}
+						stalls={reading().stalls}
+					/>
+					<Show when={reading().audio.at(-1)}>
+						{(audio) => (
+							<AudioBufferRow
+								audio={audio()}
+								history={reading().audio}
+								delays={reading().delays}
+							/>
+						)}
+					</Show>
 
 					<Show
 						when={reading().tracks.length > 0}
@@ -192,12 +220,45 @@ export function DevtoolsPanel(props: { recorder: Recorder; session: Promise<Sess
 // The transport's own counters are shown only when it reports them: a browser
 // without WebTransport statistics returns zeros, which would read as "nothing
 // is flowing". The media rate comes from the recorder, so it is always there.
-function SessionRow(props: { reading: SessionReading | undefined; media: number }) {
+function SessionRow(props: {
+	reading: SessionReading | undefined;
+	media: number;
+	timing: PlaybackTimingRecord | undefined;
+	stalls: readonly StallRecord[];
+}) {
+	const longest = () => props.stalls.reduce((most, s) => Math.max(most, s.duration), 0);
+
 	return (
 		<dl class="devtools-session">
 			<div>
 				<dt>Media received</dt>
 				<dd>{formatBitrate(props.media)}</dd>
+			</div>
+			<Show when={props.timing}>
+				{(timing) => (
+					<>
+						<div title="How far playback trails the live edge. It grows to cover the arrival jitter, and when the audio buffer runs dry.">
+							<dt>Playback delay</dt>
+							<dd>{Math.round(timing().delay)} ms</dd>
+						</div>
+						<div title="How late media has recently arrived against its fastest arrival. The delay has to cover this.">
+							<dt>Arrival jitter</dt>
+							<dd>
+								{`audio ${Math.round(timing().audioJitter)} ms, video ${
+									Math.round(timing().videoJitter)
+								} ms`}
+							</dd>
+						</div>
+					</>
+				)}
+			</Show>
+			<div title="How often, and for how long at most, the page's main thread stopped in the last minute. Media passes through it, so a stop longer than the audio buffer is a gap in the sound.">
+				<dt>Main thread stops</dt>
+				<dd>
+					{props.stalls.length === 0
+						? "none"
+						: `${props.stalls.length}, longest ${Math.round(longest())} ms`}
+				</dd>
 			</div>
 			<Show when={(props.reading?.rtt ?? 0) > 0}>
 				<div>
@@ -237,6 +298,78 @@ function SessionRow(props: { reading: SessionReading | undefined; media: number 
 	);
 }
 
+// The audio jitter buffer: how much is waiting to be played, and every way it
+// has had to put silence out or throw audio away. Any of the counts rising is
+// audible; all of them standing still is what healthy playback looks like.
+function AudioBufferRow(props: {
+	audio: AudioBufferRecord;
+	history: readonly AudioBufferSample[];
+	delays: readonly DelayRecord[];
+}) {
+	const rates = createMemo(() => clockRates(props.history));
+	// How often, and for how long at most, audio was kept from the buffer in
+	// the last minute, in one of the two ways the player can see.
+	const delayed = (kind: DelayRecord["kind"]) => {
+		const found = props.delays.filter((d) => d.track === "audio" && d.kind === kind);
+		if (found.length === 0) return "none";
+		const longest = found.reduce((most, d) => Math.max(most, d.duration), 0);
+		return `${found.length}, longest ${Math.round(longest)} ms`;
+	};
+	const percent = (rate: number) => `${(rate * 100).toFixed(1)}%`;
+
+	return (
+		<dl class="devtools-session">
+			<div>
+				<dt>Audio buffer</dt>
+				<dd>
+					{`${Math.round(props.audio.buffered)} ms of ${
+						Math.round(props.audio.latency)
+					} ms`}
+					{props.audio.stalled ? " (refilling)" : ""}
+				</dd>
+			</div>
+			<div>
+				<dt>Ran dry</dt>
+				<dd>
+					{`${props.audio.underruns}× (${Math.round(props.audio.starved)} ms silent)`}
+				</dd>
+			</div>
+			<div>
+				<dt>Missing</dt>
+				<dd>{Math.round(props.audio.gaps)} ms</dd>
+			</div>
+			<div>
+				<dt>Too late</dt>
+				<dd>{Math.round(props.audio.late)} ms</dd>
+			</div>
+			<div>
+				<dt>Overflowed</dt>
+				<dd>{Math.round(props.audio.overflowed)} ms</dd>
+			</div>
+			<div>
+				<dt>Trimmed</dt>
+				<dd>{Math.round(props.audio.trimmed)} ms</dd>
+			</div>
+			<div title="Stretches of 120 ms or more in which no audio came off the transport.">
+				<dt>Not arriving</dt>
+				<dd>{delayed("arrival")}</dd>
+			</div>
+			<div title="Times audio that had arrived waited 20 ms or more in the player for an earlier group.">
+				<dt>Held back</dt>
+				<dd>{delayed("held")}</dd>
+			</div>
+			<Show when={rates()}>
+				{(r) => (
+					<div title="How fast each end of the audio buffer runs, against real time. They should match.">
+						<dt>Clocks</dt>
+						<dd>{`media ${percent(r().media)}, output ${percent(r().output)}`}</dd>
+					</div>
+				)}
+			</Show>
+		</dl>
+	);
+}
+
 // Bits per second of media received across the played tracks over the last
 // tick. Sent tracks are recorded too, and are not counted here.
 function mediaRate(reading: Reading): number {
@@ -264,23 +397,23 @@ function TrackTable(props: { reading: Reading }) {
 					</tr>
 				</thead>
 				<tbody>
-					<For each={props.reading.tracks}>
+					<Index each={props.reading.tracks}>
 						{(track) => {
-							const rates = () => props.reading.rates.get(track.name);
+							const rates = () => props.reading.rates.get(track().name);
 							return (
 								<tr>
-									<th scope="row">{track.name}</th>
+									<th scope="row">{track().name}</th>
 									<td>{formatBitrate(rates()?.bitrate ?? 0)}</td>
 									<td>{Math.round(rates()?.framesPerSecond ?? 0)}</td>
-									<td>{track.latest ?? "—"}</td>
-									<td>{track.ended.complete}</td>
-									<td>{track.ended.skipped}</td>
-									<td>{track.ended.aborted}</td>
-									<td>{track.ended.late}</td>
+									<td>{track().latest ?? "—"}</td>
+									<td>{track().ended.complete}</td>
+									<td>{track().ended.skipped}</td>
+									<td>{track().ended.aborted}</td>
+									<td>{track().ended.late}</td>
 								</tr>
 							);
 						}}
-					</For>
+					</Index>
 				</tbody>
 			</table>
 		</div>
@@ -296,6 +429,13 @@ function Timeline(props: {
 	focus: Focus | undefined;
 	onFocus: (focus: Focus | undefined) => void;
 }) {
+	// The marks are painted in the page's theme tokens. Reading them with each
+	// new reading keeps the canvases right when the theme changes.
+	const palette = createMemo(() => {
+		props.reading;
+		return readPalette();
+	});
+
 	return (
 		<div class="devtools-timeline">
 			<div class="devtools-controls">
@@ -323,22 +463,58 @@ function Timeline(props: {
 				</button>
 			</div>
 
-			<For each={props.reading.tracks}>
+			{
+				/* Index, not For: the records are new objects on every reading, and
+			    a lane's canvas should be redrawn, not replaced. */
+			}
+			<Index each={props.reading.tracks}>
 				{(track) => (
-					<TrackLanes
-						track={track}
-						now={props.reading.now}
-						span={props.span}
-						focus={props.focus?.track === track.name ? props.focus.sequence : undefined}
-						onFocus={(sequence) =>
-							props.onFocus(
-								sequence === undefined
-									? undefined
-									: { track: track.name, sequence },
-							)}
+					<LaneCanvas
+						name={track().name}
+						label={`${track().name}: groups over the last ${props.span / 1000} seconds`}
+						lane={trackLane(
+							track().groups,
+							track().renders,
+							props.reading.now,
+							props.span,
+						)}
+						palette={palette()}
+						focus={props.focus?.track === track().name
+							? props.focus.sequence
+							: undefined}
+						onFocus={(sequence) => props.onFocus(
+							sequence === undefined ? undefined : { track: track().name, sequence },
+						)}
 					/>
 				)}
-			</For>
+			</Index>
+
+			<Show when={props.reading.audio.length > 0}>
+				<LaneCanvas
+					name="audio out"
+					label={`Audio output: buffer level and glitches over the last ${
+						props.span / 1000
+					} seconds`}
+					lane={audioLane(
+						props.reading.audio,
+						props.reading.delays,
+						props.reading.now,
+						props.span,
+					)}
+					palette={palette()}
+					focus={undefined}
+				/>
+			</Show>
+
+			<LaneCanvas
+				name="main thread"
+				label={`Main thread: ${props.reading.stalls.length} stops over the last ${
+					props.span / 1000
+				} seconds`}
+				lane={stallLane(props.reading.stalls, props.reading.now, props.span)}
+				palette={palette()}
+				focus={undefined}
+			/>
 
 			<div class="devtools-lane devtools-axis" aria-hidden="true">
 				<span />
@@ -350,258 +526,238 @@ function Timeline(props: {
 			</div>
 
 			<ul class="devtools-legend">
-				<For each={STACK_ORDER}>
-					{(state) => (
+				<For each={LEGEND}>
+					{([style, label]) => (
 						<li>
-							<span class={`devtools-swatch is-${state}`} />
-							{STATE_LABELS[state]}
+							<span class={`devtools-swatch is-${style}`} />
+							{label}
 						</li>
 					)}
 				</For>
-				<li>
-					<span class="devtools-swatch is-rendered" />
-					Rendered
-				</li>
 			</ul>
 		</div>
 	);
 }
 
-// One track: its groups as they arrived (the network view) above a single lane
-// of what was rendered, on the same time axis. Pointing at a group picks out
-// both its bar and its rendered span.
-function TrackLanes(props: {
-	track: TrackRecord;
-	now: number;
-	span: Span;
+// One lane of the timeline, drawn on a canvas. Pointing at a mark shows what
+// it is, and picks out the other marks of the same group.
+function LaneCanvas(props: {
+	name: string;
+	label: string;
+	lane: Lane;
+	palette: Palette;
 	focus: number | undefined;
-	onFocus: (sequence: number | undefined) => void;
+	onFocus?: (group: number | undefined) => void;
 }) {
-	const from = () => props.now - props.span;
-	const x = (time: number) => Math.max(0, (time - from()) * WIDTH / props.span);
-	const visible = createMemo(() =>
-		props.track.groups.filter((g) => (g.ended ?? props.now) >= from())
-	);
-	const dense = () => visible().length > BAR_LIMIT;
+	let canvas: HTMLCanvasElement | undefined;
+	const [width, setWidth] = createSignal(0);
+	const lane = createMemo(() => props.lane);
+	let pointed: number | undefined;
 
-	const bars = createMemo(() => dense() ? [] : packLanes(visible(), props.now));
-	const laneCount = () =>
-		Math.min(MAX_LANES, bars().reduce((most, bar) => Math.max(most, bar.lane + 1), 1));
-	const networkHeight = () =>
-		dense() ? COLUMN_HEIGHT : laneCount() * (LANE_HEIGHT + LANE_GAP) - LANE_GAP;
-	const renderTop = () => networkHeight() + RENDER_GAP;
-	// A sent track has nothing to render, so it gets no rendered lane.
-	const height = () => props.track.renders ? renderTop() + RENDER_HEIGHT : networkHeight();
-	const hatch = () => `devtools-hatch-${props.track.name.replace(/\W+/g, "-")}`;
+	onMount(() => {
+		if (!canvas) return;
+		const observer = new ResizeObserver(([entry]) => setWidth(entry?.contentRect.width ?? 0));
+		observer.observe(canvas);
+		onCleanup(() => observer.disconnect());
+	});
+
+	createEffect(() => {
+		if (canvas && width() > 0) drawLane(canvas, lane(), width(), props.palette, props.focus);
+	});
+
+	const point = (event: MouseEvent) => {
+		if (!canvas) return;
+		const box = canvas.getBoundingClientRect();
+		const hit = shapeAt(
+			lane(),
+			event.clientX - box.left,
+			event.clientY - box.top,
+			box.width,
+			POINTER_WIDTH,
+		);
+		canvas.title = hit?.title ?? "";
+		if (hit?.group === pointed) return;
+		pointed = hit?.group;
+		props.onFocus?.(pointed);
+	};
+
+	const leave = () => {
+		if (canvas) canvas.title = "";
+		if (pointed === undefined) return;
+		pointed = undefined;
+		props.onFocus?.(undefined);
+	};
 
 	return (
 		<div class="devtools-lane">
-			<span class="devtools-lane-name">{props.track.name}</span>
-			<svg
+			<span class="devtools-lane-name">{props.name}</span>
+			<canvas
+				ref={(element) => {
+					canvas = element;
+				}}
 				class="devtools-plot"
-				classList={{ "has-focus": props.focus !== undefined }}
-				viewBox={`0 0 ${WIDTH} ${height()}`}
-				height={height()}
-				preserveAspectRatio="none"
 				role="img"
-				aria-label={`${props.track.name}: groups over the last ${
-					props.span / 1000
-				} seconds`}
-			>
-				<defs>
-					<pattern
-						id={hatch()}
-						width="3"
-						height="3"
-						patternUnits="userSpaceOnUse"
-						patternTransform="rotate(45)"
-					>
-						<rect class="devtools-hatch-fill" width="1.5" height="3" />
-					</pattern>
-				</defs>
-				<Show when={props.track.renders}>
-					<rect
-						class="devtools-render-track"
-						x="0"
-						y={renderTop()}
-						width={WIDTH}
-						height={RENDER_HEIGHT}
-					/>
-				</Show>
-
-				<Show
-					when={dense()}
-					fallback={
-						<For each={bars()}>
-							{(bar) => {
-								const lane = Math.min(bar.lane, MAX_LANES - 1);
-								return (
-									<>
-										<rect
-											class={`devtools-mark is-${bar.group.state}`}
-											classList={{
-												"is-linked": props.focus === bar.group.sequence,
-											}}
-											onMouseEnter={() => props.onFocus(bar.group.sequence)}
-											onMouseLeave={() => props.onFocus(undefined)}
-											fill={bar.group.state === "skipped"
-												? `url(#${hatch()})`
-												: undefined}
-											x={x(bar.start)}
-											y={lane * (LANE_HEIGHT + LANE_GAP)}
-											width={markWidth(x(bar.end) - x(bar.start))}
-											height={LANE_HEIGHT}
-										>
-											<title>{describeGroup(bar.group, props.now)}</title>
-										</rect>
-										<Show when={props.track.renders}>
-											<RenderMark
-												group={bar.group}
-												x={x}
-												top={renderTop()}
-												linked={props.focus === bar.group.sequence}
-												onFocus={props.onFocus}
-											/>
-										</Show>
-									</>
-								);
-							}}
-						</For>
-					}
-				>
-					<DenseColumns
-						groups={visible()}
-						from={from()}
-						now={props.now}
-						size={props.span / COLUMNS}
-						hatch={hatch()}
-						renderTop={props.track.renders ? renderTop() : undefined}
-					/>
-				</Show>
-			</svg>
+				aria-label={props.label}
+				style={{ height: `${lane().height}px` }}
+				onMouseMove={point}
+				onMouseLeave={leave}
+			/>
 		</div>
 	);
 }
 
-// What the rendered lane shows for one group: the span over which its frames
-// reached the output, or a tick where it arrived if it ended with none shown.
-// That includes a group received in full that playback passed over.
-function RenderMark(props: {
-	group: GroupRecord;
-	x: (time: number) => number;
-	top: number;
-	linked: boolean;
-	onFocus: (sequence: number | undefined) => void;
-}) {
-	const unrendered = () =>
-		props.group.rendered === 0 && props.group.state !== "receiving" &&
-		props.group.state !== "stopped";
+// Narrowest a mark is drawn, in pixels, so a 20 ms group is still visible.
+const MIN_WIDTH = 2;
+// Shaved off each mark so neighbours are separated by the surface, not a stroke.
+const GAP = 1;
+// How wide a mark is to the pointer at least: easier to hit than to see.
+const POINTER_WIDTH = 5;
 
-	return (
-		<>
-			<Show when={props.group.renderStart !== undefined}>
-				<rect
-					class="devtools-mark is-rendered"
-					classList={{ "is-linked": props.linked }}
-					onMouseEnter={() => props.onFocus(props.group.sequence)}
-					onMouseLeave={() => props.onFocus(undefined)}
-					x={props.x(props.group.renderStart ?? 0)}
-					y={props.top}
-					width={markWidth(
-						props.x(props.group.renderEnd ?? 0) - props.x(props.group.renderStart ?? 0),
-					)}
-					height={RENDER_HEIGHT}
-				>
-					<title>
-						{`Group ${props.group.sequence}: ${props.group.rendered} of ${props.group.frames} frames rendered`}
-					</title>
-				</rect>
-			</Show>
-			<Show when={unrendered()}>
-				<rect
-					class="devtools-mark is-unrendered"
-					classList={{ "is-linked": props.linked }}
-					x={props.x(props.group.arrived)}
-					y={props.top}
-					width={MIN_WIDTH}
-					height={RENDER_HEIGHT}
-				>
-					<title>
-						{`Group ${props.group.sequence}: not rendered (${props.group.state})`}
-					</title>
-				</rect>
-			</Show>
-		</>
-	);
+// The theme colours the marks are painted in.
+interface Palette {
+	readonly complete: string;
+	readonly receiving: string;
+	readonly stopped: string;
+	readonly skipped: string;
+	readonly aborted: string;
+	readonly late: string;
+	readonly rendered: string;
+	readonly surface: string;
 }
 
-// A track with too many groups to draw one by one: a column per slice of time,
-// stacked by how its groups ended, and below it the share of their frames
-// rendered.
-function DenseColumns(props: {
-	groups: readonly GroupRecord[];
-	from: number;
-	now: number;
-	/** Milliseconds each column covers. */
-	size: number;
-	hatch: string;
-	/** Top of the rendered lane; undefined for a track that renders nothing. */
-	renderTop: number | undefined;
-}) {
-	const cols = createMemo(() => columns(props.groups, props.from, props.now, props.size));
-	const tallest = () => cols().reduce((most, c) => Math.max(most, total(c.states)), 1);
-	const width = WIDTH / COLUMNS;
+function readPalette(): Palette {
+	const style = getComputedStyle(document.documentElement);
+	const token = (name: string) => style.getPropertyValue(name).trim();
+	return {
+		complete: token("--group-complete"),
+		receiving: token("--group-receiving"),
+		stopped: token("--group-stopped"),
+		skipped: token("--group-skipped"),
+		aborted: token("--group-aborted"),
+		late: token("--group-late"),
+		rendered: token("--group-rendered"),
+		surface: token("--surface-2"),
+	};
+}
 
-	return (
-		<For each={cols()}>
-			{(col, i) => {
-				const groups = total(col.states);
-				const scale = COLUMN_HEIGHT / tallest();
-				let top = COLUMN_HEIGHT;
-				const segments = STACK_ORDER.filter((state) => col.states[state] > 0).map(
-					(state) => {
-						const h = col.states[state] * scale;
-						top -= h;
-						return { state, y: top, h };
-					},
-				);
-				const share = col.frames > 0 ? col.rendered / col.frames : 0;
+// How each kind of mark is painted. The states that mean something went wrong
+// differ in more than colour: skipped is hatched and late is an outline, so
+// they can be told apart without telling the colours apart.
+const PAINT: Record<
+	ShapeStyle,
+	{ color: keyof Palette; alpha: number; fill: "solid" | "hatch" | "outline" }
+> = {
+	complete: { color: "complete", alpha: 0.55, fill: "solid" },
+	receiving: { color: "receiving", alpha: 1, fill: "solid" },
+	stopped: { color: "stopped", alpha: 0.25, fill: "solid" },
+	skipped: { color: "skipped", alpha: 1, fill: "hatch" },
+	aborted: { color: "aborted", alpha: 1, fill: "solid" },
+	late: { color: "late", alpha: 1, fill: "outline" },
+	rendered: { color: "rendered", alpha: 1, fill: "solid" },
+	unrendered: { color: "skipped", alpha: 1, fill: "solid" },
+	glitch: { color: "aborted", alpha: 1, fill: "solid" },
+	stall: { color: "skipped", alpha: 1, fill: "solid" },
+	arrival: { color: "late", alpha: 1, fill: "solid" },
+	held: { color: "skipped", alpha: 1, fill: "hatch" },
+	track: { color: "surface", alpha: 1, fill: "solid" },
+};
 
-				return (
-					<Show when={groups > 0}>
-						<g>
-							<title>{describeColumn(col.states, col.rendered, col.frames)}</title>
-							<For each={segments}>
-								{(seg) => (
-									<rect
-										class={`devtools-mark is-${seg.state}`}
-										fill={seg.state === "skipped"
-											? `url(#${props.hatch})`
-											: undefined}
-										x={i() * width}
-										y={seg.y}
-										width={width - GAP}
-										height={seg.h}
-									/>
-								)}
-							</For>
-							<Show when={props.renderTop}>
-								{(renderTop) => (
-									<rect
-										class="devtools-mark is-rendered"
-										x={i() * width}
-										y={renderTop() + RENDER_HEIGHT * (1 - share)}
-										width={width - GAP}
-										height={RENDER_HEIGHT * share}
-									/>
-								)}
-							</Show>
-						</g>
-					</Show>
-				);
-			}}
-		</For>
-	);
+const LEGEND: readonly (readonly [string, string])[] = [
+	["complete", "Complete"],
+	["receiving", "Receiving"],
+	["stopped", "Stopped"],
+	["skipped", "Skipped"],
+	["aborted", "Aborted"],
+	["late", "Late"],
+	["rendered", "Rendered"],
+	["glitch", "Audio glitch"],
+	["stall", "Main thread stopped"],
+	["arrival", "No audio arriving"],
+	["held", "Audio held back"],
+];
+
+function drawLane(
+	canvas: HTMLCanvasElement,
+	lane: Lane,
+	width: number,
+	palette: Palette,
+	focus: number | undefined,
+): void {
+	// Size the bitmap in device pixels so marks stay sharp, and draw in CSS pixels.
+	const ratio = devicePixelRatio || 1;
+	const bitmapWidth = Math.round(width * ratio);
+	const bitmapHeight = Math.round(lane.height * ratio);
+	if (canvas.width !== bitmapWidth) canvas.width = bitmapWidth;
+	if (canvas.height !== bitmapHeight) canvas.height = bitmapHeight;
+
+	const context = canvas.getContext("2d");
+	if (context === null) return;
+	context.setTransform(ratio, 0, 0, ratio, 0, 0);
+	context.clearRect(0, 0, width, lane.height);
+
+	const first = lane.level?.[0];
+	const last = lane.level?.at(-1);
+	if (lane.level && first && last) {
+		context.globalAlpha = 0.35;
+		context.fillStyle = palette.receiving;
+		context.beginPath();
+		context.moveTo(first[0] * width, lane.height);
+		for (const [x, y] of lane.level) context.lineTo(x * width, y);
+		context.lineTo(last[0] * width, lane.height);
+		context.closePath();
+		context.fill();
+	}
+
+	for (const shape of lane.shapes) {
+		const paint = PAINT[shape.style];
+		const dimmed = focus !== undefined && shape.style !== "track" && shape.group !== focus;
+		const color = palette[paint.color];
+		const x = shape.x0 * width;
+		const markWidth = Math.max(MIN_WIDTH, (shape.x1 - shape.x0) * width - GAP);
+
+		context.globalAlpha = paint.alpha * (dimmed ? 0.2 : 1);
+		if (paint.fill === "outline") {
+			context.strokeStyle = color;
+			context.lineWidth = 1;
+			context.strokeRect(
+				x + 0.5,
+				shape.y + 0.5,
+				Math.max(1, markWidth - 1),
+				Math.max(1, shape.height - 1),
+			);
+		} else {
+			context.fillStyle = paint.fill === "hatch" ? hatch(context, color) : color;
+			context.fillRect(x, shape.y, markWidth, shape.height);
+		}
+	}
+	context.globalAlpha = 1;
+}
+
+const hatches = new Map<string, CanvasPattern>();
+
+// A diagonal-stripe fill in `color`, made once per colour.
+function hatch(context: CanvasRenderingContext2D, color: string): CanvasPattern | string {
+	const cached = hatches.get(color);
+	if (cached) return cached;
+
+	const tile = document.createElement("canvas");
+	tile.width = 6;
+	tile.height = 6;
+	const pen = tile.getContext("2d");
+	if (pen === null) return color;
+	pen.strokeStyle = color;
+	pen.lineWidth = 2;
+	pen.beginPath();
+	for (const offset of [-6, 0, 6]) {
+		pen.moveTo(offset, 6);
+		pen.lineTo(offset + 6, 0);
+	}
+	pen.stroke();
+
+	const pattern = context.createPattern(tile, "repeat");
+	if (pattern === null) return color;
+	hatches.set(color, pattern);
+	return pattern;
 }
 
 function ratesSince(
@@ -624,45 +780,9 @@ function ratesSince(
 	return rates;
 }
 
-function total(states: Readonly<Record<GroupState, number>>): number {
-	return STACK_ORDER.reduce((sum, state) => sum + states[state], 0);
-}
-
-function markWidth(width: number): number {
-	return Math.max(MIN_WIDTH, width - GAP);
-}
-
-function describeGroup(group: GroupRecord, now: number): string {
-	const duration = Math.round((group.ended ?? now) - group.arrived);
-	return [
-		`Group ${group.sequence}: ${STATE_LABELS[group.state].toLowerCase()}`,
-		`${group.frames} frames, ${formatBytes(group.bytes)}`,
-		`${duration} ms on the wire`,
-		`${group.rendered} rendered`,
-	].join(" · ");
-}
-
-function describeColumn(
-	states: Readonly<Record<GroupState, number>>,
-	rendered: number,
-	frames: number,
-): string {
-	const parts = STACK_ORDER.filter((state) => states[state] > 0)
-		.map((state) => `${states[state]} ${STATE_LABELS[state].toLowerCase()}`);
-	return `${total(states)} groups: ${
-		parts.join(", ")
-	} · ${rendered} of ${frames} frames rendered`;
-}
-
 function formatBitrate(bitsPerSecond: number): string {
 	if (bitsPerSecond >= 1_000_000) return `${(bitsPerSecond / 1_000_000).toFixed(2)} Mbps`;
 	return `${Math.round(bitsPerSecond / 1000)} kbps`;
-}
-
-function formatBytes(bytes: number): string {
-	if (bytes >= 1_000_000) return `${(bytes / 1_000_000).toFixed(1)} MB`;
-	if (bytes >= 1000) return `${(bytes / 1000).toFixed(1)} kB`;
-	return `${bytes} B`;
 }
 
 // The panel stays closed unless the viewer opened it before. Storage can be
