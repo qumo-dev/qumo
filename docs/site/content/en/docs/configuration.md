@@ -104,7 +104,7 @@ Auth is off unless `QUMO_AUTH_URL` is set. Off, the relay admits every session u
 |---|---|---|
 | `QUMO_AUTH_URL` | (unset: auth off) | The auth server the relay asks when each client session connects. `https://`, or `http://` on a loopback host only. |
 
-The auth server holds the policy: which credentials it accepts, and what a session that presents none may do. qumo doesn't ship one, because that policy differs by app.
+The auth server holds the policy: which credentials it accepts, and what a session that presents none may do. qumo ships one, [`qumo auth`](../cli/auth/), which verifies tokens your app signs with its own key; any server that speaks the contract below works too.
 
 **Trusted peers are never asked:** sessions with a client certificate verified against `CA_FILE`, and peers this relay dials (`PEERS`).
 

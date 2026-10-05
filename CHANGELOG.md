@@ -9,6 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`qumo auth`: a ready-to-run auth server, key generator and token tool (#460).** A relay with `QUMO_AUTH_URL` asks an auth server about every session; until now qumo shipped none, so a relay ran either with auth off or against an auth server you wrote yourself. An app now decides only what each client may do, and signs it:
+  - **`qumo auth keygen [-prefix acme/app]`** writes an Ed25519 signing key (private JWK; it stays on the app's server) and the public key set the server trusts. The `kid` is the key's RFC 7638 thumbprint. It prints the kid, the paths the key may grant and the next steps, and never overwrites an existing key.
+  - **`qumo auth`** runs the server that answers the relay (`QUMO_AUTH_KEYS_FILE`; `QUMO_AUTH_ADDR`, default `127.0.0.1:4440`). A session without a token is refused. It checks, in order:
+    1. a trusted `kid` and EdDSA;
+    2. the signature;
+    3. exactly the allowed claims (`path_auth`, `iat`, `nbf`, `exp`, an optional `jti`);
+    4. the time claims, with 60 s leeway and at most a one-hour lifetime;
+    5. every granted path within the key's prefix.
+
+    It answers with the grant's subtree patterns and `expires`: 401 for a token it can't accept, 403 for one that grants a path outside its key's prefix. It prints a startup banner and logs each admitted, refused and ended session; the token is never logged.
+  - **`qumo auth token -publish … -subscribe … -ttl …`** signs a token by hand, for testing: the token on stdout, what it grants on stderr.
+  - **The Go package `github.com/qumo-dev/qumo/token`** is what an app's backend signs with: `token.Sign(key, token.Grant{Publish: …, Subscribe: …}, time.Hour)`. It refuses to sign a path outside the key's prefix, and it is standard-library only.
+  - Ported from qumo-deploy's `qumo-auth` (foalk-inc/qumo-deploy#1249). qumo's managed relays add their key source there.
+
 - **Sessions are revalidated with the auth server (#419).** At the grant's `revalidate` cadence, the relay sends the session's connect request again as `event: "revalidate"`, with the same `id`. This is how key revocation, project suspension and spend limits reach live sessions; the auth server decides, and the relay doesn't know which it was.
   - **A 401 or 403** ends the session with `0x2` (Unauthorized) and reason `refused`.
   - **A grant that can't be enforced** ends it with reason `invalid`.

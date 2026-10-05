@@ -6,6 +6,7 @@ import (
 	"io/fs"
 	"os"
 
+	"github.com/qumo-dev/qumo/internal/auth"
 	"github.com/qumo-dev/qumo/internal/doctor"
 	"github.com/qumo-dev/qumo/internal/hls"
 	"github.com/qumo-dev/qumo/internal/ingest"
@@ -23,6 +24,7 @@ var (
 	runRTMP       = ingest.RunRTMP
 	runRTSP       = ingest.RunRTSP     // push server (ANNOUNCE/RECORD)
 	runRTSPPull   = ingest.RunRTSPPull // pull client (DESCRIBE/SETUP/PLAY, camera ingest)
+	runAuth       = auth.Run
 	runDoctor     = doctor.Run
 	runLoadgen    = loadgen.Run
 	runUpdate     = update.Run
@@ -81,6 +83,8 @@ func run(args []string) int {
 
 	var err error
 	switch cmd {
+	case "auth":
+		err = runAuth(cmdArgs)
 	case "hls":
 		err = runHLS(cmdArgs)
 	case "relay":
@@ -116,6 +120,7 @@ func printUsage() {
 	fmt.Fprintf(os.Stderr, "Usage: qumo <command>  (%s)\n", version.Short())
 	fmt.Fprintln(os.Stderr, "")
 	fmt.Fprintln(os.Stderr, "Commands:")
+	fmt.Fprintln(os.Stderr, "  auth       Run the auth server a relay asks (keygen, token: set it up)")
 	fmt.Fprintln(os.Stderr, "  hls        Start the HLS/DASH egress server")
 	fmt.Fprintln(os.Stderr, "  relay      Start the MoQ relay server (--role hub|edge; default flat)")
 	fmt.Fprintln(os.Stderr, "  rtmp       Start the RTMP ingest server")
