@@ -18,24 +18,34 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// leaseTransports are the two ways a client connects, each with a credential.
+var leaseTransports = map[string]struct {
+	url        func(addr string) string
+	nextProtos []string
+}{
+	"WebTransport": {url: func(addr string) string { return "https://" + addr + "/acme?jwt=h.p.s" }},
+	"native QUIC": {
+		url:        func(addr string) string { return nativeURL(addr) + "/acme?jwt=h.p.s" },
+		nextProtos: []string{moqt.NextProtoMOQ},
+	},
+}
+
+// assertEndedBy asserts that the relay closed sess with Unauthorized and
+// reason, which a client reads through moqt.Cause on either transport.
+func assertEndedBy(t *testing.T, sess *moqt.Session, reason string) {
+	t.Helper()
+	var sessErr *moqt.SessionError
+	require.ErrorAs(t, moqt.Cause(sess.Context()), &sessErr)
+	assert.Equal(t, moqt.UnauthorizedSessionErrorCode, sessErr.SessionErrorCode())
+	assert.Equal(t, reason, sessErr.ErrorMessage)
+	assert.True(t, sessErr.Remote)
+}
+
 // TestRelay_SessionEndsAtExpires verifies the relay closes a session at its
-// grant's expires and not before. On native QUIC the client also sees the
-// reason, "expired"; a WebTransport client session's context does not carry
-// the close reason, only that it ended.
+// grant's expires and not before, and that the client sees why: Unauthorized
+// with the reason "expired", over WebTransport as over native QUIC.
 func TestRelay_SessionEndsAtExpires(t *testing.T) {
-	tests := map[string]struct {
-		url        func(addr string) string
-		nextProtos []string
-		seesReason bool
-	}{
-		"WebTransport": {url: func(addr string) string { return "https://" + addr + "/acme?jwt=h.p.s" }},
-		"native QUIC": {
-			url:        func(addr string) string { return nativeURL(addr) + "/acme?jwt=h.p.s" },
-			nextProtos: []string{moqt.NextProtoMOQ},
-			seesReason: true,
-		},
-	}
-	for name, tt := range tests {
+	for name, tt := range leaseTransports {
 		t.Run(name, func(t *testing.T) {
 			// expires is in whole seconds, so the session lives 2 to 3 s.
 			expires := time.Now().Add(3 * time.Second).Unix()
@@ -49,9 +59,7 @@ func TestRelay_SessionEndsAtExpires(t *testing.T) {
 			require.Eventually(t, func() bool { return sess.Context().Err() != nil },
 				5*time.Second, 50*time.Millisecond, "the session outlived its expires")
 			assert.WithinDuration(t, time.Unix(expires, 0), time.Now(), time.Second)
-			if tt.seesReason {
-				assert.ErrorContains(t, context.Cause(sess.Context()), "expired")
-			}
+			assertEndedBy(t, sess, "expired")
 		})
 	}
 }
@@ -60,17 +68,21 @@ func TestRelay_SessionEndsAtExpires(t *testing.T) {
 // when the auth server refuses it at a revalidate, which is how key
 // revocation and project suspension reach sessions already running.
 func TestRelay_RevalidateRefusedEndsSession(t *testing.T) {
-	server := &fakeAuth{
-		body:          fmt.Sprintf(`{"subscribe":["acme/**"],"expires":%d,"revalidate":1}`, time.Now().Add(time.Hour).Unix()),
-		revalidateErr: auth.RefusedError{Status: http.StatusForbidden},
+	for name, tt := range leaseTransports {
+		t.Run(name, func(t *testing.T) {
+			server := &fakeAuth{
+				body:          fmt.Sprintf(`{"subscribe":["acme/**"],"expires":%d,"revalidate":1}`, time.Now().Add(time.Hour).Unix()),
+				revalidateErr: auth.RefusedError{Status: http.StatusForbidden},
+			}
+			addr, _ := startAuthRelay(t, server.authorize, nil)
+
+			sess := dialSession(t, tt.url(addr), tt.nextProtos)
+
+			require.Eventually(t, func() bool { return sess.Context().Err() != nil },
+				5*time.Second, 50*time.Millisecond, "a refused revalidate did not end the session")
+			assertEndedBy(t, sess, "refused")
+		})
 	}
-	addr, _ := startAuthRelay(t, server.authorize, nil)
-
-	sess := dialSession(t, nativeURL(addr)+"/acme?jwt=h.p.s", []string{moqt.NextProtoMOQ})
-
-	require.Eventually(t, func() bool { return sess.Context().Err() != nil },
-		5*time.Second, 50*time.Millisecond, "a refused revalidate did not end the session")
-	assert.ErrorContains(t, context.Cause(sess.Context()), "refused")
 }
 
 // TestRelay_SessionEndReport verifies the relay reports the end of a checked
