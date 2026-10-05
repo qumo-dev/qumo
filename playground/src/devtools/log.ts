@@ -140,6 +140,16 @@ export function severity(event: LogEvent): Severity {
 	}
 }
 
+/** How a group that did not play in full ended, in words. */
+export function describeProblem(problem: GroupProblem): string {
+	return GROUP_PROBLEMS[problem];
+}
+
+/** `ms` milliseconds of sound lost in one way, in words. */
+export function describeLoss(loss: AudioLoss, ms: number): string {
+	return AUDIO_LOSSES[loss](`${Math.round(ms)} ms`);
+}
+
 const GROUP_PROBLEMS: Record<GroupProblem, string> = {
 	skipped: "skipped (playback moved on before it finished arriving)",
 	aborted: "aborted (the sender gave it up)",

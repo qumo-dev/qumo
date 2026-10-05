@@ -1,3 +1,4 @@
+import { type AudioLoss, describeLoss, describeProblem } from "./log.ts";
 import type {
 	AudioBufferSample,
 	DelayRecord,
@@ -182,8 +183,13 @@ export interface Shape {
 	readonly y: number;
 	readonly height: number;
 	readonly style: ShapeStyle;
-	/** What the pointer shows on this shape; absent for decoration. */
+	/**
+	 * What the pointer shows on this shape, one line per line; absent for
+	 * decoration.
+	 */
 	readonly title?: string;
+	/** When the shape's start and end happened, on the recorder's clock. */
+	readonly at?: readonly [from: number, to: number];
 	/** The group this shape belongs to, for picking out a group's shapes together. */
 	readonly group?: number;
 }
@@ -257,7 +263,8 @@ export function trackLane(
 			y: Math.min(bar.lane, MAX_LANES - 1) * (LANE_HEIGHT + LANE_GAP),
 			height: LANE_HEIGHT,
 			style: group.state,
-			title: describeGroup(group, now),
+			title: describeGroup(group, now, renders),
+			at: [bar.start, bar.end],
 			group: group.sequence,
 		});
 		if (!renders) continue;
@@ -269,8 +276,8 @@ export function trackLane(
 				y: renderTop,
 				height: RENDER_HEIGHT,
 				style: "rendered",
-				title:
-					`Group ${group.sequence}: ${group.rendered} of ${group.frames} frames rendered`,
+				title: `Group ${group.sequence}: played\n${played(group.rendered, group.frames)}`,
+				at: [group.renderStart, group.renderEnd ?? group.renderStart],
 				group: group.sequence,
 			});
 		} else if (group.state !== "receiving" && group.state !== "stopped") {
@@ -282,7 +289,10 @@ export function trackLane(
 				y: renderTop,
 				height: RENDER_HEIGHT,
 				style: "unrendered",
-				title: `Group ${group.sequence}: not rendered (${group.state})`,
+				title: `Group ${group.sequence}: arrived, but none of it was played\nIt ${
+					STATE_WORDS[group.state]
+				}`,
+				at: [group.arrived, group.arrived],
 				group: group.sequence,
 			});
 		}
@@ -295,14 +305,15 @@ export function trackLane(
 			if (total(col.states) === 0) return;
 			const x0 = i / COLUMN_COUNT;
 			const x1 = (i + 1) / COLUMN_COUNT;
-			const title = describeColumn(col);
+			const title = describeColumn(col, renders);
+			const at = [col.start, col.start + span / COLUMN_COUNT] as const;
 
 			let top = COLUMN_HEIGHT;
 			for (const state of STACK_ORDER) {
 				if (col.states[state] === 0) continue;
 				const height = col.states[state] / tallest * COLUMN_HEIGHT;
 				top -= height;
-				shapes.push({ x0, x1, y: top, height, style: state, title });
+				shapes.push({ x0, x1, y: top, height, style: state, title, at });
 			}
 			if (renders && col.frames > 0 && col.rendered > 0) {
 				const height = col.rendered / col.frames * RENDER_HEIGHT;
@@ -313,6 +324,7 @@ export function trackLane(
 					height,
 					style: "rendered",
 					title,
+					at,
 				});
 			}
 		});
@@ -351,7 +363,10 @@ export function audioLane(
 		style: d.kind,
 		title: d.kind === "arrival"
 			? `No audio arrived for ${Math.round(d.duration)} ms`
-			: `Audio waited ${Math.round(d.duration)} ms in the player for an earlier group`,
+			: `Audio that had arrived waited ${
+				Math.round(d.duration)
+			} ms\nThe player was holding it for an earlier group`,
+		at: [d.at - d.duration, d.at],
 	}));
 
 	return {
@@ -366,6 +381,7 @@ export function audioLane(
 				height: AUDIO_HEIGHT,
 				style: "glitch",
 				title: describeGlitch(glitch),
+				at: [glitch.at, glitch.at],
 			})),
 			...strips,
 		],
@@ -408,6 +424,7 @@ export function withBands(lane: Lane, bands: readonly Band[], now: number, span:
 		height: lane.height,
 		style: band.style,
 		title: band.title,
+		at: [band.from, band.to],
 	}));
 	const behind = shapes.filter((shape) => shape.style !== "marker");
 	const over = shapes.filter((shape) => shape.style === "marker");
@@ -445,33 +462,70 @@ function total(states: Readonly<Record<GroupState, number>>): number {
 	return STACK_ORDER.reduce((sum, state) => sum + states[state], 0);
 }
 
-function describeGroup(group: GroupRecord, now: number): string {
-	const duration = Math.round((group.ended ?? now) - group.arrived);
-	return [
-		`Group ${group.sequence}: ${group.state}`,
-		`${group.frames} frames, ${formatBytes(group.bytes)}`,
-		`${duration} ms on the wire`,
-		`${group.rendered} rendered`,
-	].join(" · ");
+// How a group stands, as the rest of a sentence about it.
+const STATE_WORDS: Record<GroupState, string> = {
+	complete: "was received in full",
+	receiving: "is still arriving",
+	skipped: `was ${describeProblem("skipped")}`,
+	aborted: `was ${describeProblem("aborted")}`,
+	late: describeProblem("late"),
+	stopped: "was cut short (playback was stopped)",
+};
+
+// The same, short, for counting groups: "196 received in full, 4 skipped".
+const COUNT_WORDS: Record<GroupState, string> = {
+	complete: "received in full",
+	receiving: "still arriving",
+	skipped: "skipped",
+	aborted: "aborted",
+	late: "too late",
+	stopped: "cut short",
+};
+
+function describeGroup(group: GroupRecord, now: number, renders: boolean): string {
+	const lines = [
+		`Group ${group.sequence} ${STATE_WORDS[group.state]}`,
+		`${plural(group.frames, "frame")}, ${formatBytes(group.bytes)}, arriving over ${
+			formatSpan((group.ended ?? now) - group.arrived)
+		}`,
+	];
+	if (renders) lines.push(played(group.rendered, group.frames));
+	return lines.join("\n");
 }
 
-function describeColumn(col: Column): string {
+function describeColumn(col: Column, renders: boolean): string {
 	const parts = STACK_ORDER.filter((state) => col.states[state] > 0)
-		.map((state) => `${col.states[state]} ${state}`);
-	return `${total(col.states)} groups: ${
-		parts.join(", ")
-	} · ${col.rendered} of ${col.frames} frames rendered`;
+		.map((state) => `${col.states[state]} ${COUNT_WORDS[state]}`);
+	const lines = [
+		`${plural(total(col.states), "group")} arrived in this second`,
+		parts.join(", "),
+	];
+	if (renders) lines.push(played(col.rendered, col.frames));
+	return lines.join("\n");
 }
+
+// How much of `frames` frames was played, as a sentence.
+function played(rendered: number, frames: number): string {
+	if (frames === 0) return "No frames in it yet";
+	if (rendered === 0) return `None of its ${plural(frames, "frame")} has been played`;
+	if (rendered >= frames) return `All ${plural(frames, "frame")} played`;
+	return `${rendered} of ${plural(frames, "frame")} played`;
+}
+
+function plural(count: number, noun: string): string {
+	return `${count} ${noun}${count === 1 ? "" : "s"}`;
+}
+
+function formatSpan(ms: number): string {
+	return ms >= 1000 ? `${(ms / 1000).toFixed(1)} s` : `${Math.round(ms)} ms`;
+}
+
+const LOSSES: readonly AudioLoss[] = ["starved", "gaps", "late", "overflowed", "trimmed"];
 
 function describeGlitch(glitch: AudioGlitch): string {
-	const causes: [number, string][] = [
-		[glitch.starved, "silent: the buffer ran dry"],
-		[glitch.gaps, "silent: audio was missing"],
-		[glitch.late, "dropped: arrived too late"],
-		[glitch.overflowed, "dropped: more arrived than fits"],
-		[glitch.trimmed, "skipped: buffered but never needed"],
-	];
-	return causes.filter(([ms]) => ms >= GLITCH_MS)
-		.map(([ms, cause]) => `${Math.round(ms)} ms ${cause}`)
-		.join(" · ");
+	return [
+		"Sound was lost here",
+		...LOSSES.filter((loss) => glitch[loss] >= GLITCH_MS)
+			.map((loss) => describeLoss(loss, glitch[loss])),
+	].join("\n");
 }

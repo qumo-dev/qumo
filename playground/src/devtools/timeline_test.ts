@@ -250,7 +250,11 @@ Deno.test("trackLane stacks a busy track into columns", () => {
 	assertEquals(lane.shapes.map((s) => s.style), ["track", "complete", "skipped", "rendered"]);
 	assertEquals(
 		lane.shapes[1]?.title,
-		"200 groups: 196 complete, 4 skipped · 196 of 200 frames rendered",
+		[
+			"200 groups arrived in this second",
+			"196 received in full, 4 skipped",
+			"196 of 200 frames played",
+		].join("\n"),
 	);
 });
 
@@ -265,7 +269,7 @@ Deno.test("audioLane graphs how low the buffer got and marks each glitch", () =>
 
 	assertEquals(lane.level, [[0, 12], [0.5, 0], [1, 18]]);
 	assertEquals(lane.shapes.map((s) => [s.style, s.x0, s.title]), [
-		["glitch", 1, "30 ms silent: the buffer ran dry"],
+		["glitch", 1, "Sound was lost here\n30 ms of silence while the audio buffer refilled"],
 	]);
 });
 
@@ -319,9 +323,17 @@ Deno.test("withBands draws a stop behind the lane's marks and the marker over th
 	);
 
 	assertEquals(banded.shapes, [
-		{ x0: 0, x1: 0.25, y: 0, height: 20, style: "stall", title: undefined },
+		{ x0: 0, x1: 0.25, y: 0, height: 20, style: "stall", title: undefined, at: [0, 1000] },
 		{ x0: 0.5, x1: 0.6, y: 0, height: 10, style: "complete" },
-		{ x0: 0.25, x1: 0.5, y: 0, height: 20, style: "marker", title: undefined },
+		{
+			x0: 0.25,
+			x1: 0.5,
+			y: 0,
+			height: 20,
+			style: "marker",
+			title: undefined,
+			at: [1000, 2000],
+		},
 	]);
 });
 

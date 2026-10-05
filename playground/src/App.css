@@ -819,9 +819,41 @@ input[type="range"] {
 	font-size: 0.8rem;
 }
 
+.devtools-plot-box {
+	position: relative;
+}
+
 .devtools-plot {
 	display: block;
 	width: 100%;
+}
+
+/* What the pointer is on, under the lane so it does not cover the mark. */
+.devtools-tip {
+	position: absolute;
+	top: calc(100% + 4px);
+	z-index: 1;
+	display: grid;
+	gap: 2px;
+	width: max-content;
+	max-width: 300px;
+	padding: 6px 10px;
+	transform: translateX(-50%);
+	background: var(--surface-2);
+	border: 1px solid var(--border);
+	border-radius: var(--radius-sm);
+	box-shadow: var(--shadow-md);
+	font-size: 0.8rem;
+	pointer-events: none;
+}
+
+.devtools-tip time {
+	color: var(--text-muted);
+	font-variant-numeric: tabular-nums;
+}
+
+.devtools-tip span:first-of-type {
+	font-weight: 600;
 }
 
 .devtools-axis > div {

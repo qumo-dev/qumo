@@ -34,6 +34,7 @@ import {
 	clockRates,
 	formatBytes,
 	type Lane,
+	type Shape,
 	shapeAt,
 	type ShapeStyle,
 	stallBands,
@@ -763,7 +764,9 @@ function Timeline(props: {
 					)}
 				</For>
 			</dl>
-			<p class="devtools-hint">Point at a mark on the timeline for what it is.</p>
+			<p class="devtools-hint">
+				Point at a mark on the timeline for what it is and when it happened.
+			</p>
 		</div>
 	);
 }
@@ -781,6 +784,8 @@ function LaneCanvas(props: {
 	let canvas: HTMLCanvasElement | undefined;
 	const [width, setWidth] = createSignal(0);
 	const lane = createMemo(() => props.lane);
+	// What the pointer is on, and where along the lane, in pixels.
+	const [tip, setTip] = createSignal<{ shape: Shape; x: number }>();
 	let pointed: number | undefined;
 
 	onMount(() => {
@@ -804,14 +809,15 @@ function LaneCanvas(props: {
 			box.width,
 			POINTER_WIDTH,
 		);
-		canvas.title = hit?.title ?? "";
+		const x = Math.min(Math.max(event.clientX - box.left, TIP_REACH), box.width - TIP_REACH);
+		setTip(hit && { shape: hit, x });
 		if (hit?.group === pointed) return;
 		pointed = hit?.group;
 		props.onFocus?.(pointed);
 	};
 
 	const leave = () => {
-		if (canvas) canvas.title = "";
+		setTip(undefined);
 		if (pointed === undefined) return;
 		pointed = undefined;
 		props.onFocus?.(undefined);
@@ -820,17 +826,31 @@ function LaneCanvas(props: {
 	return (
 		<div class="devtools-lane">
 			<span class="devtools-lane-name">{props.name}</span>
-			<canvas
-				ref={(element) => {
-					canvas = element;
-				}}
-				class="devtools-plot"
-				role="img"
-				aria-label={props.label}
-				style={{ height: `${lane().height}px` }}
-				onMouseMove={point}
-				onMouseLeave={leave}
-			/>
+			<div class="devtools-plot-box">
+				<canvas
+					ref={(element) => {
+						canvas = element;
+					}}
+					class="devtools-plot"
+					role="img"
+					aria-label={props.label}
+					style={{ height: `${lane().height}px` }}
+					onMouseMove={point}
+					onMouseLeave={leave}
+				/>
+				<Show when={tip()}>
+					{(shown) => (
+						<div class="devtools-tip" role="tooltip" style={{ left: `${shown().x}px` }}>
+							<Show when={shown().shape.at}>
+								{(at) => <time>{clockSpan(at()[0], at()[1])}</time>}
+							</Show>
+							<For each={(shown().shape.title ?? "").split("\n")}>
+								{(line) => <span>{line}</span>}
+							</For>
+						</div>
+					)}
+				</Show>
+			</div>
 		</div>
 	);
 }
@@ -840,6 +860,17 @@ const CLOCK_SECONDS = "HH:MM:SS".length;
 // A log item's stretch is widened by this on the timeline, so a single moment
 // is a band wide enough to see.
 const MARK_PAD_MS = 250;
+
+// Half the width the pointer's tip may take, in pixels: it is kept this far
+// from either end of the lane so it does not hang over the edge.
+const TIP_REACH = 150;
+
+// A stretch on the recorder's clock as clock times; one time if it is a moment.
+function clockSpan(from: number, to: number): string {
+	const start = clockTime(wallClock(from));
+	const end = clockTime(wallClock(to));
+	return start === end ? start : `${start} to ${end}`;
+}
 
 // Narrowest a mark is drawn, in pixels, so a 20 ms group is still visible.
 const MIN_WIDTH = 2;
