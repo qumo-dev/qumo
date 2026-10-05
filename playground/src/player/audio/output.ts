@@ -36,7 +36,7 @@ export interface AudioBufferStats {
 	gaps: number;
 	/** Audio that arrived after its time had been played. */
 	late: number;
-	/** Audio given up because more arrived than the buffer holds. */
+	/** Audio given up, once playing, because more arrived than the buffer holds. */
 	overflowed: number;
 	/** Audio skipped because the buffer was holding more than it ever used. */
 	trimmed: number;

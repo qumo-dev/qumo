@@ -10,8 +10,9 @@ import {
 	type Lane,
 	packLanes,
 	shapeAt,
-	stallLane,
+	stallBands,
 	trackLane,
+	withBands,
 } from "./timeline.ts";
 
 function group(
@@ -304,15 +305,41 @@ Deno.test("shapeAt gives a mark with no width something to point at", () => {
 	assertEquals(hit?.style, "unrendered");
 });
 
-Deno.test("stallLane draws each stop of the main thread as long as it lasted", () => {
-	const lane = stallLane([{ at: 1000, duration: 200 }, { at: 3000, duration: 400 }], 4000, 4000);
+Deno.test("withBands draws a stop behind the lane's marks and the marker over them", () => {
+	const lane = {
+		height: 20,
+		shapes: [{ x0: 0.5, x1: 0.6, y: 0, height: 10, style: "complete" }],
+	} as const;
 
-	assertEquals(drawn(lane), ["track@0-100/0", "stall@20-25/0", "stall@65-75/0"]);
-	assertEquals(lane.shapes[1]?.title, "Main thread stopped for 200 ms");
+	const banded = withBands(
+		lane,
+		[{ from: 1000, to: 2000, style: "marker" }, { from: 0, to: 1000, style: "stall" }],
+		4000,
+		4000,
+	);
+
+	assertEquals(banded.shapes, [
+		{ x0: 0, x1: 0.25, y: 0, height: 20, style: "stall", title: undefined },
+		{ x0: 0.5, x1: 0.6, y: 0, height: 10, style: "complete" },
+		{ x0: 0.25, x1: 0.5, y: 0, height: 20, style: "marker", title: undefined },
+	]);
 });
 
-Deno.test("stallLane leaves out stops that ended before the span", () => {
-	const lane = stallLane([{ at: 500, duration: 100 }], 4000, 2000);
+Deno.test("withBands leaves out a band that ended before the span and cuts one that began before it", () => {
+	const lane = { height: 10, shapes: [] };
 
-	assertEquals(drawn(lane), ["track@0-100/0"]);
+	const banded = withBands(
+		lane,
+		[{ from: 0, to: 1000, style: "stall" }, { from: 1500, to: 3000, style: "stall" }],
+		4000,
+		2000,
+	);
+
+	assertEquals(banded.shapes.map((s) => [s.x0, s.x1]), [[0, 0.5]]);
+});
+
+Deno.test("stallBands turns each stop of the main thread into the stretch it lasted", () => {
+	assertEquals(stallBands([{ at: 1000, duration: 200 }]), [
+		{ from: 800, to: 1000, style: "stall", title: "The page stopped for 200 ms" },
+	]);
 });

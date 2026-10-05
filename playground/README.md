@@ -177,14 +177,21 @@ browser-trusted for every origin; in the self-signed fallback a single
 - **Stats overlay:** while a stream is active, both boards show a live readout
   over the preview — resolution, fps, media bitrate, and (publish) encoder
   queue / (subscribe) RTT and decoder queue. Updated once per second.
-- **DevTools:** a collapsible panel under the boards, closed until opened. It
-  shows the media bitrate, a table of tracks (bitrate, frame rate, latest
+- **DevTools:** a collapsible panel under the boards, closed until opened. A
+  status line at the top says whether playback is normal or breaking up, and
+  why. Under it are the playback delay, arrival jitter and audio buffer level
+  (the other counters are under "More figures"; every label explains itself
+  when pointed at), a table of tracks (bitrate, frame rate, latest
   group, and how many groups ended complete, skipped, aborted or late), and a
   timeline of each track's groups: when each arrived, how it ended, and below
-  that what was rendered. An "audio out" lane shows the audio buffer's level
-  and marks each moment sound was lost. Pick 60, 10 or 2 seconds of history (at 2 seconds
+  that what was played. An "audio buffer" lane shows the audio buffer's level
+  and marks each moment sound was lost; a stop of the page is a band across
+  every lane. Pick 60, 10 or 2 seconds of history (at 2 seconds
   every audio group is its own mark), pause it, and point at a group to pick
-  out its received bar and its rendered span together.
+  out its received bar and its rendered span together. A log at the bottom
+  lists what happened in words, with the time of each, and can be copied as
+  text. Trouble that came together is one item headed by its likely cause and
+  what it cost; pointing at an item marks its time on the timeline.
 
 ## Develop
 

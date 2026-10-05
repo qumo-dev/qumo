@@ -198,6 +198,70 @@ Deno.test("the audio buffer's history starts again with each playback", () => {
 	assertEquals(recorder.audio(), []);
 });
 
+Deno.test("logs a group the player skipped, and not one that completed", () => {
+	const { recorder } = recording();
+	recorder.groupArrived("audio", 7);
+	recorder.groupArrived("audio", 8);
+
+	recorder.groupEnded("audio", 7, "complete");
+	recorder.groupEnded("audio", 8, "skipped");
+
+	assertEquals(recorder.log().map((e) => e.event), [
+		{ kind: "group", track: "audio", problem: "skipped", first: 8, last: 8, count: 1 },
+	]);
+});
+
+Deno.test("logs what the audio buffer lost between two reports", () => {
+	const { recorder, clock } = recording();
+	recorder.audioBuffer(QUIET);
+	clock.now = 100;
+
+	recorder.audioBuffer({ ...QUIET, underruns: QUIET.underruns + 1, gaps: QUIET.gaps + 21 });
+
+	assertEquals(recorder.log().map((e) => e.event), [
+		{ kind: "ranDry", count: 1 },
+		{ kind: "audio", loss: "gaps", ms: 21 },
+	]);
+});
+
+Deno.test("logs the delay when it is set and when it steps, not as it creeps", () => {
+	const { recorder } = recording();
+	const timing = { delay: 100, audioJitter: 0, videoJitter: 0 };
+
+	recorder.playbackTiming(timing);
+	recorder.playbackTiming({ ...timing, delay: 102 });
+	recorder.playbackTiming({ ...timing, delay: 150 });
+
+	assertEquals(recorder.log().map((e) => e.event), [
+		{ kind: "delay", from: undefined, to: 100 },
+		{ kind: "delay", from: 100, to: 150 },
+	]);
+});
+
+Deno.test("logs a stop of the main thread and a stretch with nothing arriving", () => {
+	const { recorder, clock } = recording();
+	recorder.groupArrived("audio", 0);
+	recorder.frameArrived("audio", 0, 0, 100);
+	clock.now = 300;
+
+	recorder.frameArrived("audio", 0, 21_000, 100);
+	clock.now = 5000;
+	recorder.mainThreadStalled(80);
+
+	assertEquals(recorder.log().map((e) => e.event), [
+		{ kind: "arrival", track: "audio", ms: 300, count: 1 },
+		{ kind: "stall", ms: 80, count: 1 },
+	]);
+});
+
+Deno.test("does not log a frame that only waited for an earlier group", () => {
+	const { recorder } = recording();
+
+	recorder.frameHeld("audio", 85);
+
+	assertEquals(recorder.log(), []);
+});
+
 Deno.test("records a frame held back in the player", () => {
 	const { recorder, clock } = recording();
 	clock.now = 700;

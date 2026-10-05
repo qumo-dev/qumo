@@ -9,6 +9,17 @@ import {
 	Show,
 } from "solid-js";
 import type { Session } from "@qumo/moq";
+import {
+	clockTime,
+	describe,
+	formatLog,
+	type Health,
+	health,
+	type Incident,
+	incidents,
+	type LogEntry,
+	type LogItem,
+} from "./log.ts";
 import type {
 	AudioBufferRecord,
 	AudioBufferSample,
@@ -25,8 +36,9 @@ import {
 	type Lane,
 	shapeAt,
 	type ShapeStyle,
-	stallLane,
+	stallBands,
 	trackLane,
+	withBands,
 } from "./timeline.ts";
 
 const STORAGE_KEY = "qumo.devtools.open";
@@ -68,6 +80,14 @@ interface Reading {
 	readonly stalls: readonly StallRecord[];
 	/** Recent stretches in which a track's media was not moving, oldest first. */
 	readonly delays: readonly DelayRecord[];
+	/** What has happened, in words, oldest first. */
+	readonly log: readonly LogEntry[];
+}
+
+// A stretch of time on the recorder's clock.
+interface Stretch {
+	readonly from: number;
+	readonly to: number;
 }
 
 // The group the pointer is on, so its received bar and its rendered span can
@@ -92,11 +112,14 @@ export function DevtoolsPanel(props: { recorder: Recorder; session: Promise<Sess
 		timing: undefined,
 		stalls: [],
 		delays: [],
+		log: [],
 	});
 	const [session, setSession] = createSignal<SessionReading>();
 	const [span, setSpan] = createSignal<Span>(60_000);
 	const [paused, setPaused] = createSignal(false);
 	const [focus, setFocus] = createSignal<Focus>();
+	// The log item the pointer is on, so its time can be found on the timeline.
+	const [marked, setMarked] = createSignal<Stretch>();
 
 	// What the rates are measured against. Kept across redraw-rate changes so
 	// zooming or resuming does not blank them.
@@ -128,6 +151,7 @@ export function DevtoolsPanel(props: { recorder: Recorder; session: Promise<Sess
 				timing: props.recorder.timing(),
 				stalls: props.recorder.stalls(),
 				delays: props.recorder.delays(),
+				log: props.recorder.log(),
 			};
 			if (due) baseline = next;
 			setReading(next);
@@ -175,21 +199,25 @@ export function DevtoolsPanel(props: { recorder: Recorder; session: Promise<Sess
 
 			<Show when={open()}>
 				<div class="devtools-body">
-					<SessionRow
-						reading={session()}
+					<StatusLine health={health(reading().log, reading().now)} />
+					<KeyFigures
 						media={mediaRate(reading())}
 						timing={reading().timing}
-						stalls={reading().stalls}
+						audio={reading().audio.at(-1)}
 					/>
-					<Show when={reading().audio.at(-1)}>
-						{(audio) => (
-							<AudioBufferRow
-								audio={audio()}
-								history={reading().audio}
-								delays={reading().delays}
-							/>
-						)}
-					</Show>
+					<details class="devtools-more">
+						<summary>More figures</summary>
+						<SessionRow reading={session()} stalls={reading().stalls} />
+						<Show when={reading().audio.at(-1)}>
+							{(audio) => (
+								<AudioBufferRow
+									audio={audio()}
+									history={reading().audio}
+									delays={reading().delays}
+								/>
+							)}
+						</Show>
+					</details>
 
 					<Show
 						when={reading().tracks.length > 0}
@@ -209,8 +237,10 @@ export function DevtoolsPanel(props: { recorder: Recorder; session: Promise<Sess
 							onPause={() => setPaused((p) => !p)}
 							focus={focus()}
 							onFocus={setFocus}
+							marked={marked()}
 						/>
 					</Show>
+					<EventList log={reading().log} onMark={setMarked} />
 				</div>
 			</Show>
 		</section>
@@ -222,36 +252,12 @@ export function DevtoolsPanel(props: { recorder: Recorder; session: Promise<Sess
 // is flowing". The media rate comes from the recorder, so it is always there.
 function SessionRow(props: {
 	reading: SessionReading | undefined;
-	media: number;
-	timing: PlaybackTimingRecord | undefined;
 	stalls: readonly StallRecord[];
 }) {
 	const longest = () => props.stalls.reduce((most, s) => Math.max(most, s.duration), 0);
 
 	return (
 		<dl class="devtools-session">
-			<div>
-				<dt>Media received</dt>
-				<dd>{formatBitrate(props.media)}</dd>
-			</div>
-			<Show when={props.timing}>
-				{(timing) => (
-					<>
-						<div title="How far playback trails the live edge. It grows to cover the arrival jitter, and when the audio buffer runs dry.">
-							<dt>Playback delay</dt>
-							<dd>{Math.round(timing().delay)} ms</dd>
-						</div>
-						<div title="How late media has recently arrived against its fastest arrival. The delay has to cover this.">
-							<dt>Arrival jitter</dt>
-							<dd>
-								{`audio ${Math.round(timing().audioJitter)} ms, video ${
-									Math.round(timing().videoJitter)
-								} ms`}
-							</dd>
-						</div>
-					</>
-				)}
-			</Show>
 			<div title="How often, and for how long at most, the page's main thread stopped in the last minute. Media passes through it, so a stop longer than the audio buffer is a gap in the sound.">
 				<dt>Main thread stops</dt>
 				<dd>
@@ -261,13 +267,13 @@ function SessionRow(props: {
 				</dd>
 			</div>
 			<Show when={(props.reading?.rtt ?? 0) > 0}>
-				<div>
+				<div title="The connection's round-trip time, as the browser measures it.">
 					<dt>RTT</dt>
 					<dd>{Math.round(props.reading?.rtt ?? 0)} ms</dd>
 				</div>
 			</Show>
 			<Show when={(props.reading?.bytesReceived ?? 0) > 0}>
-				<div>
+				<div title="Everything received on the connection since it opened, and the rate over the last second. More than the media: it includes the protocol's own messages.">
 					<dt>Connection received</dt>
 					<dd>
 						{formatBytes(props.reading?.bytesReceived ?? 0)}
@@ -278,7 +284,7 @@ function SessionRow(props: {
 				</div>
 			</Show>
 			<Show when={(props.reading?.bytesSent ?? 0) > 0}>
-				<div>
+				<div title="Everything sent on the connection since it opened, and the rate over the last second.">
 					<dt>Connection sent</dt>
 					<dd>
 						{formatBytes(props.reading?.bytesSent ?? 0)}
@@ -289,7 +295,7 @@ function SessionRow(props: {
 				</div>
 			</Show>
 			<Show when={(props.reading?.estimatedBitrate ?? 0) > 0}>
-				<div>
+				<div title="How fast the browser thinks this connection can send.">
 					<dt>Estimated send rate</dt>
 					<dd>{formatBitrate(props.reading?.estimatedBitrate ?? 0)}</dd>
 				</div>
@@ -319,42 +325,33 @@ function AudioBufferRow(props: {
 
 	return (
 		<dl class="devtools-session">
-			<div>
-				<dt>Audio buffer</dt>
-				<dd>
-					{`${Math.round(props.audio.buffered)} ms of ${
-						Math.round(props.audio.latency)
-					} ms`}
-					{props.audio.stalled ? " (refilling)" : ""}
-				</dd>
-			</div>
-			<div>
+			<div title="Times the audio buffer emptied since the page loaded, and the silence played while it refilled. Each one is a break in the sound.">
 				<dt>Ran dry</dt>
 				<dd>
 					{`${props.audio.underruns}× (${Math.round(props.audio.starved)} ms silent)`}
 				</dd>
 			</div>
-			<div>
+			<div title="Silence played, since the page loaded, where a frame of audio never arrived.">
 				<dt>Missing</dt>
 				<dd>{Math.round(props.audio.gaps)} ms</dd>
 			</div>
-			<div>
+			<div title="Audio, since the page loaded, that arrived after its time had already been played.">
 				<dt>Too late</dt>
 				<dd>{Math.round(props.audio.late)} ms</dd>
 			</div>
-			<div>
+			<div title="Audio dropped, since the page loaded, because more arrived at once than the buffer holds. A backlog passed over as playback starts is not counted.">
 				<dt>Overflowed</dt>
 				<dd>{Math.round(props.audio.overflowed)} ms</dd>
 			</div>
-			<div>
+			<div title="Audio skipped, since the page loaded, to bring the delay back down after the buffer had held more than it needed.">
 				<dt>Trimmed</dt>
 				<dd>{Math.round(props.audio.trimmed)} ms</dd>
 			</div>
-			<div title="Stretches of 120 ms or more in which no audio came off the transport.">
+			<div title="Stretches of 120 ms or more, in the last minute, in which no audio came off the connection.">
 				<dt>Not arriving</dt>
 				<dd>{delayed("arrival")}</dd>
 			</div>
-			<div title="Times audio that had arrived waited 20 ms or more in the player for an earlier group.">
+			<div title="Times, in the last minute, audio that had arrived waited 20 ms or more in the player for an earlier group.">
 				<dt>Held back</dt>
 				<dd>{delayed("held")}</dd>
 			</div>
@@ -368,6 +365,198 @@ function AudioBufferRow(props: {
 			</Show>
 		</dl>
 	);
+}
+
+// How playback is going, in one line. The rest of the panel is the evidence.
+function StatusLine(props: { health: Health }) {
+	return (
+		<p class={`devtools-status is-${props.health.level}`} role="status">
+			<span class="devtools-status-mark" aria-hidden="true" />
+			{props.health.summary}
+		</p>
+	);
+}
+
+// The few figures that say whether playback is healthy. Everything else is
+// under "More figures".
+function KeyFigures(props: {
+	media: number;
+	timing: PlaybackTimingRecord | undefined;
+	audio: AudioBufferRecord | undefined;
+}) {
+	return (
+		<dl class="devtools-session">
+			<div title="Media arriving on the played tracks, over the last second.">
+				<dt>Media received</dt>
+				<dd>{formatBitrate(props.media)}</dd>
+			</div>
+			<Show when={props.timing}>
+				{(timing) => (
+					<>
+						<div title="How far playback trails the live edge. About 100 to 200 ms is usual. It grows to cover the arrival jitter, and when the audio buffer runs dry; it stops at 500 ms.">
+							<dt>Playback delay</dt>
+							<dd>{Math.round(timing().delay)} ms</dd>
+						</div>
+						<div title="How unevenly media arrives: how late it has recently come against its fastest arrival. The delay has to cover this.">
+							<dt>Arrival jitter</dt>
+							<dd>
+								{`audio ${Math.round(timing().audioJitter)} ms, video ${
+									Math.round(timing().videoJitter)
+								} ms`}
+							</dd>
+						</div>
+					</>
+				)}
+			</Show>
+			<Show when={props.audio}>
+				{(audio) => (
+					<div title="Audio waiting to be played, against the delay it aims to hold. It should stay near the aim; at zero the sound breaks.">
+						<dt>Audio buffer</dt>
+						<dd>
+							{`${Math.round(audio().buffered)} ms of ${
+								Math.round(audio().latency)
+							} ms`}
+							{audio().stalled ? " (refilling)" : ""}
+						</dd>
+					</div>
+				)}
+			</Show>
+		</dl>
+	);
+}
+
+// How many items the list shows. Copy takes every entry.
+const LOG_SHOWN = 100;
+// How long the Copy button says it has copied.
+const COPIED_MS = 1500;
+
+// What happened, in words. Trouble that came together is one incident, headed
+// by its likely cause and what it cost, so it can be read after the fact; its
+// entries are underneath. Pointing at an item marks its time on the timeline.
+function EventList(props: {
+	log: readonly LogEntry[];
+	onMark: (stretch: Stretch | undefined) => void;
+}) {
+	const [copied, setCopied] = createSignal(false);
+	// Which incidents are open, by when they began: the list is redrawn with
+	// every reading, and an incident should stay as the reader left it.
+	const [opened, setOpened] = createSignal<ReadonlySet<number>>(new Set());
+	// Newest first, so what just happened is at the top without scrolling.
+	const shown = createMemo(() => incidents(props.log).slice(-LOG_SHOWN).reverse());
+
+	const copy = () => {
+		navigator.clipboard.writeText(formatLog(props.log, wallClock)).then(() => {
+			setCopied(true);
+			setTimeout(() => setCopied(false), COPIED_MS);
+			// reason: without clipboard access the log can still be selected and copied by hand.
+		}, () => {});
+	};
+
+	const setOpen = (at: number, open: boolean) => {
+		if (opened().has(at) === open) return;
+		const next = new Set(opened());
+		if (open) next.add(at);
+		else next.delete(at);
+		setOpened(next);
+	};
+
+	return (
+		<section class="devtools-log">
+			<div class="devtools-controls">
+				<h3 class="devtools-heading">Log</h3>
+				<button
+					type="button"
+					class="copy-btn"
+					disabled={props.log.length === 0}
+					onClick={copy}
+				>
+					{copied() ? "Copied" : "Copy"}
+				</button>
+			</div>
+			<Show
+				when={shown().length > 0}
+				fallback={<p class="devtools-empty">Nothing has happened yet.</p>}
+			>
+				<ol class="devtools-events" reversed onMouseLeave={() => props.onMark(undefined)}>
+					<Index each={shown()}>
+						{(item) => (
+							<Show
+								when={incidentOf(item())}
+								fallback={
+									<li
+										class="is-info"
+										onMouseEnter={() => props.onMark(stretchOf(item()))}
+									>
+										<EventLine entry={entryOf(item())} />
+									</li>
+								}
+							>
+								{(incident) => (
+									<li
+										class={`is-${incident().level}`}
+										onMouseEnter={() => props.onMark(stretchOf(item()))}
+									>
+										<details
+											open={opened().has(incident().at)}
+											onToggle={(event) =>
+												setOpen(incident().at, event.currentTarget.open)}
+										>
+											<summary>
+												<time>{clockTime(wallClock(incident().at))}</time>
+												<span>{incident().headline}</span>
+											</summary>
+											<ol>
+												<Index each={incident().entries}>
+													{(entry) => (
+														<li>
+															<EventLine entry={entry()} />
+														</li>
+													)}
+												</Index>
+											</ol>
+										</details>
+									</li>
+								)}
+							</Show>
+						)}
+					</Index>
+				</ol>
+			</Show>
+		</section>
+	);
+}
+
+function EventLine(props: { entry: LogEntry | undefined }) {
+	return (
+		<Show when={props.entry}>
+			{(entry) => (
+				<>
+					<time>{clockTime(wallClock(entry().at))}</time>
+					<span>{describe(entry().event)}</span>
+				</>
+			)}
+		</Show>
+	);
+}
+
+function incidentOf(item: LogItem): Incident | undefined {
+	return item.kind === "incident" ? item.incident : undefined;
+}
+
+function entryOf(item: LogItem): LogEntry | undefined {
+	return item.kind === "entry" ? item.entry : undefined;
+}
+
+function stretchOf(item: LogItem): Stretch {
+	return item.kind === "incident"
+		? { from: item.incident.at, to: item.incident.until }
+		: { from: item.entry.at, to: item.entry.until };
+}
+
+// The recorder's times are on the page's monotonic clock; this is the same
+// moment in milliseconds since the epoch.
+function wallClock(at: number): number {
+	return Date.now() - (performance.now() - at);
 }
 
 // Bits per second of media received across the played tracks over the last
@@ -387,13 +576,34 @@ function TrackTable(props: { reading: Reading }) {
 				<thead>
 					<tr>
 						<th scope="col">Track</th>
-						<th scope="col">Bitrate</th>
-						<th scope="col">Frames/s</th>
-						<th scope="col">Latest group</th>
-						<th scope="col">Complete</th>
-						<th scope="col">Skipped</th>
-						<th scope="col">Aborted</th>
-						<th scope="col">Late</th>
+						<th scope="col" title="Media received on the track over the last second.">
+							Bitrate
+						</th>
+						<th scope="col" title="Frames received on the track over the last second.">
+							Frames/s
+						</th>
+						<th
+							scope="col"
+							title="The highest group number seen. A group is a run of frames that can be played without the ones before it: for video, a keyframe and what follows."
+						>
+							Latest group
+						</th>
+						<th scope="col" title="Groups received in full, since the page loaded.">
+							Complete
+						</th>
+						<th
+							scope="col"
+							title="Groups the player moved on from before they had finished arriving."
+						>
+							Skipped
+						</th>
+						<th scope="col" title="Groups the sender gave up part-way.">Aborted</th>
+						<th
+							scope="col"
+							title="Groups that arrived after playback had already passed them."
+						>
+							Late
+						</th>
 					</tr>
 				</thead>
 				<tbody>
@@ -428,7 +638,24 @@ function Timeline(props: {
 	onPause: () => void;
 	focus: Focus | undefined;
 	onFocus: (focus: Focus | undefined) => void;
+	marked: Stretch | undefined;
 }) {
+	// What is picked out across every lane: the page's stops, during which
+	// nothing in any lane moves, and the log item being pointed at.
+	const bands = createMemo(() => {
+		const stops = stallBands(props.reading.stalls);
+		const mark = props.marked;
+		if (mark === undefined) return stops;
+		return [...stops, {
+			from: mark.from - MARK_PAD_MS,
+			to: mark.to + MARK_PAD_MS,
+			style: "marker" as const,
+		}];
+	});
+	const banded = (lane: Lane) => withBands(lane, bands(), props.reading.now, props.span);
+	const axisTime = (ago: number) =>
+		clockTime(wallClock(props.reading.now - ago)).slice(0, CLOCK_SECONDS);
+
 	// The marks are painted in the page's theme tokens. Reading them with each
 	// new reading keeps the canvases right when the theme changes.
 	const palette = createMemo(() => {
@@ -472,12 +699,12 @@ function Timeline(props: {
 					<LaneCanvas
 						name={track().name}
 						label={`${track().name}: groups over the last ${props.span / 1000} seconds`}
-						lane={trackLane(
+						lane={banded(trackLane(
 							track().groups,
 							track().renders,
 							props.reading.now,
 							props.span,
-						)}
+						))}
 						palette={palette()}
 						focus={props.focus?.track === track().name
 							? props.focus.sequence
@@ -491,50 +718,50 @@ function Timeline(props: {
 
 			<Show when={props.reading.audio.length > 0}>
 				<LaneCanvas
-					name="audio out"
-					label={`Audio output: buffer level and glitches over the last ${
+					name="audio buffer"
+					label={`Audio buffer: its level, and where sound was lost, over the last ${
 						props.span / 1000
 					} seconds`}
-					lane={audioLane(
+					lane={banded(audioLane(
 						props.reading.audio,
 						props.reading.delays,
 						props.reading.now,
 						props.span,
-					)}
+					))}
 					palette={palette()}
 					focus={undefined}
 				/>
 			</Show>
 
-			<LaneCanvas
-				name="main thread"
-				label={`Main thread: ${props.reading.stalls.length} stops over the last ${
-					props.span / 1000
-				} seconds`}
-				lane={stallLane(props.reading.stalls, props.reading.now, props.span)}
-				palette={palette()}
-				focus={undefined}
-			/>
-
 			<div class="devtools-lane devtools-axis" aria-hidden="true">
 				<span />
 				<div>
-					<span>−{props.span / 1000} s</span>
-					<span>−{props.span / 2000} s</span>
-					<span>now</span>
+					<span>{axisTime(props.span)}</span>
+					<span>{axisTime(props.span / 2)}</span>
+					<span>{axisTime(0)} (now)</span>
 				</div>
 			</div>
 
-			<ul class="devtools-legend">
+			<dl class="devtools-legend">
 				<For each={LEGEND}>
-					{([style, label]) => (
-						<li>
-							<span class={`devtools-swatch is-${style}`} />
-							{label}
-						</li>
+					{(row) => (
+						<div>
+							<dt title={row.about}>{row.lane}</dt>
+							<dd>
+								<For each={row.marks}>
+									{([style, label, meaning]) => (
+										<span class="devtools-legend-mark" title={meaning}>
+											<span class={`devtools-swatch is-${style}`} />
+											{label}
+										</span>
+									)}
+								</For>
+							</dd>
+						</div>
 					)}
 				</For>
-			</ul>
+			</dl>
+			<p class="devtools-hint">Point at a mark on the timeline for what it is.</p>
 		</div>
 	);
 }
@@ -606,6 +833,12 @@ function LaneCanvas(props: {
 	);
 }
 
+// The log's times are shown to the millisecond; the axis to the second.
+const CLOCK_SECONDS = "HH:MM:SS".length;
+// A log item's stretch is widened by this on the timeline, so a single moment
+// is a band wide enough to see.
+const MARK_PAD_MS = 250;
+
 // Narrowest a mark is drawn, in pixels, so a 20 ms group is still visible.
 const MIN_WIDTH = 2;
 // Shaved off each mark so neighbours are separated by the surface, not a stroke.
@@ -640,40 +873,99 @@ function readPalette(): Palette {
 	};
 }
 
-// How each kind of mark is painted. The states that mean something went wrong
-// differ in more than colour: skipped is hatched and late is an outline, so
-// they can be told apart without telling the colours apart.
+// How each kind of mark is painted. No two marks that share a row look alike,
+// and they differ in more than colour (solid, hatched, outlined; a block, a
+// tick, a strip), so they can be told apart without telling the colours apart.
+// Across rows a colour keeps its meaning: grey is as expected, blue is in
+// progress, green was played, amber is the player or the page getting in the
+// way, red is something lost.
 const PAINT: Record<
 	ShapeStyle,
 	{ color: keyof Palette; alpha: number; fill: "solid" | "hatch" | "outline" }
 > = {
 	complete: { color: "complete", alpha: 0.55, fill: "solid" },
 	receiving: { color: "receiving", alpha: 1, fill: "solid" },
-	stopped: { color: "stopped", alpha: 0.25, fill: "solid" },
+	stopped: { color: "stopped", alpha: 0.7, fill: "hatch" },
 	skipped: { color: "skipped", alpha: 1, fill: "hatch" },
 	aborted: { color: "aborted", alpha: 1, fill: "solid" },
 	late: { color: "late", alpha: 1, fill: "outline" },
 	rendered: { color: "rendered", alpha: 1, fill: "solid" },
 	unrendered: { color: "skipped", alpha: 1, fill: "solid" },
 	glitch: { color: "aborted", alpha: 1, fill: "solid" },
-	stall: { color: "skipped", alpha: 1, fill: "solid" },
+	stall: { color: "skipped", alpha: 0.45, fill: "solid" },
+	marker: { color: "receiving", alpha: 0.45, fill: "solid" },
 	arrival: { color: "late", alpha: 1, fill: "solid" },
-	held: { color: "skipped", alpha: 1, fill: "hatch" },
+	held: { color: "skipped", alpha: 1, fill: "solid" },
 	track: { color: "surface", alpha: 1, fill: "solid" },
 };
 
-const LEGEND: readonly (readonly [string, string])[] = [
-	["complete", "Complete"],
-	["receiving", "Receiving"],
-	["stopped", "Stopped"],
-	["skipped", "Skipped"],
-	["aborted", "Aborted"],
-	["late", "Late"],
-	["rendered", "Rendered"],
-	["glitch", "Audio glitch"],
-	["stall", "Main thread stopped"],
-	["arrival", "No audio arriving"],
-	["held", "Audio held back"],
+type LegendMark = readonly [style: string, label: string, meaning: string];
+
+// The legend, a row for each kind of row on the timeline, so a mark is looked
+// up where it is seen and only has to differ from the others on its own row.
+const LEGEND: readonly {
+	readonly lane: string;
+	readonly about: string;
+	readonly marks: readonly LegendMark[];
+}[] = [
+	{
+		lane: "Arrived",
+		about: "The upper row of each track: when each group arrived, and how it ended.",
+		marks: [
+			["complete", "Received", "A group that arrived in full."],
+			["receiving", "Receiving", "A group still arriving."],
+			[
+				"skipped",
+				"Skipped",
+				"A group the player moved on from before it had finished arriving.",
+			],
+			["aborted", "Aborted", "A group the sender gave up part-way."],
+			["late", "Late", "A group that arrived after playback had already passed it."],
+			["stopped", "Stopped", "A group cut short because playback was stopped."],
+		],
+	},
+	{
+		lane: "Played",
+		about: "The lower row of each track: when its frames were played.",
+		marks: [
+			[
+				"rendered",
+				"Played",
+				"When a group's frames were drawn or handed to the audio output.",
+			],
+			["unrendered", "Not played", "Frames that arrived and were never drawn or played."],
+		],
+	},
+	{
+		lane: "audio buffer",
+		about: "The audio waiting to be played, and what interrupted it.",
+		marks: [
+			["level", "Buffer level", "How much audio was waiting to be played."],
+			["glitch", "Sound lost", "The audio output lost sound or gave some up here."],
+			[
+				"arrival",
+				"Nothing arriving",
+				"No audio came off the connection for 120 ms or more.",
+			],
+			[
+				"held",
+				"Waited",
+				"Audio that had arrived waited 20 ms or more in the player for an earlier group.",
+			],
+		],
+	},
+	{
+		lane: "Every row",
+		about: "Bands drawn across all the rows.",
+		marks: [
+			[
+				"stall",
+				"Page stopped",
+				"The page's main thread stopped. All media passes through it, so nothing in any row moved.",
+			],
+			["marker", "In the log", "The time of the log item the pointer is on."],
+		],
+	},
 ];
 
 function drawLane(

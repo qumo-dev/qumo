@@ -1,7 +1,7 @@
 // The playground compiles against browser libs; tests run under Deno.
 /// <reference lib="deno.ns" />
 import { assertStrictEquals } from "@std/assert";
-import { delayFor, delayForJitter, raisedDelay, Sync, waitBudget } from "./sync.ts";
+import { delayFor, delayForJitter, raisedDelay, steppedDelay, Sync, waitBudget } from "./sync.ts";
 
 const MS = 1000; // timestamps are microseconds
 
@@ -46,6 +46,32 @@ Deno.test("a raised delay moves what is due later by the difference", () => {
 	sync.delay = 150;
 
 	assertStrictEquals(sync.due(40 * MS), 1190);
+});
+
+Deno.test("steppedDelay", async (t) => {
+	const cases = [
+		{ name: "stays put when less is wanted", current: 150, wanted: 120, want: 150 },
+		{
+			name: "stays put for a raise too small to be worth it",
+			current: 100,
+			wanted: 109,
+			want: 100,
+		},
+		{
+			name: "goes a little past a raise that is worth it",
+			current: 100,
+			wanted: 110,
+			want: 120,
+		},
+		{ name: "stops at the ceiling", current: 400, wanted: 495, want: 500 },
+		{ name: "does not come down from past the ceiling", current: 600, wanted: 700, want: 600 },
+	] as const;
+
+	for (const c of cases) {
+		await t.step(c.name, () => {
+			assertStrictEquals(steppedDelay(c.current, c.wanted), c.want);
+		});
+	}
 });
 
 Deno.test("delayForJitter", async (t) => {

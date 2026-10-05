@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **The playground's DevTools panel says how playback is going, and keeps a log in words (`playground/src/devtools/log.ts`).**
+  - **Status:** one line at the top, "Playing normally" or what is wrong and why, from the last ten seconds.
+  - **Log:** what happened, each with its time: the delay set or raised, groups skipped, aborted or late, sound lost and why, the page stopping, nothing arriving. It can be copied as text.
+  - **Incidents:** trouble that came together is one item, headed by its likely cause and what it cost ("Nothing arrived for up to 463 ms: the audio buffer ran dry, 400 ms of sound lost, delay raised to 500 ms"), with its entries underneath. It reads the same a minute later as it did live.
+  - **Log and timeline are tied together:** pointing at a log item marks its time across the timeline, and the timeline's axis shows clock times, the same ones the log uses.
+  - **Readable without the source:** the playback delay, arrival jitter and audio buffer level stay in view and the other counters move under "More figures"; every label, table heading and legend entry explains itself when pointed at.
+  - **A legend that can be looked up:** one row per kind of timeline row, named as on the timeline, and no two marks on a row look alike. "Stopped" is hatched grey and "Waited" a solid strip; they used to look like "Received" and "Skipped".
+  - **Three lanes, not four:** the page's stops are bands across every lane, since nothing in any of them moves meanwhile, in place of a "main thread" lane that was nearly always empty. "audio out" is named "audio buffer", which is what it shows.
+
+### Fixed
+
+- **The playground's viewer no longer drops seconds of audio as it starts.** The audio output is started before the audio track is subscribed to: starting it can take seconds the first time, and everything that arrived meanwhile was handed over at once and thrown away. A backlog passed over before anything has played is no longer counted as lost audio, and silence before playback begins is no longer counted as starvation.
+- **Raising the playback delay interrupts the sound less often.** Every raise holds playback while the buffer fills, and the delay used to creep up a few milliseconds at a time, a short silence each. It now moves only for a raise of 10 ms or more, and then a little further.
+
 ### Changed
 
 - **The playground's viewer decodes and plays by itself; it no longer uses `@okdaichi/av-nodes` (`playground/src/player/audio`, `playground/src/player/video`).** The publish board still does.

@@ -171,6 +171,7 @@ export type ShapeStyle =
 	| "stall"
 	| "arrival"
 	| "held"
+	| "marker"
 	| "track";
 
 export interface Shape {
@@ -371,30 +372,46 @@ export function audioLane(
 	};
 }
 
-const STALL_HEIGHT = 8;
+/** A stretch of time picked out across every lane. */
+export interface Band {
+	/** Start and end, in milliseconds on the recorder's clock. */
+	readonly from: number;
+	readonly to: number;
+	readonly style: "stall" | "marker";
+	readonly title?: string;
+}
+
+/** The main thread's stops as bands: while the page is stopped, nothing in any lane moves. */
+export function stallBands(stalls: readonly StallRecord[]): Band[] {
+	return stalls.map((s) => ({
+		from: s.at - s.duration,
+		to: s.at,
+		style: "stall",
+		title: `The page stopped for ${Math.round(s.duration)} ms`,
+	}));
+}
 
 /**
- * The main thread's lane: a mark as long as each stop. A stop under an audio
- * glitch is a glitch the page caused; a glitch with nothing above it came from
- * the stream.
+ * `lane` with the bands in view, each the lane's full height: the page's stops
+ * behind its marks, since they explain them, and the marker over them, since
+ * it has to be found. A band that has partly scrolled out is cut at the edge.
  */
-export function stallLane(stalls: readonly StallRecord[], now: number, span: number): Lane {
+export function withBands(lane: Lane, bands: readonly Band[], now: number, span: number): Lane {
 	const from = now - span;
 	const x = (time: number) => Math.min(1, Math.max(0, (time - from) / span));
-	return {
-		height: STALL_HEIGHT,
-		shapes: [
-			{ x0: 0, x1: 1, y: 0, height: STALL_HEIGHT, style: "track" },
-			...stalls.filter((s) => s.at >= from).map((s): Shape => ({
-				x0: x(s.at - s.duration),
-				x1: x(s.at),
-				y: 0,
-				height: STALL_HEIGHT,
-				style: "stall",
-				title: `Main thread stopped for ${Math.round(s.duration)} ms`,
-			})),
-		],
-	};
+	const shapes = bands.filter((band) => band.to >= from && band.from <= now).map((
+		band,
+	): Shape => ({
+		x0: x(band.from),
+		x1: x(band.to),
+		y: 0,
+		height: lane.height,
+		style: band.style,
+		title: band.title,
+	}));
+	const behind = shapes.filter((shape) => shape.style !== "marker");
+	const over = shapes.filter((shape) => shape.style === "marker");
+	return { ...lane, shapes: [...behind, ...lane.shapes, ...over] };
 }
 
 /** The topmost shape with something to say under a point, if any. */

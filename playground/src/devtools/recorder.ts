@@ -5,6 +5,8 @@
 // A publisher records the tracks it sends through the same calls: a group
 // "arrives" when it is opened and a frame "arrives" when it is written.
 
+import { EventLog, type LogEntry } from "./log.ts";
+
 /** Where a group stands: still being read, or how its reading ended. */
 export type GroupState = "receiving" | "complete" | "aborted" | "skipped" | "late" | "stopped";
 
@@ -132,8 +134,18 @@ interface Track {
 	arrivedAt: number | undefined;
 }
 
+// A rise in one of the audio buffer's counters smaller than this, between two
+// reports, is rounding.
+const LOSS_MS = 0.5;
+const DELAY_STEP_MS = 5;
+const AUDIO_LOSSES = ["starved", "gaps", "late", "overflowed", "trimmed"] as const;
+
 export class Recorder {
 	readonly #now: () => number;
+	readonly #log = new EventLog();
+	// What the log last saw, to tell a change from a repeat.
+	#loggedAudio: AudioBufferRecord | undefined;
+	#loggedDelay: number | undefined;
 	readonly #tracks = new Map<string, Track>();
 	// The jitter buffer's reports within the retention window, oldest first.
 	#audioBuffer: AudioBufferSample[] = [];
@@ -198,6 +210,16 @@ export class Recorder {
 		// group that already failed) changes nothing.
 		if (record !== undefined && record.state !== "receiving") return;
 		t.ended[outcome]++;
+		if (outcome === "skipped" || outcome === "aborted" || outcome === "late") {
+			this.#log.add(this.#now(), {
+				kind: "group",
+				track,
+				problem: outcome,
+				first: group,
+				last: group,
+				count: 1,
+			});
+		}
 
 		if (record === undefined) return;
 		record.state = outcome;
@@ -224,6 +246,8 @@ export class Recorder {
 	 * and the buffer's clocks would be measured across the stop.
 	 */
 	playbackStarted(): void {
+		this.#log.add(this.#now(), { kind: "started" });
+		this.#loggedDelay = undefined;
 		this.#audioBuffer.length = 0;
 		for (const track of this.#tracks.values()) {
 			if (track.renders) track.arrivedAt = undefined;
@@ -232,6 +256,7 @@ export class Recorder {
 
 	audioBuffer(stats: AudioBufferRecord): void {
 		const at = this.#now();
+		this.#logAudio(at, stats);
 		const history = this.#audioBuffer;
 		history.push({ ...stats, at });
 		// Reports come several times a second, so prune as they arrive.
@@ -251,7 +276,38 @@ export class Recorder {
 		return this.#delays.slice();
 	}
 
+	// The counters only grow while one output plays, so each rise since the
+	// last report is sound that was lost or given up in between.
+	#logAudio(at: number, stats: AudioBufferRecord): void {
+		const before = this.#loggedAudio;
+		this.#loggedAudio = stats;
+		if (before === undefined) return;
+
+		if (stats.underruns > before.underruns) {
+			this.#log.add(at, { kind: "ranDry", count: stats.underruns - before.underruns });
+		}
+		for (const loss of AUDIO_LOSSES) {
+			const ms = stats[loss] - before[loss];
+			if (ms >= LOSS_MS) this.#log.add(at, { kind: "audio", loss, ms });
+		}
+	}
+
+	/** What has happened, in words, oldest first. */
+	log(): LogEntry[] {
+		return this.#log.entries();
+	}
+
 	#delayed(delay: DelayRecord): void {
+		// A frame held for an earlier group is the player working as meant;
+		// nothing arriving at all is worth a line.
+		if (delay.kind === "arrival") {
+			this.#log.add(delay.at, {
+				kind: "arrival",
+				track: delay.track,
+				ms: delay.duration,
+				count: 1,
+			});
+		}
 		this.#delays.push(delay);
 		const cutoff = delay.at - WINDOW_MS;
 		let stale = 0;
@@ -262,6 +318,7 @@ export class Recorder {
 	/** Records that the main thread has just come back from a stop of `duration` milliseconds. */
 	mainThreadStalled(duration: number): void {
 		const at = this.#now();
+		this.#log.add(at, { kind: "stall", ms: duration, count: 1 });
 		this.#stalls.push({ at, duration });
 		const cutoff = at - WINDOW_MS;
 		let stale = 0;
@@ -275,6 +332,17 @@ export class Recorder {
 	}
 
 	playbackTiming(timing: PlaybackTimingRecord): void {
+		// The delay creeps up by fractions as the jitter estimate does; only a
+		// step someone could notice is worth a line.
+		const logged = this.#loggedDelay;
+		if (logged === undefined || Math.abs(timing.delay - logged) >= DELAY_STEP_MS) {
+			this.#log.add(this.#now(), {
+				kind: "delay",
+				from: this.#loggedDelay,
+				to: timing.delay,
+			});
+			this.#loggedDelay = timing.delay;
+		}
 		this.#timing = timing;
 	}
 
