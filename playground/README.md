@@ -177,12 +177,20 @@ browser-trusted for every origin; in the self-signed fallback a single
 - **Stats overlay:** while a stream is active, both boards show a live readout
   over the preview — resolution, fps, media bitrate, and (publish) encoder
   queue / (subscribe) RTT and decoder queue. Updated once per second.
+- **DevTools:** a collapsible panel under the boards, closed until opened. It
+  shows the media bitrate, a table of tracks (bitrate, frame rate, latest
+  group, and how many groups ended complete, skipped, aborted or late), and a
+  timeline of each track's groups: when each arrived, how it ended, and below
+  that what was rendered. Pick 60, 10 or 2 seconds of history (at 2 seconds
+  every audio group is its own mark), pause it, and point at a group to pick
+  out its received bar and its rendered span together.
 
 ## Develop
 
 ```bash
 deno task dev      # Vite dev server
-deno task build    # type-check (deno check) + production build to dist/
+deno task test     # unit tests (deno test)
+deno task build    # unit tests + type-check (deno check) + production build to dist/
 deno task preview  # preview the production build
 
 Install deps first with `deno install` (the project is Deno-managed —
@@ -204,6 +212,10 @@ src/
   scenarios.ts         Scenario registry (ports, modes, push commands)
   cert.ts              VITE_CERT_HASH parsing + transport options
   publish/             Publish board: capture → encode → MoQ
-  subscribe/           Subscribe board: MoQ → decode → canvas
+  subscribe/           Subscribe board: start/stop, controls, stats overlay
+  player/              Viewer: MoQ → decode → canvas, with no UI of its own.
+                       Reads tracks through its own small interface
+                       (source.ts); moq_source.ts adapts @qumo/moq to it
+  devtools/            DevTools panel and the recorder that feeds it
   user/                Random-name helper (seeds the Echo default path)
 ```

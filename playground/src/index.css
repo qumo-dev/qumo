@@ -34,6 +34,15 @@
 	--warn: #ffb02e;
 	--err: #ff5a5f;
 
+	/* Group states (DevTools timeline). They follow the theme tokens above. */
+	--group-complete: var(--text-muted);
+	--group-receiving: var(--accent);
+	--group-skipped: var(--warn);
+	--group-aborted: var(--err);
+	--group-late: var(--text-muted);
+	--group-stopped: var(--text-muted);
+	--group-rendered: var(--ok);
+
 	/* Elevation */
 	--shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.24);
 	--shadow-md: 0 4px 12px rgba(0, 0, 0, 0.3);
