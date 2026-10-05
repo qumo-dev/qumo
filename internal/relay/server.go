@@ -66,6 +66,10 @@ type Server struct {
 	sampler       *statsSampler
 	samplerCancel context.CancelFunc
 
+	// sessionEnds counts checked sessions whose end report hasn't been sent
+	// yet (waitSessionEnds).
+	sessionEnds pendingCount
+
 	// connectedMu guards connected, which tracks peer addresses already dialing
 	// or connected to prevent duplicate maintainPeer goroutines.
 	connectedMu sync.Mutex
@@ -132,7 +136,9 @@ func (s *Server) HandleWebTransport(w http.ResponseWriter, r *http.Request) {
 	// anyway, no session ran and none will report its end: report it here,
 	// so the auth server can close the session it counted at connect.
 	if g != nil && !a.served.Load() {
+		s.sessionEnds.add()
 		s.reportEnd(r.Context(), req, moqt.SessionStats{}, endUpgradeFailed, 0)
+		s.sessionEnds.done()
 	}
 }
 
@@ -287,6 +293,62 @@ func (s *Server) Close() error {
 	}
 
 	return nil
+}
+
+// waitSessionEnds waits, at most d, for the end reports of sessions that
+// have closed but not yet reported: a session reports its end after its
+// connection closes, which can be after Shutdown returns. The relay command
+// calls it before the verifier's last usage send, so those ends are in it.
+func (s *Server) waitSessionEnds(d time.Duration) {
+	if !s.sessionEnds.wait(d) {
+		slog.Warn("relay: some sessions hadn't reported their end at shutdown", "waited", d)
+	}
+}
+
+// pendingCount counts work in flight and lets a caller wait for it to reach
+// zero. Unlike a sync.WaitGroup, add may race with wait: a session that
+// starts while shutdown waits is simply counted.
+type pendingCount struct {
+	mu   sync.Mutex
+	n    int
+	zero chan struct{} // closed when n returns to zero
+}
+
+func (c *pendingCount) add() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.n == 0 {
+		c.zero = make(chan struct{})
+	}
+	c.n++
+}
+
+func (c *pendingCount) done() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.n--
+	if c.n == 0 {
+		close(c.zero)
+	}
+}
+
+// wait reports whether the count reached zero within d.
+func (c *pendingCount) wait(d time.Duration) bool {
+	c.mu.Lock()
+	if c.n == 0 {
+		c.mu.Unlock()
+		return true
+	}
+	zero := c.zero
+	c.mu.Unlock()
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-zero:
+		return true
+	case <-timer.C:
+		return false
+	}
 }
 
 func (s *Server) Shutdown(ctx context.Context) error {
@@ -532,8 +594,11 @@ func (s *Server) serveSession(sess *moqt.Session) {
 		a.served.Store(true)
 		start := time.Now()
 		// Registered first so that it runs last: after the close below,
-		// with the session's final byte totals and close cause.
+		// with the session's final byte totals and close cause. Counted in
+		// sessionEnds, since it can run after Shutdown has returned.
+		s.sessionEnds.add()
 		defer func() {
+			defer s.sessionEnds.done()
 			s.reportEnd(sess.Context(), a.req, sess.Stats(), endReason(l, context.Cause(sess.Context())), time.Since(start))
 		}()
 	}

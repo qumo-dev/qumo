@@ -1,9 +1,12 @@
-// Package auth is both sides of the relay's session auth.
+// Package auth is the relay's session auth, in both of its forms, and the
+// auth server.
 //
-// The relay's side (Client) asks an auth server whether a session may start:
-// it forwards what it knows about the session and enforces the grant it gets
-// back. It never parses a credential: keys, projects and quotas are the auth
-// server's business.
+// The relay either verifies a session's credential itself (Verifier): it
+// checks the token in the connect URL against a key set it loads from a file
+// or a URL, re-checks live sessions against it, and can report each
+// session's usage. Or it asks an auth server (Client): it forwards what it
+// knows about the session and enforces the grant it gets back, without
+// parsing the credential.
 //
 // The server's side (Handler, and the "qumo auth" command in Run) is a
 // ready-to-run auth server: it verifies the capability token a client
@@ -99,27 +102,45 @@ type Client struct {
 // NewClient returns a Client for the auth server at rawURL: https, or http
 // only on a loopback host, since the request carries the client's credential.
 func NewClient(rawURL string) (*Client, error) {
+	if err := checkURL(rawURL); err != nil {
+		return nil, err
+	}
 	u, err := url.Parse(rawURL)
 	if err != nil {
 		return nil, err
+	}
+	return &Client{endpoint: u, client: noRedirectClient(timeout)}, nil
+}
+
+// checkURL accepts an https URL, or http only on a loopback host: what the
+// relay sends to it (a client's credential, or a bearer token) must not
+// cross a network in the clear.
+func checkURL(rawURL string) error {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return err
 	}
 	switch u.Scheme {
 	case "https":
 	case "http":
 		host := u.Hostname()
 		if ip := net.ParseIP(host); host != "localhost" && (ip == nil || !ip.IsLoopback()) {
-			return nil, fmt.Errorf("http is allowed only for a loopback host, got %q", host)
+			return fmt.Errorf("http is allowed only for a loopback host, got %q", host)
 		}
 	default:
-		return nil, fmt.Errorf("want an https URL, got scheme %q", u.Scheme)
+		return fmt.Errorf("want an https URL, got scheme %q", u.Scheme)
 	}
-	return &Client{endpoint: u, client: &http.Client{
-		Timeout: timeout,
-		// Never follow a redirect: a 307 or 308 would re-POST the client's
-		// credential to wherever Location points, past the scheme and
-		// loopback checks above. A 3xx is answered like any non-2xx: refused.
+	return nil
+}
+
+// noRedirectClient returns an HTTP client that never follows a redirect: a
+// 307 or 308 would resend the request, and what it carries, to wherever
+// Location points, past checkURL. A 3xx is answered like any other non-2xx.
+func noRedirectClient(timeout time.Duration) *http.Client {
+	return &http.Client{
+		Timeout:       timeout,
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
-	}}, nil
+	}
 }
 
 // Request is one session event sent to the auth server.
