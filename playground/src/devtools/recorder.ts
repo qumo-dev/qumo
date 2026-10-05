@@ -44,7 +44,74 @@ export interface TrackRecord {
 	readonly latest: number | undefined;
 }
 
+/** The audio jitter buffer's state, in milliseconds unless noted. */
+export interface AudioBufferRecord {
+	readonly buffered: number;
+	/** The least that was buffered since the previous report. */
+	readonly low: number;
+	/** How much is held before playing, and refilled to after running dry. */
+	readonly latency: number;
+	readonly stalled: boolean;
+	/** Times playback ran dry (a count). */
+	readonly underruns: number;
+	/** Silence played because playback was held back or had run dry. */
+	readonly starved: number;
+	/** Silence played where audio was missing. */
+	readonly gaps: number;
+	/** Audio that arrived after its time had been played. */
+	readonly late: number;
+	/** Audio given up because more arrived than the buffer holds. */
+	readonly overflowed: number;
+	/** Audio skipped because the buffer was holding more than it ever used. */
+	readonly trimmed: number;
+	/** How far the media has been written to, on its own timeline. */
+	readonly written: number;
+	/** How much the output has played, audio or silence. */
+	readonly played: number;
+}
+
+/** The playback delay and what it is sized from, in milliseconds. */
+export interface PlaybackTimingRecord {
+	/** How far playback trails the live edge. */
+	readonly delay: number;
+	/** How late audio has recently arrived against its fastest arrival. */
+	readonly audioJitter: number;
+	/** The same for video. */
+	readonly videoJitter: number;
+}
+
+/** A stretch during which a track's media was not moving. */
+export interface DelayRecord {
+	readonly track: string;
+	/**
+	 * "arrival": nothing of the track came off the transport.
+	 * "held": frames that had arrived waited in the player for an earlier group.
+	 */
+	readonly kind: "arrival" | "held";
+	/** When it ended, in milliseconds on the recorder's clock. */
+	readonly at: number;
+	/** How long it lasted, in milliseconds. */
+	readonly duration: number;
+}
+
+/** A stretch during which the page's main thread did nothing else. */
+export interface StallRecord {
+	/** When it ended, in milliseconds on the recorder's clock. */
+	readonly at: number;
+	/** How long it lasted, in milliseconds. */
+	readonly duration: number;
+}
+
+/** The audio jitter buffer's state at one moment. */
+export interface AudioBufferSample extends AudioBufferRecord {
+	/** When it was reported, in milliseconds on the recorder's clock. */
+	readonly at: number;
+}
+
 const WINDOW_MS = 60_000;
+// A track with nothing arriving for this long has a gap worth showing. Audio
+// from RTMP and RTSP arrives about 80 ms at a time, which is not a gap.
+const ARRIVAL_GAP_MS = 120;
 // Backstop for a track whose groups never end.
 const MAX_GROUPS = 4096;
 
@@ -61,11 +128,18 @@ interface Track {
 	bytes: number;
 	rendered: number;
 	latest: number | undefined;
+	// When the track's latest frame arrived.
+	arrivedAt: number | undefined;
 }
 
 export class Recorder {
 	readonly #now: () => number;
 	readonly #tracks = new Map<string, Track>();
+	// The jitter buffer's reports within the retention window, oldest first.
+	#audioBuffer: AudioBufferSample[] = [];
+	#timing: PlaybackTimingRecord | undefined;
+	#stalls: StallRecord[] = [];
+	#delays: DelayRecord[] = [];
 
 	/** @param now - A monotonic clock in milliseconds. */
 	constructor(now: () => number = () => performance.now()) {
@@ -103,6 +177,12 @@ export class Recorder {
 		t.frames++;
 		t.bytes += bytes;
 
+		const now = this.#now();
+		if (t.arrivedAt !== undefined && now - t.arrivedAt >= ARRIVAL_GAP_MS) {
+			this.#delayed({ track, kind: "arrival", at: now, duration: now - t.arrivedAt });
+		}
+		t.arrivedAt = now;
+
 		const record = t.bySequence.get(group);
 		if (record === undefined) return;
 		record.frames++;
@@ -135,6 +215,80 @@ export class Recorder {
 		record.rendered++;
 		record.renderStart ??= now;
 		record.renderEnd = now;
+	}
+
+	/**
+	 * A new stretch of playback is starting. The audio buffer's history and
+	 * the time since each track's last frame belong to the one before: carried
+	 * over, the time spent stopped would read as media that did not arrive,
+	 * and the buffer's clocks would be measured across the stop.
+	 */
+	playbackStarted(): void {
+		this.#audioBuffer.length = 0;
+		for (const track of this.#tracks.values()) {
+			if (track.renders) track.arrivedAt = undefined;
+		}
+	}
+
+	audioBuffer(stats: AudioBufferRecord): void {
+		const at = this.#now();
+		const history = this.#audioBuffer;
+		history.push({ ...stats, at });
+		// Reports come several times a second, so prune as they arrive.
+		const cutoff = at - WINDOW_MS;
+		let stale = 0;
+		while ((history[stale]?.at ?? Infinity) < cutoff) stale++;
+		if (stale > 0) history.splice(0, stale);
+	}
+
+	/** Records that a frame of `track` was handed on after waiting `held` milliseconds in the player. */
+	frameHeld(track: string, held: number): void {
+		this.#delayed({ track, kind: "held", at: this.#now(), duration: held });
+	}
+
+	/** The recent stretches in which a track's media was not moving, oldest first. */
+	delays(): DelayRecord[] {
+		return this.#delays.slice();
+	}
+
+	#delayed(delay: DelayRecord): void {
+		this.#delays.push(delay);
+		const cutoff = delay.at - WINDOW_MS;
+		let stale = 0;
+		while ((this.#delays[stale]?.at ?? Infinity) < cutoff) stale++;
+		if (stale > 0) this.#delays.splice(0, stale);
+	}
+
+	/** Records that the main thread has just come back from a stop of `duration` milliseconds. */
+	mainThreadStalled(duration: number): void {
+		const at = this.#now();
+		this.#stalls.push({ at, duration });
+		const cutoff = at - WINDOW_MS;
+		let stale = 0;
+		while ((this.#stalls[stale]?.at ?? Infinity) < cutoff) stale++;
+		if (stale > 0) this.#stalls.splice(0, stale);
+	}
+
+	/** The main thread's recent stops, oldest first. */
+	stalls(): StallRecord[] {
+		return this.#stalls.slice();
+	}
+
+	playbackTiming(timing: PlaybackTimingRecord): void {
+		this.#timing = timing;
+	}
+
+	/** The latest playback delay and arrival jitter; undefined until playback has begun. */
+	timing(): PlaybackTimingRecord | undefined {
+		return this.#timing;
+	}
+
+	/**
+	 * The audio jitter buffer's reports within the retention window, oldest
+	 * first. Empty until audio has played.
+	 */
+	audio(): AudioBufferSample[] {
+		return this.#audioBuffer.slice();
 	}
 
 	/** The tracks seen so far, in the order they first appeared. */
@@ -170,6 +324,7 @@ export class Recorder {
 				bytes: 0,
 				rendered: 0,
 				latest: undefined,
+				arrivedAt: undefined,
 			};
 			this.#tracks.set(name, t);
 		}

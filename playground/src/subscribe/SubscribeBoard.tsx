@@ -123,6 +123,7 @@ export function SubscribeBoard(
 	onCleanup(() => {
 		document.removeEventListener("fullscreenchange", onFullscreenChange);
 		stopSubscribing();
+		viewer?.close();
 	});
 
 	const startSubscribing = async () => {

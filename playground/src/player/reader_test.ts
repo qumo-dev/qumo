@@ -168,7 +168,7 @@ class Harness {
 	 */
 	playhead: number | undefined;
 
-	constructor(time: FakeTime, maxAge?: number) {
+	constructor(time: FakeTime, maxAge?: number | (() => number)) {
 		this.#time = time;
 		const done = new Promise<void>((resolve) => {
 			this.#stop = resolve;
@@ -439,6 +439,28 @@ Deno.test("waits maxAge for a missing group before moving past it", async () => 
 	await h.stop();
 });
 
+Deno.test("follows a wait that is lengthened while it is running", async () => {
+	using time = new FakeTime();
+	let maxAge = 100;
+	const h = new Harness(time, () => maxAge);
+	h.track.deliver(
+		new FakeGroup(0).frame(0).end(),
+		new FakeGroup(2).frame(500),
+	);
+	await h.take(1);
+	const next = h.next();
+
+	const pendingAtFirst = await h.pendingAfter(next, 50);
+	maxAge = 200;
+	const pendingPastTheOldWait = await h.pendingAfter(next, 149);
+	const pendingAtTheNewWait = await h.pendingAfter(next, 1);
+
+	assertStrictEquals(pendingAtFirst, true);
+	assertStrictEquals(pendingPastTheOldWait, true);
+	assertStrictEquals(pendingAtTheNewWait, false);
+	await h.stop();
+});
+
 Deno.test("keeps waiting for a missing group while newer media is within maxAge", async () => {
 	using time = new FakeTime();
 	const h = new Harness(time, 100);
@@ -565,6 +587,30 @@ Deno.test("throws the unpack error when a frame cannot be unpacked", async () =>
 
 	assertInstanceOf(err, RangeError);
 	assertStrictEquals(err, failure);
+});
+
+Deno.test("a frame delivered as soon as it is read was not held", async () => {
+	using time = new FakeTime();
+	const h = new Harness(time);
+	h.track.deliver(new FakeGroup(0).frame(0).end());
+
+	const { value } = await h.next();
+
+	assertStrictEquals(value.held, 0);
+	await h.stop();
+});
+
+Deno.test("a frame that waited for an earlier group says for how long", async () => {
+	using time = new FakeTime();
+	const h = new Harness(time, 100);
+	h.track.deliver(new FakeGroup(0).frame(0).end(), new FakeGroup(2).frame(500));
+	await h.take(1);
+	const next = h.next();
+
+	await h.pendingAfter(next, 100);
+
+	assertStrictEquals((await next).value.held, 100);
+	await h.stop();
 });
 
 Deno.test("tells the observer of each group's arrival, frames and end", async () => {

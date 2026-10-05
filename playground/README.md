@@ -181,7 +181,8 @@ browser-trusted for every origin; in the self-signed fallback a single
   shows the media bitrate, a table of tracks (bitrate, frame rate, latest
   group, and how many groups ended complete, skipped, aborted or late), and a
   timeline of each track's groups: when each arrived, how it ended, and below
-  that what was rendered. Pick 60, 10 or 2 seconds of history (at 2 seconds
+  that what was rendered. An "audio out" lane shows the audio buffer's level
+  and marks each moment sound was lost. Pick 60, 10 or 2 seconds of history (at 2 seconds
   every audio group is its own mark), pause it, and point at a group to pick
   out its received bar and its rendered span together.
 
@@ -216,6 +217,8 @@ src/
   player/              Viewer: MoQ → decode → canvas, with no UI of its own.
                        Reads tracks through its own small interface
                        (source.ts); moq_source.ts adapts @qumo/moq to it
+    audio/             WebCodecs decode + jitter buffer on the audio thread
+    video/             WebCodecs decode + timed drawing on the canvas
   devtools/            DevTools panel and the recorder that feeds it
   user/                Random-name helper (seeds the Echo default path)
 ```

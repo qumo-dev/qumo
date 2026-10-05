@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **The playground's viewer decodes and plays by itself; it no longer uses `@okdaichi/av-nodes` (`playground/src/player/audio`, `playground/src/player/video`).** The publish board still does.
+  - **Audio** is decoded with WebCodecs and played through the viewer's own jitter buffer, a ring of PCM indexed by media time on the audio thread. It holds playback back until the playback delay is buffered, and holds back again after running dry instead of stuttering on an empty buffer. Blocks whose timestamps are a few samples off the end of the last one (RTMP timestamps are whole milliseconds) are joined to it rather than leaving a hole or an overlap at every block.
+  - **The playback delay follows how the audio arrives.** It is sized from the measured arrival jitter (how late audio arrives against its fastest arrival), and raised by half if the buffer runs dry anyway, up to 500 ms; it stays raised for the rest of the run. An audio group that is late is waited for only 40% of the delay, since giving up one frame costs far less than emptying the buffer waiting for it. The buffer also returns to its target after a burst instead of staying full, and skips audio it has held for two seconds without needing.
+  - **A lost audio frame no longer shortens the buffer for good.** The browser's audio decoder stamps its output by counting samples and ignores later input timestamps, so decoded audio closed up around any frame that was not fed to it, and each one left the buffer a frame shorter until it ran dry. The viewer now notices jumps in the input timestamps and puts them back, so a lost frame is one frame of silence in its own place.
+  - **Video** is decoded with WebCodecs, held until due, and drawn on the canvas. The DevTools "rendered" lane now records frames actually drawn, not frames passed on to be drawn.
+  - **Why:** how long to buffer and when to play are the player's decisions, and they lived half in the viewer and half in a package this repository does not control.
+  - The ring buffer follows the moq-dev reference player's and has unit tests.
+- **The playground's DevTools panel shows playback timing and the audio output, and is drawn on canvas (`playground/src/devtools`).**
+  - **Timing:** the playback delay and the arrival jitter of audio and video, next to the media bitrate.
+  - **Drawn on canvas.** Building an SVG element per mark held the main thread for 50-63 ms every second, which starved the audio the panel was showing.
+  - **Audio output:** a row with the jitter buffer's level and how much sound it has lost (ran dry, missing, too late, overflowed, trimmed), and a timeline lane with the level over time and a mark at each moment sound was lost. The lanes above show what the network delivered; this one shows what reached the speaker.
+
 ## [v0.10.261005] - 2026-10-05
 
 > **Breaking for operators.** `qumo_relay_sessions_expired_total` is replaced by `qumo_relay_sessions_ended_total{reason}` (use `reason="expired"` for the old count). Sessions are now revalidated with the auth server, which also receives each session's bytes and an `end` report. The HLS egress can connect as a trusted peer with a client certificate. New: `qumo auth`, a ready-to-run auth server with a key generator and token tool, and the `token` package apps sign with. WebTransport clients now see why the relay ended their session. **Not yet enforced:** which paths a session can discover through announce interest and TRACK_INFO (#450).
