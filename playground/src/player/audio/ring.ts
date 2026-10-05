@@ -39,7 +39,10 @@ export interface AudioRingStats {
 	gaps: number;
 	/** Arrived after their time had been played, and dropped. */
 	late: number;
-	/** Given up because more arrived than the buffer holds. */
+	/**
+	 * Given up, once playing, because more arrived than the buffer holds. A
+	 * backlog passed over before anything has played is not counted.
+	 */
 	overflowed: number;
 	/** Skipped because the buffer was holding more than it ever used. */
 	trimmed: number;
@@ -67,6 +70,8 @@ export class AudioRing {
 	// Whether the positions have been set from a first block.
 	#anchored = false;
 	#stalled = true;
+	// Whether any of this stream has been played yet.
+	#heard = false;
 	#latency: number; // samples
 	readonly #headroom: number | undefined; // samples
 	#underruns = 0;
@@ -165,6 +170,7 @@ export class AudioRing {
 		this.#write = 0;
 		this.#anchored = false;
 		this.#stalled = true;
+		this.#heard = false;
 		this.#floor = Infinity;
 		this.#floorSpan = 0;
 	}
@@ -189,6 +195,7 @@ export class AudioRing {
 			this.#write = start;
 			this.#anchored = true;
 			this.#stalled = true;
+			this.#heard = false;
 		}
 
 		// Timestamps are rounded, to microseconds or (from RTMP) to whole
@@ -209,10 +216,17 @@ export class AudioRing {
 		// running). Catch up to the cushion in one step, giving up the oldest
 		// audio. Trimming only what does not fit would leave the ring full,
 		// and every burst after that would spill a little more: a click each.
+		//
+		// Before any of the stream has been played, the surplus is only the
+		// backlog that built up while playback was starting. Passing over it
+		// is how playback starts at the live edge, and is not counted: nothing
+		// the listener was hearing is interrupted.
 		let overflowing = false;
 		if (end - this.#read > capacity) {
 			const target = end - this.#latency;
-			this.#overflowed += Math.max(0, Math.min(this.#write, target) - this.#read);
+			if (this.#heard) {
+				this.#overflowed += Math.max(0, Math.min(this.#write, target) - this.#read);
+			}
 			this.#read = target;
 			this.#stalled = false;
 			overflowing = true;
@@ -220,8 +234,8 @@ export class AudioRing {
 
 		// Whatever of this block is behind playback is not played.
 		const skip = Math.max(0, this.#read - start);
-		if (overflowing) this.#overflowed += skip;
-		else this.#late += skip;
+		if (!overflowing) this.#late += skip;
+		else if (this.#heard) this.#overflowed += skip;
 		start += skip;
 
 		// Silence where nothing was written between the last block and this one.
@@ -267,10 +281,12 @@ export class AudioRing {
 		}
 
 		this.#read += samples;
+		if (samples > 0) this.#heard = true;
 		this.#played += want;
 		this.#low = Math.min(this.#low, this.buffered);
-		// Silence before the first block ever arrives is not starvation.
-		if (this.#anchored) this.#starved += want - samples;
+		// Silence before the stream has begun to play is the wait to start,
+		// not starvation.
+		if (this.#heard) this.#starved += want - samples;
 		if (!this.#stalled && samples < want) {
 			this.#stalled = true;
 			this.#underruns++;

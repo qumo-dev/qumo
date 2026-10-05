@@ -226,10 +226,38 @@ Deno.test("keeps audio above the latency that playback does dip into", () => {
 Deno.test("by default leaves at least 200 ms of room above the latency", () => {
 	const r = new AudioRing({ rate: RATE, channels: 1, latency: 50 });
 	r.write(0, block(1, 250));
+	read(r, 10);
 
-	r.write(250 * MS, block(251, 1)); // one sample more than 50 + 200
+	r.write(250 * MS, block(251, 11)); // one sample more than 50 + 200
 
 	assertStrictEquals(r.stats.overflowed, 201);
+});
+
+Deno.test("a backlog passed over before anything has played is not counted as lost", () => {
+	const r = ring(4); // holds 8 samples
+
+	r.write(0, block(1, 20));
+
+	assertStrictEquals(r.stats.overflowed, 0);
+});
+
+Deno.test("starts at the newest audio when it begins with a backlog", () => {
+	const r = ring(4); // holds 8 samples
+
+	r.write(0, block(1, 20));
+
+	assertEquals(read(r, 4), [17, 18, 19, 20]);
+});
+
+Deno.test("a backlog after a reset is not counted as lost either", () => {
+	const r = ring(4);
+	r.write(0, block(1, 4));
+	read(r, 2);
+
+	r.reset();
+	r.write(100 * MS, block(1, 20));
+
+	assertStrictEquals(r.stats.overflowed, 0);
 });
 
 Deno.test("takeLow gives the bottom of the swing since it was last asked", () => {

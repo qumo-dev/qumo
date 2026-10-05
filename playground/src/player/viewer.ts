@@ -11,7 +11,7 @@ import {
 	type Unpack,
 } from "./reader.ts";
 import type { Track, TrackSource } from "./source.ts";
-import { delayFor, delayForJitter, raisedDelay, Sync, waitBudget } from "./sync.ts";
+import { delayFor, delayForJitter, raisedDelay, steppedDelay, Sync, waitBudget } from "./sync.ts";
 import { VideoOutput } from "./video/output.ts";
 
 const log = createLogger("subscribe");
@@ -39,6 +39,8 @@ export interface PlaybackObserver {
 	 * from what was reported before.
 	 */
 	playbackStarted?(): void;
+	/** The stretch of playback last reported as starting has ended. */
+	playbackStopped?(): void;
 }
 
 export interface PlaybackTiming {
@@ -76,6 +78,8 @@ export class Viewer {
 	readonly #audio: AudioOutput;
 	// Cancels the current run; undefined while stopped.
 	#cancel: (() => void) | undefined;
+	// Whether the observer has been told of a start it has not been told the end of.
+	#reportedStart = false;
 
 	constructor(init: ViewerInit) {
 		this.#init = init;
@@ -128,6 +132,10 @@ export class Viewer {
 	stop(): void {
 		this.#cancel?.();
 		this.#cancel = undefined;
+		if (this.#reportedStart) {
+			this.#reportedStart = false;
+			this.#init.observer?.playbackStopped?.();
+		}
 		this.#video.hold = undefined;
 		this.#video.flush();
 
@@ -160,6 +168,7 @@ export class Viewer {
 		};
 		const audio = this.#audio;
 		audio.reset(delay);
+		this.#reportedStart = true;
 		run.observer?.playbackStarted?.();
 		const raise = (to: number, why: string) => {
 			if (to <= delay) return;
@@ -179,7 +188,7 @@ export class Viewer {
 			// Ahead of trouble: the arrivals show how long a wait the buffer
 			// has to bridge, before it has had to bridge one.
 			const jitter = clocks.audio.jitter;
-			raise(delayForJitter(jitter, floor), "audio arrives unevenly");
+			raise(steppedDelay(delay, delayForJitter(jitter, floor)), "audio arrives unevenly");
 
 			// And after it: running dry anyway means something held the audio
 			// up after it had arrived, which the arrivals cannot show.
@@ -304,18 +313,22 @@ export class Viewer {
 
 	// Audio is optional: a broadcast without an audio track plays video only.
 	async #playAudio(run: Playback): Promise<void> {
+		// The output is started before the track is asked for. Starting it
+		// can take seconds the first time, and audio that arrived meanwhile
+		// would all be handed over at once, only to be passed over.
+		try {
+			await run.audio.resume();
+		} catch {
+			// reason: resume rejects once close() has closed the context;
+			// playing() below is then false as well.
+		}
+		if (!run.playing()) return;
+
 		const [track, err] = await run.source.subscribe(run.broadcast, "audio");
 		if (track === undefined) {
 			if (!run.playing()) return;
 			audioLog.warn("subscribe failed", { err });
 			return;
-		}
-
-		try {
-			await run.audio.resume();
-		} catch {
-			// reason: resume rejects once stop() has closed the context; the
-			// check below then ends the subscription.
 		}
 		if (!run.playing()) {
 			track.close();

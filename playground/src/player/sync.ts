@@ -55,6 +55,22 @@ export function delayForJitter(jitter: number, floor: number): number {
 	return Math.max(floor, Math.min(MAX_DELAY_MS, needed));
 }
 
+// Raising the delay holds the sound back while the buffer fills to it: a short
+// silence every time. A raise smaller than this is not worth one, since the
+// headroom already covers it; and a raise that is made goes this much further,
+// so the next creep of the jitter does not ask for another.
+const MIN_RAISE_MS = 10;
+
+/**
+ * The delay to play at when it is `current` and the arrivals call for
+ * `wanted` (both milliseconds): unchanged unless the difference is worth the
+ * interruption, and then a little past what was asked, up to the ceiling.
+ */
+export function steppedDelay(current: number, wanted: number): number {
+	if (wanted - current < MIN_RAISE_MS) return current;
+	return Math.max(current, Math.min(MAX_DELAY_MS, wanted + MIN_RAISE_MS));
+}
+
 /**
  * How long, in milliseconds, a missing or stalled group of `track` is worth
  * waiting for when playback trails the live edge by `delay`.
