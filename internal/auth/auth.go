@@ -1,7 +1,15 @@
-// Package auth asks an auth server whether a relay session may start
-// (qumo-deploy ADR 0035, Decision 3). The relay forwards what it knows about
-// the session and enforces the grant it gets back. It never parses a
-// credential: keys, projects and quotas are the auth server's business.
+// Package auth is both sides of the relay's session auth (qumo-deploy ADR
+// 0035, Decision 3).
+//
+// The relay's side (Client) asks an auth server whether a session may start:
+// it forwards what it knows about the session and enforces the grant it gets
+// back. It never parses a credential: keys, projects and quotas are the auth
+// server's business.
+//
+// The server's side (Handler, and the "qumo auth" command in Run) is a
+// ready-to-run auth server: it verifies the capability token a client
+// presented in its connect URL, signed with the token package, and answers
+// with the grant the relay enforces.
 //
 // The request and grant are a subset of moq-auth's (kixelated/moq), which is
 // still changing upstream: subtree patterns only, and no root rewriting,

@@ -400,8 +400,18 @@ func (b *trackBuffer) earliestAvailable() moqt.GroupSequence {
 	return h - moqt.GroupSequence(b.size) + 1
 }
 
+// get returns the group with sequence seq, or nil if its slot holds another
+// group. openGroup advances head before it stores the group, so for a moment
+// the slot of the newest sequence still holds the group one ring-length older;
+// a slot can also have been taken over by a newer group since the caller
+// looked. Returning whatever is in the slot would serve that other group in
+// place of the one asked for.
 func (b *trackBuffer) get(seq moqt.GroupSequence) *sourceGroup {
-	return b.ring[uint64(seq)%b.size].Load()
+	g := b.ring[uint64(seq)%b.size].Load()
+	if g == nil || g.seq != seq {
+		return nil
+	}
+	return g
 }
 
 // --- subscriber egress ---

@@ -85,6 +85,29 @@ func TestTrackBuffer_Get(t *testing.T) {
 	assert.Equal(t, g, got)
 }
 
+func TestTrackBuffer_Get_HeadAdvancedBeforeStore(t *testing.T) {
+	b := newTestTrackBuffer()
+	for range defaultRingSize {
+		b.openGroup()
+	}
+
+	// openGroup advances head, then stores the group. A subscriber that reads
+	// head in between must not be handed the group that still sits in the slot.
+	next := moqt.GroupSequence(b.pos.Add(1))
+
+	assert.Nil(t, b.get(next))
+}
+
+func TestTrackBuffer_Get_SlotTakenOver(t *testing.T) {
+	b := newTestTrackBuffer()
+	first := b.openGroup()
+	for range defaultRingSize {
+		b.openGroup()
+	}
+
+	assert.Nil(t, b.get(first.seq))
+}
+
 func TestTrackBuffer_EarliestAvailable(t *testing.T) {
 	b := newTestTrackBuffer()
 
