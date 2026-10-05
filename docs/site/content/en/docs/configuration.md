@@ -109,7 +109,7 @@ The auth server holds the policy: which credentials it accepts, and what a sessi
 **Trusted peers are never asked:** sessions with a client certificate verified against `CA_FILE`, and peers this relay dials (`PEERS`).
 
 ### The auth server contract
-A subset of [`moq-auth`](https://github.com/kixelated/moq/blob/main/doc/bin/relay/auth.md) (qumo-deploy ADR 0035). When a client connects, the relay POSTs JSON:
+A subset of [`moq-auth`](https://github.com/kixelated/moq/blob/main/doc/bin/relay/auth.md). When a client connects, the relay POSTs JSON:
 
 ```json
 {"id": "<random hex>", "event": "connect", "node": "<RELAY_NAME>", "transport": "webtransport|quic",

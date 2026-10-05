@@ -25,7 +25,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     It answers with the grant's subtree patterns and `expires`: 401 for a token it can't accept, 403 for one that grants a path outside its key's prefix. It prints a startup banner and logs each admitted, refused and ended session; the token is never logged.
   - **`qumo auth token -publish … -subscribe … -ttl …`** signs a token by hand, for testing: the token on stdout, what it grants on stderr.
   - **The Go package `github.com/qumo-dev/qumo/token`** is what an app's backend signs with: `token.Sign(key, token.Grant{Publish: …, Subscribe: …}, time.Hour)`. It refuses to sign a path outside the key's prefix, and it is standard-library only.
-  - Ported from qumo-deploy's `qumo-auth` (foalk-inc/qumo-deploy#1249). qumo's managed relays add their key source there.
 
 - **Sessions are revalidated with the auth server (#419).** At the grant's `revalidate` cadence, the relay sends the session's connect request again as `event: "revalidate"`, with the same `id`. This is how key revocation, project suspension and spend limits reach live sessions; the auth server decides, and the relay doesn't know which it was.
   - **A 401 or 403** ends the session with `0x2` (Unauthorized) and reason `refused`.
@@ -56,6 +55,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Bumped `github.com/qumo-dev/gomoqt` to v0.22.1.** No relay code change was needed. It brings:
   - **WebTransport clients see why the relay ended their session.** When the relay ends a session at its grant's `expires` or on a refused revalidate, `moqt.Cause` now gives the client Unauthorized with the reason `expired` or `refused` over WebTransport, as it already did over native QUIC. A client can reconnect with a fresh credential on `expired` and stop on `refused` (#423). The lease integration tests now check this on both transports.
   - **quic-go v0.63.0,** and webtransport-go `v0.13.0-okdaichi.2` (synced with upstream v0.13.0). Dependabot's quic-go bump (#420) is included.
+- **The playground's viewer is a UI-free module, and it no longer waits on a stalled group (`playground/src/player`).**
+  - **Structure:** playback moved out of `SubscribeBoard` into a `Viewer` that knows nothing about SolidJS. It reads from a small Track / Group / Frame interface it defines itself; `@qumo/moq` is adapted to that interface in one file.
+  - **Groups are read as they arrive,** instead of one at a time. Frames are still delivered in group order, but a missing or stalled group is waited for only so long: once a later group has had a frame ready for the playback delay (100 ms at least) and its media is further ahead than that, the awaited group is cancelled (`ExpiredGroup`) and playback moves on. A group that arrives after playback has passed it is cancelled at once. The scheme follows the moq-dev reference player, with the wait also measured on the clock, so groups that merely arrive together are not mistaken for late ones. Two further rules keep playback at the live edge: a group whose frames are all played and which the next group continues without a gap is finished without waiting for its stream to end, and a group that is already too late when its turn comes is skipped whole if a newer one is ready (so a stall is not followed by its backlog).
+  - **A group aborted part-way no longer ends the track:** its frames so far are played and the next group follows.
+  - **Audio and video are played on a clock.** Both trail the live edge by the same delay: room for one retransmit (1.25 × the connection's round-trip time), and never less than 100 ms. Video frames are held until they are due instead of being drawn as soon as they decode, so video no longer runs ahead of audio. The delay is also how long a group is waited for. It is sized once per Start, and the audio output is opened per Start to match. Each track keeps its own clock, since their timestamps need not start from the same origin.
+  - **Fixed:** a failed start left the other tracks' read loops running, so pressing Start again could feed the decoder twice; the catalog subscription was never closed; stopping before the first catalog arrived left the video and audio subscriptions open.
+  - **Tests:** the group reader, the playback clock and the frame pacer have unit tests (`deno task test`), which `deno task build` now runs first.
 
 ### Fixed
 
@@ -68,16 +74,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed (breaking)
 
 - **`qumo_relay_sessions_expired_total` is replaced by `qumo_relay_sessions_ended_total{reason}`,** with `reason` `expired`, `refused` or `invalid`. The old metric shipped only in v0.9.261004; use `reason="expired"` for the same count. `qumo_relay_auth_requests_total{event}` now also counts `revalidate`.
-
-### Changed
-
-- **The playground's viewer is a UI-free module, and it no longer waits on a stalled group (`playground/src/player`).**
-  - **Structure:** playback moved out of `SubscribeBoard` into a `Viewer` that knows nothing about SolidJS. It reads from a small Track / Group / Frame interface it defines itself; `@qumo/moq` is adapted to that interface in one file.
-  - **Groups are read as they arrive,** instead of one at a time. Frames are still delivered in group order, but a missing or stalled group is waited for only so long: once a later group has had a frame ready for the playback delay (100 ms at least) and its media is further ahead than that, the awaited group is cancelled (`ExpiredGroup`) and playback moves on. A group that arrives after playback has passed it is cancelled at once. The scheme follows the moq-dev reference player, with the wait also measured on the clock, so groups that merely arrive together are not mistaken for late ones. Two further rules keep playback at the live edge: a group whose frames are all played and which the next group continues without a gap is finished without waiting for its stream to end, and a group that is already too late when its turn comes is skipped whole if a newer one is ready (so a stall is not followed by its backlog).
-  - **A group aborted part-way no longer ends the track:** its frames so far are played and the next group follows.
-  - **Audio and video are played on a clock.** Both trail the live edge by the same delay: room for one retransmit (1.25 × the connection's round-trip time), and never less than 100 ms. Video frames are held until they are due instead of being drawn as soon as they decode, so video no longer runs ahead of audio. The delay is also how long a group is waited for. It is sized once per Start, and the audio output is opened per Start to match. Each track keeps its own clock, since their timestamps need not start from the same origin.
-  - **Fixed:** a failed start left the other tracks' read loops running, so pressing Start again could feed the decoder twice; the catalog subscription was never closed; stopping before the first catalog arrived left the video and audio subscriptions open.
-  - **Tests:** the group reader, the playback clock and the frame pacer have unit tests (`deno task test`), which `deno task build` now runs first.
 
 ## [v0.9.261004] - 2026-10-04
 
@@ -99,7 +95,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **Unchanged:** trusted peers and dialed peers are never checked. FETCH stays rejected: the relay registers no fetch handler.
   - **Still open on #418:** path names and metadata are still discoverable, never media. Announce interest lists every path under the requested prefix, and a TRACK request returns a track's publisher properties (TRACK_INFO) for any path. gomoqt answers both inside the shared `TrackMux`, and `TrackInfoProvider.TrackInfo` has no context to tell which session is asking.
   - **New metric:** `qumo_relay_subscribe_authorizations_total{result}` (`admitted`, `not_covered`).
-- **Relays ask an auth server when a session connects; introspection is removed (`internal/relay`).** First step of the relay side of qumo-deploy ADR 0035, as revised on 2026-10-02 (#417, epic #426).
+- **Relays ask an auth server when a session connects; introspection is removed (`internal/relay`).** First step of the relay side of the auth redesign (#417, epic #426).
   - **Setting:** `QUMO_AUTH_URL`, the auth server. (This change first also required one of `QUMO_AUTH_URL` or `QUMO_AUTH_PUBLIC`; auth has since become optional and `QUMO_AUTH_PUBLIC` was removed before release, see #441 above.)
   - **The contract** is a subset of `moq-auth`. The relay POSTs a `connect` request with the session's path and raw `query`, and enforces the grant's `publish` patterns on announcements. The relay never parses the credential, which clients put in the connect URL (`?jwt=`).
   - **Refusal:** a WebTransport client gets 401, 403 or 503 before the upgrade; a native-QUIC session is closed with `0x2`.
@@ -142,10 +138,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - **Local credential verification for self-hosted relays (`internal/credential`, `internal/relay`).**
-  - **What it does:** with `QUMO_RELAY_AUDIENCE` set, the relay verifies publisher credentials itself against the control plane's JWKS instead of calling `POST /v1/credentials/introspect`. It checks the EdDSA signature by `kid`, `exp`/`nbf`/`iat` with 60 s leeway, `iss`, `aud`, and that `path_auth` covers the announced path, matching qumo-deploy's rule.
+  - **What it does:** with `QUMO_RELAY_AUDIENCE` set, the relay verifies publisher credentials itself against the control plane's JWKS instead of calling `POST /v1/credentials/introspect`. It checks the EdDSA signature by `kid`, `exp`/`nbf`/`iat` with 60 s leeway, `iss`, `aud`, and that `path_auth` covers the announced path, matching the control plane's rule.
   - **Key set:** fetched at start (nothing is admitted until it succeeds), refreshed every 5 minutes, and refetched on an unknown `kid` at most every 30 s. It stays fail-static for up to 6 hours if refreshes fail.
-  - **Intended use:** a relay a customer runs for a qumo-deploy dev project (`QUMO_RELAY_AUDIENCE=qumo-relay-dev`). No relay token needed, no revocation feed (a revoked credential stops working at its expiry), no usage reporting.
-  - **Managed relays are unchanged.** `qumo-relay` is refused until they consume the revocation feed (#419). qumo-deploy ADR 0034.
+  - **Intended use:** a relay a customer runs for a dev project (`QUMO_RELAY_AUDIENCE=qumo-relay-dev`). No relay token needed, no revocation feed (a revoked credential stops working at its expiry), no usage reporting.
+  - **Managed relays are unchanged.** `qumo-relay` is refused until they consume the revocation feed (#419).
 
 - **Ramped session admission for capacity probes (`internal/loadgen`, `tools/capacity`).**
   `qumo loadgen subscribe` gains `--ramp R` (sessions/second; the `tools/capacity`

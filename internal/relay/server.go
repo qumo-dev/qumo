@@ -843,7 +843,7 @@ func (s *Server) promoteAlternate(path moqt.BroadcastPath) {
 
 // handlePeerGoaway is the Dialer.OnGoaway callback: an upstream peer relay sent
 // GOAWAY (a migration/drain hint). Route/subscription migration is the primary
-// mobility mechanism; GOAWAY is observed and surfaced to qumo-deploy via metrics.
+// mobility mechanism; GOAWAY is observed and surfaced via metrics.
 // Automatic re-dial to the new URI is future work (gomoqt delivers OnGoaway
 // without identifying which peer session originated it).
 func handlePeerGoaway(newSessionURI string) {

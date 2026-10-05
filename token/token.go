@@ -1,6 +1,6 @@
 // Package token signs and verifies qumo capability tokens: EdDSA JWTs an app
 // signs with its own Ed25519 key to say what a client may publish and
-// subscribe to on a qumo relay (qumo-deploy ADR 0035).
+// subscribe to on a qumo relay.
 //
 // An app's backend signs one per client with Sign and hands it to the client,
 // which connects with it in the relay URL (?jwt=…). The auth server the relay

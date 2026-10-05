@@ -1,5 +1,4 @@
-// Package auth is both sides of the relay's session auth (qumo-deploy ADR
-// 0035, Decision 3).
+// Package auth is both sides of the relay's session auth.
 //
 // The relay's side (Client) asks an auth server whether a session may start:
 // it forwards what it knows about the session and enforces the grant it gets
