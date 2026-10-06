@@ -21,6 +21,15 @@ export class NoVideoTrackError extends Error {
 	}
 }
 
+/** The video could no longer be captured or encoded; `cause` says why. */
+export class VideoFailedError extends Error {
+	constructor(cause: unknown) {
+		const why = cause instanceof Error ? cause.message : String(cause);
+		super(`the video could not be captured or encoded: ${why}`, { cause });
+		this.name = "VideoFailedError";
+	}
+}
+
 export interface PublisherInit {
 	/** Where the broadcast is announced. */
 	mux: TrackMux;
@@ -115,6 +124,7 @@ export class Publisher {
 	 * @throws {NoVideoTrackError} If the stream has no video.
 	 * @throws {NoVideoFrameError} If the video ends without a frame.
 	 * @throws {NoVideoCodecError} If the browser can encode none of the codecs.
+	 * @throws {VideoFailedError} If the encoder fails before the announce.
 	 */
 	async start(stream: MediaStream, settings: PublishSettings): Promise<Picture | undefined> {
 		this.stop();
@@ -145,17 +155,17 @@ export class Publisher {
 			// An encoder that fails produces nothing more. Before the
 			// announce that would leave start() waiting for a keyframe that
 			// never comes; after it, a broadcast with no video.
-			let failure: { err: unknown } | undefined;
+			let failure: VideoFailedError | undefined;
 			let announced = false;
 			video.onerror = (err) => {
 				if (run.stopped) return;
-				failure = { err };
+				failure = new VideoFailedError(err);
 				this.#end(run);
-				if (announced) this.onerror?.(err);
+				if (announced) this.onerror?.(failure);
 			};
 			// Whether to give up starting: throws if the video failed.
 			const halted = (): boolean => {
-				if (failure !== undefined) throw failure.err;
+				if (failure !== undefined) throw failure;
 				return run.stopped;
 			};
 

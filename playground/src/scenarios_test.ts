@@ -31,7 +31,9 @@ Deno.test("pushTargetFor is empty for a scenario nothing is pushed to", () => {
 });
 
 Deno.test("pushCommandFor ends with the push target on the given host", () => {
+	const ending = " -f flv rtmp://example.com:1935/live/abc";
+
 	const command = pushCommandFor("rtmp", "/live/abc", "example.com");
 
-	assertEquals(command.endsWith(" -f flv rtmp://example.com:1935/live/abc"), true);
+	assertEquals(command.slice(-ending.length), ending);
 });

@@ -72,7 +72,7 @@
 
 .segmented-btn.active {
 	background: var(--accent);
-	color: #fff;
+	color: var(--on-accent);
 	border-color: transparent;
 }
 
@@ -375,7 +375,7 @@ input[type="range"] {
 	display: flex;
 	align-items: center;
 	justify-content: center;
-	background: #000;
+	background: var(--video-bg);
 	border-radius: 0;
 }
 
@@ -391,7 +391,7 @@ input[type="range"] {
 .btn-start {
 	background: var(--ok);
 	border-color: transparent;
-	color: #062a14;
+	color: var(--on-ok);
 	font-weight: 600;
 	transition: filter var(--transition);
 }
@@ -403,7 +403,7 @@ input[type="range"] {
 .btn-stop {
 	background: var(--err);
 	border-color: transparent;
-	color: #2a0606;
+	color: var(--on-err);
 	font-weight: 600;
 	transition: filter var(--transition);
 }
@@ -449,8 +449,8 @@ input[type="range"] {
 	height: auto !important;
 	aspect-ratio: 16 / 9;
 	border: 1px solid var(--border);
-	border-radius: 8px;
-	background: #000;
+	border-radius: var(--radius-sm);
+	background: var(--video-bg);
 }
 
 /* Placeholder for a player waiting on its stream. The video element stays
@@ -471,10 +471,10 @@ input[type="range"] {
 	flex-wrap: wrap;
 	gap: 4px 14px;
 	padding: 5px 10px;
-	background: rgba(0, 0, 0, 0.65);
+	background: var(--overlay-bg);
 	backdrop-filter: blur(6px);
 	border-radius: var(--radius-sm);
-	color: #fff;
+	color: var(--overlay-text);
 	font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 	font-size: 0.75rem;
 	line-height: 1.5;
@@ -488,7 +488,7 @@ input[type="range"] {
 }
 
 .stats-overlay dt {
-	color: rgba(255, 255, 255, 0.6);
+	color: var(--overlay-text-muted);
 }
 
 .stats-overlay dd {

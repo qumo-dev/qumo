@@ -8,7 +8,7 @@ import { generateBroadcastId, generateUsername } from "./user/user_name.ts";
 // Read ?scenario= and ?path= from the URL (shareable deep links). Falls back to
 // "echo" for an unknown/missing scenario.
 function readParams(): { scenario: ScenarioId; path: string | null } {
-	const params = new URLSearchParams(window.location.search);
+	const params = new URLSearchParams(globalThis.location.search);
 	const s = params.get("scenario");
 	return { scenario: s && isScenarioId(s) ? s : "echo", path: params.get("path") };
 }
@@ -53,7 +53,7 @@ export function Dashboard() {
 	// Keep the URL in sync so the current scenario+path is shareable as-is.
 	createEffect(() => {
 		const params = new URLSearchParams({ scenario: scenario(), path: path() });
-		window.history.replaceState(null, "", `?${params.toString()}`);
+		globalThis.history.replaceState(null, "", `?${params.toString()}`);
 	});
 
 	// Switching scenario resets the path to that scenario's default (each

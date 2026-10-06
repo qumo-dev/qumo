@@ -34,6 +34,18 @@
 	--warn: #ffb02e;
 	--err: #ff5a5f;
 
+	/* Text on a filled accent, ok or err surface. */
+	--on-accent: #fff;
+	--on-ok: #062a14;
+	--on-err: #2a0606;
+
+	/* Behind a video, and the figures laid over it: the same in both themes,
+	   since they sit on the picture and not on the page. */
+	--video-bg: #000;
+	--overlay-bg: rgba(0, 0, 0, 0.65);
+	--overlay-text: #fff;
+	--overlay-text-muted: rgba(255, 255, 255, 0.6);
+
 	/* Group states (DevTools timeline). They follow the theme tokens above. */
 	--group-complete: var(--text-muted);
 	--group-receiving: var(--accent);

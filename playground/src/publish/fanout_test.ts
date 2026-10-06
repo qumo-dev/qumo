@@ -13,7 +13,7 @@ import {
 class FakeGroup implements GroupSink<string> {
 	readonly frames: string[] = [];
 	readonly sequence: number;
-	readonly fails: Error | undefined;
+	fails: Error | undefined;
 	closed = false;
 
 	constructor(sequence: number, fails: Error | undefined) {
@@ -30,6 +30,11 @@ class FakeGroup implements GroupSink<string> {
 	close(): Promise<void> {
 		this.closed = true;
 		return Promise.resolve();
+	}
+
+	/** Makes writes succeed from now on. */
+	heal(): void {
+		this.fails = undefined;
 	}
 }
 
@@ -78,8 +83,29 @@ class FakeObserver implements SendObserver {
 	}
 }
 
-const key = (timestamp = 0): FrameInfo => ({ key: true, timestamp, bytes: 10 });
-const delta = (timestamp = 0): FrameInfo => ({ key: false, timestamp, bytes: 5 });
+// One frame to send: what it is called in the assertions, and what kind it is.
+type Sent = readonly [frame: string, info: FrameInfo];
+
+const k = (frame: string, timestamp = 0): Sent => [frame, {
+	key: true,
+	timestamp,
+	bytes: 10,
+}];
+const d = (frame: string, timestamp = 0): Sent => [frame, {
+	key: false,
+	timestamp,
+	bytes: 5,
+}];
+
+// Sends the frames one after another, each once the one before has been written.
+async function sendInTurn(fanout: Fanout<string>, frames: readonly Sent[]): Promise<void> {
+	for (const [frame, info] of frames) await fanout.send(frame, info);
+}
+
+// Sends the frames in one go, as an encoder does when it emits them together.
+function sendTogether(fanout: Fanout<string>, frames: readonly Sent[]): Promise<void> {
+	return Promise.all(frames.map(([frame, info]) => fanout.send(frame, info))).then(() => {});
+}
 
 // A promise and the function that resolves it.
 function gate(): { held: Promise<void>; open: () => void } {
@@ -90,18 +116,28 @@ function gate(): { held: Promise<void>; open: () => void } {
 	return { held, open };
 }
 
-Deno.test("a keyframe opens a group and the frames up to the next one follow in it", async () => {
+// How the observer was told each group ended, in order.
+function endings(observer: FakeObserver): string[] {
+	return observer.calls.filter((call) => /^(complete|aborted|stopped) /.test(call));
+}
+
+Deno.test("a keyframe opens a group that the frames up to the next keyframe follow in", async () => {
 	const fanout = new Fanout<string>({ grouping: "keyframe" });
 	const track = new FakeTrack();
 	fanout.add("video", track);
 
-	await fanout.send("k1", key());
-	await fanout.send("d1", delta());
-	await fanout.send("d2", delta());
-	await fanout.send("k2", key());
-	await fanout.send("d3", delta());
+	await sendInTurn(fanout, [k("k1"), d("d1"), d("d2"), k("k2"), d("d3")]);
 
 	assertEquals(track.written, [["k1", "d1", "d2"], ["k2", "d3"]]);
+});
+
+Deno.test("a group is closed when the next keyframe opens another", async () => {
+	const fanout = new Fanout<string>({ grouping: "keyframe" });
+	const track = new FakeTrack();
+	fanout.add("video", track);
+
+	await sendInTurn(fanout, [k("k1"), d("d1"), k("k2")]);
+
 	assertEquals(track.groups.map((g) => g.closed), [true, false]);
 });
 
@@ -110,32 +146,38 @@ Deno.test("a subscriber is sent nothing until the first keyframe after it arrive
 	const track = new FakeTrack();
 	fanout.add("video", track);
 
-	await fanout.send("d1", delta());
-	await fanout.send("d2", delta());
-	await fanout.send("k1", key());
+	await sendInTurn(fanout, [d("d1"), d("d2"), k("k1")]);
 
 	assertEquals(track.written, [["k1"]]);
 });
 
-Deno.test("with frame grouping every frame is a group by itself, closed once written", async () => {
+Deno.test("with frame grouping every frame is a group by itself", async () => {
 	const fanout = new Fanout<string>({ grouping: "frame" });
 	const track = new FakeTrack();
 	fanout.add("audio", track);
 
-	await fanout.send("a1", key());
-	await fanout.send("a2", key());
+	await sendInTurn(fanout, [k("a1"), k("a2")]);
 
 	assertEquals(track.written, [["a1"], ["a2"]]);
+});
+
+Deno.test("with frame grouping a group is closed once its frame is written", async () => {
+	const fanout = new Fanout<string>({ grouping: "frame" });
+	const track = new FakeTrack();
+	fanout.add("audio", track);
+
+	await sendInTurn(fanout, [k("a1"), k("a2")]);
+
 	assertEquals(track.groups.map((g) => g.closed), [true, true]);
 });
 
 Deno.test("a frame sent with no subscriber is dropped", async () => {
 	const fanout = new Fanout<string>({ grouping: "keyframe" });
 	const track = new FakeTrack();
-
-	await fanout.send("k1", key());
+	await sendInTurn(fanout, [k("k1")]);
 	fanout.add("video", track);
-	await fanout.send("d1", delta());
+
+	await sendInTurn(fanout, [d("d1")]);
 
 	assertEquals(track.written, []);
 });
@@ -147,14 +189,27 @@ Deno.test("frames keep their order when a group is slow to open", async () => {
 	track.hold = held;
 	fanout.add("video", track);
 
-	const sent = [fanout.send("k1", key()), fanout.send("d1", delta()), fanout.send("d2", delta())];
+	const sent = sendTogether(fanout, [k("k1"), d("d1"), d("d2")]);
 	open();
-	await Promise.all(sent);
+	await sent;
 
 	assertEquals(track.written, [["k1", "d1", "d2"]]);
 });
 
-Deno.test("one subscriber failing does not stop the others", async () => {
+Deno.test("a subscriber whose group cannot be opened does not stop the others", async () => {
+	const fanout = new Fanout<string>({ grouping: "keyframe" });
+	const broken = new FakeTrack();
+	broken.openError = new Error("gone");
+	const working = new FakeTrack();
+	fanout.add("video #1", broken);
+	fanout.add("video #2", working);
+
+	await sendInTurn(fanout, [k("k1"), d("d1")]);
+
+	assertEquals(working.written, [["k1", "d1"]]);
+});
+
+Deno.test("a frame that could not be sent is reported with the subscriber's name", async () => {
 	const errors: string[] = [];
 	const fanout = new Fanout<string>({
 		grouping: "keyframe",
@@ -162,28 +217,36 @@ Deno.test("one subscriber failing does not stop the others", async () => {
 	});
 	const broken = new FakeTrack();
 	broken.openError = new Error("gone");
-	const working = new FakeTrack();
 	fanout.add("video #1", broken);
-	fanout.add("video #2", working);
 
-	await fanout.send("k1", key());
-	await fanout.send("d1", delta());
+	await sendInTurn(fanout, [k("k1")]);
 
-	assertEquals(working.written, [["k1", "d1"]]);
 	assertEquals(errors, ["video #1: gone"]);
 });
 
-Deno.test("after a write fails the rest of the group is dropped, and the next keyframe starts again", async () => {
+Deno.test("after a write fails the rest of the group is dropped", async () => {
 	const fanout = new Fanout<string>({ grouping: "keyframe" });
 	const track = new FakeTrack();
 	track.writeError = new Error("reset");
 	fanout.add("video", track);
+	await sendInTurn(fanout, [k("k1")]);
+	// Even a group that would now take the frames is not written to again.
+	track.groups[0]?.heal();
 
-	await fanout.send("k1", key());
+	await sendInTurn(fanout, [d("d1"), d("d2")]);
+
+	assertEquals(track.written, [[]]);
+});
+
+Deno.test("the keyframe after a failed write starts a new group", async () => {
+	const fanout = new Fanout<string>({ grouping: "keyframe" });
+	const track = new FakeTrack();
+	track.writeError = new Error("reset");
+	fanout.add("video", track);
+	await sendInTurn(fanout, [k("k1")]);
 	track.writeError = undefined;
-	await fanout.send("d1", delta());
-	await fanout.send("k2", key());
-	await fanout.send("d2", delta());
+
+	await sendInTurn(fanout, [d("d1"), k("k2"), d("d2")]);
 
 	assertEquals(track.written, [[], ["k2", "d2"]]);
 });
@@ -192,17 +255,26 @@ Deno.test("a removed subscriber is sent nothing more", async () => {
 	const fanout = new Fanout<string>({ grouping: "keyframe" });
 	const track = new FakeTrack();
 	fanout.add("video", track);
-	await fanout.send("k1", key());
-
+	await sendInTurn(fanout, [k("k1")]);
 	fanout.remove(track);
-	await fanout.send("d1", delta());
-	await fanout.send("k2", key());
+
+	await sendInTurn(fanout, [d("d1"), k("k2")]);
 
 	assertEquals(track.written, [["k1"]]);
-	assertEquals(fanout.size, 0);
 });
 
-Deno.test("a subscriber too far behind has frames dropped up to the next keyframe", async () => {
+Deno.test("size counts the subscribers there are", () => {
+	const fanout = new Fanout<string>({ grouping: "keyframe" });
+	const first = new FakeTrack();
+	fanout.add("video #1", first);
+	fanout.add("video #2", new FakeTrack());
+
+	fanout.remove(first);
+
+	assertEquals(fanout.size, 1);
+});
+
+Deno.test("a subscriber too far behind has the frames that do not fit dropped", async () => {
 	const fanout = new Fanout<string>({ grouping: "keyframe", maxPending: 2 });
 	const track = new FakeTrack();
 	const { held, open } = gate();
@@ -210,20 +282,23 @@ Deno.test("a subscriber too far behind has frames dropped up to the next keyfram
 	fanout.add("video", track);
 
 	// Two wait behind the group being opened; the third and fourth do not fit.
-	const sent = [
-		fanout.send("k1", key()),
-		fanout.send("d1", delta()),
-		fanout.send("d2", delta()),
-		fanout.send("d3", delta()),
-	];
+	const sent = sendTogether(fanout, [k("k1"), d("d1"), d("d2"), d("d3")]);
 	open();
-	await Promise.all(sent);
-	// The gap is not papered over: frames after it wait for a keyframe.
-	await fanout.send("d4", delta());
-	await fanout.send("k2", key());
-	await fanout.send("d5", delta());
+	await sent;
 
-	assertEquals(track.written, [["k1", "d1"], ["k2", "d5"]]);
+	assertEquals(track.written, [["k1", "d1"]]);
+});
+
+Deno.test("after frames were dropped, the ones that follow wait for a keyframe", async () => {
+	const fanout = new Fanout<string>({ grouping: "keyframe", maxPending: 1 });
+	const track = new FakeTrack();
+	fanout.add("video", track);
+	// The second is dropped: only one may wait.
+	await sendTogether(fanout, [k("k1"), d("d1")]);
+
+	await sendInTurn(fanout, [d("d2"), k("k2"), d("d3")]);
+
+	assertEquals(track.written, [["k1"], ["k2", "d3"]]);
 });
 
 Deno.test("the observer is told of each group and frame, under the subscriber's name", async () => {
@@ -232,10 +307,7 @@ Deno.test("the observer is told of each group and frame, under the subscriber's 
 	const track = new FakeTrack();
 	fanout.add("video sent #1", track);
 
-	await fanout.send("k1", key(1000));
-	await fanout.send("d1", delta(2000));
-	await fanout.send("k2", key(3000));
-	fanout.remove(track);
+	await sendInTurn(fanout, [k("k1", 1000), d("d1", 2000), k("k2", 3000)]);
 
 	assertEquals(observer.calls, [
 		"sent video sent #1",
@@ -245,47 +317,44 @@ Deno.test("the observer is told of each group and frame, under the subscriber's 
 		"complete video sent #1 1",
 		"open video sent #1 2",
 		"frame video sent #1 2 3000 10",
-		"stopped video sent #1 2",
 	]);
 });
 
-Deno.test("the observer is told how a group that was not sent whole ended", async () => {
-	const cases = [
-		{
-			name: "a write failed",
-			arrange: (track: FakeTrack) => {
-				track.writeError = new Error("reset");
-			},
-			maxPending: 64,
-			want: "aborted video 1",
-		},
-		{
-			name: "frames were dropped from it",
-			arrange: () => {},
-			maxPending: 1,
-			want: "aborted video 1",
-		},
-	] as const;
+Deno.test("the observer is told a group was stopped when its subscriber is removed", async () => {
+	const observer = new FakeObserver();
+	const fanout = new Fanout<string>({ grouping: "keyframe", observer });
+	const track = new FakeTrack();
+	fanout.add("video", track);
+	await sendInTurn(fanout, [k("k1")]);
 
-	for (const c of cases) {
-		const observer = new FakeObserver();
-		const fanout = new Fanout<string>({
-			grouping: "keyframe",
-			observer,
-			maxPending: c.maxPending,
-		});
-		const track = new FakeTrack();
-		c.arrange(track);
-		fanout.add("video", track);
+	fanout.remove(track);
 
-		// The second is dropped when only one may wait.
-		await Promise.all([fanout.send("k1", key()), fanout.send("d1", delta())]);
-		track.writeError = undefined;
-		await fanout.send("k2", key());
+	assertEquals(endings(observer), ["stopped video 1"]);
+});
 
-		assertEquals(observer.calls.includes(c.want), true, c.name);
-		assertEquals(observer.calls.includes("complete video 1"), false, c.name);
-	}
+Deno.test("the observer is told a group was aborted when a write to it fails", async () => {
+	const observer = new FakeObserver();
+	const fanout = new Fanout<string>({ grouping: "keyframe", observer });
+	const track = new FakeTrack();
+	track.writeError = new Error("reset");
+	fanout.add("video", track);
+
+	await sendInTurn(fanout, [k("k1")]);
+
+	assertEquals(endings(observer), ["aborted video 1"]);
+});
+
+Deno.test("the observer is told a group that lost frames was aborted", async () => {
+	const observer = new FakeObserver();
+	const fanout = new Fanout<string>({ grouping: "keyframe", observer, maxPending: 1 });
+	const track = new FakeTrack();
+	fanout.add("video", track);
+	// The second is dropped: only one may wait.
+	await sendTogether(fanout, [k("k1"), d("d1")]);
+
+	await sendInTurn(fanout, [k("k2")]);
+
+	assertEquals(endings(observer), ["aborted video 1"]);
 });
 
 Deno.test("a dropped keyframe leaves the group before it whole", async () => {
@@ -293,14 +362,11 @@ Deno.test("a dropped keyframe leaves the group before it whole", async () => {
 	const fanout = new Fanout<string>({ grouping: "keyframe", observer, maxPending: 1 });
 	const track = new FakeTrack();
 	fanout.add("video", track);
-
-	await fanout.send("k1", key());
+	await sendInTurn(fanout, [k("k1")]);
 	// The keyframe is dropped while the frame before it is still being written.
-	await Promise.all([fanout.send("d1", delta()), fanout.send("k2", key())]);
-	await fanout.send("d2", delta());
-	await fanout.send("k3", key());
+	await sendTogether(fanout, [d("d1"), k("k2")]);
 
-	assertEquals(track.written, [["k1", "d1"], ["k3"]]);
-	assertEquals(observer.calls.includes("complete video 1"), true);
-	assertEquals(observer.calls.includes("aborted video 1"), false);
+	await sendInTurn(fanout, [d("d2"), k("k3")]);
+
+	assertEquals(endings(observer), ["complete video 1"]);
 });

@@ -1,6 +1,7 @@
 import {
 	type Accessor,
 	type Component,
+	createMemo,
 	createSignal,
 	For,
 	onCleanup,
@@ -10,23 +11,43 @@ import {
 import type { TrackMux } from "@qumo/moq";
 import { createLogger } from "@okdaichi/media-log";
 import { Camera, Monitor, Tv } from "lucide-solid";
+import { PreviewCanvas } from "../components/PreviewCanvas.tsx";
+import { type Stat, StatsOverlay } from "../components/StatsOverlay.tsx";
 import type { Recorder } from "../devtools/recorder.ts";
 import { friendlyMessage } from "../errors.ts";
 import { createStatsTicker } from "../stats.ts";
 import { getMediaStream, type MediaSourceType } from "./media.ts";
-import { Publisher } from "./publisher.ts";
+import { Publisher, VideoFailedError } from "./publisher.ts";
 
 const log = createLogger("publish");
 
 // Encode-quality presets (#135). Resolution maps to getUserMedia `ideal`
 // constraints (the camera picks the nearest mode); the encoder then encodes at
 // the actual captured dimensions. Bitrate/framerate go straight to the encoder.
-const RESOLUTIONS: Record<string, { width: number; height: number }> = {
+const RESOLUTIONS = {
 	"480p": { width: 854, height: 480 },
 	"720p": { width: 1280, height: 720 },
 	"1080p": { width: 1920, height: 1080 },
-};
+} as const;
+type Resolution = keyof typeof RESOLUTIONS;
 const FRAMERATES = [24, 30, 60] as const;
+type Framerate = (typeof FRAMERATES)[number];
+
+// What a <select> hands back is a string; these say whether it is one of the picks.
+function isResolution(value: string): value is Resolution {
+	return Object.hasOwn(RESOLUTIONS, value);
+}
+
+// What to tell the user about a failed run. The message is chosen by what
+// went wrong underneath, which a VideoFailedError carries as its cause: an
+// encoder that rejects a codec says so by name.
+function failureMessage(err: unknown): string {
+	return friendlyMessage(err instanceof VideoFailedError ? err.cause : err);
+}
+
+function isFramerate(value: number): value is Framerate {
+	return FRAMERATES.some((framerate) => framerate === value);
+}
 const BITRATE_MIN = 500_000;
 const BITRATE_MAX = 6_000_000;
 const BITRATE_STEP = 100_000;
@@ -52,8 +73,8 @@ export function PublishBoard(
 	const [canvasWidth, setCanvasWidth] = createSignal(1280);
 	const [canvasHeight, setCanvasHeight] = createSignal(720);
 	// Encode-quality controls (applied at Start; stop+restart to change mid-session).
-	const [resolution, setResolution] = createSignal<keyof typeof RESOLUTIONS>("720p");
-	const [framerate, setFramerate] = createSignal<(typeof FRAMERATES)[number]>(30);
+	const [resolution, setResolution] = createSignal<Resolution>("720p");
+	const [framerate, setFramerate] = createSignal<Framerate>(30);
 	const [bitrate, setBitrate] = createSignal(2_500_000);
 
 	// Live stats overlay (#139): fps + media bitrate from a 1s rolling meter, plus
@@ -85,7 +106,7 @@ export function PublishBoard(
 		// own controls, or the camera was unplugged.
 		publisher.onended = stopped;
 		publisher.onerror = (err) => {
-			setError(friendlyMessage(err));
+			setError(failureMessage(err));
 			stopped();
 		};
 	});
@@ -103,8 +124,8 @@ export function PublishBoard(
 		let stream: MediaStream;
 		try {
 			stream = await getMediaStream(sourceType(), {
-				width: target?.width,
-				height: target?.height,
+				width: target.width,
+				height: target.height,
 				frameRate: framerate(),
 			});
 		} catch (err) {
@@ -135,7 +156,7 @@ export function PublishBoard(
 			videoStats.start();
 			log.info("started streaming", { source: sourceType() });
 		} catch (err) {
-			setError(friendlyMessage(err));
+			setError(failureMessage(err));
 			log.error("failed to start streaming", { err });
 		}
 	};
@@ -153,6 +174,16 @@ export function PublishBoard(
 		publisher?.close();
 		publisher = undefined;
 	});
+
+	const sourceLabel = createMemo(() =>
+		SOURCES.find((s) => s.id === sourceType())?.label ?? sourceType()
+	);
+	const stats = createMemo((): Stat[] => [
+		{ label: "res", value: `${canvasWidth()}×${canvasHeight()}` },
+		{ label: "fps", value: videoStats.stats().fps },
+		{ label: "br", value: `${videoStats.stats().bitrateMbps} Mbps` },
+		...(encQueue() > 0 ? [{ label: "queue", value: encQueue() }] : []),
+	]);
 
 	return (
 		<div class="publish-board">
@@ -187,8 +218,10 @@ export function PublishBoard(
 						Quality
 						<select
 							value={resolution()}
-							onChange={(e) =>
-								setResolution(e.currentTarget.value as keyof typeof RESOLUTIONS)}
+							onChange={(e) => {
+								const picked = e.currentTarget.value;
+								if (isResolution(picked)) setResolution(picked);
+							}}
 							disabled={isStreaming()}
 						>
 							<For each={Object.keys(RESOLUTIONS)}>
@@ -200,9 +233,10 @@ export function PublishBoard(
 						FPS
 						<select
 							value={framerate()}
-							onChange={(e) => setFramerate(
-								Number(e.currentTarget.value) as (typeof FRAMERATES)[number],
-							)}
+							onChange={(e) => {
+								const picked = Number(e.currentTarget.value);
+								if (isFramerate(picked)) setFramerate(picked);
+							}}
 							disabled={isStreaming()}
 						>
 							<For each={FRAMERATES}>
@@ -246,48 +280,19 @@ export function PublishBoard(
 			</Show>
 
 			<Show when={isStreaming()}>
-				<div class="status-message">
-					Streaming from:{" "}
-					{SOURCES.find((s) => s.id === sourceType())?.label ?? sourceType()}
-				</div>
+				<div class="status-message">Streaming from: {sourceLabel()}</div>
 			</Show>
 
 			<div class="video-preview">
-				<canvas
-					ref={canvasEle}
+				<PreviewCanvas
+					ref={(canvas) => {
+						canvasEle = canvas;
+					}}
 					width={canvasWidth()}
 					height={canvasHeight()}
-					style={{
-						display: "block",
-						width: "100%",
-						"max-width": `${canvasWidth()}px`,
-						"aspect-ratio": `${canvasWidth()} / ${canvasHeight()}`,
-						border: "1px solid #ccc",
-						"border-radius": "8px",
-						background: "#000",
-					}}
 				/>
 				<Show when={isStreaming()}>
-					<dl class="stats-overlay" aria-live="off">
-						<div>
-							<dt>res</dt>
-							<dd>{canvasWidth()}×{canvasHeight()}</dd>
-						</div>
-						<div>
-							<dt>fps</dt>
-							<dd>{videoStats.stats().fps}</dd>
-						</div>
-						<div>
-							<dt>br</dt>
-							<dd>{videoStats.stats().bitrateMbps} Mbps</dd>
-						</div>
-						<Show when={encQueue() > 0}>
-							<div>
-								<dt>queue</dt>
-								<dd>{encQueue()}</dd>
-							</div>
-						</Show>
-					</dl>
+					<StatsOverlay stats={stats()} />
 				</Show>
 			</div>
 		</div>

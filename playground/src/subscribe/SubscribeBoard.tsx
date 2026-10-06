@@ -1,6 +1,16 @@
-import { type Accessor, createEffect, createSignal, onCleanup, onMount, Show } from "solid-js";
+import {
+	type Accessor,
+	createEffect,
+	createMemo,
+	createSignal,
+	onCleanup,
+	onMount,
+	Show,
+} from "solid-js";
 import type { Session } from "@qumo/moq";
 import { deserializeMediaFrame } from "../publish/media_frame.ts";
+import { PreviewCanvas } from "../components/PreviewCanvas.tsx";
+import { type Stat, StatsOverlay } from "../components/StatsOverlay.tsx";
 import { friendlyMessage } from "../errors.ts";
 import { createLogger, createMediaLogger, MediaTags } from "@okdaichi/media-log";
 import { moqSource } from "../player/moq_source.ts";
@@ -154,6 +164,14 @@ export function SubscribeBoard(
 		setIsSubscribed(false);
 	};
 
+	const stats = createMemo((): Stat[] => [
+		{ label: "res", value: `${canvasWidth()}×${canvasHeight()}` },
+		{ label: "fps", value: videoStats.stats().fps },
+		{ label: "br", value: `${videoStats.stats().bitrateMbps} Mbps` },
+		...(rtt() > 0 ? [{ label: "rtt", value: `${rtt()} ms` }] : []),
+		...(decQueue() > 0 ? [{ label: "queue", value: decQueue() }] : []),
+	]);
+
 	return (
 		<div class="subscribe-board">
 			<h2>Subscribe Board</h2>
@@ -186,47 +204,15 @@ export function SubscribeBoard(
 			</Show>
 
 			<div class="video-preview" ref={previewEle}>
-				<canvas
-					ref={canvasEle}
+				<PreviewCanvas
+					ref={(canvas) => {
+						canvasEle = canvas;
+					}}
 					width={canvasWidth()}
 					height={canvasHeight()}
-					style={{
-						display: "block",
-						width: "100%",
-						"max-width": `${canvasWidth()}px`,
-						"aspect-ratio": `${canvasWidth()} / ${canvasHeight()}`,
-						border: "1px solid #ccc",
-						"border-radius": "8px",
-						background: "#000",
-					}}
 				/>
 				<Show when={isSubscribed()}>
-					<dl class="stats-overlay" aria-live="off">
-						<div>
-							<dt>res</dt>
-							<dd>{canvasWidth()}×{canvasHeight()}</dd>
-						</div>
-						<div>
-							<dt>fps</dt>
-							<dd>{videoStats.stats().fps}</dd>
-						</div>
-						<div>
-							<dt>br</dt>
-							<dd>{videoStats.stats().bitrateMbps} Mbps</dd>
-						</div>
-						<Show when={rtt() > 0}>
-							<div>
-								<dt>rtt</dt>
-								<dd>{rtt()} ms</dd>
-							</div>
-						</Show>
-						<Show when={decQueue() > 0}>
-							<div>
-								<dt>queue</dt>
-								<dd>{decQueue()}</dd>
-							</div>
-						</Show>
-					</dl>
+					<StatsOverlay stats={stats()} />
 				</Show>
 			</div>
 

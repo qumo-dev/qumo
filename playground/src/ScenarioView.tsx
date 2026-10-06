@@ -130,12 +130,12 @@ export function ScenarioView(props: {
 				/>
 			</Show>
 
-			{isCamera && (
+			<Show when={isCamera}>
 				<CameraPullForm
 					path={props.path}
 					onStateChange={(s: PullState) => setPullActive(s === "active")}
 				/>
-			)}
+			</Show>
 			<Show when={ingest && !isCamera ? host() : undefined}>
 				{(reached) => (
 					<PushInstructions
@@ -147,23 +147,25 @@ export function ScenarioView(props: {
 			</Show>
 
 			<div class={ingest ? "boards single" : "boards"}>
-				{!ingest && (
+				<Show when={!ingest}>
 					<PublishBoard
 						mux={mux}
 						path={props.path}
 						recorder={recorder}
 					/>
-				)}
-				{showsSubscriber() && (
+				</Show>
+				<Show when={showsSubscriber()}>
 					<SubscribeBoard session={session} path={props.path} observer={recorder} />
-				)}
-				{isHls && <HlsPlayer path={props.path} />}
-				{isCamera && !pullActive() && (
+				</Show>
+				<Show when={isHls}>
+					<HlsPlayer path={props.path} />
+				</Show>
+				<Show when={isCamera && !pullActive()}>
 					<div class="video-empty">
 						<span class="video-empty-icon">📷</span>
 						Enter a camera URL and click "Start Pull" to begin streaming.
 					</div>
-				)}
+				</Show>
 			</div>
 
 			<Show when={showsSubscriber() || !ingest}>
