@@ -52,7 +52,7 @@ func (b *broadcastNotify) notify() {
 	old := b.state.Load()
 	n := &notifyState{seq: old.seq + 1, ch: make(chan struct{})}
 	b.state.Store(n)
-	close(old.ch) // wake all waiters on the previous channel
+	close(old.ch)
 	b.mu.Unlock()
 }
 
