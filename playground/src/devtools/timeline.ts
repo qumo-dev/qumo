@@ -252,7 +252,12 @@ export function trackLane(
 	const dense = visible.length > BAR_LIMIT;
 	const bars = dense ? [] : packLanes(visible, now);
 	const lanes = Math.min(MAX_LANES, bars.reduce((most, bar) => Math.max(most, bar.lane + 1), 1));
-	const networkHeight = dense ? COLUMN_HEIGHT : lanes * (LANE_HEIGHT + LANE_GAP) - LANE_GAP;
+	// Never lower than the columns are, whichever way the groups are drawn:
+	// zooming moves a track between the two, and a lane that changed height
+	// with it would shift every lane below while the pointer is on them.
+	const networkHeight = dense
+		? COLUMN_HEIGHT
+		: Math.max(COLUMN_HEIGHT, lanes * (LANE_HEIGHT + LANE_GAP) - LANE_GAP);
 	const renderTop = networkHeight + RENDER_GAP;
 
 	if (renders) {
@@ -364,6 +369,16 @@ export function audioLane(
 	const x = (time: number) => Math.min(1, Math.max(0, (time - from) / span));
 	const visible = history.filter((s) => s.at >= from && s.at <= to);
 	const ceiling = visible.reduce((most, s) => Math.max(most, s.buffered), MIN_AUDIO_CEILING_MS);
+	// The graph runs to both edges of the lane: the sample just outside each
+	// end stands in at the edge. With little time in view the samples are far
+	// apart, and the graph would otherwise stop short of the edges.
+	const before = history.findLast((s) => s.at < from);
+	const after = history.find((s) => s.at > to);
+	const graphed = [
+		...(before === undefined ? [] : [before]),
+		...visible,
+		...(after === undefined ? [] : [after]),
+	];
 
 	const strips = delays.filter((d) =>
 		d.track === "audio" && d.at >= from && d.at - d.duration <= to
@@ -384,7 +399,10 @@ export function audioLane(
 	return {
 		height: AUDIO_HEIGHT,
 		// The bottom of each swing, not the level at the moment of the report.
-		level: visible.map((s) => [x(s.at), AUDIO_HEIGHT - s.low / ceiling * AUDIO_HEIGHT]),
+		level: graphed.map((s) => [
+			x(s.at),
+			AUDIO_HEIGHT - Math.min(s.low, ceiling) / ceiling * AUDIO_HEIGHT,
+		]),
 		shapes: [
 			...audioGlitches(history).filter((g) => g.at >= from && g.at <= to).map((
 				glitch,

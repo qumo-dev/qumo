@@ -687,6 +687,9 @@ function Timeline(props: {
 	const shown = createMemo(() => windowOf(props.view, props.reading.now));
 	const span = () => shown().to - shown().from;
 	const live = () => isLive(props.view, props.reading.now);
+	// Showing the present as it happens. A paused panel may end at the last
+	// moment it read, but that moment is no longer now.
+	const following = () => live() && !props.paused;
 
 	const banded = (lane: Lane) => withBands(lane, bands(), props.reading.now, span(), shown().to);
 	// A short span needs the fraction of the second to tell its ends apart.
@@ -728,10 +731,18 @@ function Timeline(props: {
 	onCleanup(() => {
 		if (frame !== undefined) cancelAnimationFrame(frame);
 	});
-	const zoom = (factor: number, anchor: number) => gather(factor, anchor, 0);
+	// Says whether there is anything to zoom: at the least or the most that
+	// can be shown, a step that way changes nothing, and the wheel is then
+	// the page's to scroll with.
+	const zoom = (factor: number, anchor: number): boolean => {
+		const current = props.view.span;
+		if (zoomed(props.view, props.reading.now, factor, anchor).span === current) return false;
+		gather(factor, anchor, 0);
+		return true;
+	};
 	const pan = (share: number) => gather(1, 0.5, share);
 	const describeSpan = () =>
-		live()
+		following()
 			? `over the last ${formatSeconds(span())}`
 			: `from ${axisTime(shown().from)} to ${axisTime(shown().to)}`;
 
@@ -786,8 +797,11 @@ function Timeline(props: {
 						type="button"
 						class="copy-btn"
 						title="Show the present, and follow it"
-						aria-pressed={live()}
-						onClick={() => props.onView({ span: props.view.span, end: undefined })}
+						aria-pressed={following()}
+						onClick={() => {
+							props.onView({ span: props.view.span, end: undefined });
+							if (props.paused) props.onPause();
+						}}
 					>
 						Live
 					</button>
@@ -854,7 +868,7 @@ function Timeline(props: {
 				<div>
 					<span>{axisTime(shown().from)}</span>
 					<span>{axisTime((shown().from + shown().to) / 2)}</span>
-					<span>{axisTime(shown().to)}{live() ? " (now)" : ""}</span>
+					<span>{axisTime(shown().to)}{following() ? " (now)" : ""}</span>
 				</div>
 			</div>
 
@@ -896,9 +910,10 @@ function LaneCanvas(props: {
 	onFocus?: (group: number | undefined) => void;
 	/**
 	 * Asks for `factor` times as much time in view, keeping the moment
-	 * `anchor` of the way along the lane (0 to 1) where it is.
+	 * `anchor` of the way along the lane (0 to 1) where it is. Returns
+	 * whether that changes anything.
 	 */
-	onZoom: (factor: number, anchor: number) => void;
+	onZoom: (factor: number, anchor: number) => boolean;
 	/** Asks for the view to follow a drag of `share` of the lane's width. */
 	onPan: (share: number) => void;
 }) {
@@ -926,10 +941,11 @@ function LaneCanvas(props: {
 		const wheel = (event: WheelEvent) => {
 			// A sideways swipe zooms nothing, and is left to the page.
 			if (event.deltaY === 0) return;
-			event.preventDefault();
 			const box = target.getBoundingClientRect();
 			const anchor = box.width > 0 ? (event.clientX - box.left) / box.width : 0.5;
-			props.onZoom(wheelFactor(event.deltaY, event.deltaMode), anchor);
+			// With nothing left to zoom the page scrolls, as it would anywhere else.
+			if (!props.onZoom(wheelFactor(event.deltaY, event.deltaMode), anchor)) return;
+			event.preventDefault();
 			// What was under the pointer is no longer what is under it.
 			leave();
 		};
