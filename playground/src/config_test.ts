@@ -1,3 +1,5 @@
+// The playground compiles against browser libs; tests run under Deno.
+/// <reference lib="deno.ns" />
 import { assertEquals } from "@std/assert";
 import { parseConfig, relayHost } from "./config.ts";
 
