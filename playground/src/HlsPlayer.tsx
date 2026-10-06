@@ -1,4 +1,5 @@
 import { createEffect, createSignal, onCleanup, Show } from "solid-js";
+import { StatsOverlay } from "./components/StatsOverlay.tsx";
 import type { Accessor } from "solid-js";
 import Hls from "hls.js";
 import { createMediaLogger, MediaTags } from "@okdaichi/media-log";
@@ -266,12 +267,9 @@ export function HlsPlayer(props: { path: Accessor<string> }) {
 			<div class={ready() ? "video-preview" : "video-preview video-preview--waiting"}>
 				<video ref={videoEle} controls muted playsinline preload="auto" />
 				<Show when={latencyMs() !== undefined}>
-					<dl class="stats-overlay" aria-live="off">
-						<div>
-							<dt>latency</dt>
-							<dd>{formatLatency(latencyMs())}</dd>
-						</div>
-					</dl>
+					<StatsOverlay
+						stats={[{ label: "latency", value: formatLatency(latencyMs()) }]}
+					/>
 				</Show>
 			</div>
 			<Show when={!ready()}>

@@ -28,6 +28,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **The playground's boards share their preview and stats overlay, and its colours all come from tokens (`playground/src/components`).** `PreviewCanvas` and `StatsOverlay` replace the markup the publish board, the subscribe board and the HLS player each repeated. The colours that were written into the stylesheet and into inline styles (the black behind a video, the overlay, the text on the Start and Stop buttons) are tokens on `:root`. Conditional and repeated markup uses `<Show>` and `<For>`. Nothing looks different.
 - **The playground's publish board captures and encodes by itself; `@okdaichi/av-nodes` is no longer a dependency (`playground/src/publish`).**
   - **A publisher with no UI:** `Publisher` takes a media stream and a path, and does the rest: capture, encode, catalog, and a group per GOP (video) or per frame (audio) to each subscriber. `PublishBoard` is the controls around it.
   - **The encoder is sized from the first captured frame,** the one place the true picture size is known. This replaces grabbing a still through `ImageCapture` before starting.

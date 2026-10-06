@@ -1,6 +1,7 @@
 import {
 	type Accessor,
 	type Component,
+	createMemo,
 	createSignal,
 	For,
 	onCleanup,
@@ -10,6 +11,8 @@ import {
 import type { TrackMux } from "@qumo/moq";
 import { createLogger } from "@okdaichi/media-log";
 import { Camera, Monitor, Tv } from "lucide-solid";
+import { PreviewCanvas } from "../components/PreviewCanvas.tsx";
+import { type Stat, StatsOverlay } from "../components/StatsOverlay.tsx";
 import type { Recorder } from "../devtools/recorder.ts";
 import { friendlyMessage } from "../errors.ts";
 import { createStatsTicker } from "../stats.ts";
@@ -154,6 +157,16 @@ export function PublishBoard(
 		publisher = undefined;
 	});
 
+	const sourceLabel = createMemo(() =>
+		SOURCES.find((s) => s.id === sourceType())?.label ?? sourceType()
+	);
+	const stats = createMemo((): Stat[] => [
+		{ label: "res", value: `${canvasWidth()}×${canvasHeight()}` },
+		{ label: "fps", value: videoStats.stats().fps },
+		{ label: "br", value: `${videoStats.stats().bitrateMbps} Mbps` },
+		...(encQueue() > 0 ? [{ label: "queue", value: encQueue() }] : []),
+	]);
+
 	return (
 		<div class="publish-board">
 			<h2>Publish Board</h2>
@@ -246,48 +259,19 @@ export function PublishBoard(
 			</Show>
 
 			<Show when={isStreaming()}>
-				<div class="status-message">
-					Streaming from:{" "}
-					{SOURCES.find((s) => s.id === sourceType())?.label ?? sourceType()}
-				</div>
+				<div class="status-message">Streaming from: {sourceLabel()}</div>
 			</Show>
 
 			<div class="video-preview">
-				<canvas
-					ref={canvasEle}
+				<PreviewCanvas
+					ref={(canvas) => {
+						canvasEle = canvas;
+					}}
 					width={canvasWidth()}
 					height={canvasHeight()}
-					style={{
-						display: "block",
-						width: "100%",
-						"max-width": `${canvasWidth()}px`,
-						"aspect-ratio": `${canvasWidth()} / ${canvasHeight()}`,
-						border: "1px solid #ccc",
-						"border-radius": "8px",
-						background: "#000",
-					}}
 				/>
 				<Show when={isStreaming()}>
-					<dl class="stats-overlay" aria-live="off">
-						<div>
-							<dt>res</dt>
-							<dd>{canvasWidth()}×{canvasHeight()}</dd>
-						</div>
-						<div>
-							<dt>fps</dt>
-							<dd>{videoStats.stats().fps}</dd>
-						</div>
-						<div>
-							<dt>br</dt>
-							<dd>{videoStats.stats().bitrateMbps} Mbps</dd>
-						</div>
-						<Show when={encQueue() > 0}>
-							<div>
-								<dt>queue</dt>
-								<dd>{encQueue()}</dd>
-							</div>
-						</Show>
-					</dl>
+					<StatsOverlay stats={stats()} />
 				</Show>
 			</div>
 		</div>
