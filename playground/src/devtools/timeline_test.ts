@@ -369,3 +369,58 @@ Deno.test("stallBands turns each stop of the main thread into the stretch it las
 		{ from: 800, to: 1000, style: "stall", title: "The page stopped for 200 ms" },
 	]);
 });
+
+// A view that has been moved back ends before the present: the lanes are
+// laid out over the span up to where it ends, not up to now.
+
+Deno.test("trackLane lays a moved view out over the span up to where it ends", () => {
+	const groups = [group(0, 1000, 2000), group(1, 3000, 3500)];
+
+	// The present is 10 000; the view is the two seconds up to 4000.
+	const lane = trackLane(groups, false, 10_000, 2000, 4000);
+
+	assertEquals(drawn(lane), ["complete@0-0/0", "complete@50-75/0"]);
+});
+
+Deno.test("trackLane leaves out of a moved view the groups that arrived after it ends", () => {
+	const groups = [group(0, 3000, 3500), group(1, 5000, 5500), group(2, 9000, undefined)];
+
+	const lane = trackLane(groups, false, 10_000, 2000, 4000);
+
+	assertEquals(lane.shapes.map((s) => s.group), [0]);
+});
+
+Deno.test("trackLane cuts a group still arriving at the end of a moved view", () => {
+	// It began inside the view and has not ended by the present.
+	const lane = trackLane([group(0, 3000, undefined)], false, 10_000, 2000, 4000);
+
+	assertEquals(drawn(lane), ["receiving@50-100/0"]);
+});
+
+Deno.test("audioLane shows only the samples and glitches inside a moved view", () => {
+	const history = [
+		sample(1000, { buffered: 100, low: 100 }),
+		sample(3000, { buffered: 100, low: 50, starved: 30 }),
+		sample(5000, { buffered: 100, low: 20, starved: 80 }),
+	];
+
+	// The view is the two seconds up to 4000; the present is 6000.
+	const lane = audioLane(history, [], 6000, 2000, 4000);
+
+	assertEquals(lane.level?.map(([x]) => x), [0.5]);
+	assertEquals(lane.shapes.map((s) => [s.style, s.x0]), [["glitch", 0.5]]);
+});
+
+Deno.test("withBands leaves out of a moved view a band that began after it ends", () => {
+	const lane = { height: 10, shapes: [] };
+
+	const banded = withBands(
+		lane,
+		[{ from: 2500, to: 3000, style: "stall" }, { from: 5000, to: 6000, style: "stall" }],
+		10_000,
+		2000,
+		4000,
+	);
+
+	assertEquals(banded.shapes.map((s) => [s.x0, s.x1]), [[0.25, 0.5]]);
+});
