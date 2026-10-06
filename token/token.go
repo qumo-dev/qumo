@@ -127,8 +127,9 @@ func signAt(key SigningKey, g Grant, ttl time.Duration, now time.Time) (string, 
 	return input + "." + base64.RawURLEncoding.EncodeToString(ed25519.Sign(key.Private, []byte(input))), nil
 }
 
-// Verify checks token against the trusted keys at now, in order: the kid is
-// trusted and the alg is EdDSA; the signature verifies; the claims are
+// Verify checks token against the trusted keys at now, in order: the header
+// carries no crit, the alg is EdDSA and the kid is trusted; the signature
+// verifies; the claims are
 // exactly the allowed set (path_auth, iat, nbf, exp, and an optional jti)
 // with no duplicate members; exp, nbf and iat hold within Leeway and the
 // lifetime is at most MaxLifetime; and every path the token grants lies

@@ -58,19 +58,25 @@ func Test_withCORS(t *testing.T) {
 			assert.Equal(t, tt.wantStatus, rec.Code)
 			assert.Equal(t, tt.wantServed, served)
 			assert.Equal(t, tt.wantAllowOrigin, rec.Header().Get("Access-Control-Allow-Origin"))
+			// Every answer depends on the origin, allowed or not: a cache must
+			// not serve one made for one origin, or for none, to another.
+			assert.Equal(t, []string{"Origin"}, rec.Header().Values("Vary"))
+			// Credentials are never allowed: the egress takes none from a page.
+			assert.Empty(t, rec.Header().Get("Access-Control-Allow-Credentials"))
+			// A preflight is answered here, with the methods the egress serves.
+			wantMethods := ""
+			if tt.method == http.MethodOptions {
+				wantMethods = "GET, HEAD, OPTIONS"
+			}
+			assert.Equal(t, wantMethods, rec.Header().Get("Access-Control-Allow-Methods"))
 			if tt.wantAllowOrigin == "" {
 				// Nothing that widens what a page may do with the answer.
 				assert.Empty(t, rec.Header().Get("Access-Control-Allow-Headers"))
 				assert.Empty(t, rec.Header().Get("Access-Control-Expose-Headers"))
-				assert.Empty(t, rec.Header().Values("Vary"))
 				return
 			}
-			// One origin's answer must not be served from a cache to another.
-			assert.Equal(t, []string{"Origin"}, rec.Header().Values("Vary"))
 			assert.Equal(t, "Range", rec.Header().Get("Access-Control-Allow-Headers"))
 			assert.Equal(t, "Content-Length, Content-Range", rec.Header().Get("Access-Control-Expose-Headers"))
-			// Credentials are never allowed: the egress takes none from a page.
-			assert.Empty(t, rec.Header().Get("Access-Control-Allow-Credentials"))
 		})
 	}
 }

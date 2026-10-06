@@ -1,9 +1,7 @@
 package token
 
 import (
-	"crypto/ed25519"
 	"encoding/base64"
-	"encoding/json/v2"
 	"strings"
 	"testing"
 	"time"
@@ -37,12 +35,7 @@ func TestVerify_Invalid(t *testing.T) {
 	kid := signer.trusted(t).ID
 	// rawHeader mints a token whose header is the JSON text header, signed
 	// by signer: for headers a map can't spell, such as a member given twice.
-	rawHeader := func(header string) string {
-		claims, err := json.Marshal(validClaims(now))
-		require.NoError(t, err)
-		input := encodeRaw(t, header) + "." + encodeRaw(t, string(claims))
-		return input + "." + base64.RawURLEncoding.EncodeToString(ed25519.Sign(signer.private, []byte(input)))
-	}
+	rawHeader := func(header string) string { return signer.signWithRawHeader(t, header, now) }
 	// resigned replaces a valid token's signature with what edit makes of it.
 	resigned := func(edit func(sig string) string) string {
 		parts := strings.Split(signer.sign(t, validClaims(now)), ".")
@@ -81,11 +74,14 @@ func TestVerify_Invalid(t *testing.T) {
 			},
 			wantReason: "signature",
 		},
-		// RFC 7515 4.1.11: a header that must be understood, and isn't.
-		"a critical header": {
-			token:      func() string { return rawHeader(`{"alg":"EdDSA","kid":"` + kid + `","crit":["exp"]}`) },
-			wantReason: "crit",
-		},
+		// RFC 7515 4.1.11: a header that must be understood, and isn't. Any
+		// crit is refused, whatever it holds: none names a header this
+		// verifier could have been told to understand.
+		"a critical header":         {token: func() string { return rawHeader(`{"alg":"EdDSA","kid":"` + kid + `","crit":["exp"]}`) }, wantReason: "crit"},
+		"crit names nothing":        {token: func() string { return rawHeader(`{"alg":"EdDSA","kid":"` + kid + `","crit":[]}`) }, wantReason: "crit"},
+		"crit is null":              {token: func() string { return rawHeader(`{"alg":"EdDSA","kid":"` + kid + `","crit":null}`) }, wantReason: "crit"},
+		"crit is not a list":        {token: func() string { return rawHeader(`{"alg":"EdDSA","kid":"` + kid + `","crit":"exp"}`) }, wantReason: "crit"},
+		"crit names a known header": {token: func() string { return rawHeader(`{"alg":"EdDSA","kid":"` + kid + `","typ":"JWT","crit":["typ"]}`) }, wantReason: "crit"},
 		// The claims: an object, with numbers where times go.
 		"claims are not an object": {token: func() string { return signer.signWithRawClaims(t, encodeRaw(t, `[]`)) }, wantReason: "claims"},
 		"claims are not JSON":      {token: func() string { return signer.signWithRawClaims(t, encodeRaw(t, `{`)) }, wantReason: "claims"},

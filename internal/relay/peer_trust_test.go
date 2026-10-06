@@ -338,15 +338,21 @@ func TestPeerTrust_DialerTLS(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			dialed := &PeerTrust{ca: caPool, cert: tt.dialed, own: tt.dialed.Certificate[0]}
 
-			dialerState, _, dialerErr, _ := handshake(t, dialer.DialerTLS(), dialed.ServerTLS(publicCfg))
+			dialerState, dialedState, dialerErr, dialedErr := handshake(t, dialer.DialerTLS(), dialed.ServerTLS(publicCfg))
 
 			if tt.wantDialerErr != "" {
 				assert.ErrorContains(t, dialerErr, tt.wantDialerErr)
 				assert.Nil(t, dialerState, "no session to a relay that isn't a peer")
+				assert.Error(t, dialedErr, "the dialed relay learns it was refused")
+				assert.Nil(t, dialedState, "and holds no session either")
 				return
 			}
 			require.NoError(t, dialerErr)
+			require.NoError(t, dialedErr)
 			assert.Equal(t, tt.dialed.Certificate[0], dialerState.PeerCertificates[0].Raw)
+			class, identity := classify(dialedState)
+			assert.Equal(t, classPeer, class, "the dialed relay takes the dialer for a peer")
+			assert.Equal(t, "relay-1", identity)
 		})
 	}
 }

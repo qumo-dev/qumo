@@ -26,13 +26,16 @@ func withCORS(h http.Handler, allowed []string) http.Handler {
 	allow := cors.NewChecker(allowed)
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// The answer depends on the request's Origin whether or not it is
+		// allowed, so every answer says so: a shared cache that kept one made
+		// without the headers below must not serve it to an allowed origin,
+		// whose browser would refuse it.
+		w.Header().Add("Vary", "Origin")
+
 		// A request with no Origin is not a browser fetch and needs no CORS
 		// headers; the checker admits it for the same reason.
 		if origin := r.Header.Get("Origin"); origin != "" && allow(r) {
 			w.Header().Set("Access-Control-Allow-Origin", origin)
-			// The response varies per origin, so a shared cache must not serve
-			// one origin's response to another.
-			w.Header().Add("Vary", "Origin")
 			// Players issue ranged segment reads, and need the length headers
 			// to be readable to do so.
 			w.Header().Set("Access-Control-Allow-Headers", "Range")

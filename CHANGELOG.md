@@ -22,6 +22,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - **A credential whose header carries `crit` is refused** (`token.Verify`, and so the relay). `crit` lists headers a verifier must understand (RFC 7515 4.1.11); the relay understands none beyond `alg`, `kid` and `typ`, and took such a token as valid. No token `token.Sign` or `qumo auth token` makes carries one.
+- **Every answer of the HLS egress carries `Vary: Origin`** (`internal/hls/cors.go`), not only one to an allowed origin. A manifest or segment fetched with no `Origin`, or from an origin that isn't allowed, was answered without it, so a shared cache or CDN in front of the egress could keep that answer and serve it to a page on an allowed origin, whose browser then refused it.
 
 ## [v0.11.261005] - 2026-10-05
 
