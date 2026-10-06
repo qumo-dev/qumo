@@ -48,8 +48,8 @@ function pad(value: number, digits: number): string {
 	return String(value).padStart(digits, "0");
 }
 
-// The time of day to the millisecond, for reading the delay off two screens.
-function clockText(date: Date): string {
+/** The time of day to the millisecond, for reading the delay off two screens. */
+export function clockText(date: Date): string {
 	return `${pad(date.getHours(), 2)}:${pad(date.getMinutes(), 2)}:${pad(date.getSeconds(), 2)}.${
 		pad(date.getMilliseconds(), 3)
 	}`;

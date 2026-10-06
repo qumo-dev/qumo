@@ -48,8 +48,12 @@ export const getMediaStream = async (
 					height: h ?? 720,
 					frameRate: fps ?? 30,
 				});
-			default:
-				throw new Error(`Unsupported media source type: ${type}`);
+			default: {
+				// A source added to MediaSourceType and not handled above
+				// fails to compile here.
+				const unhandled: never = type;
+				throw new TypeError(`unsupported media source: ${String(unhandled)}`);
+			}
 		}
 	} catch (err) {
 		// Rethrow the ORIGINAL error (typically a DOMException) unchanged.

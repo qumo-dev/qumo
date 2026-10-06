@@ -18,19 +18,20 @@ function supporting(accepts: (config: VideoEncoderConfig) => boolean): VideoSupp
 Deno.test("videoCandidates asks for hardware first, then software", () => {
 	const candidates = videoCandidates(SETTINGS, true);
 
-	const firstSoftware = candidates.findIndex((c) => c.hardwareAcceleration === undefined);
-	const hardware = candidates.slice(0, firstSoftware);
-	const software = candidates.slice(firstSoftware);
-	assertEquals(hardware.every((c) => c.hardwareAcceleration === "prefer-hardware"), true);
-	assertEquals(software.every((c) => c.hardwareAcceleration === undefined), true);
-	assertEquals(hardware[0]?.codec, "vp09.00.10.08");
-	assertEquals(software[0]?.codec, "avc1.640028");
+	const order = candidates.map((c) => `${c.hardwareAcceleration ?? "software"} ${c.codec}`);
+	assertEquals(order.slice(0, 2), [
+		"prefer-hardware vp09.00.10.08",
+		"prefer-hardware vp09",
+	]);
+	assertEquals(order.slice(11, 13), ["software avc1.640028", "software avc1.4D401F"]);
+	assertEquals(order.length, 22);
 });
 
 Deno.test("videoCandidates asks for software only when hardware cannot be told", () => {
 	const candidates = videoCandidates(SETTINGS, false);
 
-	assertEquals(candidates.some((c) => c.hardwareAcceleration !== undefined), false);
+	const asked = new Set(candidates.map((c) => c.hardwareAcceleration));
+	assertEquals([...asked], [undefined]);
 	assertEquals(candidates[0]?.codec, "avc1.640028");
 });
 

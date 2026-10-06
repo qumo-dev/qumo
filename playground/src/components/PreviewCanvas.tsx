@@ -1,3 +1,5 @@
+import type { JSX } from "solid-js";
+
 // The canvas a video is drawn on, in a board. It has the size and shape of
 // the picture; the stylesheet (`.video-preview canvas`) scales it to the board
 // and gives it its frame.
@@ -6,7 +8,7 @@ export function PreviewCanvas(props: {
 	width: number;
 	height: number;
 	ref: (canvas: HTMLCanvasElement) => void;
-}) {
+}): JSX.Element {
 	return (
 		<canvas
 			ref={props.ref}

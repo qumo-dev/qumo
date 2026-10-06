@@ -73,7 +73,8 @@ async function resolveConfig(): Promise<ResolvedConfig> {
 				return parseConfig(raw);
 			}
 		} catch {
-			// Built binary not serving /config (unexpected) — fall through.
+			// reason: a /config that cannot be fetched or is not JSON leaves
+			// the build-time values below, which dial localhost.
 		}
 	}
 	return envFallback();
