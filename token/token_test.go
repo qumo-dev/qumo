@@ -1,6 +1,9 @@
 package token
 
 import (
+	"crypto/ed25519"
+	"encoding/base64"
+	"encoding/json/v2"
 	"strings"
 	"testing"
 	"time"
@@ -31,12 +34,64 @@ func TestVerify_Invalid(t *testing.T) {
 		edit(c)
 		return c
 	}
+	kid := signer.trusted(t).ID
+	// rawHeader mints a token whose header is the JSON text header, signed
+	// by signer: for headers a map can't spell, such as a member given twice.
+	rawHeader := func(header string) string {
+		claims, err := json.Marshal(validClaims(now))
+		require.NoError(t, err)
+		input := encodeRaw(t, header) + "." + encodeRaw(t, string(claims))
+		return input + "." + base64.RawURLEncoding.EncodeToString(ed25519.Sign(signer.private, []byte(input)))
+	}
+	// resigned replaces a valid token's signature with what edit makes of it.
+	resigned := func(edit func(sig string) string) string {
+		parts := strings.Split(signer.sign(t, validClaims(now)), ".")
+		return parts[0] + "." + parts[1] + "." + edit(parts[2])
+	}
 
 	tests := map[string]struct {
 		token      func() string
 		wantReason string
 	}{
-		"not a JWS": {token: func() string { return "a.b" }, wantReason: "JWS"},
+		"not a JWS":     {token: func() string { return "a.b" }, wantReason: "JWS"},
+		"four segments": {token: func() string { return signer.sign(t, validClaims(now)) + ".x" }, wantReason: "JWS"},
+		"empty":         {token: func() string { return "" }, wantReason: "JWS"},
+		// The signature: absent, cut short, re-encoded.
+		"no signature":             {token: func() string { return resigned(func(string) string { return "" }) }, wantReason: "signature"},
+		"a signature cut short":    {token: func() string { return resigned(func(sig string) string { return sig[:len(sig)-2] }) }, wantReason: "signature"},
+		"a padded signature":       {token: func() string { return resigned(func(sig string) string { return sig + "==" }) }, wantReason: "signature"},
+		"a signature that is text": {token: func() string { return resigned(func(string) string { return "not base64!" }) }, wantReason: "signature"},
+		// The header names the key and nothing else: it can't bring one.
+		"header is not base64url": {token: func() string { return "!!." + encodeRaw(t, "{}") + ".AA" }, wantReason: "header"},
+		"header is not JSON":      {token: func() string { return rawHeader("EdDSA") }, wantReason: "header"},
+		"header is not an object": {token: func() string { return rawHeader(`["EdDSA"]`) }, wantReason: "header"},
+		"no alg":                  {token: func() string { return rawHeader(`{"kid":"` + kid + `"}`) }, wantReason: "EdDSA"},
+		"alg in another case":     {token: func() string { return rawHeader(`{"alg":"eddsa","kid":"` + kid + `"}`) }, wantReason: "EdDSA"},
+		"alg under another name":  {token: func() string { return rawHeader(`{"ALG":"EdDSA","kid":"` + kid + `"}`) }, wantReason: "EdDSA"},
+		"alg given twice":         {token: func() string { return rawHeader(`{"alg":"none","alg":"EdDSA","kid":"` + kid + `"}`) }, wantReason: "header"},
+		"kid given twice":         {token: func() string { return rawHeader(`{"alg":"EdDSA","kid":"other","kid":"` + kid + `"}`) }, wantReason: "header"},
+		"no kid":                  {token: func() string { return rawHeader(`{"alg":"EdDSA"}`) }, wantReason: "not trusted"},
+		"kid is not a string":     {token: func() string { return rawHeader(`{"alg":"EdDSA","kid":1}`) }, wantReason: "header"},
+		"a key of its own in the header": {
+			token: func() string {
+				return other.signWithHeader(t, map[string]any{
+					"alg": "EdDSA", "kid": kid,
+					"jwk": map[string]any{"kty": "OKP", "crv": "Ed25519", "x": base64.RawURLEncoding.EncodeToString(other.trusted(t).Public)},
+				}, validClaims(now))
+			},
+			wantReason: "signature",
+		},
+		// RFC 7515 4.1.11: a header that must be understood, and isn't.
+		"a critical header": {
+			token:      func() string { return rawHeader(`{"alg":"EdDSA","kid":"` + kid + `","crit":["exp"]}`) },
+			wantReason: "crit",
+		},
+		// The claims: an object, with numbers where times go.
+		"claims are not an object": {token: func() string { return signer.signWithRawClaims(t, encodeRaw(t, `[]`)) }, wantReason: "claims"},
+		"claims are not JSON":      {token: func() string { return signer.signWithRawClaims(t, encodeRaw(t, `{`)) }, wantReason: "claims"},
+		"exp is a string": {token: func() string {
+			return signer.sign(t, with(func(c map[string]any) { c["exp"] = "1800000300" }))
+		}, wantReason: "claims"},
 		"alg is not EdDSA": {
 			token: func() string {
 				return signer.signWithHeader(t, map[string]any{"alg": "HS256", "kid": signer.trusted(t).ID}, validClaims(now))
@@ -96,10 +151,11 @@ func TestVerify_Invalid(t *testing.T) {
 	}
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
-			_, err := Verify(tt.token(), signer.keys(t), now)
+			got, err := Verify(tt.token(), signer.keys(t), now)
 
 			require.ErrorIs(t, err, ErrInvalid)
 			assert.Contains(t, err.Error(), tt.wantReason)
+			assert.Equal(t, Claims{}, got, "a refused token grants nothing")
 		})
 	}
 }
