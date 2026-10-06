@@ -36,6 +36,11 @@ for a worked example on Nomad.
 operator-facing label logged at startup for visibility only and has no effect
 on which addresses are dialed.
 
+Peers authenticate each other with mutual TLS under a relay CA (`CA_FILE`,
+`PEER_CERT_FILE`, `PEER_KEY_FILE`); a relay with `PEERS` refuses to start
+without them. See [TLS & mTLS]({{< relref "tls" >}}#trusted-peers-optional).
+A relay whose `PEERS` resolve to itself drops that session.
+
 Each connection dials QUIC with ALPN `moqt`, exchanges `ANNOUNCE_PLEASE` /
 `ANNOUNCE`, and registers the peer's tracks on the local `TrackMux`. On
 disconnect the connection is retried with exponential backoff (1s base, 30s

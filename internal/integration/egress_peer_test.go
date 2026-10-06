@@ -4,8 +4,13 @@ package integration
 
 import (
 	"context"
+	"crypto/ecdsa"
 	"crypto/tls"
+	"crypto/x509"
+	"encoding/pem"
 	"net/http"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -17,15 +22,17 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestEgress_ClientCertificateIsTrustedPeer verifies the HLS egress's
+// TestEgress_ClientCertificateIsInternalClient verifies the HLS egress's
 // connection (#432): with the client certificate it loads through
 // tlsclient.ApplyClientCert (RELAY_CERT_FILE, RELAY_KEY_FILE) from the CA the
 // relay trusts, it subscribes outside any grant without a credential, and the
-// credential is never checked. Without the certificate it is refused.
-func TestEgress_ClientCertificateIsTrustedPeer(t *testing.T) {
-	certFile, keyFile := createTempCert(t)
-	peerCert, err := tls.LoadX509KeyPair(certFile, keyFile)
-	require.NoError(t, err)
+// credential is never checked. Without the certificate it is refused. Its
+// certificate carries no peering name, so it is an internal client, not a
+// peer: it may announce nothing.
+func TestEgress_ClientCertificateIsInternalClient(t *testing.T) {
+	ca := newTestCA(t)
+	egress := ca.issue(t, "egress-1", false)
+	certFile, keyFile := writeCert(t, egress)
 
 	// Authorize refuses everyone: only a trusted peer gets through.
 	server := &fakeAuth{err: auth.RefusedError{Status: http.StatusUnauthorized}}
@@ -35,7 +42,7 @@ func TestEgress_ClientCertificateIsTrustedPeer(t *testing.T) {
 			return publisher.authorize(ctx, req)
 		}
 		return server.authorize(ctx, req)
-	}, &peerCert)
+	}, ca.trust(t, nil))
 	publishOver(t, srv, "https://"+addr+"/?jwt=publisher", "/hls/live")
 
 	tests := map[string]struct {
@@ -57,13 +64,33 @@ func TestEgress_ClientCertificateIsTrustedPeer(t *testing.T) {
 			err := subscribeWith(t, nativeURL(addr)+"/", tc, "/hls/live")
 
 			if tt.wantTrusted {
-				assert.NoError(t, err, "a trusted peer subscribes outside any grant")
-				assert.Len(t, server.received(), asked, "a trusted peer is never asked about")
+				assert.NoError(t, err, "an internal client subscribes outside any grant")
+				assert.Len(t, server.received(), asked, "an internal client is never asked about")
 				return
 			}
 			assert.Error(t, err)
 		})
 	}
+
+	t.Run("an internal client cannot announce", func(t *testing.T) {
+		const path = moqt.BroadcastPath("/hls/from-egress")
+		require.NoError(t, announceOver(t, nativeURL(addr)+"/", []string{moqt.NextProtoMOQ}, &egress, path))
+
+		assert.Never(t, routed(srv, path), 1500*time.Millisecond, 25*time.Millisecond, "the announcement is refused")
+	})
+}
+
+// writeCert writes a certificate and its key as PEM files for a client that
+// loads them from disk.
+func writeCert(t *testing.T, cert tls.Certificate) (certFile, keyFile string) {
+	t.Helper()
+	dir := t.TempDir()
+	certFile, keyFile = filepath.Join(dir, "client.crt"), filepath.Join(dir, "client.key")
+	keyDER, err := x509.MarshalECPrivateKey(cert.PrivateKey.(*ecdsa.PrivateKey))
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(certFile, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: cert.Certificate[0]}), 0o600))
+	require.NoError(t, os.WriteFile(keyFile, pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER}), 0o600))
+	return certFile, keyFile
 }
 
 // subscribeWith subscribes to testTrack at path over a new session to url

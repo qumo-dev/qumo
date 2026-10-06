@@ -35,9 +35,9 @@ type feedConfig struct {
 	// InsecureSkipVerify short-circuits verification regardless of RootCAs.
 	insecure bool
 	// certFile and keyFile, when set, are the egress's client certificate
-	// and key (PEM), from the private CA the relay trusts as CA_FILE. The
-	// relay then serves the egress as a trusted peer, which needs no
-	// credential and has no grant to expire (ADR 0035, Decision 7). Only a
+	// and key (PEM), from the relay CA the relay trusts as CA_FILE. The
+	// relay then serves the egress as an internal client, which needs no
+	// credential and has no grant to expire, and may only subscribe. Only a
 	// native-QUIC (moqt://) relayURL presents it.
 	certFile, keyFile string
 
@@ -111,7 +111,7 @@ func (c feedConfig) validate() error {
 		return errors.New("RELAY_CERT_FILE and RELAY_KEY_FILE must be set together")
 	}
 	if u.Scheme != "moqt" {
-		// A WebTransport session is never a trusted peer: the relay checks
+		// A WebTransport session presents no certificate: the relay checks
 		// the credential of every one.
 		return fmt.Errorf("RELAY_CERT_FILE needs a native-QUIC RELAY_URL (moqt://), got %q", u.Scheme)
 	}

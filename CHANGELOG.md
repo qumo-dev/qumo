@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Breaking: relay peers authenticate with certificates a relay CA issued, in both directions, and a relay's peer identity is separate from its public certificate (`internal/relay/peer_trust.go`).**
+  - **A relay no longer presents `CERT_FILE` to the relays it dials.** Its peer identity is `PEER_CERT_FILE` and `PEER_KEY_FILE`: a certificate `CA_FILE` issued, carrying the DNS name `peer.qumo.internal` and usable for client and server authentication. The subject common name is the relay's identity for logs; the relay never interprets it.
+  - **The dialed relay is verified against the relay CA too.** A dialing relay asks for the server name `peer.qumo.internal`; the dialed relay answers it with its peer certificate, and the dialer verifies that against `CA_FILE` alone. Public certificates play no part in relay identity, and `PEERS` may name peers by any address (a Consul name, an IP).
+  - **A CA-issued certificate authenticates; only the peering name makes a peer.** A session whose certificate `CA_FILE` verifies but lacks the name is an internal client, such as the HLS egress: it may subscribe to anything and announce nothing. One carrying the name is a relay peer, served without a credential.
+  - **Strict settings.** `PEER_CERT_FILE` and `PEER_KEY_FILE` are set together and need `CA_FILE`; `PEERS` needs all three; a peer certificate the CA didn't issue, without the name, or expired stops the relay at startup. `CA_FILE` alone remains valid and authenticates internal clients. There is no fallback to `CERT_FILE`: a relay without the two settings has no peer identity.
+  - **A relay recognizes itself.** With `PEERS` naming a group that resolves to the relay too, it sees its own certificate on that session, drops it and doesn't retry. `PEERS` is still resolved once at startup; a relay that starts later must dial the earlier ones.
+  - **Only native-QUIC clients are asked for a certificate.** A browser never is.
+  - **To move over:** issue a certificate per relay from your CA as `docs/site/content/en/docs/deployment/tls.md` describes (an OpenSSL example is there), and set the two new variables. For development, `mage cert` now also writes a relay CA and peer certificates (`PEER_NAMES=a,b mage cert`); the Compose topologies, the Nomad simulation and the multi-process benchmark use them.
+
 ## [v0.11.261005] - 2026-10-05
 
 > **Breaking for operators.** The auth server is removed: the relay no longer asks one (`QUMO_AUTH_URL`), and `qumo auth` no longer runs one. The relay verifies credentials itself against a key set. To move over, unset `QUMO_AUTH_URL`, set `QUMO_AUTH_KEYS` to the key set the auth server was reading, and stop the `qumo auth` process; tokens and signing keys are unchanged. A relay with `QUMO_AUTH_URL` still set refuses to start. See **Removed** below.

@@ -42,19 +42,36 @@ qumo relay --role hub    # or "edge"; omit for a standalone / flat relay
 
 | Variable | Default | Description |
 |---|---|---|
-| `PEERS` | (empty) | Comma-separated relays to dial, as `host:4433`. Each host is resolved to all its addresses and every address is dialed, so a DNS name for a group of relays (`role-hub.qumo-relay.service.consul:4433`) connects to each. The node relays their announcements. |
+| `PEERS` | (empty) | Comma-separated relays to dial, as `host:4433`. Each host is resolved to all its addresses and every address is dialed, so a DNS name for a group of relays (`role-hub.qumo-relay.service.consul:4433`) connects to each; a relay that reaches itself that way drops that session. The node relays their announcements. Needs `CA_FILE` and a peer identity (below). |
 
-There is no runtime peer-discovery service — the list is static, dialed once
-at startup and re-dialed with backoff on disconnect. See
+There is no runtime peer-discovery service — the list is static, resolved and
+dialed once at startup and re-dialed with backoff on disconnect. A relay
+that starts later must dial the earlier ones; they learn of it only when
+they restart. See
 [Deployment → Peer topology]({{< relref "deployment/peer-topology" >}}) for
 how they fit together, and [Deployment → Nomad]({{< relref "deployment/nomad" >}})
 for a worked example of giving relays stable addresses on Nomad.
 
 ## Peer trust (optional)
 
+Relays authenticate each other with mutual TLS under a CA of yours, the
+**relay CA**. A relay's peer identity is a certificate that CA issued, separate
+from the public certificate it serves browsers: different credentials, different
+trust. `PEERS` only says whom to dial; identity comes from the certificates.
+
 | Variable | Default | Description |
 |---|---|---|
-| `CA_FILE` | (empty) | PEM CA certificate. A session whose client certificate it verifies is a **trusted relay peer**: its credential is never checked. Client certificates stay optional for everyone else (browsers present none). Relays this one dials are verified against the system roots plus this CA, and this relay presents its `CERT_FILE` as its client certificate. Unset: no session is a peer. |
+| `CA_FILE` | (empty) | PEM certificate of the relay CA. A native-QUIC session whose client certificate it verifies is an **internal client** (it may subscribe to anything and announce nothing), or a **relay peer** (served without a credential, checked for nothing) when the certificate also carries the peering name. Unset: no session is either. |
+| `PEER_CERT_FILE` / `PEER_KEY_FILE` | (empty) | This relay's peer identity: a certificate `CA_FILE` issued for the peering name, usable for client and server authentication. Set together, and only with `CA_FILE`. It is presented to the relays this one dials and to the relays that dial it. |
+
+The four valid settings:
+
+- nothing: a standalone relay;
+- `CA_FILE` alone: internal clients such as the HLS egress are authenticated, but this relay is no peer;
+- `CA_FILE` and a peer identity: this relay accepts peers but dials none;
+- all three with `PEERS`: full peering.
+
+The relay refuses to start with only one of the two peer files, a peer identity without `CA_FILE`, `PEERS` without all three, or a peer certificate the CA didn't issue, that lacks the peering name, or that isn't valid. A browser is never asked for a certificate.
 
 See [Deployment → TLS & mTLS]({{< relref "deployment/tls" >}}).
 

@@ -26,6 +26,10 @@ type admission struct {
 	decided chan struct{}
 	// grant is set before decided closes. nil is unchecked: a trusted peer.
 	grant *auth.Grant
+	// internal marks an internal client (peer_trust.go): grant restricts
+	// what it may do, but it has no credential to re-check and no usage to
+	// report.
+	internal bool
 	// req is the connect request that admitted the session, set with
 	// grant. A revalidate re-sends it, with the same id.
 	req auth.Request
@@ -41,6 +45,18 @@ type admissionKey struct{}
 
 // refusedGrant is the grant of a refused session: it covers nothing.
 var refusedGrant = &auth.Grant{}
+
+// internalGrant is what an internal client may do: subscribe to anything,
+// announce nothing.
+var internalGrant = mustGrant(nil, []string{"**"})
+
+func mustGrant(publish, subscribe []string) *auth.Grant {
+	g, err := auth.NewGrant(publish, subscribe, time.Time{}, 0)
+	if err != nil {
+		panic(err) // fixed patterns, checked at init
+	}
+	return g
+}
 
 func pendingAdmission() *admission {
 	return &admission{decided: make(chan struct{})}
@@ -59,6 +75,13 @@ func (a *admission) decide(g *auth.Grant, req auth.Request) {
 	a.req = req
 	a.deadline = deadlineOf(g)
 	close(a.decided)
+}
+
+// decideInternal records an internal client's admission: internalGrant,
+// with no connect request behind it.
+func (a *admission) decideInternal() {
+	a.internal = true
+	a.decide(internalGrant, auth.Request{})
 }
 
 // deadlineOf returns when a session holding g must end: its expires, taken

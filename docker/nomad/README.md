@@ -29,6 +29,13 @@ of scaled-up/down hubs.
 
 ## Run
 
+Every relay needs the dev relay CA and a peer identity of its own
+(`mage cert` writes them under `certs/`; the job names them by allocation):
+
+```bash
+PEER_NAMES=hub-asia-0,hub-asia-1,edge-asia-0,edge-asia-1 mage cert
+```
+
 ```bash
 # 1. Build the relay image into the host Docker (Nomad's docker driver runs it).
 docker build -f docker/Dockerfile -t qumo:local .

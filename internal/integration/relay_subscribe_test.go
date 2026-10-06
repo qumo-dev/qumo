@@ -9,6 +9,7 @@ package integration
 import (
 	"context"
 	"crypto/tls"
+	"slices"
 	"testing"
 	"time"
 
@@ -127,9 +128,10 @@ func TestRelay_SubscribeAuth(t *testing.T) {
 }
 
 func TestRelay_SubscribeAuth_TrustedPeerUnchecked(t *testing.T) {
-	peerCert := loadTempCert(t)
+	ca := newTestCA(t)
+	own, peerCert := ca.issue(t, "relay-under-test", true), ca.issue(t, "relay-2", true)
 	server := &fakeAuth{grant: testGrant(t, "acme/**", "acme/app/**", time.Time{}, 0)}
-	addr, srv := startAuthRelay(t, server.authorize, &peerCert)
+	addr, srv := startAuthRelay(t, server.authorize, ca.trust(t, &own))
 	publishOver(t, srv, "https://"+addr+"/?jwt=a.b.c", "/acme/apple/live")
 
 	err := subscribe(t, nativeURL(addr)+"/", &peerCert, "/acme/apple/live")
@@ -144,15 +146,15 @@ func TestRelay_SubscribeAuth_TrustedPeerUnchecked(t *testing.T) {
 // on a: b subscribes to a over a's dialed session.
 func TestRelay_SubscribeAuth_DialedPeerUnchecked(t *testing.T) {
 	const path = moqt.BroadcastPath("/acme/apple/live")
-	peerCert := loadTempCert(t)
+	ca := newTestCA(t)
+	aCert, bCert := ca.issue(t, "relay-a", true), ca.issue(t, "relay-b", true)
 	bAuth := &fakeAuth{grant: testGrant(t, "acme/**", "acme/**", time.Time{}, 0)}
-	bAddr, b := startAuthRelay(t, bAuth.authorize, &peerCert)
+	bAddr, b := startAuthRelay(t, bAuth.authorize, ca.trust(t, &bCert))
 	// a's sessions may subscribe only under acme/app, which the path is not.
 	aAuth := &fakeAuth{grant: testGrant(t, "acme/**", "acme/app/**", time.Time{}, 0)}
-	aAddr, a := startAuthRelay(t, aAuth.authorize, nil, func(s *relay.Server) {
-		// a dials b presenting peerCert, which b verifies: a is b's
-		// trusted peer.
-		s.MOQDialer.TLSConfig.Certificates = []tls.Certificate{peerCert}
+	aAddr, a := startAuthRelay(t, aAuth.authorize, ca.trust(t, &aCert), func(s *relay.Server) {
+		// a dials b with its peer certificate, asking for the peering name;
+		// b answers with its own and verifies a's: each is the other's peer.
 		s.Config.Peers = []relay.Peer{{Address: bAddr}}
 	})
 	go a.ConnectPeers(t.Context())
@@ -200,4 +202,28 @@ func TestRelay_AuthOff(t *testing.T) {
 
 		assert.NoError(t, err)
 	})
+}
+
+// A relay whose PEERS resolve to itself (a group name that includes it) sees
+// its own certificate on the session it dialed, drops it, and does not count
+// it as a peer, while its other peers are unaffected.
+func TestRelay_PeersItself(t *testing.T) {
+	const path = moqt.BroadcastPath("/acme/apple/live")
+	ca := newTestCA(t)
+	aCert, bCert := ca.issue(t, "relay-a", true), ca.issue(t, "relay-b", true)
+	bAuth := &fakeAuth{grant: testGrant(t, "acme/**", "acme/**", time.Time{}, 0)}
+	bAddr, b := startAuthRelay(t, bAuth.authorize, ca.trust(t, &bCert))
+	aAuth := &fakeAuth{grant: testGrant(t, "acme/**", "acme/**", time.Time{}, 0)}
+	var aAddr string
+	aAddr, a := startAuthRelay(t, aAuth.authorize, ca.trust(t, &aCert))
+	// As a group name resolving to both would: itself first.
+	a.Config.Peers = []relay.Peer{{Address: aAddr}, {Address: bAddr}}
+	go a.ConnectPeers(t.Context())
+	publishOver(t, a, "https://"+aAddr+"/?jwt=a.b.c", path)
+
+	require.Eventually(t, routed(b, path), 5*time.Second, 25*time.Millisecond, "a still peers with b")
+	assert.Eventually(t, func() bool { return slices.Equal(a.ConnectedPeers(), []string{bAddr}) },
+		5*time.Second, 25*time.Millisecond, "the session to itself is dropped and not counted")
+	assert.Never(t, func() bool { return slices.Contains(a.ConnectedPeers(), aAddr) },
+		1500*time.Millisecond, 100*time.Millisecond, "and not retried")
 }

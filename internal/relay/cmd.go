@@ -3,7 +3,6 @@ package relay
 import (
 	"context"
 	"crypto/tls"
-	"crypto/x509"
 	"errors"
 	"flag"
 	"fmt"
@@ -14,7 +13,6 @@ import (
 	"net/http/pprof"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
@@ -45,16 +43,23 @@ func sanitizeLog(s string) string {
 //	                               on hosts where it resolves to ::1)
 //	CERT_FILE                    - TLS certificate file (default: "certs/server.crt")
 //	KEY_FILE                     - TLS key file (default: "certs/server.key")
-//	CA_FILE                      - PEM CA certificate (optional). A session
-//	                               whose client certificate it verifies is a
-//	                               trusted relay peer; relays this one dials are
-//	                               also verified against it. Unset: no peers.
+//	CA_FILE                      - PEM CA certificate (optional): the relay CA.
+//	                               A session whose client certificate it
+//	                               verifies is an internal client, or a relay
+//	                               peer when the certificate carries the
+//	                               peering name (peer_trust.go). Unset: no
+//	                               session is either.
+//	PEER_CERT_FILE, PEER_KEY_FILE - this relay's peer identity (optional), a
+//	                               certificate CA_FILE issued for the peering
+//	                               name; set together, and only with CA_FILE.
+//	                               Needed to dial PEERS and to be dialed.
 //	RELAY_NAME                   - node ID (default: "relay-" + hostname)
 //	GROUP_CACHE_SIZE             - completed groups retained per track (default: 8)
 //	FRAME_CAPACITY               - frame buffer size in bytes (default: 1500)
 //	PEERS                        - comma-separated relays to dial (host:port);
 //	                               each host is resolved to all its addresses
-//	                               (e.g. "role-hub.qumo-relay.service.consul:4433")
+//	                               (e.g. "role-hub.qumo-relay.service.consul:4433").
+//	                               Needs CA_FILE and the peer identity.
 //	CORS_ALLOWED_ORIGINS     - comma-separated WebTransport origins allowed to
 //	                           connect (default: same-origin only; "*" allows any;
 //	                           "same-host" allows any port on the request's host).
@@ -102,26 +107,27 @@ func Run(args []string) error {
 		peers = append(peers, Peer{Address: p})
 	}
 
+	// Peer trust (peer_trust.go): a CA and this relay's own peer identity,
+	// checked before anything is loaded so a settings mistake is what fails.
+	trust, err := LoadPeerTrust(os.Getenv("CA_FILE"), os.Getenv("PEER_CERT_FILE"), os.Getenv("PEER_KEY_FILE"), len(peers) > 0)
+	if err != nil {
+		return err
+	}
+
 	tlsConfig, err := setupTLS(certFile, keyFile)
 	if err != nil {
 		return fmt.Errorf("failed to setup TLS: %w", err)
 	}
 
-	// Peer trust: with CA_FILE, a client certificate is optional for everyone
-	// (browsers present none) and verified when given; a verified one makes the
-	// session a trusted relay peer. Without CA_FILE no session is a peer.
-	caPEM, err := readCAFile(os.Getenv("CA_FILE"))
-	if err != nil {
-		return fmt.Errorf("failed to load CA_FILE: %w", err)
-	}
-	if caPEM != nil {
-		clientCAs := x509.NewCertPool()
-		clientCAs.AppendCertsFromPEM(caPEM)
-		tlsConfig.ClientAuth = tls.VerifyClientCertIfGiven
-		tlsConfig.ClientCAs = clientCAs
-		slog.Info("relay: peering on: sessions with a client certificate verified against CA_FILE are trusted peers",
+	tlsConfig = trust.ServerTLS(tlsConfig)
+	switch {
+	case trust.cert != nil:
+		slog.Info("relay: peering on: sessions with a certificate from CA_FILE that carries the peering name are peers",
+			"ca_file", os.Getenv("CA_FILE"), "identity", trust.cert.Leaf.Subject.CommonName)
+	case trust.ca != nil:
+		slog.Info("relay: internal clients on: sessions with a certificate from CA_FILE may subscribe; this relay is no peer (no PEER_CERT_FILE)",
 			"ca_file", os.Getenv("CA_FILE"))
-	} else {
+	default:
 		slog.Info("relay: peering off (no CA_FILE): every inbound session is admitted like a client")
 	}
 
@@ -183,25 +189,14 @@ func Run(args []string) error {
 		// stream-object retention and a GC-driven degradation spiral.
 	}
 
-	// Dialer TLS: advertise only moqt ALPN for native QUIC peer connections.
-	// The server TLS config advertises ["h3", "moqt"] to support both
-	// WebTransport (browsers) and native QUIC (peer relays). If the dialer
-	// sends both, TLS ALPN picks "h3" first → QPACK decompression failure.
-	dialerTLS := tlsConfig.Clone()
-	dialerTLS.NextProtos = []string{moqt.NextProtoMOQ}
-	// Verify dialed relays against the system roots plus CA_FILE (a public
-	// server certificate, or a private one under CA_FILE), and present this
-	// relay's own certificate as the client certificate. ClientAuth/ClientCAs
-	// are server-side settings.
-	dialerTLS.ClientAuth = tls.NoClientCert
-	dialerTLS.ClientCAs = nil
-	if caPEM != nil {
-		roots, err := x509.SystemCertPool()
-		if err != nil {
-			roots = x509.NewCertPool()
-		}
-		roots.AppendCertsFromPEM(caPEM)
-		dialerTLS.RootCAs = roots
+	// Dialing peers: the peer identity as the client certificate, the peering
+	// name as the server name, the CA as the only root (peer_trust.go). The
+	// dialer advertises only the moqt ALPN: with "h3" too, ALPN would pick
+	// h3 and QPACK decompression fail. Without a peer identity there are no
+	// PEERS to dial (LoadPeerTrust), so the dialer never runs.
+	var dialerTLS *tls.Config
+	if trust.cert != nil {
+		dialerTLS = trust.DialerTLS()
 	}
 
 	// Override the QUIC listener's UDP receive buffer (SO_RCVBUF) to a
@@ -228,11 +223,12 @@ func Run(args []string) error {
 			QUICConfig: quicConfig,
 			OnGoaway:   handlePeerGoaway,
 		},
-		Config:         &relayCfg,
-		TrackMux:       trackMux,
-		AllowedOrigins: cors.LoadAllowed(),
-		Authorize:      authorize,
-		End:            reportEnd,
+		Config:          &relayCfg,
+		TrackMux:        trackMux,
+		AllowedOrigins:  cors.LoadAllowed(),
+		Authorize:       authorize,
+		End:             reportEnd,
+		PeerCertificate: trust.OwnCertificate(),
 	}
 
 	httpMux.HandleFunc("/", relayServer.HandleWebTransport)
@@ -275,6 +271,14 @@ func Run(args []string) error {
 	log.Printf("\t%-8s: Prometheus metrics\n", "/metrics")
 	for _, p := range relayCfg.Peers {
 		log.Printf("\t%-8s: %s\n", "Peer", sanitizeLog(p.Address))
+	}
+	switch {
+	case trust.cert != nil:
+		log.Printf("\t%-8s: %s, trusting %s\n", "Peering", sanitizeLog(trust.cert.Leaf.Subject.CommonName), sanitizeLog(os.Getenv("CA_FILE")))
+	case trust.ca != nil:
+		log.Printf("\t%-8s: internal clients only, trusting %s (no PEER_CERT_FILE)\n", "Peering", sanitizeLog(os.Getenv("CA_FILE")))
+	default:
+		log.Printf("\t%-8s: off (no CA_FILE)\n", "Peering")
 	}
 	if verifier != nil {
 		log.Printf("\t%-8s: key set %s\n", "Auth", sanitizeLog(verifier.Source()))
@@ -421,30 +425,6 @@ func envInt(key string, defaultVal int) (int, error) {
 		return 0, err
 	}
 	return n, nil
-}
-
-// readCAFile reads a PEM-encoded CA certificate file and checks it holds at
-// least one certificate. Returns (nil, nil) when caFile is empty: peering off.
-// CA_FILE must be a relative path with no path traversal components.
-func readCAFile(caFile string) ([]byte, error) {
-	if caFile == "" {
-		return nil, nil
-	}
-	if filepath.IsAbs(caFile) {
-		return nil, fmt.Errorf("CA_FILE must be a relative path")
-	}
-	caFile = filepath.Clean(caFile)
-	if caFile == ".." || strings.HasPrefix(caFile, ".."+string(filepath.Separator)) || strings.Contains(caFile, string(filepath.Separator)+".."+string(filepath.Separator)) {
-		return nil, fmt.Errorf("CA_FILE must not contain path traversal")
-	}
-	pemData, err := os.ReadFile(caFile)
-	if err != nil {
-		return nil, fmt.Errorf("read CA file %q: %w", caFile, err)
-	}
-	if !x509.NewCertPool().AppendCertsFromPEM(pemData) {
-		return nil, fmt.Errorf("no valid certificates in CA file %q", caFile)
-	}
-	return pemData, nil
 }
 
 func setupTLS(certFile, keyFile string) (*tls.Config, error) {
