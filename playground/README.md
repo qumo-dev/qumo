@@ -132,6 +132,7 @@ Environment variables live in `playground/.env` (see `.env.example`):
 | Variable          | Description                                              |
 | ----------------- | -------------------------------------------------------- |
 | `VITE_RELAY_URL`  | Relay WebTransport URL (must be HTTPS).                  |
+| `VITE_HLS_URL`    | Base URL of the HLS egress (`qumo hls`). Optional: without it the egress is looked for on the page's host at port 8081. `qumo hls` listens on 8080 by default, so start it with `HLS_ADDR=:8081` and `CORS_ALLOWED_ORIGINS` set to the page's origin. |
 | `VITE_CERT_HASH`  | SHA-256 (hex) of the relay cert. Set by `mage cert` in its self-signed fallback; **not needed** when `mage cert` uses mkcert (browser-trusted). |
 
 The header title is a fixed `qumo` (not configurable).
