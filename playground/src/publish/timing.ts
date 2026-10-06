@@ -27,15 +27,24 @@ export class Rebase {
 	}
 }
 
-// How much sooner than the frame interval a frame may come and still be taken.
-// A camera asked for 30 fps delivers frames a few milliseconds either side of
-// 33 ms apart; one delivering 60 fps is 17 ms apart, and every other is dropped.
-const EARLY = 0.75;
-
-/** Keeps a source that runs faster than the wanted frame rate down to it. */
+/**
+ * Keeps a source that runs faster than the wanted frame rate down to it.
+ *
+ * It holds to a schedule, one frame an interval, and takes the frame nearest
+ * each slot. Judging each frame by its distance from the last one taken
+ * would not do: a source at the wanted rate rarely delivers evenly (a canvas
+ * capture at 30 fps comes 17, 33 and 50 ms apart), and every frame that
+ * followed another closely would be dropped though the rate was right.
+ */
 export class FrameLimiter {
+	// How early a frame may be for its slot, as a share of the interval. Under
+	// a half, so that a source at exactly twice the rate loses every other
+	// frame and not a pattern that depends on rounding.
+	static readonly #EARLY = 0.4;
+
 	readonly #interval: number;
-	#last: number | undefined;
+	// When the next frame is due, on the frames' own timeline.
+	#due: number | undefined;
 
 	/** @param framerate - Frames per second to let through, at most. */
 	constructor(framerate: number) {
@@ -44,10 +53,12 @@ export class FrameLimiter {
 
 	/** Whether to take the frame with this timestamp (microseconds). */
 	takes(timestamp: number): boolean {
-		if (this.#last !== undefined && timestamp - this.#last < this.#interval * EARLY) {
-			return false;
-		}
-		this.#last = timestamp;
+		const due = this.#due ?? timestamp;
+		// Too early: the slot belongs to a later frame.
+		if (timestamp < due - this.#interval * FrameLimiter.#EARLY) return false;
+		// The schedule moves on by one slot. A source that missed a whole
+		// slot starts it afresh, and does not get to make up with a burst.
+		this.#due = (timestamp - due > this.#interval ? timestamp : due) + this.#interval;
 		return true;
 	}
 }
