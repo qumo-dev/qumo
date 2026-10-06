@@ -19,6 +19,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **What the relay asks of the certificate files.** One peer certificate per relay: a relay recognizes itself by its own, so two relays sharing one never peer. A certificate issued by an intermediate CA works with the intermediate after the leaf in `PEER_CERT_FILE` and the root in `CA_FILE`. The files are read once at startup, so a renewed certificate needs a restart.
   - **To move over:** issue a certificate per relay from your CA as `docs/site/content/en/docs/deployment/tls.md` describes (an OpenSSL example is there), and set the two new variables. For development, `mage cert` now also writes a relay CA and peer certificates (`PEER_NAMES=a,b mage cert`); the Compose topologies, the Nomad simulation and the multi-process benchmark use them.
 
+### Fixed
+
+- **A credential whose header carries `crit` is refused** (`token.Verify`, and so the relay). `crit` lists headers a verifier must understand (RFC 7515 4.1.11); the relay understands none beyond `alg`, `kid` and `typ`, and took such a token as valid. No token `token.Sign` or `qumo auth token` makes carries one.
+- **Every answer of the HLS egress carries `Vary: Origin`** (`internal/hls/cors.go`), not only one to an allowed origin. A manifest or segment fetched with no `Origin`, or from an origin that isn't allowed, was answered without it, so a shared cache or CDN in front of the egress could keep that answer and serve it to a page on an allowed origin, whose browser then refused it.
+
 ## [v0.11.261005] - 2026-10-05
 
 > **Breaking for operators.** The auth server is removed: the relay no longer asks one (`QUMO_AUTH_URL`), and `qumo auth` no longer runs one. The relay verifies credentials itself against a key set. To move over, unset `QUMO_AUTH_URL`, set `QUMO_AUTH_KEYS` to the key set the auth server was reading, and stop the `qumo auth` process; tokens and signing keys are unchanged. A relay with `QUMO_AUTH_URL` still set refuses to start. See **Removed** below.
