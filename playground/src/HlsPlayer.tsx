@@ -47,10 +47,10 @@ function formatLatency(ms: number | undefined): string {
 
 // HlsPlayer plays the HLS egress for a track. The egress (`qumo hls`) is a
 // separate process that subscribes to the relay and serves HLS. It is taken
-// to be on `host`, the one the relay is reached on, at port 8081 (which must
-// differ from the playground's own web UI port); VITE_HLS_URL replaces that.
-export function HlsPlayer(props: { path: Accessor<string>; host: string }) {
-	const base = hlsBaseUrl(props.host, globalThis.location.protocol, import.meta.env.VITE_HLS_URL);
+// to be on the host the page was opened at, at port 8081 (which must differ
+// from the playground's own web UI port); VITE_HLS_URL replaces that.
+export function HlsPlayer(props: { path: Accessor<string> }) {
+	const base = hlsBaseUrl(globalThis.location, import.meta.env.VITE_HLS_URL);
 	// props.path() already starts with "/" (e.g. "/hls/<id>"); avoid a double
 	// slash when joining it to base.
 	const playlistUrl = () => `${base}${props.path()}/playlist.m3u8`;

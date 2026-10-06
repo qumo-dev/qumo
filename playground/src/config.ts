@@ -21,7 +21,9 @@ const DEFAULT_RELAY_URL = "https://localhost:4433";
 
 // The port an https URL has when it names none.
 const HTTPS_PORT = 443;
-// The port `qumo hls` listens on unless told otherwise.
+// The port the playground expects the HLS egress on. `qumo hls` listens on
+// 8080 unless told otherwise, which is the playground's own port, so the
+// egress is started with HLS_ADDR=:8081 to go with it.
 const HLS_PORT = 8081;
 
 /** Where the relay is reached: the host, and the port it listens on. */
@@ -36,26 +38,44 @@ export interface RelayEndpoint {
 	port: number;
 }
 
-/** Where the runtime config says the relay is. */
+/**
+ * Where the runtime config says the relay is. A relay URL that names no port
+ * means 443: that is what a URL on the https port looks like once parsed.
+ */
 export function relayEndpoint(config: ResolvedConfig): RelayEndpoint {
 	const url = new URL(config.relayUrl);
 	return { host: url.hostname, port: url.port === "" ? HTTPS_PORT : Number(url.port) };
+}
+
+// Hosts that are this machine. A page on https may still fetch them over
+// http: browsers leave loopback out of mixed-content blocking.
+function isLoopback(hostname: string): boolean {
+	return hostname === "localhost" || hostname.endsWith(".localhost") ||
+		hostname === "127.0.0.1" || hostname === "[::1]";
 }
 
 /**
  * The base URL of the HLS egress (`qumo hls`), with no trailing slash.
  *
  * The egress is a separate process that nothing tells the page about, so it
- * is taken to be on the host the relay is on, at its default port, and
- * served the way the page is: a page on https cannot load it over http.
+ * is taken to be on the host the page was opened at, at port 8081. Under
+ * `qumo playground` that is the host the relay is on as well; under Vite it
+ * is this machine, wherever the relay is.
  *
- * @param host - The host the relay is reached on.
- * @param pageProtocol - The page's own protocol, such as `location.protocol`.
+ * The egress serves plain http. A page on https can only fetch that from
+ * this machine, so anywhere else the guess is https, which holds only if
+ * something in front of the egress terminates TLS on that port.
+ *
+ * @param page - Where the page was opened: `location`, or its two fields.
  * @param override - A base URL that replaces the guess, such as VITE_HLS_URL.
  */
-export function hlsBaseUrl(host: string, pageProtocol: string, override?: string): string {
+export function hlsBaseUrl(
+	page: { protocol: string; hostname: string },
+	override?: string,
+): string {
 	if (override !== undefined && override !== "") return override.replace(/\/+$/, "");
-	return `${pageProtocol === "https:" ? "https:" : "http:"}//${host}:${HLS_PORT}`;
+	const secure = page.protocol === "https:" && !isLoopback(page.hostname);
+	return `${secure ? "https:" : "http:"}//${page.hostname}:${HLS_PORT}`;
 }
 
 /**
@@ -111,9 +131,12 @@ async function resolveConfig(): Promise<ResolvedConfig> {
 	return envFallback();
 }
 
+// The build-time values, checked as /config's answer is: a VITE_RELAY_URL
+// that is not an https URL would otherwise fail later, where the relay's
+// address is taken apart, and leave the page connecting for ever.
 function envFallback(): ResolvedConfig {
-	return {
-		relayUrl: import.meta.env.VITE_RELAY_URL ?? DEFAULT_RELAY_URL,
+	return parseConfig({
+		relayUrl: import.meta.env.VITE_RELAY_URL,
 		certHash: import.meta.env.VITE_CERT_HASH,
-	};
+	});
 }

@@ -51,20 +51,38 @@ Deno.test("relayEndpoint takes the https port for a relay URL that names none", 
 	assertEquals(endpoint, { host: "example.com", port: 443 });
 });
 
-Deno.test("hlsBaseUrl puts the egress on the relay's host, served as the page is", () => {
+Deno.test("hlsBaseUrl puts the egress on the page's host, at port 8081", () => {
 	const cases = [
-		{ host: "localhost", page: "http:", want: "http://localhost:8081" },
-		{ host: "192.168.1.20", page: "http:", want: "http://192.168.1.20:8081" },
-		{ host: "example.com", page: "https:", want: "https://example.com:8081" },
-		{ host: "[::1]", page: "http:", want: "http://[::1]:8081" },
+		{ hostname: "localhost", want: "http://localhost:8081" },
+		{ hostname: "192.168.1.20", want: "http://192.168.1.20:8081" },
+		{ hostname: "[::1]", want: "http://[::1]:8081" },
 	] as const;
 
 	for (const c of cases) {
-		assertEquals(hlsBaseUrl(c.host, c.page), c.want);
+		assertEquals(hlsBaseUrl({ protocol: "http:", hostname: c.hostname }), c.want);
 	}
 });
 
+Deno.test("hlsBaseUrl keeps http for this machine even from a page on https", () => {
+	const cases = ["localhost", "app.localhost", "127.0.0.1", "[::1]"] as const;
+
+	for (const hostname of cases) {
+		assertEquals(
+			hlsBaseUrl({ protocol: "https:", hostname }),
+			`http://${hostname}:8081`,
+			hostname,
+		);
+	}
+});
+
+Deno.test("hlsBaseUrl uses https from a page on https anywhere else", () => {
+	const base = hlsBaseUrl({ protocol: "https:", hostname: "example.com" });
+
+	assertEquals(base, "https://example.com:8081");
+});
+
 Deno.test("hlsBaseUrl takes an override in place of its guess", () => {
+	const page = { protocol: "http:", hostname: "localhost" };
 	const cases = [
 		{ name: "as given", override: "https://hls.example.com", want: "https://hls.example.com" },
 		{
@@ -76,6 +94,6 @@ Deno.test("hlsBaseUrl takes an override in place of its guess", () => {
 	] as const;
 
 	for (const c of cases) {
-		assertEquals(hlsBaseUrl("localhost", "http:", c.override), c.want, c.name);
+		assertEquals(hlsBaseUrl(page, c.override), c.want, c.name);
 	}
 });

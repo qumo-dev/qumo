@@ -1,6 +1,9 @@
-// Scenario registry for the demo. One source of truth for each pipeline's
-// WebTransport origin port, UI mode, and (for ingest scenarios) the push
-// scheme/port used to build the ffmpeg command shown in the UI.
+// Scenario registry for the demo. One source of truth for each pipeline's UI
+// mode, for the WebTransport port of the ones that are ingests (the relay's
+// own port comes from the runtime config), and for the push scheme and port
+// used to build the ffmpeg command shown in the UI.
+
+import type { RelayEndpoint } from "./config.ts";
 
 export type ScenarioId = "echo" | "rtmp" | "rtsp" | "camera" | "hls";
 export type ScenarioMode = "publish-subscribe" | "subscribe";
@@ -73,7 +76,7 @@ export function isScenarioId(x: string): x is ScenarioId {
 // Each scenario is a WebTransport origin on the one host the runtime config
 // names (see relayEndpoint in config.ts): the relay itself, on the port it was
 // started on, or an ingest on a port of its own.
-export function relayUrlFor(id: ScenarioId, relay: { host: string; port: number }): string {
+export function relayUrlFor(id: ScenarioId, relay: RelayEndpoint): string {
 	return `https://${relay.host}:${SCENARIOS[id].port ?? relay.port}`;
 }
 

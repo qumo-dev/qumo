@@ -49,6 +49,9 @@ export function ScenarioView(props: {
 	}).then((s) => s);
 
 	let certReady = false;
+	// The session is dialled once. Everything below holds the one promise, so
+	// a second connection would be used by nothing and closed by nothing.
+	let dialled = false;
 	let cachedTransportOptions:
 		| ReturnType<typeof buildTransportOptions>["transportOptions"]
 		| undefined;
@@ -59,7 +62,8 @@ export function ScenarioView(props: {
 	// onMount.
 	const doDial = () => {
 		const to = relay();
-		if (!certReady || to === undefined) return;
+		if (!certReady || to === undefined || dialled) return;
+		dialled = true;
 		setConnState("connecting");
 		const connected = connect(relayUrlFor(props.scenario, to), {
 			mux,
@@ -109,9 +113,10 @@ export function ScenarioView(props: {
 		}
 	});
 
-	// Camera: dial when the pull becomes active.
+	// Camera: dial when the pull is active and the config has been read,
+	// whichever comes last.
 	createEffect(() => {
-		if (isCamera && pullActive() && certReady) {
+		if (isCamera && pullActive() && relay() !== undefined) {
 			doDial();
 		}
 	});
@@ -157,8 +162,8 @@ export function ScenarioView(props: {
 				<Show when={showsSubscriber()}>
 					<SubscribeBoard session={session} path={props.path} observer={recorder} />
 				</Show>
-				<Show when={isHls ? relay()?.host : undefined}>
-					{(reached) => <HlsPlayer path={props.path} host={reached()} />}
+				<Show when={isHls}>
+					<HlsPlayer path={props.path} />
 				</Show>
 				<Show when={isCamera && !pullActive()}>
 					<div class="video-empty">
