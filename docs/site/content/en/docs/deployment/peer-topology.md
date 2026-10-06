@@ -39,7 +39,11 @@ on which addresses are dialed.
 Peers authenticate each other with mutual TLS under a relay CA (`CA_FILE`,
 `PEER_CERT_FILE`, `PEER_KEY_FILE`); a relay with `PEERS` refuses to start
 without them. See [TLS & mTLS]({{< relref "tls" >}}#trusted-peers-optional).
-A relay whose `PEERS` resolve to itself drops that session.
+A relay whose `PEERS` resolve to itself drops that session. Announcements
+flow both ways over one peer session, so one side's `PEERS` naming the
+other is enough for both to relay each other's broadcasts; listing every
+relay on every relay only saves the dial from depending on which started
+first.
 
 Each connection dials QUIC with ALPN `moqt`, exchanges `ANNOUNCE_PLEASE` /
 `ANNOUNCE`, and registers the peer's tracks on the local `TrackMux`. On

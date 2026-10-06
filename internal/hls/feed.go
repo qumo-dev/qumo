@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"time"
 
+	"github.com/quic-go/quic-go"
 	"github.com/qumo-dev/gomoqt/moqt"
 	"github.com/qumo-dev/gomoqt/msf"
 
@@ -152,6 +153,7 @@ func connect(ctx context.Context, cfg feedConfig) (*moqt.Session, mediaInfo, err
 
 	catalog, err := fetchCatalog(ctx, session, cfg.trackPath)
 	if err != nil {
+		err = sessionRefusal(session, err)
 		// not actionable: the close outcome is irrelevant once the catalog read failed.
 		_ = session.CloseWithError(moqt.NoError, "catalog fetch failed")
 		return nil, mediaInfo{}, err
@@ -203,6 +205,23 @@ func packagerForTrack(c msf.Catalog, t *msf.Track) (*cmaf.Packager, error) {
 		// the track's initRef.
 		Description: initFromTrack(c, t),
 	})
+}
+
+// sessionRefusal returns what to report for a subscribe that failed with
+// err. A relay that won't serve a session closes it with "unauthorized"
+// before answering anything, so a subscribe in flight fails with that
+// close; the session's cause then says so, and the two ways in are named.
+// Any other close by the relay is reported as such; otherwise err.
+func sessionRefusal(session *moqt.Session, err error) error {
+	var appErr *quic.ApplicationError
+	cause := context.Cause(session.Context())
+	if !errors.As(cause, &appErr) || !appErr.Remote {
+		return err
+	}
+	if appErr.ErrorCode == quic.ApplicationErrorCode(moqt.UnauthorizedSessionErrorCode) {
+		return fmt.Errorf("hls: the relay refused the session (%w): connect with a credential (?jwt= in RELAY_URL) or a client certificate from its CA (RELAY_CERT_FILE)", cause)
+	}
+	return fmt.Errorf("hls: the relay closed the session: %w", cause)
 }
 
 // fetchCatalog subscribes to the reserved catalog track and parses its first

@@ -47,7 +47,12 @@ qumo relay --role hub    # or "edge"; omit for a standalone / flat relay
 There is no runtime peer-discovery service — the list is static, resolved and
 dialed once at startup and re-dialed with backoff on disconnect. A relay
 that starts later must dial the earlier ones; they learn of it only when
-they restart. See
+they restart. Every resolved address is dialed and retried for as long as
+the relay runs, so name peers by addresses they listen on: `localhost`
+resolves to `::1` as well, and a relay bound to `127.0.0.1` leaves that
+dial warning forever. A peer that stops cleanly (SIGINT, GOAWAY) is
+re-dialed at once; one that vanishes without closing is noticed after the
+QUIC idle timeout, 60 s. See
 [Deployment → Peer topology]({{< relref "deployment/peer-topology" >}}) for
 how they fit together, and [Deployment → Nomad]({{< relref "deployment/nomad" >}})
 for a worked example of giving relays stable addresses on Nomad.

@@ -601,8 +601,11 @@ func (s *Server) relayPeer(sess *moqt.Session) {
 	req := s.nativeRequest(sess)
 	g, err := s.admit(sess.Context(), req)
 	if err != nil {
-		a.decide(refusedGrant, req)
+		// Closed before the decision: a subscribe the client already sent
+		// then fails with the session's error (unauthorized), not with the
+		// refused grant's "track does not exist", so the client learns why.
 		_ = sess.CloseWithError(moqt.UnauthorizedSessionErrorCode, "refused")
+		a.decide(refusedGrant, req)
 		return
 	}
 	a.decide(g, req)

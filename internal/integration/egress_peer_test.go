@@ -68,7 +68,13 @@ func TestEgress_ClientCertificateIsInternalClient(t *testing.T) {
 				assert.Len(t, server.received(), asked, "an internal client is never asked about")
 				return
 			}
-			assert.Error(t, err)
+			// The relay closes a refused session before answering its
+			// subscribes, so the client learns the reason rather than a
+			// "track does not exist" for a path that may well exist.
+			var appErr *quic.ApplicationError
+			require.ErrorAs(t, err, &appErr, "the subscribe fails with the relay's close")
+			assert.True(t, appErr.Remote)
+			assert.Equal(t, quic.ApplicationErrorCode(moqt.UnauthorizedSessionErrorCode), appErr.ErrorCode)
 		})
 	}
 
