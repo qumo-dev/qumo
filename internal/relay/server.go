@@ -2,10 +2,11 @@ package relay
 
 import (
 	"context"
-	"crypto/tls"
 	"log/slog"
+	"maps"
 	"net"
 	"net/http"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -22,10 +23,18 @@ type Server struct {
 	MOQServer *moqt.Server
 	// MOQDialer is used for outbound peer connections. The caller must set
 	// TLSConfig with NextProtos: []string{moqt.NextProtoMOQ} only, so that
-	// ALPN negotiation does not accidentally select "h3".
+	// ALPN negotiation does not accidentally select "h3"; the relay command
+	// sets (*PeerTrust).DialerTLS, which also names PeeringName.
 	MOQDialer *moqt.Dialer
-	Config    *Config
-	TrackMux  *moqt.TrackMux
+	// PeerCertificate is this relay's own peer certificate (DER), or nil
+	// without a peer identity. A dialed peer that presents it is this relay
+	// itself, reached through a name in Config.Peers that resolves to it
+	// too: that session is dropped and not retried. So is a session with another relay holding the same
+	// certificate, which nothing tells apart from this one: every relay
+	// needs a peer certificate of its own.
+	PeerCertificate []byte
+	Config          *Config
+	TrackMux        *moqt.TrackMux
 
 	// AllowedOrigins is the list of WebTransport origins the browser-facing
 	// handler accepts (CSWT mitigation). nil/empty = same-origin only (secure
@@ -43,7 +52,8 @@ type Server struct {
 	// refuses it as unavailable.
 	//
 	// A nil Authorize refuses every client session and logs why: a Server
-	// never runs open by omission. Trusted peers are never asked.
+	// never runs open by omission. Relay peers and internal clients
+	// (peer_trust.go) are never asked.
 	Authorize func(ctx context.Context, req auth.Request) (*auth.Grant, error)
 
 	// End reports the end of a checked session, with its final byte totals:
@@ -74,6 +84,9 @@ type Server struct {
 	// or connected to prevent duplicate maintainPeer goroutines.
 	connectedMu sync.Mutex
 	connected   map[string]struct{}
+	// peerSessions holds the dialed addresses this relay has a session to
+	// right now, a subset of connected; also guarded by connectedMu.
+	peerSessions map[string]struct{}
 
 	// routeMu guards alternates: per-BroadcastPath route-election losers that
 	// are retained (not cancelled) so they can be promoted if the active route's
@@ -419,6 +432,30 @@ func resolvePeerAddrs(ctx context.Context, entry string) []string {
 	return addrs
 }
 
+// ConnectedPeers returns the addresses of the peers this relay has dialed
+// and holds a session to, for tests. A dial that reached this relay itself,
+// or that is between retries, is not among them.
+func (s *Server) ConnectedPeers() []string {
+	s.connectedMu.Lock()
+	defer s.connectedMu.Unlock()
+	return slices.Sorted(maps.Keys(s.peerSessions))
+}
+
+// setPeerSession records whether this relay holds a session to the peer it
+// dialed at addr.
+func (s *Server) setPeerSession(addr string, held bool) {
+	s.connectedMu.Lock()
+	defer s.connectedMu.Unlock()
+	if !held {
+		delete(s.peerSessions, addr)
+		return
+	}
+	if s.peerSessions == nil {
+		s.peerSessions = make(map[string]struct{})
+	}
+	s.peerSessions[addr] = struct{}{}
+}
+
 // isConnected reports whether addr is currently in the connected set.
 // It is safe for concurrent use.
 func (s *Server) isConnected(addr string) bool {
@@ -499,10 +536,26 @@ func (s *Server) maintainPeer(ctx context.Context, peer Peer) {
 		for {
 			// A peer this relay dialed from its own configuration is trusted:
 			// its session carries no admission, so nothing on it is checked.
+			// The handshake verified the peer's certificate against the CA
+			// for the peering name; the one peer it must not be is this
+			// relay.
+			if isSelf(sess.ConnectionState().TLS, s.PeerCertificate) {
+				// Expected for a name among the peers that resolves to this
+				// relay too. A relay sharing this one's certificate looks the
+				// same, and would never be peered with: hence the reminder.
+				slog.Info("relay: dialed peer is this relay; not dialing it again (a relay sharing this peer certificate looks the same: each needs its own)",
+					"address", peer.Address)
+				_ = sess.CloseWithError(moqt.NoError, "self")
+				return
+			}
+			_, identity := classify(sess.ConnectionState().TLS)
+			slog.Info("relay: peer connected", "address", peer.Address, "identity", identity)
+			s.setPeerSession(peer.Address, true)
 			s.serveSession(sess)
 
 			<-sess.Context().Done()
 
+			s.setPeerSession(peer.Address, false)
 			slog.Info("peer disconnected", "address", peer.Address)
 
 			// Attempt one immediate reconnect with a small random jitter to
@@ -540,11 +593,11 @@ func (s *Server) Relay(sess *moqt.Session) {
 	s.serveSession(sess)
 }
 
-// relayPeer handles inbound native QUIC sessions. A trusted relay peer, one
-// that presented a client certificate verified against CA_FILE, is served
-// without asking. Any other native-QUIC session is admitted exactly like a
-// WebTransport client: speaking the native protocol is not itself proof of
-// being a peer.
+// relayPeer handles inbound native QUIC sessions. What the handshake made
+// the session decides (peer_trust.go): a relay peer is served without
+// asking; an internal client may subscribe and announce nothing; any other
+// native-QUIC session is admitted exactly like a WebTransport client, since
+// speaking the native protocol is not itself proof of being a peer.
 func (s *Server) relayPeer(sess *moqt.Session) {
 	a := admissionFrom(sess.Context())
 	if a == nil {
@@ -552,31 +605,38 @@ func (s *Server) relayPeer(sess *moqt.Session) {
 		_ = sess.CloseWithError(moqt.UnauthorizedSessionErrorCode, "not admitted")
 		return
 	}
-	if s.trustedPeer(sess) {
+	state := sess.ConnectionState().TLS
+	if isSelf(state, s.PeerCertificate) {
+		// This relay dialed itself through a name among its peers; the
+		// dialing side drops the session too.
+		a.decide(refusedGrant, auth.Request{})
+		_ = sess.CloseWithError(moqt.NoError, "self")
+		return
+	}
+	switch class, identity := classify(state); class {
+	case classPeer:
+		slog.Info("relay: peer session", "remote", sess.RemoteAddr(), "identity", identity)
 		a.decide(nil, auth.Request{})
+		s.serveSession(sess)
+		return
+	case classInternal:
+		slog.Info("relay: internal client session", "remote", sess.RemoteAddr(), "identity", identity)
+		a.decideInternal()
 		s.serveSession(sess)
 		return
 	}
 	req := s.nativeRequest(sess)
 	g, err := s.admit(sess.Context(), req)
 	if err != nil {
-		a.decide(refusedGrant, req)
+		// Closed before the decision: a subscribe the client already sent
+		// then fails with the session's error (unauthorized), not with the
+		// refused grant's "track does not exist", so the client learns why.
 		_ = sess.CloseWithError(moqt.UnauthorizedSessionErrorCode, "refused")
+		a.decide(refusedGrant, req)
 		return
 	}
 	a.decide(g, req)
 	s.serveSession(sess)
-}
-
-func (s *Server) trustedPeer(sess *moqt.Session) bool {
-	return isTrustedPeer(sess.ConnectionState().TLS)
-}
-
-// isTrustedPeer reports whether a native-QUIC session is a relay peer: its TLS
-// handshake verified a client certificate chain against CA_FILE. Without
-// CA_FILE the relay verifies no client certificates, so no session is a peer.
-func isTrustedPeer(state *tls.ConnectionState) bool {
-	return state != nil && len(state.VerifiedChains) > 0
 }
 
 // serveSession is the shared core for Relay, relayPeer and maintainPeer. The
@@ -588,7 +648,9 @@ func (s *Server) serveSession(sess *moqt.Session) {
 		return
 	}
 	a := admissionFrom(sess.Context())
-	checked := a != nil && a.grant != nil
+	// An internal client is restricted by its grant but has no credential:
+	// nothing to re-check, and no usage to report.
+	checked := a != nil && a.grant != nil && !a.internal
 	var l *lease
 	if checked {
 		a.served.Store(true)
@@ -617,7 +679,7 @@ func (s *Server) serveSession(sess *moqt.Session) {
 	sampleSessionStats(sess, addr) // immediate first sample
 	defer s.sampler.removeSession(addr)
 
-	slog.Info("relay: new session", "remote", addr, "checked", g != nil)
+	slog.Info("relay: new session", "remote", addr, "checked", checked)
 
 	announced, err := sess.AcceptAnnounce("/")
 	if err != nil {

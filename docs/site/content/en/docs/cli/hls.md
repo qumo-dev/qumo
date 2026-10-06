@@ -62,10 +62,12 @@ RELAY_TLS_INSECURE=true qumo hls           # dev relay with a self-signed cert
 
 The egress is an HLS **origin**: viewers are authorized in front of it, by your
 CDN or application, not by the relay. So it doesn't connect with a credential.
-Against a relay with auth on (`QUMO_AUTH_KEYS`), it connects as a
-**trusted peer** instead. It presents a client certificate from the private CA
-that the relay trusts as `CA_FILE`, and the relay then never checks the
-egress for a credential, so the session has no grant to expire.
+Against a relay with auth on (`QUMO_AUTH_KEYS`), it connects as an
+**internal client** instead. It presents a client certificate from the relay CA
+that the relay trusts as `CA_FILE`, issued **without** the peering name (it is
+not a relay peer), and the relay then never checks the egress for a
+credential, so the session has no grant to expire. It may subscribe to
+anything and announce nothing.
 
 ```bash
 RELAY_URL=moqt://relay.example.com:4433 \
@@ -73,7 +75,7 @@ RELAY_CERT_FILE=/secrets/egress.crt RELAY_KEY_FILE=/secrets/egress.key \
 RELAY_CA_FILE=/secrets/relay-ca.crt qumo hls
 ```
 
-- **Native QUIC only:** only a native-QUIC session can be a trusted peer, so a
+- **Native QUIC only:** only a native-QUIC session can be an internal client, so a
   client certificate needs a `moqt://` `RELAY_URL`. The egress refuses to start
   otherwise.
 - **Renewal:** the certificate is read again on every reconnect, so a
@@ -101,7 +103,7 @@ All configuration is via environment variables:
 | `HLS_LIVE_TIMEOUT_S` | `10` | Seconds of silence after which the publisher is treated as gone; the feed reconnects and manifests answer `503`. |
 | `RELAY_CA_FILE` | _unset_ | PEM cert to trust as the relay's root, overriding the system roots. Unset means verify against the system root store. |
 | `RELAY_TLS_INSECURE` | `false` | Skip relay TLS verification entirely. Dominates `RELAY_CA_FILE` when both are set. |
-| `RELAY_CERT_FILE`, `RELAY_KEY_FILE` | _unset_ | The egress's client certificate and key (PEM), from the private CA the relay trusts as `CA_FILE`. The relay serves the egress as a trusted peer: no credential, no expiry. Set both or neither; they need a `moqt://` `RELAY_URL`. |
+| `RELAY_CERT_FILE`, `RELAY_KEY_FILE` | _unset_ | The egress's client certificate and key (PEM), from the private CA the relay trusts as `CA_FILE`. The relay serves the egress as an internal client: no credential, no expiry, subscribe-only. Set both or neither; they need a `moqt://` `RELAY_URL`. |
 | `CORS_ALLOWED_ORIGINS` | _unset_ | Comma-separated origins allowed to fetch manifests and segments, or `*` for any. Unset disables CORS. Required when the player is served from another origin (e.g. `http://localhost:5173` for the playground). |
 
 ## See also

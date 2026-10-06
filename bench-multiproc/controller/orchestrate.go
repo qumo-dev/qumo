@@ -37,6 +37,13 @@ func RunCell(ctx context.Context, cfg *Config, qumoBin, certDir string) (*CellRe
 	if err != nil {
 		return nil, fmt.Errorf("cert generation: %w", err)
 	}
+	var names []string
+	for _, r := range top.AllRelays() {
+		names = append(names, r.Name)
+	}
+	if err := EnsurePeerCredentials(certDir, names); err != nil {
+		return nil, fmt.Errorf("peer credentials: %w", err)
+	}
 
 	// ---- Step 3: Start hub ----
 	slog.Info("starting hub")

@@ -56,12 +56,13 @@ import (
 //	                     RELAY_CA_FILE when both are set.
 //	RELAY_CERT_FILE,
 //	RELAY_KEY_FILE      - the egress's client certificate and key (PEM), from
-//	                     the private CA the relay trusts as CA_FILE. The relay
-//	                     then serves the egress as a trusted peer: no auth
-//	                     server, no credential, no expiry. Set both or neither;
-//	                     they need a moqt:// RELAY_URL, since only native QUIC
-//	                     sessions can be trusted peers. Re-read on every
-//	                     reconnect, so a renewed certificate is picked up.
+//	                     the relay CA the relay trusts as CA_FILE, without the
+//	                     peering name. The relay then serves the egress as an
+//	                     internal client: no credential, no expiry, subscribe
+//	                     only. Set both or neither; they need a moqt://
+//	                     RELAY_URL, since only native QUIC sessions present a
+//	                     certificate. Re-read on every reconnect, so a renewed
+//	                     certificate is picked up.
 //	CORS_ALLOWED_ORIGINS - comma-separated origins allowed to fetch manifests
 //	                     and segments, or "*" for any. Unset disables CORS.
 //	                     Required when the player is served from another origin,

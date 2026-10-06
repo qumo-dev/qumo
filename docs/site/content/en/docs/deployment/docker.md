@@ -45,6 +45,8 @@ services:
 ```
 
 For a multi-node mesh (hub + edge, one or more regions), every node runs the
-same image — only `RELAY_NAME`, `--role`, and `PEERS` differ per service. See
+same image — `RELAY_NAME`, `--role`, `PEERS` and the relay's own peer
+certificate (`PEER_CERT_FILE`, `PEER_KEY_FILE`) differ per service; the relay
+CA (`CA_FILE`) is the same for all. See
 [Peer topology]({{< relref "peer-topology" >}}) for how nodes discover and
 connect to each other.

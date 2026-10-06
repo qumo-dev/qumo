@@ -163,6 +163,19 @@ func TestRun_RefusesQUMOAuthURL(t *testing.T) {
 	assert.ErrorContains(t, err, "QUMO_AUTH_URL is no longer supported")
 }
 
+// A relay told to dial peers without a CA and a peer identity stops at
+// startup rather than dialing with the wrong certificate.
+func TestRun_RefusesPeersWithoutPeerTrust(t *testing.T) {
+	t.Setenv("PEERS", "hub:4433")
+	t.Setenv("CA_FILE", "")
+	t.Setenv("PEER_CERT_FILE", "")
+	t.Setenv("PEER_KEY_FILE", "")
+
+	err := Run(nil)
+
+	assert.ErrorContains(t, err, "PEERS needs CA_FILE, PEER_CERT_FILE and PEER_KEY_FILE")
+}
+
 // TestParseRelayArgs covers the --role flag: it is the only execution-mode
 // flag (secrets/deployment config stay env), and it is flag-only — there is no
 // ROLE env fallback to misconfigure against.

@@ -56,3 +56,21 @@ func TestResolveFramePool(t *testing.T) {
 		assert.NotSame(t, DefaultFramePool, p, "explicit capacity should mint a dedicated pool")
 	})
 }
+
+func Test_splitAddrList(t *testing.T) {
+	tests := map[string]struct {
+		raw  string
+		want []string
+	}{
+		"empty":                {raw: "", want: nil},
+		"one":                  {raw: "hub:4433", want: []string{"hub:4433"}},
+		"list with whitespace": {raw: " hub1:4433 , hub2:4433 ,", want: []string{"hub1:4433", "hub2:4433"}},
+	}
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			got := splitAddrList(tt.raw)
+
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}

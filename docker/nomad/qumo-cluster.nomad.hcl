@@ -52,6 +52,11 @@ job "qumo-cluster" {
       env {
         RELAY_ADDR = "0.0.0.0:4433"
         RELAY_NAME = "hub-asia-${NOMAD_ALLOC_INDEX}"
+        # Peer trust: the dev relay CA and this relay's own peer identity,
+        # from `mage cert` (PEER_NAMES=hub-asia-0,hub-asia-1,edge-asia-0,edge-asia-1).
+        CA_FILE        = "certs/peer-ca.crt"
+        PEER_CERT_FILE = "certs/peers/hub-asia-${NOMAD_ALLOC_INDEX}.crt"
+        PEER_KEY_FILE  = "certs/peers/hub-asia-${NOMAD_ALLOC_INDEX}.key"
       }
 
       resources {
@@ -91,6 +96,9 @@ job "qumo-cluster" {
       env {
         RELAY_ADDR = "0.0.0.0:4433"
         RELAY_NAME = "edge-asia-${NOMAD_ALLOC_INDEX}"
+        CA_FILE        = "certs/peer-ca.crt"
+        PEER_CERT_FILE = "certs/peers/edge-asia-${NOMAD_ALLOC_INDEX}.crt"
+        PEER_KEY_FILE  = "certs/peers/edge-asia-${NOMAD_ALLOC_INDEX}.key"
         # Static upstream list: both hub aliases from the "hubs" group above.
         # Fixed to match that group's count = 2; bump both together.
         PEERS = "hub-0:4433,hub-1:4433"
