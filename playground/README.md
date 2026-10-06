@@ -169,9 +169,11 @@ browser-trusted for every origin; in the self-signed fallback a single
 
 ## Controls
 
-- **Publish (Echo):** resolution (480p/720p/1080p), framerate (24/30/60), and
-  bitrate (0.5–6 Mbps) picks. These shape the camera capture and the encoder;
-  stop and restart to apply a change mid-session.
+- **Publish (Echo):** source (camera, screen, or a test pattern made in the
+  page, which needs no camera and no permission), resolution
+  (480p/720p/1080p), framerate (24/30/60), and bitrate (0.5–6 Mbps) picks.
+  These shape the capture and the encoder; stop and restart to apply a change
+  mid-session.
 - **Subscribe:** mute, volume, and fullscreen. These are viewer controls only —
   MoQ is live, so there is no pause/seek/scrub.
 - **Stats overlay:** while a stream is active, both boards show a live readout
@@ -219,7 +221,11 @@ src/
   ConnectionStatus.tsx WebTransport lifecycle indicator (#134)
   scenarios.ts         Scenario registry (ports, modes, push commands)
   cert.ts              VITE_CERT_HASH parsing + transport options
-  publish/             Publish board: capture → encode → MoQ
+  publish/             Publish board, and the publisher behind it (publisher.ts):
+                       capture → encode → MoQ, with no UI of its own.
+                       fanout.ts sends a track's frames to each subscriber
+    audio/             Capture on the audio thread + WebCodecs encode
+    video/             Track frames → preview canvas + WebCodecs encode
   subscribe/           Subscribe board: start/stop, controls, stats overlay
   player/              Viewer: MoQ → decode → canvas, with no UI of its own.
                        Reads tracks through its own small interface

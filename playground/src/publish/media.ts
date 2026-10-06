@@ -1,8 +1,9 @@
 import { createLogger } from "@okdaichi/media-log";
+import { patternStream } from "./pattern.ts";
 
 const log = createLogger("media");
 
-export type MediaSourceType = "camera" | "screen";
+export type MediaSourceType = "camera" | "screen" | "pattern";
 
 export interface MediaConstraints {
 	width?: number;
@@ -39,8 +40,20 @@ export const getMediaStream = async (
 					},
 					audio: true,
 				});
-			default:
-				throw new Error(`Unsupported media source type: ${type}`);
+			case "pattern":
+				// Drawn here, so it is exactly what was asked for and needs
+				// no permission.
+				return patternStream({
+					width: w ?? 1280,
+					height: h ?? 720,
+					frameRate: fps ?? 30,
+				});
+			default: {
+				// A source added to MediaSourceType and not handled above
+				// fails to compile here.
+				const unhandled: never = type;
+				throw new TypeError(`unsupported media source: ${String(unhandled)}`);
+			}
 		}
 	} catch (err) {
 		// Rethrow the ORIGINAL error (typically a DOMException) unchanged.

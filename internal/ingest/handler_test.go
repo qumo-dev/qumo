@@ -108,6 +108,100 @@ func TestTrackBuffer_Get_SlotTakenOver(t *testing.T) {
 	assert.Nil(t, b.get(first.seq))
 }
 
+func TestTrackBuffer_Next(t *testing.T) {
+	open := func(n int) *trackBuffer {
+		b := newTestTrackBuffer()
+		for range n {
+			b.openGroup()
+		}
+		return b
+	}
+
+	tests := map[string]struct {
+		opened      int
+		last        moqt.GroupSequence
+		wantSeq     moqt.GroupSequence // 0: no group to serve
+		wantServed  moqt.GroupSequence
+		wantSkipped bool
+	}{
+		"nothing published yet": {
+			opened: 0, last: 0, wantSeq: 0, wantServed: 0,
+		},
+		"the first group": {
+			opened: 1, last: 0, wantSeq: 1, wantServed: 1,
+		},
+		"caught up": {
+			opened: 3, last: 3, wantSeq: 0, wantServed: 3,
+		},
+		"the group after the last one served": {
+			opened: 3, last: 1, wantSeq: 2, wantServed: 2,
+		},
+		"the oldest group still in the ring": {
+			opened: 10, last: 2, wantSeq: 3, wantServed: 3,
+		},
+		"fallen out of the ring skips to the newest": {
+			opened: 10, last: 1, wantSeq: 10, wantServed: 10, wantSkipped: true,
+		},
+	}
+
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			b := open(tt.opened)
+
+			g, served, skipped := b.next(tt.last)
+
+			var gotSeq moqt.GroupSequence
+			if g != nil {
+				gotSeq = g.seq
+			}
+			assert.Equal(t, tt.wantSeq, gotSeq)
+			assert.Equal(t, tt.wantServed, served)
+			assert.Equal(t, tt.wantSkipped, skipped)
+		})
+	}
+}
+
+// openGroup advances head before it stores the group. A subscriber that looks
+// in between is told there is nothing yet and keeps its place, so that it
+// waits for the push's notification rather than asking again at once.
+func TestTrackBuffer_Next_HeadAdvancedBeforeStore(t *testing.T) {
+	b := newTestTrackBuffer()
+	b.openGroup()
+	b.pos.Add(1) // head counts group 2, which is not stored yet
+
+	g, served, skipped := b.next(1)
+
+	assert.Nil(t, g)
+	assert.Equal(t, moqt.GroupSequence(1), served)
+	assert.False(t, skipped)
+}
+
+// A subscriber that skips to a newest group not yet stored is counted as
+// having skipped once: it keeps the place just before that group, and the
+// next look serves it without another skip.
+func TestTrackBuffer_Next_SkipToGroupNotYetStored(t *testing.T) {
+	b := newTestTrackBuffer()
+	for range defaultRingSize + 1 {
+		b.openGroup()
+	}
+	newest := moqt.GroupSequence(b.pos.Add(1)) // counted by head, not stored yet
+
+	g, served, skipped := b.next(0)
+
+	assert.Nil(t, g)
+	assert.Equal(t, newest-1, served)
+	assert.True(t, skipped)
+
+	stored := &sourceGroup{seq: newest}
+	b.ring[uint64(newest)%b.size].Store(stored)
+
+	g, served, skipped = b.next(served)
+
+	assert.Same(t, stored, g)
+	assert.Equal(t, newest, served)
+	assert.False(t, skipped)
+}
+
 func TestTrackBuffer_EarliestAvailable(t *testing.T) {
 	b := newTestTrackBuffer()
 

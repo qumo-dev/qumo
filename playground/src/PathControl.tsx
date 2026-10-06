@@ -20,7 +20,7 @@ export function PathControl(props: {
 	};
 
 	const copyLink = () => {
-		const url = new URL(window.location.href);
+		const url = new URL(globalThis.location.href);
 		url.searchParams.set("scenario", props.scenario);
 		url.searchParams.set("path", props.path());
 		navigator.clipboard?.writeText(url.toString()).then(() => flash("link")).catch(() => {});

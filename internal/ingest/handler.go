@@ -414,6 +414,34 @@ func (b *trackBuffer) get(seq moqt.GroupSequence) *sourceGroup {
 	return g
 }
 
+// next returns the group to serve a subscriber that has been served up to
+// last, and the sequence it has then been served up to.
+//
+// A subscriber whose next group has left the ring is moved on to the newest,
+// and skipped reports that. g is nil when there is nothing to serve yet: no
+// group newer than last, or one that head counts but openGroup has not stored.
+// The caller then waits for the next notification, which follows every push.
+func (b *trackBuffer) next(last moqt.GroupSequence) (g *sourceGroup, served moqt.GroupSequence, skipped bool) {
+	latest := b.head()
+	if last >= latest {
+		return nil, last, false
+	}
+
+	seq := last + 1
+	if seq < b.earliestAvailable() {
+		// Subscriber fell behind; skip to latest.
+		seq = latest
+		last = latest - 1
+		skipped = true
+	}
+
+	g = b.get(seq)
+	if g == nil {
+		return nil, last, skipped
+	}
+	return g, seq, skipped
+}
+
 // --- subscriber egress ---
 
 // serve writes groups and frames to a single MoQT TrackWriter. It blocks
@@ -471,25 +499,13 @@ func (b *trackBuffer) serve(ctx context.Context, tw *moqt.TrackWriter) {
 	}
 
 	for {
-		latest := b.head()
+		g, served, skipped := b.next(last)
+		last = served
+		if skipped {
+			metricSubscriberSkipsTotal.Inc()
+		}
 
-		if last < latest {
-			last++
-
-			earliest := b.earliestAvailable()
-			if last < earliest {
-				// Subscriber fell behind; skip to latest.
-				metricSubscriberSkipsTotal.Inc()
-				last = latest - 1
-				continue
-			}
-
-			g := b.get(last)
-			if g == nil {
-				last--
-				continue
-			}
-
+		if g != nil {
 			gw, err := tw.OpenGroupAt(ctx, g.seq)
 			if err != nil {
 				metricSubscribeErrorsTotal.WithLabelValues("open_group_failed").Inc()
@@ -529,7 +545,9 @@ func (b *trackBuffer) serve(ctx context.Context, tw *moqt.TrackWriter) {
 			continue
 		}
 
-		// No new groups yet; wait for data (the level-triggered wakeup).
+		// Nothing to serve yet; wait for data (the level-triggered wakeup).
+		// This is also where a group that head counts but that is not yet
+		// stored is waited for, instead of asking for it again in a tight loop.
 		if !wait(lastState.seq) {
 			return
 		}
