@@ -107,7 +107,7 @@ type dialTarget struct {
 // 1.3 floor) and the QUIC tuning are owned here.
 //
 // relay is the relay's host:port, or a moqt:// URL whose query may carry a
-// credential (?jwt=…) for a relay with an auth server. Only the host:port is
+// credential (?jwt=…) for a relay with auth on. Only the host:port is
 // logged.
 func newTarget(relay, metrics, path, track, caFile string, insecure bool, idle, keepalive time.Duration) (dialTarget, error) {
 	u, err := parseRelay(relay)

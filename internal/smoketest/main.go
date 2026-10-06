@@ -25,8 +25,8 @@ const (
 )
 
 func main() {
-	pubURL := flag.String("pub", "", "publisher-side relay URL (e.g. moqt://localhost:9002); add ?jwt=… for a relay with an auth server")
-	subURL := flag.String("sub", "", "subscriber-side relay URL (e.g. moqt://localhost:9006); add ?jwt=… for a relay with an auth server")
+	pubURL := flag.String("pub", "", "publisher-side relay URL (e.g. moqt://localhost:9002); add ?jwt=… for a relay with auth on")
+	subURL := flag.String("sub", "", "subscriber-side relay URL (e.g. moqt://localhost:9006); add ?jwt=… for a relay with auth on")
 	caFile := flag.String("ca", "", "PEM file of the relays' TLS cert/CA to trust (required unless -insecure)")
 	insecure := flag.Bool("insecure", false, "skip TLS verification (dev; self-signed relays)")
 	timeout := flag.Duration("timeout", 30*time.Second, "overall test timeout")

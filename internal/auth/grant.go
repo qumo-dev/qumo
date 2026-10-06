@@ -1,9 +1,7 @@
 package auth
 
 import (
-	"encoding/json"
 	"fmt"
-	"net/http"
 	"strings"
 	"time"
 
@@ -18,75 +16,36 @@ type Grant struct {
 	Subscribe Patterns
 	// expires is when the session must end; zero means never.
 	expires time.Time
-	// revalidate is how often to ask again; zero means never.
+	// revalidate is how often to check again; zero means never.
 	revalidate time.Duration
 }
 
-// UnmarshalJSON decodes a grant as the auth server sends it. root, mounts and
-// peer are read only to refuse a grant that uses them.
-func (g *Grant) UnmarshalJSON(b []byte) error {
-	var w struct {
-		Publish    []string        `json:"publish"`
-		Subscribe  []string        `json:"subscribe"`
-		Expires    *int64          `json:"expires"`
-		Revalidate *int64          `json:"revalidate"`
-		Root       string          `json:"root"`
-		Mounts     json.RawMessage `json:"mounts"`
-		Peer       bool            `json:"peer"`
-	}
-	if err := json.Unmarshal(b, &w); err != nil {
-		return err
-	}
-	if w.Root != "" || (len(w.Mounts) > 0 && string(w.Mounts) != "null" && string(w.Mounts) != "{}") || w.Peer {
-		return fmt.Errorf("root, mounts and peer are not supported")
-	}
-	publish, err := parsePatterns(w.Publish)
+// NewGrant returns a grant for the subtree patterns publish and subscribe
+// ("**" for everything, "a/b/**" for a/b and everything beneath it). The
+// session ends at expires (zero: never) and is checked again every revalidate
+// (zero: never). It is for an Authorize other than the Verifier's.
+func NewGrant(publish, subscribe []string, expires time.Time, revalidate time.Duration) (*Grant, error) {
+	pub, err := parsePatterns(publish)
 	if err != nil {
-		return fmt.Errorf("publish: %w", err)
+		return nil, fmt.Errorf("publish: %w", err)
 	}
-	subscribe, err := parsePatterns(w.Subscribe)
+	sub, err := parsePatterns(subscribe)
 	if err != nil {
-		return fmt.Errorf("subscribe: %w", err)
+		return nil, fmt.Errorf("subscribe: %w", err)
 	}
-	*g = Grant{Publish: publish, Subscribe: subscribe}
-	if w.Expires != nil {
-		g.expires = time.Unix(*w.Expires, 0)
-	}
-	if w.Revalidate != nil {
-		if *w.Revalidate <= 0 || w.Expires == nil {
-			return fmt.Errorf("revalidate needs a positive value and an expires")
-		}
-		g.revalidate = time.Duration(*w.Revalidate) * time.Second
-	}
-	return nil
+	return &Grant{Publish: pub, Subscribe: sub, expires: expires, revalidate: revalidate}, nil
 }
 
-// Expires returns when the session must end, which the auth server sets to the
-// credential's expiry. The zero Time means the grant does not expire.
+// Expires returns when the session must end: the credential's expiry. The
+// zero Time means the grant does not expire.
 func (g *Grant) Expires() time.Time {
 	return g.expires
 }
 
-// Revalidate returns how often the relay asks the auth server again about a
-// live session. Zero means never.
+// Revalidate returns how often the relay checks a live session again. Zero
+// means never.
 func (g *Grant) Revalidate() time.Duration {
 	return g.revalidate
-}
-
-// parseGrant decodes an auth server's grant and checks it can be enforced at
-// now. A grant that names nothing is a refusal.
-func parseGrant(raw []byte, now time.Time) (*Grant, error) {
-	var g Grant
-	if err := json.Unmarshal(raw, &g); err != nil {
-		return nil, fmt.Errorf("%w: %w", ErrInvalidGrant, err)
-	}
-	if len(g.Publish) == 0 && len(g.Subscribe) == 0 {
-		return nil, RefusedError{Status: http.StatusForbidden}
-	}
-	if !g.expires.IsZero() && !g.expires.After(now) {
-		return nil, fmt.Errorf("%w: expires is not in the future", ErrInvalidGrant)
-	}
-	return &g, nil
 }
 
 // Patterns is a set of subtree patterns.

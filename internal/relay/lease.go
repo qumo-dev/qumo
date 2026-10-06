@@ -13,30 +13,29 @@ import (
 	"github.com/qumo-dev/qumo/internal/auth"
 )
 
-// Backoff for a revalidate the auth server could not answer: the first retry
+// Backoff for a revalidate that could not be answered: the first retry
 // waits about revalidateRetryBase, each later one twice as long, never more
 // than revalidateRetryMax. The session lives until its current deadline
-// meanwhile, so an outage is bounded by what the server last granted.
+// meanwhile, so an outage is bounded by what was last granted.
 const (
 	revalidateRetryBase = time.Second
 	revalidateRetryMax  = 30 * time.Second
 )
 
 // Reasons a session ends, the reason of its end report. A lease ends a
-// session for the first three, which are also the reason label of
+// session for the first two, which are also the reason label of
 // metricSessionsEnded and the close message the client sees with
 // Unauthorized.
 const (
 	endExpired = "expired"
 	endRefused = "refused"
-	endInvalid = "invalid"
 	// endClosed is a session the client or the relay closed normally.
 	endClosed = "closed"
 	// endDropped is a session whose connection was lost: an idle timeout or
 	// a stateless reset.
 	endDropped = "dropped"
-	// endUpgradeFailed is a WebTransport session the auth server admitted
-	// but whose upgrade then failed, so it never started.
+	// endUpgradeFailed is a WebTransport session that was admitted but
+	// whose upgrade then failed, so it never started.
 	endUpgradeFailed = "upgrade_failed"
 )
 
@@ -47,16 +46,16 @@ type leasedSession interface {
 	Stats() moqt.SessionStats
 }
 
-// authorizeFunc asks the auth server about a session: Server.Authorize.
+// authorizeFunc checks a session: Server.Authorize.
 type authorizeFunc func(ctx context.Context, req auth.Request) (*auth.Grant, error)
 
 // lease keeps a checked session within its grant (ADR 0035, #419, #423): it
-// ends the session at the grant's expires, and asks the auth server again at
-// the grant's revalidate cadence. One timer per session drives both.
+// ends the session at the grant's expires, and checks it again at the
+// grant's revalidate cadence. One timer per session drives both.
 //
 // A revalidate re-sends the connect request. Its reply decides only whether
-// the session continues: a refusal or an unenforceable grant ends it, and an
-// admitted grant moves expires and the cadence. The patterns were fixed at
+// the session continues: a refusal ends it, and an admitted grant moves
+// expires and the cadence. The patterns were fixed at
 // connect, since the credential is the same, so they are not compared.
 type lease struct {
 	// ctx is the session's. It ends a revalidate in flight when the session
@@ -74,7 +73,7 @@ type lease struct {
 	cadence time.Duration
 	// next is when the next revalidate is due, if cadence is set.
 	next time.Time
-	// failures counts revalidates in a row the auth server could not answer.
+	// failures counts revalidates in a row that could not be answered.
 	failures int
 	stopped  bool
 	// ended is why the lease ended the session, or "" while it hasn't.
@@ -173,11 +172,6 @@ func (l *lease) check() string {
 	case authRefused:
 		l.stopped, l.ended = true, endRefused
 		return endRefused
-	case authInvalid:
-		slog.Error("relay: the auth server's revalidate grant can't be enforced",
-			"id", l.req.ID, "remote", l.req.Remote, "error", err)
-		l.stopped, l.ended = true, endInvalid
-		return endInvalid
 	case authError:
 		l.failures++
 		slog.Warn("relay: revalidate failed; the session lives until its expires",
@@ -193,7 +187,7 @@ func (l *lease) check() string {
 		l.cadence = g.Revalidate()
 		l.next = time.Now().Add(l.cadence)
 	case authUnchecked:
-		// The auth server stopped checking the session: keep what it has.
+		// Authorize stopped checking the session: keep what it has.
 		l.failures = 0
 		l.next = time.Now().Add(l.cadence)
 	}
@@ -203,8 +197,8 @@ func (l *lease) check() string {
 	return ""
 }
 
-// revalidate asks the auth server again. The request ends with the session
-// or at its deadline, so a stalled auth server can't keep it past expires.
+// revalidate checks the session again. The request ends with the session
+// or at its deadline, so a stalled check can't keep it past expires.
 func (l *lease) revalidate(deadline time.Time) (*auth.Grant, error) {
 	ctx := l.ctx
 	if !deadline.IsZero() {
@@ -222,14 +216,14 @@ func (l *lease) revalidate(deadline time.Time) (*auth.Grant, error) {
 
 // retryDelay returns the jittered backoff before the attempt-th retry: half
 // the exponential delay plus a random part of the other half, so relays that
-// lost the auth server together don't retry in step.
+// failed together don't retry in step.
 func retryDelay(attempt int) time.Duration {
 	d := min(revalidateRetryBase<<min(attempt-1, 30), revalidateRetryMax)
 	return d/2 + rand.N(d/2+1)
 }
 
-// sessionBytes returns a session's cumulative byte totals as the auth server
-// receives them.
+// sessionBytes returns a session's cumulative byte totals as a Request
+// carries them.
 func sessionBytes(st moqt.SessionStats) auth.Bytes {
 	return auth.Bytes{Sent: st.BytesSent, Received: st.BytesReceived}
 }

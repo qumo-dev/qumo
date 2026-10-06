@@ -40,7 +40,7 @@ func TestLease_Expires(t *testing.T) {
 	})
 }
 
-// TestLease_RevalidateEnds verifies a refused or unenforceable revalidate ends
+// TestLease_RevalidateEnds verifies a refused revalidate ends
 // the session at the revalidate, re-sending the connect request as a
 // revalidate with the same id.
 func TestLease_RevalidateEnds(t *testing.T) {
@@ -49,7 +49,6 @@ func TestLease_RevalidateEnds(t *testing.T) {
 		wantReason string
 	}{
 		"refused": {err: auth.RefusedError{Status: http.StatusUnauthorized}, wantReason: endRefused},
-		"invalid": {err: fmt.Errorf("%w: expires is not in the future", auth.ErrInvalidGrant), wantReason: endInvalid},
 	}
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
@@ -81,7 +80,7 @@ func TestLease_RevalidateEnds(t *testing.T) {
 func TestLease_RevalidateMovesExpires(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		// The reply's patterns differ from connect's; only expires matters.
-		server := &fakeAuth{body: fmt.Sprintf(`{"publish":["other/**"],"expires":%d,"revalidate":30}`, time.Now().Add(2*time.Minute).Unix())}
+		server := &fakeAuth{grant: testGrant(t, "other/**", "", time.Now().Add(2*time.Minute), 30*time.Second)}
 		sess := &fakeLeasedSession{}
 		l := startLease(t.Context(), sess, server.authorize, leaseRequest, time.Now().Add(time.Minute), 30*time.Second)
 		defer l.stop()
@@ -97,9 +96,9 @@ func TestLease_RevalidateMovesExpires(t *testing.T) {
 	})
 }
 
-// TestLease_AuthServerUnavailable verifies a revalidate the auth server can't
-// answer is retried with backoff, and the session lives until its expires.
-func TestLease_AuthServerUnavailable(t *testing.T) {
+// TestLease_RevalidateUnavailable verifies a revalidate that can't be
+// answered is retried with backoff, and the session lives until its expires.
+func TestLease_RevalidateUnavailable(t *testing.T) {
 	tests := map[string]*fakeAuth{
 		"server errors": {err: errors.New("503")},
 		"server stalls": {block: true},
@@ -181,7 +180,7 @@ func TestRetryDelay(t *testing.T) {
 // session's cumulative byte totals at that moment.
 func TestLease_RevalidateReportsBytes(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		server := &fakeAuth{body: fmt.Sprintf(`{"subscribe":["**"],"expires":%d,"revalidate":30}`, time.Now().Add(time.Hour).Unix())}
+		server := &fakeAuth{grant: testGrant(t, "", "**", time.Now().Add(time.Hour), 30*time.Second)}
 		sess := &fakeLeasedSession{}
 		l := startLease(t.Context(), sess, server.authorize, leaseRequest, time.Now().Add(time.Hour), 30*time.Second)
 		defer l.stop()
@@ -228,7 +227,7 @@ func TestEndReason(t *testing.T) {
 // than lifting it.
 func TestLease_RevalidateWithoutExpiresKeepsDeadline(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		server := &fakeAuth{body: `{"subscribe":["**"]}`}
+		server := &fakeAuth{grant: testGrant(t, "", "**", time.Time{}, 0)}
 		sess := &fakeLeasedSession{}
 		l := startLease(t.Context(), sess, server.authorize, leaseRequest, time.Now().Add(time.Minute), 30*time.Second)
 		defer l.stop()

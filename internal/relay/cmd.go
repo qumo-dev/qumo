@@ -72,6 +72,13 @@ func Run(args []string) error {
 		return err
 	}
 
+	// A relay still configured to ask an auth server must not start with
+	// auth off instead.
+	if os.Getenv("QUMO_AUTH_URL") != "" {
+		return errors.New("QUMO_AUTH_URL is no longer supported: the relay verifies credentials itself; " +
+			"unset it, and set QUMO_AUTH_KEYS to the key set")
+	}
+
 	gctune.Apply()
 
 	addr := envconfig.String("RELAY_ADDR", ":4433")
@@ -118,20 +125,31 @@ func Run(args []string) error {
 		slog.Info("relay: peering off (no CA_FILE): every inbound session is admitted like a client")
 	}
 
-	// Session admission (admit.go): the auth server beside this relay, or,
-	// with no QUMO_AUTH_URL, auth off.
-	authCfg := auth.LoadConfig()
+	// Session admission (admit.go): the relay verifies credentials itself
+	// against a key set (QUMO_AUTH_KEYS: a URL or a file), or, without one,
+	// runs with auth off.
+	verifierCfg := auth.VerifierConfig{
+		Keys:      os.Getenv("QUMO_AUTH_KEYS"),
+		KeysCache: os.Getenv("QUMO_AUTH_KEYS_CACHE"),
+		UsageURL:  os.Getenv("QUMO_USAGE_URL"),
+		Token:     os.Getenv("QUMO_RELAY_TOKEN"),
+	}
 	authorize := admitUnchecked
 	var reportEnd func(context.Context, auth.Request) error // nil: auth off reports nothing
-	if authCfg.URL != "" {
-		authClient, err := auth.NewClient(authCfg.URL)
+	var verifier *auth.Verifier
+	if verifierCfg.Keys != "" {
+		v, err := auth.NewVerifier(verifierCfg)
 		if err != nil {
-			return fmt.Errorf("QUMO_AUTH_URL: %w", err)
+			return err
 		}
-		authorize = authClient.Authorize
-		reportEnd = authClient.End
+		verifier = v
+		authorize = v.Authorize
+		reportEnd = v.End
 	} else {
-		slog.Warn("relay: auth is off: QUMO_AUTH_URL is not set, so every session is admitted unchecked")
+		slog.Warn("relay: auth is off: no key set (QUMO_AUTH_KEYS), so every session is admitted unchecked")
+	}
+	if verifierCfg.UsageURL != "" && verifier == nil {
+		return errors.New("QUMO_USAGE_URL needs QUMO_AUTH_KEYS: usage is reported for the sessions the relay verifies")
 	}
 
 	relayCfg := Config{
@@ -258,11 +276,32 @@ func Run(args []string) error {
 	for _, p := range relayCfg.Peers {
 		log.Printf("\t%-8s: %s\n", "Peer", sanitizeLog(p.Address))
 	}
-	if authCfg.URL != "" {
-		log.Printf("\t%-8s: %s\n", "Auth", sanitizeLog(authCfg.URL))
+	if verifier != nil {
+		log.Printf("\t%-8s: key set %s\n", "Auth", sanitizeLog(verifier.Source()))
+		if verifier.Reporting() {
+			log.Printf("\t%-8s: %s\n", "Usage", sanitizeLog(verifierCfg.UsageURL))
+		}
 	} else {
-		log.Printf("\t%-8s: off (QUMO_AUTH_URL unset): every session is admitted unchecked\n", "Auth")
+		log.Printf("\t%-8s: off (no QUMO_AUTH_KEYS): every session is admitted unchecked\n", "Auth")
 	}
+
+	// The verifier refreshes its key set and sends usage until the relay has
+	// stopped taking sessions, then sends what usage is left once more.
+	verifierDone := make(chan struct{})
+	stopVerifier := func() {}
+	if verifier != nil {
+		vctx, vcancel := context.WithCancel(context.WithoutCancel(ctx))
+		stopVerifier = func() { vcancel(); <-verifierDone }
+		go func() {
+			defer close(verifierDone)
+			verifier.Run(vctx)
+		}()
+	}
+	defer stopVerifier()
+	// Deferred after stopVerifier, so it runs before it: sessions report
+	// their end after their connection closes, which can be after the
+	// servers have shut down, and the last usage send must include them.
+	defer relayServer.waitSessionEnds(endReportGrace)
 
 	// Start peer connections in background
 	go relayServer.ConnectPeers(ctx)
@@ -276,6 +315,10 @@ func Run(args []string) error {
 
 	return nil
 }
+
+// endReportGrace bounds how long shutdown waits for closed sessions to report
+// their end before the verifier's last usage send.
+const endReportGrace = 5 * time.Second
 
 // server is a minimal interface implemented by both *Server and
 // *http.Server so we can unit-test the run/shutdown flow with fakes.

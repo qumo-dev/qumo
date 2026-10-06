@@ -5,7 +5,6 @@ package integration
 import (
 	"context"
 	"crypto/tls"
-	"fmt"
 	"net/http"
 	"testing"
 	"time"
@@ -47,9 +46,8 @@ func assertEndedBy(t *testing.T, sess *moqt.Session, reason string) {
 func TestRelay_SessionEndsAtExpires(t *testing.T) {
 	for name, tt := range leaseTransports {
 		t.Run(name, func(t *testing.T) {
-			// expires is in whole seconds, so the session lives 2 to 3 s.
-			expires := time.Now().Add(3 * time.Second).Unix()
-			server := &fakeAuth{body: fmt.Sprintf(`{"subscribe":["acme/**"],"expires":%d}`, expires)}
+			expires := time.Now().Add(3 * time.Second)
+			server := &fakeAuth{grant: testGrant(t, "", "acme/**", expires, 0)}
 			addr, _ := startAuthRelay(t, server.authorize, nil)
 
 			sess := dialSession(t, tt.url(addr), tt.nextProtos)
@@ -58,20 +56,20 @@ func TestRelay_SessionEndsAtExpires(t *testing.T) {
 				1500*time.Millisecond, 50*time.Millisecond, "the session ended before its expires")
 			require.Eventually(t, func() bool { return sess.Context().Err() != nil },
 				5*time.Second, 50*time.Millisecond, "the session outlived its expires")
-			assert.WithinDuration(t, time.Unix(expires, 0), time.Now(), time.Second)
+			assert.WithinDuration(t, expires, time.Now(), time.Second)
 			assertEndedBy(t, sess, "expired")
 		})
 	}
 }
 
 // TestRelay_RevalidateRefusedEndsSession verifies a live session is ended
-// when the auth server refuses it at a revalidate, which is how key
+// when it is refused at a revalidate, which is how key
 // revocation and project suspension reach sessions already running.
 func TestRelay_RevalidateRefusedEndsSession(t *testing.T) {
 	for name, tt := range leaseTransports {
 		t.Run(name, func(t *testing.T) {
 			server := &fakeAuth{
-				body:          fmt.Sprintf(`{"subscribe":["acme/**"],"expires":%d,"revalidate":1}`, time.Now().Add(time.Hour).Unix()),
+				grant:         testGrant(t, "", "acme/**", time.Now().Add(time.Hour), time.Second),
 				revalidateErr: auth.RefusedError{Status: http.StatusForbidden},
 			}
 			addr, _ := startAuthRelay(t, server.authorize, nil)
@@ -86,7 +84,7 @@ func TestRelay_RevalidateRefusedEndsSession(t *testing.T) {
 }
 
 // TestRelay_SessionEndReport verifies the relay reports the end of a checked
-// session to its auth server: the connect request's id, why it ended, and its
+// session to End: the connect request's id, why it ended, and its
 // final byte totals.
 func TestRelay_SessionEndReport(t *testing.T) {
 	tests := map[string]struct {
@@ -103,12 +101,12 @@ func TestRelay_SessionEndReport(t *testing.T) {
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
 			server := &fakeAuth{
-				body:          fmt.Sprintf(`{"subscribe":["acme/**"],"expires":%d,"revalidate":1}`, time.Now().Add(time.Hour).Unix()),
+				grant:         testGrant(t, "", "acme/**", time.Now().Add(time.Hour), time.Second),
 				revalidateErr: tt.revalidateErr,
 			}
 			if tt.closeByClient {
 				// No revalidate: the client closes first.
-				server.body = fmt.Sprintf(`{"subscribe":["acme/**"],"expires":%d}`, time.Now().Add(time.Hour).Unix())
+				server.grant = testGrant(t, "", "acme/**", time.Now().Add(time.Hour), 0)
 			}
 			addr, _ := startAuthRelay(t, server.authorize, nil, func(s *relay.Server) { s.End = server.end })
 

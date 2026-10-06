@@ -2,9 +2,7 @@ package relay
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -79,10 +77,9 @@ func TestServer_HandleWebTransport_Refused(t *testing.T) {
 		err        error
 		wantStatus int
 	}{
-		"401 from the auth server":   {err: auth.RefusedError{Status: http.StatusUnauthorized}, wantStatus: http.StatusUnauthorized},
-		"403 from the auth server":   {err: auth.RefusedError{Status: http.StatusForbidden}, wantStatus: http.StatusForbidden},
-		"auth server unavailable":    {err: errors.New("connection refused"), wantStatus: http.StatusServiceUnavailable},
-		"grant the relay can't keep": {err: fmt.Errorf("%w: mounts", auth.ErrInvalidGrant), wantStatus: http.StatusServiceUnavailable},
+		"refused with 401":     {err: auth.RefusedError{Status: http.StatusUnauthorized}, wantStatus: http.StatusUnauthorized},
+		"refused with 403":     {err: auth.RefusedError{Status: http.StatusForbidden}, wantStatus: http.StatusForbidden},
+		"can't be checked now": {err: errors.New("no key set loaded yet"), wantStatus: http.StatusServiceUnavailable},
 	}
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
@@ -102,7 +99,7 @@ func TestServer_HandleWebTransport_Refused(t *testing.T) {
 
 			assert.Equal(t, tt.wantStatus, rec.Code)
 			got := fake.received()
-			require.Len(t, got, 1, "the auth server is asked once per upgrade")
+			require.Len(t, got, 1, "an upgrade is checked once")
 			assert.Equal(t, auth.EventConnect, got[0].Event)
 			assert.Equal(t, auth.TransportWebTransport, got[0].Transport)
 			assert.Equal(t, "/acme/app", got[0].Path)
@@ -122,7 +119,7 @@ func TestServer_HandleWebTransport_NotAnUpgrade(t *testing.T) {
 
 	srv.HandleWebTransport(rec, httptest.NewRequest(http.MethodGet, "https://relay.example/?jwt=a.b.c", nil))
 
-	assert.Empty(t, fake.received(), "a request that isn't an upgrade never reaches the auth server")
+	assert.Empty(t, fake.received(), "a request that isn't an upgrade is never checked")
 	assert.Equal(t, http.StatusBadRequest, rec.Code, "gomoqt answers it without a session")
 }
 
@@ -149,7 +146,6 @@ func TestServer_Admit_Metrics(t *testing.T) {
 		"auth off":    {authorize: admitUnchecked, wantResult: "unchecked"},
 		"admitted":    {wantResult: "admitted"},
 		"refused":     {err: auth.RefusedError{Status: http.StatusForbidden}, wantResult: "refused"},
-		"invalid":     {err: fmt.Errorf("%w: root", auth.ErrInvalidGrant), wantResult: "invalid"},
 		"unavailable": {err: errors.New("timeout"), wantResult: "error"},
 	}
 	for name, tt := range tests {
@@ -177,14 +173,14 @@ func TestServer_Admit_Metrics(t *testing.T) {
 // accepted, and no deadline for a grant without expires or no grant.
 func TestAdmission_Decide_Deadline(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		expiring := grantFrom(t, fmt.Sprintf(`{"subscribe":["**"],"expires":%d}`, time.Now().Add(90*time.Second).Unix()))
+		expiring := testGrant(t, "", "**", time.Now().Add(90*time.Second), 0)
 		cases := []struct {
 			name  string
 			grant *auth.Grant
 			want  time.Duration // from now; 0 means no deadline
 		}{
 			{name: "grant with expires", grant: expiring, want: 90 * time.Second},
-			{name: "grant without expires", grant: grantFrom(t, `{"subscribe":["**"]}`)},
+			{name: "grant without expires", grant: testGrant(t, "", "**", time.Time{}, 0)},
 			{name: "unchecked", grant: nil},
 		}
 		// t.Run is unsupported inside a synctest bubble.
@@ -198,14 +194,6 @@ func TestAdmission_Decide_Deadline(t *testing.T) {
 			assert.Equal(t, tc.want, time.Until(a.deadline), tc.name)
 		}
 	})
-}
-
-// grantFrom decodes a grant as the auth server sends it.
-func grantFrom(tb testing.TB, body string) *auth.Grant {
-	tb.Helper()
-	var g auth.Grant
-	require.NoError(tb, json.Unmarshal([]byte(body), &g))
-	return &g
 }
 
 func TestServer_ReportEnd(t *testing.T) {
@@ -249,10 +237,10 @@ func TestServer_ReportEnd_Off(t *testing.T) {
 }
 
 // TestServer_HandleWebTransport_DisallowedOriginNotAsked verifies a request
-// from an Origin the upgrade refuses never reaches the auth server, which
+// from an Origin the upgrade refuses is never checked, which
 // would otherwise count a session that never starts.
 func TestServer_HandleWebTransport_DisallowedOriginNotAsked(t *testing.T) {
-	fake := &fakeAuth{body: `{"subscribe":["**"]}`}
+	fake := &fakeAuth{grant: testGrant(t, "", "**", time.Time{}, 0)}
 	srv := newTestServer("127.0.0.1:0")
 	srv.Authorize = fake.authorize
 	srv.End = fake.end
@@ -265,16 +253,16 @@ func TestServer_HandleWebTransport_DisallowedOriginNotAsked(t *testing.T) {
 
 	srv.HandleWebTransport(rec, req)
 
-	assert.Empty(t, fake.received(), "a refused Origin never reaches the auth server")
+	assert.Empty(t, fake.received(), "a refused Origin is never checked")
 	assert.Empty(t, fake.ended())
 	assert.Equal(t, http.StatusBadRequest, rec.Code, "gomoqt refuses the upgrade as before")
 }
 
 // TestServer_HandleWebTransport_FailedUpgradeReportsEnd verifies an admitted
-// upgrade that fails anyway reports an end, so the auth server can close the
+// upgrade that fails anyway reports an end, which closes the
 // session it counted at connect.
 func TestServer_HandleWebTransport_FailedUpgradeReportsEnd(t *testing.T) {
-	fake := &fakeAuth{body: `{"subscribe":["**"]}`}
+	fake := &fakeAuth{grant: testGrant(t, "", "**", time.Time{}, 0)}
 	srv := newTestServer("127.0.0.1:0")
 	srv.Authorize = fake.authorize
 	srv.End = fake.end
