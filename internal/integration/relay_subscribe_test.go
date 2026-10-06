@@ -136,12 +136,12 @@ func TestRelay_SubscribeAuth_TrustedPeerUnchecked(t *testing.T) {
 
 	err := subscribe(t, nativeURL(addr)+"/", &peerCert, "/acme/apple/live")
 
-	assert.NoError(t, err, "a trusted peer subscribes outside any grant")
+	assert.NoError(t, err, "a relay peer subscribes outside any grant")
 }
 
 // A relay serves the SUBSCRIBEs of a peer it dialed (PEERS), which arrive over
 // the session it dialed. That session never passes through its ConnContext or
-// Authorize, so the subscribe check must treat it as a trusted peer.
+// Authorize, so the subscribe check must treat it as a relay peer.
 // Here relay a dials relay b, and a viewer on b watches a broadcast published
 // on a: b subscribes to a over a's dialed session.
 func TestRelay_SubscribeAuth_DialedPeerUnchecked(t *testing.T) {
@@ -214,7 +214,6 @@ func TestRelay_PeersItself(t *testing.T) {
 	bAuth := &fakeAuth{grant: testGrant(t, "acme/**", "acme/**", time.Time{}, 0)}
 	bAddr, b := startAuthRelay(t, bAuth.authorize, ca.trust(t, &bCert))
 	aAuth := &fakeAuth{grant: testGrant(t, "acme/**", "acme/**", time.Time{}, 0)}
-	var aAddr string
 	aAddr, a := startAuthRelay(t, aAuth.authorize, ca.trust(t, &aCert))
 	// As a group name resolving to both would: itself first.
 	a.Config.Peers = []relay.Peer{{Address: aAddr}, {Address: bAddr}}

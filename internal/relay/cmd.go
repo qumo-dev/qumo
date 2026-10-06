@@ -109,7 +109,7 @@ func Run(args []string) error {
 
 	// Peer trust (peer_trust.go): a CA and this relay's own peer identity,
 	// checked before anything is loaded so a settings mistake is what fails.
-	trust, err := LoadPeerTrust(os.Getenv("CA_FILE"), os.Getenv("PEER_CERT_FILE"), os.Getenv("PEER_KEY_FILE"), len(peers) > 0)
+	trust, err := loadPeerTrust(os.Getenv("CA_FILE"), os.Getenv("PEER_CERT_FILE"), os.Getenv("PEER_KEY_FILE"), len(peers) > 0)
 	if err != nil {
 		return err
 	}
@@ -121,10 +121,10 @@ func Run(args []string) error {
 
 	tlsConfig = trust.ServerTLS(tlsConfig)
 	switch {
-	case trust.cert != nil:
+	case trust.Identity() != "":
 		slog.Info("relay: peering on: sessions with a certificate from CA_FILE that carries the peering name are peers",
-			"ca_file", os.Getenv("CA_FILE"), "identity", trust.cert.Leaf.Subject.CommonName)
-	case trust.ca != nil:
+			"ca_file", os.Getenv("CA_FILE"), "identity", trust.Identity())
+	case trust.HasCA():
 		slog.Info("relay: internal clients on: sessions with a certificate from CA_FILE may subscribe; this relay is no peer (no PEER_CERT_FILE)",
 			"ca_file", os.Getenv("CA_FILE"))
 	default:
@@ -193,9 +193,9 @@ func Run(args []string) error {
 	// name as the server name, the CA as the only root (peer_trust.go). The
 	// dialer advertises only the moqt ALPN: with "h3" too, ALPN would pick
 	// h3 and QPACK decompression fail. Without a peer identity there are no
-	// PEERS to dial (LoadPeerTrust), so the dialer never runs.
+	// PEERS to dial (loadPeerTrust), so the dialer never runs.
 	var dialerTLS *tls.Config
-	if trust.cert != nil {
+	if trust.Identity() != "" {
 		dialerTLS = trust.DialerTLS()
 	}
 
@@ -273,9 +273,9 @@ func Run(args []string) error {
 		log.Printf("\t%-8s: %s\n", "Peer", sanitizeLog(p.Address))
 	}
 	switch {
-	case trust.cert != nil:
-		log.Printf("\t%-8s: %s, trusting %s\n", "Peering", sanitizeLog(trust.cert.Leaf.Subject.CommonName), sanitizeLog(os.Getenv("CA_FILE")))
-	case trust.ca != nil:
+	case trust.Identity() != "":
+		log.Printf("\t%-8s: %s, trusting %s\n", "Peering", sanitizeLog(trust.Identity()), sanitizeLog(os.Getenv("CA_FILE")))
+	case trust.HasCA():
 		log.Printf("\t%-8s: internal clients only, trusting %s (no PEER_CERT_FILE)\n", "Peering", sanitizeLog(os.Getenv("CA_FILE")))
 	default:
 		log.Printf("\t%-8s: off (no CA_FILE)\n", "Peering")

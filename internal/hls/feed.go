@@ -12,7 +12,6 @@ import (
 	"net/url"
 	"time"
 
-	"github.com/quic-go/quic-go"
 	"github.com/qumo-dev/gomoqt/moqt"
 	"github.com/qumo-dev/gomoqt/msf"
 
@@ -213,12 +212,13 @@ func packagerForTrack(c msf.Catalog, t *msf.Track) (*cmaf.Packager, error) {
 // close; the session's cause then says so, and the two ways in are named.
 // Any other close by the relay is reported as such; otherwise err.
 func sessionRefusal(session *moqt.Session, err error) error {
-	var appErr *quic.ApplicationError
-	cause := context.Cause(session.Context())
-	if !errors.As(cause, &appErr) || !appErr.Remote {
+	// moqt.Cause gives the close as a SessionError on either transport.
+	cause := moqt.Cause(session.Context())
+	sessErr, ok := errors.AsType[*moqt.SessionError](cause)
+	if !ok || !sessErr.Remote {
 		return err
 	}
-	if appErr.ErrorCode == quic.ApplicationErrorCode(moqt.UnauthorizedSessionErrorCode) {
+	if sessErr.SessionErrorCode() == moqt.UnauthorizedSessionErrorCode {
 		return fmt.Errorf("hls: the relay refused the session (%w): connect with a credential (?jwt= in RELAY_URL) or a client certificate from its CA (RELAY_CERT_FILE)", cause)
 	}
 	return fmt.Errorf("hls: the relay closed the session: %w", cause)

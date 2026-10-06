@@ -4,19 +4,18 @@ package integration
 
 import (
 	"context"
-	"crypto/ecdsa"
 	"crypto/tls"
-	"crypto/x509"
-	"encoding/pem"
 	"net/http"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/quic-go/quic-go"
 	"github.com/qumo-dev/gomoqt/moqt"
 	"github.com/qumo-dev/qumo/internal/auth"
+	"github.com/qumo-dev/qumo/internal/devcert"
 	"github.com/qumo-dev/qumo/internal/tlsclient"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -34,7 +33,8 @@ func TestEgress_ClientCertificateIsInternalClient(t *testing.T) {
 	egress := ca.issue(t, "egress-1", false)
 	certFile, keyFile := writeCert(t, egress)
 
-	// Authorize refuses everyone: only a trusted peer gets through.
+	// Authorize refuses everyone: only a session the CA vouches for gets
+	// through.
 	server := &fakeAuth{err: auth.RefusedError{Status: http.StatusUnauthorized}}
 	publisher := &fakeAuth{grant: testGrant(t, "**", "", time.Time{}, 0)}
 	addr, srv := startAuthRelay(t, func(ctx context.Context, req auth.Request) (*auth.Grant, error) {
@@ -55,6 +55,7 @@ func TestEgress_ClientCertificateIsInternalClient(t *testing.T) {
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
 			asked := len(server.received())
+			authorized := subscribeAuthorizations(t)
 			tc := &tls.Config{
 				InsecureSkipVerify: true, //nolint:gosec // test-only self-signed cert
 				MinVersion:         tls.VersionTLS13,
@@ -66,15 +67,10 @@ func TestEgress_ClientCertificateIsInternalClient(t *testing.T) {
 			if tt.wantTrusted {
 				assert.NoError(t, err, "an internal client subscribes outside any grant")
 				assert.Len(t, server.received(), asked, "an internal client is never asked about")
+				assert.Equal(t, authorized, subscribeAuthorizations(t), "its subscription is not counted as checked against a credential")
 				return
 			}
-			// The relay closes a refused session before answering its
-			// subscribes, so the client learns the reason rather than a
-			// "track does not exist" for a path that may well exist.
-			var appErr *quic.ApplicationError
-			require.ErrorAs(t, err, &appErr, "the subscribe fails with the relay's close")
-			assert.True(t, appErr.Remote)
-			assert.Equal(t, quic.ApplicationErrorCode(moqt.UnauthorizedSessionErrorCode), appErr.ErrorCode)
+			assert.Error(t, err)
 		})
 	}
 
@@ -86,16 +82,84 @@ func TestEgress_ClientCertificateIsInternalClient(t *testing.T) {
 	})
 }
 
+// A session the relay refuses is closed before its subscribes are answered:
+// a subscribe sent while admission was pending fails with the relay's
+// "unauthorized", not with "track does not exist" for a path that may well
+// exist.
+func TestRelay_RefusedSessionTellsItsSubscribeWhy(t *testing.T) {
+	server := &fakeAuth{err: auth.RefusedError{Status: http.StatusUnauthorized}, hold: make(chan struct{})}
+	publisher := &fakeAuth{grant: testGrant(t, "**", "", time.Time{}, 0)}
+	addr, srv := startAuthRelay(t, func(ctx context.Context, req auth.Request) (*auth.Grant, error) {
+		if req.Query == "jwt=publisher" {
+			return publisher.authorize(ctx, req)
+		}
+		return server.authorize(ctx, req)
+	}, nil)
+	// The path exists: only the session's admission stands between the
+	// subscribe and the broadcast.
+	publishOver(t, srv, "https://"+addr+"/?jwt=publisher", "/hls/live")
+	tc := &tls.Config{
+		InsecureSkipVerify: true, //nolint:gosec // test-only self-signed cert
+		MinVersion:         tls.VersionTLS13,
+	}
+	subscribed := make(chan error, 1)
+	go func() { subscribed <- subscribeWith(t, nativeURL(addr)+"/", tc, "/hls/live") }()
+	require.Eventually(t, func() bool { return len(server.received()) == 1 }, 5*time.Second, 10*time.Millisecond,
+		"the relay asks about the session")
+	// The subscribe waits for the admission, which is what puts it in
+	// flight when the refusal comes.
+	require.Never(t, func() bool { return len(subscribed) > 0 }, 300*time.Millisecond, 10*time.Millisecond,
+		"the subscribe is held while admission is pending")
+
+	close(server.hold)
+
+	var err error
+	require.Eventually(t, func() bool {
+		select {
+		case err = <-subscribed:
+			return true
+		default:
+			return false
+		}
+	}, 5*time.Second, 10*time.Millisecond, "the subscribe ends once the session is refused")
+	var appErr *quic.ApplicationError
+	require.ErrorAs(t, err, &appErr, "the subscribe fails with the relay's close")
+	assert.True(t, appErr.Remote)
+	assert.Equal(t, quic.ApplicationErrorCode(moqt.UnauthorizedSessionErrorCode), appErr.ErrorCode)
+}
+
+// subscribeAuthorizations returns how many subscriptions the relay has
+// checked against a session's grant and admitted, from the metric it
+// publishes.
+func subscribeAuthorizations(tb testing.TB) float64 {
+	tb.Helper()
+	families, err := prometheus.DefaultGatherer.Gather()
+	require.NoError(tb, err)
+	for _, family := range families {
+		if family.GetName() != "qumo_relay_subscribe_authorizations_total" {
+			continue
+		}
+		for _, m := range family.GetMetric() {
+			for _, label := range m.GetLabel() {
+				if label.GetName() == "result" && label.GetValue() == "admitted" {
+					return m.GetCounter().GetValue()
+				}
+			}
+		}
+	}
+	return 0
+}
+
 // writeCert writes a certificate and its key as PEM files for a client that
 // loads them from disk.
 func writeCert(t *testing.T, cert tls.Certificate) (certFile, keyFile string) {
 	t.Helper()
 	dir := t.TempDir()
 	certFile, keyFile = filepath.Join(dir, "client.crt"), filepath.Join(dir, "client.key")
-	keyDER, err := x509.MarshalECPrivateKey(cert.PrivateKey.(*ecdsa.PrivateKey))
+	certPEM, keyPEM, err := devcert.EncodePEM(cert)
 	require.NoError(t, err)
-	require.NoError(t, os.WriteFile(certFile, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: cert.Certificate[0]}), 0o600))
-	require.NoError(t, os.WriteFile(keyFile, pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER}), 0o600))
+	require.NoError(t, os.WriteFile(certFile, certPEM, 0o600))
+	require.NoError(t, os.WriteFile(keyFile, keyPEM, 0o600))
 	return certFile, keyFile
 }
 

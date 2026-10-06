@@ -6,26 +6,22 @@ import (
 	"crypto/x509"
 	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
 	"slices"
-	"strings"
 
 	"github.com/qumo-dev/gomoqt/moqt"
 )
 
 // Relay peers authenticate each other with mutual TLS on native QUIC, under a
-// CA of the operator's (CA_FILE). A relay's peer identity is a certificate
-// that CA issued (PEER_CERT_FILE, PEER_KEY_FILE), separate from the public
-// certificate it serves browsers (CERT_FILE, KEY_FILE): the two are different
-// credentials with different trust.
+// CA of the operator's. A relay's peer identity is a certificate that CA
+// issued, separate from the public certificate it serves browsers: the two
+// are different credentials with different trust.
 //
-// A relay that dials a peer (PEERS) presents its peer certificate as its
-// client certificate, asks for PeeringName, and verifies the certificate the
-// peer answers with against CA_FILE alone, so PEERS may name peers by any
-// address. The dialed relay answers that name with its own peer certificate,
-// to a native-QUIC client only, and verifies the client certificate against
-// CA_FILE.
+// A relay that dials a peer presents its peer certificate as its client
+// certificate, asks for PeeringName, and verifies the certificate the peer
+// answers with against the CA alone, so a peer may be dialed at any address.
+// The dialed relay answers that name with its own peer certificate, to a
+// native-QUIC client only, and verifies the client certificate against the
+// CA.
 //
 // What a CA-issued certificate grants depends on what it carries:
 //
@@ -36,9 +32,12 @@ import (
 //     name into a valid certificate.
 //
 // The certificate's subject common name is the relay's identity for logs and
-// metrics; it is never interpreted. A relay that reaches itself through
-// PEERS (a group name that resolves to it too) sees its own certificate and
-// drops the session.
+// metrics; it is never interpreted. A relay that reaches itself among the
+// peers it dials sees its own certificate and drops the session.
+//
+// This file is the trust itself: what a peer is, and the TLS configurations
+// and session classes that follow. Which settings and files it comes from is
+// the relay command's business (cmd_peer_trust.go).
 
 // PeeringName is the TLS server name a relay asks for when it dials a peer,
 // and the DNS name a peer certificate must carry. It can never resolve.
@@ -51,10 +50,10 @@ const (
 	// classClient presented no certificate the relay verified: it is admitted
 	// by its credential like any client.
 	classClient sessionClass = iota
-	// classInternal presented a certificate CA_FILE verified, without
+	// classInternal presented a certificate the CA verified, without
 	// PeeringName: an internal client, subscribe-only.
 	classInternal
-	// classPeer presented a certificate CA_FILE verified that carries
+	// classPeer presented a certificate the CA verified that carries
 	// PeeringName: a relay peer.
 	classPeer
 )
@@ -69,12 +68,12 @@ func (c sessionClass) String() string {
 	return "client"
 }
 
-// PeerTrust is a relay's peer trust configuration: the CA it trusts, and its
-// own peer identity when it has one. LoadPeerTrust reads it from files;
-// ServerTLS and DialerTLS derive the listener's and the dialer's TLS
-// configurations, and OwnCertificate is what Server.PeerCertificate takes.
+// PeerTrust is a relay's peer trust: the CA it trusts, and its own peer
+// identity when it has one. ServerTLS and DialerTLS derive the listener's and
+// the dialer's TLS configurations from it, and OwnCertificate is what
+// Server.PeerCertificate takes.
 type PeerTrust struct {
-	// ca holds CA_FILE; nil when unset.
+	// ca is the CA; nil without one.
 	ca *x509.CertPool
 	// cert is the relay's peer certificate; nil when it has no peer identity.
 	cert *tls.Certificate
@@ -82,52 +81,15 @@ type PeerTrust struct {
 	own []byte
 }
 
-// LoadPeerTrust reads CA_FILE, PEER_CERT_FILE and PEER_KEY_FILE and checks
-// they make a valid configuration, given whether PEERS is set:
-//
-//   - nothing set: a standalone relay, no session is a peer;
-//   - CA_FILE alone: CA-issued certificates authenticate internal clients,
-//     but the relay is no peer itself;
-//   - CA_FILE with a peer certificate: the relay accepts peers;
-//   - all of that with PEERS: full peering.
-//
-// It is an error to set only one of the peer files, a peer certificate
-// without CA_FILE, or PEERS without CA_FILE and a peer certificate. A peer
-// certificate must be one CA_FILE issued, carry PeeringName and be valid
-// now: a relay that could never pass a peer's checks stops at startup rather
-// than failing at every dial.
-func LoadPeerTrust(caFile, certFile, keyFile string, hasPeers bool) (*PeerTrust, error) {
-	if (certFile == "") != (keyFile == "") {
-		return nil, errors.New("PEER_CERT_FILE and PEER_KEY_FILE must be set together")
-	}
-	if certFile != "" && caFile == "" {
-		return nil, errors.New("PEER_CERT_FILE needs CA_FILE: the CA that issued it, which peers are verified against")
-	}
-	if hasPeers && certFile == "" {
-		return nil, errors.New("PEERS needs CA_FILE, PEER_CERT_FILE and PEER_KEY_FILE: a relay dials its peers with a certificate the CA issued")
-	}
-	caPEM, err := readCAFile(caFile)
-	if err != nil {
-		return nil, fmt.Errorf("failed to load CA_FILE: %w", err)
-	}
-	var cert *tls.Certificate
-	if certFile != "" {
-		c, err := tls.LoadX509KeyPair(certFile, keyFile)
-		if err != nil {
-			return nil, fmt.Errorf("failed to load PEER_CERT_FILE: %w", err)
-		}
-		cert = &c
-	}
-	t, err := NewPeerTrust(caPEM, cert)
-	if err != nil {
-		return nil, fmt.Errorf("PEER_CERT_FILE: %w", err)
-	}
-	return t, nil
-}
-
 // NewPeerTrust returns the trust for a CA (PEM; nil for none) and a peer
-// certificate (nil for none), checked as LoadPeerTrust checks files. It is
-// for code that builds a Server itself, such as tests.
+// certificate (nil for none). The certificate must be one the CA issued,
+// directly or through the intermediates that follow it in its chain, carry
+// PeeringName, be usable as both a client and a server, and be valid now: a
+// relay that could never pass a peer's checks is refused here rather than at
+// every dial.
+//
+// The certificate is taken as given: one renewed later is presented only by
+// a PeerTrust made anew.
 func NewPeerTrust(caPEM []byte, cert *tls.Certificate) (*PeerTrust, error) {
 	t := &PeerTrust{}
 	if caPEM != nil {
@@ -148,7 +110,18 @@ func NewPeerTrust(caPEM []byte, cert *tls.Certificate) (*PeerTrust, error) {
 		return nil, err
 	}
 	c.Leaf = leaf
-	if err := checkPeerCertificate(leaf, t.ca); err != nil {
+	// What follows the leaf in the certificate is its chain: a peer sees
+	// those certificates in the handshake and builds its path through
+	// them, so the check here does too.
+	intermediates := x509.NewCertPool()
+	for _, der := range c.Certificate[1:] {
+		ic, err := x509.ParseCertificate(der)
+		if err != nil {
+			return nil, fmt.Errorf("a certificate after the first isn't valid: %w", err)
+		}
+		intermediates.AddCert(ic)
+	}
+	if err := checkPeerCertificate(leaf, intermediates, t.ca); err != nil {
 		return nil, err
 	}
 	t.cert = &c
@@ -157,15 +130,15 @@ func NewPeerTrust(caPEM []byte, cert *tls.Certificate) (*PeerTrust, error) {
 }
 
 // checkPeerCertificate reports why leaf would fail a peer's checks: not
-// issued by the CA, not for PeeringName, not usable as both a client and a
-// server, or not valid now.
-func checkPeerCertificate(leaf *x509.Certificate, ca *x509.CertPool) error {
+// issued by the CA (directly, or through intermediates), not for
+// PeeringName, not usable as both a client and a server, or not valid now.
+func checkPeerCertificate(leaf *x509.Certificate, intermediates, ca *x509.CertPool) error {
 	if !slices.Contains(leaf.DNSNames, PeeringName) {
 		return fmt.Errorf("the certificate doesn't carry the peering name %q among its DNS names", PeeringName)
 	}
 	for _, usage := range []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth, x509.ExtKeyUsageServerAuth} {
-		if _, err := leaf.Verify(x509.VerifyOptions{Roots: ca, DNSName: PeeringName, KeyUsages: []x509.ExtKeyUsage{usage}}); err != nil {
-			return fmt.Errorf("the certificate isn't one CA_FILE issued for %s, or isn't valid now: %w", usageName(usage), err)
+		if _, err := leaf.Verify(x509.VerifyOptions{Roots: ca, Intermediates: intermediates, DNSName: PeeringName, KeyUsages: []x509.ExtKeyUsage{usage}}); err != nil {
+			return fmt.Errorf("the certificate isn't one the CA issued for %s, or isn't valid now: %w", usageName(usage), err)
 		}
 	}
 	return nil
@@ -232,6 +205,19 @@ func (t *PeerTrust) DialerTLS() *tls.Config {
 	}
 }
 
+// HasCA reports whether there is a CA: without one no session is a peer or
+// an internal client.
+func (t *PeerTrust) HasCA() bool { return t.ca != nil }
+
+// Identity returns the subject common name of the relay's peer certificate,
+// what its peers log it as, or "" without a peer identity.
+func (t *PeerTrust) Identity() string {
+	if t.cert == nil {
+		return ""
+	}
+	return t.cert.Leaf.Subject.CommonName
+}
+
 // OwnCertificate returns the relay's peer certificate in DER, or nil without
 // a peer identity: the value for Server.PeerCertificate.
 func (t *PeerTrust) OwnCertificate() []byte { return t.own }
@@ -253,28 +239,4 @@ func classify(state *tls.ConnectionState) (sessionClass, string) {
 // certificate (own, DER): the relay reached itself.
 func isSelf(state *tls.ConnectionState, own []byte) bool {
 	return state != nil && len(own) > 0 && len(state.PeerCertificates) > 0 && bytes.Equal(state.PeerCertificates[0].Raw, own)
-}
-
-// readCAFile reads a PEM-encoded CA certificate file and checks it holds at
-// least one certificate. Returns (nil, nil) when caFile is empty.
-// CA_FILE must be a relative path with no path traversal components.
-func readCAFile(caFile string) ([]byte, error) {
-	if caFile == "" {
-		return nil, nil
-	}
-	if filepath.IsAbs(caFile) {
-		return nil, fmt.Errorf("CA_FILE must be a relative path")
-	}
-	caFile = filepath.Clean(caFile)
-	if caFile == ".." || strings.HasPrefix(caFile, ".."+string(filepath.Separator)) || strings.Contains(caFile, string(filepath.Separator)+".."+string(filepath.Separator)) {
-		return nil, fmt.Errorf("CA_FILE must not contain path traversal")
-	}
-	pemData, err := os.ReadFile(caFile)
-	if err != nil {
-		return nil, fmt.Errorf("read CA file %q: %w", caFile, err)
-	}
-	if !x509.NewCertPool().AppendCertsFromPEM(pemData) {
-		return nil, fmt.Errorf("no valid certificates in CA file %q", caFile)
-	}
-	return pemData, nil
 }

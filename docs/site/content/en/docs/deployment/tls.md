@@ -22,7 +22,7 @@ qumo relay
 (`qumo playground` needs no manual cert — it generates and trusts its own dev
 certificate automatically.)
 
-## Trusted peers (optional)
+## Relay peers (optional)
 
 Relays authenticate each other with **mutual TLS under a relay CA**, a CA you
 run. Public certificates such as Let's Encrypt's are for browsers and other
@@ -78,8 +78,20 @@ tooling works the same way (step-ca, Vault PKI). For development, `mage cert`
 writes a relay CA and peer certificates (`PEER_NAMES=a,b mage cert`).
 
 Issuing, renewing, distributing and revoking these certificates is the
-operator's; the relay only reads the files. Revocation lists are not checked:
-a compromised certificate stays valid until it expires or the CA is replaced.
+operator's; the relay only reads the files.
+
+- **One certificate per relay.** A relay recognizes itself by its own
+  certificate. Two relays given the same one each take the other for
+  themselves, drop the session without an error, and never peer.
+- **Renewal needs a restart.** The relay reads its peer certificate once, at
+  startup. Renew it on disk and restart the relay before the old one expires;
+  a relay still running on an expired certificate can neither dial nor be
+  dialed.
+- **A chain is fine.** When an intermediate CA issues the certificate, put
+  the intermediate after the leaf in `PEER_CERT_FILE` and the root in
+  `CA_FILE`.
+- **Revocation lists are not checked.** A compromised certificate stays valid
+  until it expires or the CA is replaced.
 
 See
 [Configuration → Peer trust]({{< relref "../configuration" >}}#peer-trust-optional).

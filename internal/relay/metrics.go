@@ -49,7 +49,8 @@ var (
 	})
 
 	// metricSubscribeAuthorizations counts subscriptions checked against the
-	// session's grant. Trusted peers' subscriptions aren't checked or counted.
+	// session's grant. A relay peer's and an internal client's subscriptions
+	// aren't checked against a credential, and aren't counted.
 	metricSubscribeAuthorizations = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "qumo",
 		Subsystem: "relay",

@@ -131,7 +131,7 @@ Without a key set, auth is off: the relay admits every session unchecked and log
 | `QUMO_RELAY_TOKEN` | (unset) | Sent as a bearer token to a key-set URL and to `QUMO_USAGE_URL`. |
 | `QUMO_USAGE_URL` | (unset: no reports) | Where the relay reports each verified session's usage (below). Needs a key set. |
 
-**Trusted peers are never checked:** sessions with a client certificate verified against `CA_FILE`, and peers this relay dials (`PEERS`).
+**Relay peers are never checked:** sessions whose client certificate `CA_FILE` verifies and that carries the peering name, and peers this relay dials (`PEERS`). A session whose certificate `CA_FILE` verifies without the name is an **internal client**: it needs no credential either, and may subscribe to anything and announce nothing ([Peer trust](#peer-trust-optional)).
 
 ### Verifying against a key set
 A credential is a token your app signs with its own key, using the Go package [`github.com/qumo-dev/qumo/token`](../cli/auth/) (or `qumo auth token` while testing). The relay admits a session when, in order: the token's `kid` is in the key set and its `alg` is EdDSA; the signature verifies; its claims are exactly `path_auth`, `iat`, `nbf`, `exp` and an optional `jti`; the times hold, with 60 s leeway and a lifetime of at most an hour; and **every path it grants lies within its key's `prefix`**. The session may then publish and subscribe where the token says, and ends when the token expires.
@@ -172,7 +172,7 @@ Records go out in batches of at most 500. A failed send, a 401, 403, 408, 413 or
 - **Subscriptions** are served only if the token's subscribe path covers their path. A refused subscription gets the same answer as a path that doesn't exist (`NotFound`).
 - **Expiry:** a session ends when its token expires (its `exp` plus the leeway), closed with `0x2` (Unauthorized) and reason `expired`. This covers publishers and subscribers. The client reconnects with a fresh credential, ideally shortly before the credential's `exp`. The deadline is taken on the relay's monotonic clock when the session is admitted, so a wall-clock jump doesn't move it.
 - **Why a session ended** is the `reason` of its usage record: `expired`, `refused` (its key left the set), `closed` (the client or relay closed it normally), `dropped` (the connection was lost) or `upgrade_failed` (a WebTransport session that was admitted, whose upgrade then failed, so it never started).
-- **Trusted peers**, and peers this relay dials, are never checked.
+- **Relay peers**, peers this relay dials, and internal clients carry no credential, so nothing above applies to them.
 - **Not yet enforced:** which paths a session can discover (qumo-dev/qumo#450). Announce interest lists every path under the requested prefix, and a TRACK request returns a track's publisher properties (TRACK_INFO) for any path. Both reveal path names and metadata, never media.
 
 Metrics: `qumo_relay_auth_requests_total{event,result}` (`admitted`, `refused`, `error`, and `unchecked` with auth off), `qumo_relay_announcements_refused_total`, `qumo_relay_subscribe_authorizations_total{result}` (`admitted`, `not_covered`) and `qumo_relay_sessions_ended_total{reason}` (`expired`, `refused`). `auth_requests_total`'s `event` is `connect`, `revalidate` or `end`; an `end`'s `result` is `ok` or `error`.

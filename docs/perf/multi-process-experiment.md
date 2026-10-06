@@ -246,7 +246,9 @@ On an N-core host:
 ```
 RELAY_ADDR=127.0.0.1:<port>       # unique port per relay
 CERT_FILE=cert.pem, KEY_FILE=key.pem  # self-signed dev cert
-CA_FILE=cert.pem                   # same file is both cert and CA
+CA_FILE=peer-ca.crt                # the cell's relay CA
+PEER_CERT_FILE=peers/<name>.crt    # this relay's own peer certificate,
+PEER_KEY_FILE=peers/<name>.key     #   issued by that CA per run
 RELAY_GOGC=800                     # match existing bench config
 GROUP_CACHE_SIZE=8                 # default
 --role (unset)                     # flat mode (no hub/edge)
