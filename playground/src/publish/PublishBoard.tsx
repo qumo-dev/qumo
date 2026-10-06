@@ -9,7 +9,7 @@ import {
 } from "solid-js";
 import type { TrackMux } from "@qumo/moq";
 import { createLogger } from "@okdaichi/media-log";
-import { Camera, Monitor } from "lucide-solid";
+import { Camera, Monitor, Tv } from "lucide-solid";
 import type { Recorder } from "../devtools/recorder.ts";
 import { friendlyMessage } from "../errors.ts";
 import { createStatsTicker } from "../stats.ts";
@@ -37,6 +37,8 @@ const BITRATE_STEP = 100_000;
 const SOURCES: { id: MediaSourceType; label: string; icon: Component<{ class?: string }> }[] = [
 	{ id: "camera", label: "Camera", icon: Camera },
 	{ id: "screen", label: "Screen", icon: Monitor },
+	// A moving picture and a tone made in the page: no camera, no permission.
+	{ id: "pattern", label: "Test pattern", icon: Tv },
 ];
 
 export function PublishBoard(

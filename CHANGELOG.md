@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **The playground can publish a test pattern, with no camera (`playground/src/publish/pattern.ts`).** "Test pattern" is a third source next to Camera and Screen: colour bars, the time of day to the millisecond, a frame counter and a marker that crosses the picture once a second, with a 440 Hz tone. Each second the picture flashes as the tone beeps, so sound and picture can be checked against each other, and the clock can be read off two screens for the delay. It needs no permission, is exactly the size and frame rate chosen, and keeps its frame rate in a background tab.
 - **The playground's DevTools panel says how playback is going, and keeps a log in words (`playground/src/devtools/log.ts`).**
   - **Status:** one line at the top, "Playing normally" or what is wrong and why, from the last ten seconds.
   - **Log:** what happened, each with its time: the delay set or raised, groups skipped, aborted or late, sound lost and why, the page stopping, nothing arriving. It can be copied as text.
