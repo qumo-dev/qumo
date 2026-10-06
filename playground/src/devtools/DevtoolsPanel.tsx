@@ -693,12 +693,43 @@ function Timeline(props: {
 	const axisTime = (at: number) =>
 		clockTime(wallClock(at)).slice(0, span() < 10_000 ? CLOCK_TENTHS : CLOCK_SECONDS);
 
-	const zoom = (factor: number, anchor: number) =>
-		props.onView(zoomed(props.view, props.reading.now, factor, anchor));
-	// Dragging the timeline by a share of its width moves the view by that
-	// share of its span, the other way: the picture follows the pointer.
-	const pan = (share: number) =>
-		props.onView(panned(props.view, props.reading.now, -share * span()));
+	// A wheel or a drag reports many small steps for each frame drawn, and
+	// every change of view lays out and paints every lane again. The steps
+	// are gathered and applied once a frame, so that zooming over a busy
+	// minute does not itself stop the page.
+	let gathered: { factor: number; anchor: number; share: number } | undefined;
+	let frame: number | undefined;
+	const apply = () => {
+		frame = undefined;
+		const change = gathered;
+		gathered = undefined;
+		if (change === undefined) return;
+
+		const now = props.reading.now;
+		// Dragging the timeline by a share of its width moves the view by
+		// that share of its span, the other way: the picture follows the pointer.
+		const moved = change.share === 0
+			? props.view
+			: panned(props.view, now, -change.share * span());
+		const next = change.factor === 1 ? moved : zoomed(moved, now, change.factor, change.anchor);
+		// At the least or the most that can be shown, a step changes nothing.
+		if (next.span !== props.view.span || next.end !== props.view.end) props.onView(next);
+	};
+	const gather = (factor: number, anchor: number, share: number) => {
+		gathered = {
+			factor: (gathered?.factor ?? 1) * factor,
+			anchor,
+			share: (gathered?.share ?? 0) + share,
+		};
+		// A page that is not being shown gets no frames.
+		if (document.hidden) apply();
+		else frame ??= requestAnimationFrame(apply);
+	};
+	onCleanup(() => {
+		if (frame !== undefined) cancelAnimationFrame(frame);
+	});
+	const zoom = (factor: number, anchor: number) => gather(factor, anchor, 0);
+	const pan = (share: number) => gather(1, 0.5, share);
 	const describeSpan = () =>
 		live()
 			? `over the last ${formatSeconds(span())}`
@@ -872,7 +903,9 @@ function LaneCanvas(props: {
 	onPan: (share: number) => void;
 }) {
 	let canvas: HTMLCanvasElement | undefined;
-	// Where the pointer was at the last step of a drag, while one is under way.
+	// Where the pointer went down, until it is let go.
+	let pressed: number | undefined;
+	// Where the pointer was at the last step of a drag, once one is under way.
 	let dragged: number | undefined;
 	const [width, setWidth] = createSignal(0);
 	const lane = createMemo(() => props.lane);
@@ -891,10 +924,14 @@ function LaneCanvas(props: {
 		// stop it.
 		const target = canvas;
 		const wheel = (event: WheelEvent) => {
+			// A sideways swipe zooms nothing, and is left to the page.
+			if (event.deltaY === 0) return;
 			event.preventDefault();
 			const box = target.getBoundingClientRect();
 			const anchor = box.width > 0 ? (event.clientX - box.left) / box.width : 0.5;
 			props.onZoom(wheelFactor(event.deltaY, event.deltaMode), anchor);
+			// What was under the pointer is no longer what is under it.
+			leave();
 		};
 		target.addEventListener("wheel", wheel, { passive: false });
 		onCleanup(() => target.removeEventListener("wheel", wheel));
@@ -906,18 +943,25 @@ function LaneCanvas(props: {
 
 	const grab = (event: PointerEvent) => {
 		if (event.button !== 0) return;
-		dragged = event.clientX;
+		pressed = event.clientX;
 		event.currentTarget instanceof Element &&
 			event.currentTarget.setPointerCapture(event.pointerId);
 	};
 
 	const release = () => {
+		pressed = undefined;
 		dragged = undefined;
 	};
 
 	const point = (event: PointerEvent) => {
 		if (!canvas) return;
 		const box = canvas.getBoundingClientRect();
+		// A press becomes a drag once the pointer has moved a little. A click
+		// rarely leaves the pointer exactly where it went down, and would
+		// otherwise take a live view off the present.
+		if (pressed !== undefined && dragged === undefined) {
+			if (Math.abs(event.clientX - pressed) >= DRAG_SLOP) dragged = pressed;
+		}
 		if (dragged !== undefined) {
 			// A drag moves the view; what is under the pointer keeps changing,
 			// so nothing is pointed at meanwhile.
@@ -995,6 +1039,9 @@ function formatSeconds(ms: number): string {
 // A log item's stretch is widened by this on the timeline, so a single moment
 // is a band wide enough to see.
 const MARK_PAD_MS = 250;
+
+// How far the pointer has to move, in pixels, before a press is a drag.
+const DRAG_SLOP = 4;
 
 // Half the width the pointer's tip may take, in pixels: it is kept this far
 // from either end of the lane so it does not hang over the edge.

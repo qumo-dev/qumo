@@ -274,6 +274,9 @@ export function trackLane(
 		if (!renders) continue;
 
 		if (group.renderStart !== undefined) {
+			// Played after a moved view ends: not in this view, and not
+			// "not played" either.
+			if (group.renderStart > to) continue;
 			shapes.push({
 				x0: x(group.renderStart),
 				x1: x(group.renderEnd ?? group.renderStart),
@@ -303,7 +306,9 @@ export function trackLane(
 	}
 
 	if (dense) {
-		const cols = columns(visible, from, to, span / COLUMN_COUNT);
+		// A span that is not a round number can divide into one column too
+		// many, which would lie past the end of the lane.
+		const cols = columns(visible, from, to, span / COLUMN_COUNT).slice(0, COLUMN_COUNT);
 		const tallest = cols.reduce((most, c) => Math.max(most, total(c.states)), 1);
 		cols.forEach((col, i) => {
 			if (total(col.states) === 0) return;

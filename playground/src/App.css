@@ -836,10 +836,10 @@ input[type="range"] {
 .devtools-plot {
 	display: block;
 	width: 100%;
-	/* It is dragged to look further back, so the page must not take the
-	   gesture for a scroll, and text must not be selected under it. */
+	/* It is dragged sideways to look further back. A finger moving up or down
+	   on it still scrolls the page; text must not be selected under it. */
 	cursor: grab;
-	touch-action: none;
+	touch-action: pan-y;
 	user-select: none;
 }
 

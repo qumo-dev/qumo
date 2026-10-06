@@ -424,3 +424,31 @@ Deno.test("withBands leaves out of a moved view a band that began after it ends"
 
 	assertEquals(banded.shapes.map((s) => [s.x0, s.x1]), [[0.25, 0.5]]);
 });
+
+Deno.test("trackLane leaves out of a moved view what was played after it ends", () => {
+	const groups = [
+		group(0, 3000, 3200, { frames: 6, rendered: 6, renderStart: 3300, renderEnd: 3500 }),
+		// Arrived in view, played 400 ms later, which is after the view ends.
+		group(1, 3900, 3950, { frames: 6, rendered: 6, renderStart: 4300, renderEnd: 4500 }),
+	];
+
+	const lane = trackLane(groups, true, 10_000, 2000, 4000);
+
+	assertEquals(
+		lane.shapes.filter((s) => s.style === "rendered" || s.style === "unrendered").map((s) => [
+			s.style,
+			s.group,
+		]),
+		[["rendered", 0]],
+	);
+});
+
+Deno.test("trackLane never draws a column past the end of the lane", () => {
+	// Enough groups to be drawn as columns, over a span that is not round.
+	const span = 2227.6162154068797;
+	const groups = Array.from({ length: 400 }, (_, i) => group(i, i * 5, i * 5 + 4));
+
+	const lane = trackLane(groups, false, 2000, span);
+
+	assertEquals(lane.shapes.filter((s) => s.x0 >= 1 || s.x1 > 1), []);
+});
