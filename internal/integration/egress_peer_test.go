@@ -21,15 +21,15 @@ import (
 // connection (#432): with the client certificate it loads through
 // tlsclient.ApplyClientCert (RELAY_CERT_FILE, RELAY_KEY_FILE) from the CA the
 // relay trusts, it subscribes outside any grant without a credential, and the
-// auth server is never asked. Without the certificate it is refused.
+// credential is never checked. Without the certificate it is refused.
 func TestEgress_ClientCertificateIsTrustedPeer(t *testing.T) {
 	certFile, keyFile := createTempCert(t)
 	peerCert, err := tls.LoadX509KeyPair(certFile, keyFile)
 	require.NoError(t, err)
 
-	// The auth server refuses everyone: only a trusted peer gets through.
+	// Authorize refuses everyone: only a trusted peer gets through.
 	server := &fakeAuth{err: auth.RefusedError{Status: http.StatusUnauthorized}}
-	publisher := &fakeAuth{body: `{"publish":["**"]}`}
+	publisher := &fakeAuth{grant: testGrant(t, "**", "", time.Time{}, 0)}
 	addr, srv := startAuthRelay(t, func(ctx context.Context, req auth.Request) (*auth.Grant, error) {
 		if req.Query == "jwt=publisher" {
 			return publisher.authorize(ctx, req)

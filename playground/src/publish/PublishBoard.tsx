@@ -124,8 +124,8 @@ export function PublishBoard(
 		let stream: MediaStream;
 		try {
 			stream = await getMediaStream(sourceType(), {
-				width: target.width,
-				height: target.height,
+				width: target?.width,
+				height: target?.height,
 				frameRate: framerate(),
 			});
 		} catch (err) {

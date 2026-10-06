@@ -34,9 +34,9 @@ type Server struct {
 	AllowedOrigins []string
 
 	// Authorize decides whether a client session may start, and returns its
-	// grant (admit.go). The relay command sets it to the auth server's
-	// client (QUMO_AUTH_URL), or, with auth off, to a function that admits
-	// every session unchecked. Other code in this module that builds a
+	// grant (admit.go). The relay command sets it to the Verifier's
+	// (QUMO_AUTH_KEYS), or, with auth off, to a function that admits every
+	// session unchecked. Other code in this module that builds a
 	// Server, such as the black-box tests in internal/integration, supplies
 	// its own. A nil grant with a nil error admits the session unchecked;
 	// an auth.RefusedError refuses it with its status; any other error
@@ -47,7 +47,7 @@ type Server struct {
 	Authorize func(ctx context.Context, req auth.Request) (*auth.Grant, error)
 
 	// End reports the end of a checked session, with its final byte totals:
-	// the auth client's End. Nil reports nothing, as with auth off. It is
+	// the Verifier's End. Nil reports nothing, as with auth off. It is
 	// called after the session has closed, so it can't hold a session open.
 	End func(ctx context.Context, req auth.Request) error
 
@@ -65,6 +65,10 @@ type Server struct {
 	// fan-out. Created and started in init(); stopped by samplerCancel.
 	sampler       *statsSampler
 	samplerCancel context.CancelFunc
+
+	// sessionEnds counts checked sessions whose end report hasn't been sent
+	// yet (waitSessionEnds).
+	sessionEnds pendingCount
 
 	// connectedMu guards connected, which tracks peer addresses already dialing
 	// or connected to prevent duplicate maintainPeer goroutines.
@@ -102,10 +106,10 @@ func (s *Server) ServeStatus(w http.ResponseWriter, r *http.Request) {
 }
 
 // HandleWebTransport admits a WebTransport upgrade before it happens: a
-// refused client gets the HTTP status (401 or 403, or 503 when the auth
-// server can't answer), and an admitted one carries its grant into the
-// session through the request context. Only an upgrade (an extended
-// CONNECT) asks the auth server; any other request falls through to the
+// refused client gets the HTTP status (401 or 403, or 503 when it can't be
+// checked), and an admitted one carries its grant into the session through
+// the request context. Only an upgrade (an extended CONNECT) is checked;
+// any other request falls through to the
 // WebTransport handler, which answers it without a session.
 func (s *Server) HandleWebTransport(w http.ResponseWriter, r *http.Request) {
 	s.init()
@@ -114,8 +118,8 @@ func (s *Server) HandleWebTransport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// A request gomoqt won't upgrade goes straight to it, unasked: not an
-	// extended CONNECT, or an Origin it refuses. Asking the auth server first
-	// would count a session that never starts.
+	// extended CONNECT, or an Origin it refuses. Checking it first would
+	// count a session that never starts.
 	if r.Method != http.MethodConnect || !s.webtransportHandler.CheckOrigin(r) {
 		s.webtransportHandler.ServeHTTP(w, r)
 		return
@@ -130,9 +134,11 @@ func (s *Server) HandleWebTransport(w http.ResponseWriter, r *http.Request) {
 	s.webtransportHandler.ServeHTTP(w, r.WithContext(withAdmission(r.Context(), a)))
 	// gomoqt serves the session within ServeHTTP. If the upgrade failed
 	// anyway, no session ran and none will report its end: report it here,
-	// so the auth server can close the session it counted at connect.
+	// so the session counted at connect is closed.
 	if g != nil && !a.served.Load() {
+		s.sessionEnds.add()
 		s.reportEnd(r.Context(), req, moqt.SessionStats{}, endUpgradeFailed, 0)
+		s.sessionEnds.done()
 	}
 }
 
@@ -287,6 +293,62 @@ func (s *Server) Close() error {
 	}
 
 	return nil
+}
+
+// waitSessionEnds waits, at most d, for the end reports of sessions that
+// have closed but not yet reported: a session reports its end after its
+// connection closes, which can be after Shutdown returns. The relay command
+// calls it before the verifier's last usage send, so those ends are in it.
+func (s *Server) waitSessionEnds(d time.Duration) {
+	if !s.sessionEnds.wait(d) {
+		slog.Warn("relay: some sessions hadn't reported their end at shutdown", "waited", d)
+	}
+}
+
+// pendingCount counts work in flight and lets a caller wait for it to reach
+// zero. Unlike a sync.WaitGroup, add may race with wait: a session that
+// starts while shutdown waits is simply counted.
+type pendingCount struct {
+	mu   sync.Mutex
+	n    int
+	zero chan struct{} // closed when n returns to zero
+}
+
+func (c *pendingCount) add() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.n == 0 {
+		c.zero = make(chan struct{})
+	}
+	c.n++
+}
+
+func (c *pendingCount) done() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.n--
+	if c.n == 0 {
+		close(c.zero)
+	}
+}
+
+// wait reports whether the count reached zero within d.
+func (c *pendingCount) wait(d time.Duration) bool {
+	c.mu.Lock()
+	if c.n == 0 {
+		c.mu.Unlock()
+		return true
+	}
+	zero := c.zero
+	c.mu.Unlock()
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-zero:
+		return true
+	case <-timer.C:
+		return false
+	}
 }
 
 func (s *Server) Shutdown(ctx context.Context) error {
@@ -532,8 +594,11 @@ func (s *Server) serveSession(sess *moqt.Session) {
 		a.served.Store(true)
 		start := time.Now()
 		// Registered first so that it runs last: after the close below,
-		// with the session's final byte totals and close cause.
+		// with the session's final byte totals and close cause. Counted in
+		// sessionEnds, since it can run after Shutdown has returned.
+		s.sessionEnds.add()
 		defer func() {
+			defer s.sessionEnds.done()
 			s.reportEnd(sess.Context(), a.req, sess.Stats(), endReason(l, context.Cause(sess.Context())), time.Since(start))
 		}()
 	}

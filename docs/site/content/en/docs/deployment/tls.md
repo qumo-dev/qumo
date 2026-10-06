@@ -27,9 +27,9 @@ certificate automatically.)
 Setting `CA_FILE` makes the relay's peers identify themselves by certificate:
 
 - a session presenting a client certificate signed by this CA is a trusted
-  peer, never asked by the auth server;
+  peer, whose credential is never checked;
 - a client certificate stays optional, so browsers (which present none) still
-  connect and are admitted by the auth server;
+  connect and are admitted by their credential;
 - the dialer presents this node's `CERT_FILE` cert to the relays in `PEERS` and
   verifies theirs against the system roots plus this CA.
 

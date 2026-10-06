@@ -54,7 +54,7 @@ for a worked example of giving relays stable addresses on Nomad.
 
 | Variable | Default | Description |
 |---|---|---|
-| `CA_FILE` | (empty) | PEM CA certificate. A session whose client certificate it verifies is a **trusted relay peer**: it is never asked by the auth server. Client certificates stay optional for everyone else (browsers present none). Relays this one dials are verified against the system roots plus this CA, and this relay presents its `CERT_FILE` as its client certificate. Unset: no session is a peer. |
+| `CA_FILE` | (empty) | PEM CA certificate. A session whose client certificate it verifies is a **trusted relay peer**: its credential is never checked. Client certificates stay optional for everyone else (browsers present none). Relays this one dials are verified against the system roots plus this CA, and this relay presents its `CERT_FILE` as its client certificate. Unset: no session is a peer. |
 
 See [Deployment → TLS & mTLS]({{< relref "deployment/tls" >}}).
 
@@ -98,49 +98,59 @@ relay's HTTP port.
 
 ## Session auth (optional)
 
-Auth is off unless `QUMO_AUTH_URL` is set. Off, the relay admits every session unchecked and logs a warning at startup: the right setting for local development and for a relay that is open on purpose. On, the relay asks its auth server about every client session.
+A client puts its credential in the connect URL: `https://relay.example.com/…?jwt=…` over WebTransport, or `moqt://relay.example.com/…?jwt=…` over native QUIC. **The relay verifies the credential itself, against a key set** (`QUMO_AUTH_KEYS`); no other process is involved.
+
+Without a key set, auth is off: the relay admits every session unchecked and logs a warning at startup, the right setting for local development and for a relay that is open on purpose.
 
 | Variable | Default | Description |
 |---|---|---|
-| `QUMO_AUTH_URL` | (unset: auth off) | The auth server the relay asks when each client session connects. `https://`, or `http://` on a loopback host only. |
+| `QUMO_AUTH_KEYS` | (unset) | The key set: a JWK Set of Ed25519 public keys, what [`qumo auth keygen`](../cli/auth/#keygen) writes. Its form says where it is: an `https://` URL (or `http://` on a loopback host only) is downloaded about every 30 s (±10%, so relays restarted together spread out) with `If-None-Match`; a path or a `file://` URL is a file, re-read when it changes. Any other scheme is refused at startup. |
+| `QUMO_AUTH_KEYS_CACHE` | (unset: no cache) | A file the relay keeps the last downloaded key set in, and loads at startup, so a relay that restarts while the key-set URL can't be reached still has its keys. For a key-set URL only. |
+| `QUMO_RELAY_TOKEN` | (unset) | Sent as a bearer token to a key-set URL and to `QUMO_USAGE_URL`. |
+| `QUMO_USAGE_URL` | (unset: no reports) | Where the relay reports each verified session's usage (below). Needs a key set. |
 
-The auth server holds the policy: which credentials it accepts, and what a session that presents none may do. qumo ships one, [`qumo auth`](../cli/auth/), which verifies tokens your app signs with its own key; any server that speaks the contract below works too.
+**Trusted peers are never checked:** sessions with a client certificate verified against `CA_FILE`, and peers this relay dials (`PEERS`).
 
-**Trusted peers are never asked:** sessions with a client certificate verified against `CA_FILE`, and peers this relay dials (`PEERS`).
+### Verifying against a key set
+A credential is a token your app signs with its own key, using the Go package [`github.com/qumo-dev/qumo/token`](../cli/auth/) (or `qumo auth token` while testing). The relay admits a session when, in order: the token's `kid` is in the key set and its `alg` is EdDSA; the signature verifies; its claims are exactly `path_auth`, `iat`, `nbf`, `exp` and an optional `jti`; the times hold, with 60 s leeway and a lifetime of at most an hour; and **every path it grants lies within its key's `prefix`**. The session may then publish and subscribe where the token says, and ends when the token expires.
 
-### The auth server contract
-A subset of [`moq-auth`](https://github.com/kixelated/moq/blob/main/doc/bin/relay/auth.md). When a client connects, the relay POSTs JSON:
-
-```json
-{"id": "<random hex>", "event": "connect", "node": "<RELAY_NAME>", "transport": "webtransport|quic",
- "remote": "ip:port", "local": "ip:port", "server_name": "relay.example.com",
- "path": "/as/dialed", "query": "jwt=<credential>"}
-```
-
-**The relay never parses the credential;** the client puts it in the connect URL (`https://relay.example.com/…?jwt=…`, or `moqt://relay.example.com/…?jwt=…` over native QUIC) and the relay forwards `query` as is.
-
-The server answers with a grant:
+Each key in the set may carry two members besides the standard JWK ones:
 
 ```json
-{"publish": ["acme/app/**"], "subscribe": ["acme/**"], "expires": 1767225600, "revalidate": 30}
+{"keys": [{"kty": "OKP", "crv": "Ed25519", "x": "…", "kid": "…", "prefix": "acme/app", "publish": false}]}
 ```
 
-- **Patterns** are subtree patterns only: `**` (everything) or `a/b/**` (`a/b` and everything beneath it, on `/` boundaries).
-- **Unsupported fields** (`root`, `mounts`, `peer`) make a grant invalid. `tier` is ignored.
-- **Admission:**
-  - A 2xx with a non-empty grant admits the session.
-  - A 401 or 403 refuses it. A WebTransport client gets that status before the upgrade; a native-QUIC session is closed with `0x2` (Unauthorized).
-  - Anything else refuses too: a timeout, a 5xx, an invalid grant, or a grant that names nothing. Nothing is admitted while the auth server is down; a WebTransport client gets 503.
-- **Announcements** are routed only if the grant's `publish` patterns cover their path.
-- **Subscriptions** are served only if the grant's `subscribe` patterns cover their path. A refused subscription gets the same answer as a path that doesn't exist (`NotFound`).
-- **Expiry:** a session ends at its grant's `expires` (Unix seconds), closed with `0x2` (Unauthorized) and reason `expired`. This covers publishers and subscribers. The client reconnects with a fresh credential, ideally shortly before the credential's `exp`. A grant without `expires` never expires. The deadline is taken on the relay's monotonic clock when the grant is accepted, so a wall-clock jump doesn't move it; any leeway is the auth server's to add.
-- **Revalidation:** every `revalidate` seconds, the relay sends the session's connect request again, with the same `id` and `event: "revalidate"`. This is how key revocation, project suspension or a spend limit reaches a live session.
-  - **A 401 or 403** ends the session with `0x2` (Unauthorized) and reason `refused`.
-  - **A grant that can't be enforced** ends it with reason `invalid`.
-  - **An admitted grant** keeps the session and takes the new `expires` and `revalidate`. Its patterns are not compared: they were fixed at connect, and the credential is the same. A grant without `expires` keeps the session's current deadline; a revalidate never lifts it.
-  - **Anything else** (a timeout, a 5xx) is retried with jittered exponential backoff, from about 1 s up to 30 s. The session lives until its current `expires`, so an outage is bounded by what the server last granted.
-- **Usage and session end:** each revalidate carries the session's cumulative `bytes` (`{"sent": …, "received": …}`, counted from the relay's side). `bytes` is left out while both totals are zero, so an absent one means none. When a checked session closes, the relay sends `event: "end"` with the same `id`, the final `bytes`, `duration` in whole seconds, and a `reason`: `expired`, `refused`, `invalid`, `closed` (the client or relay closed it normally), `dropped` (the connection was lost) or `upgrade_failed` (a WebTransport session the auth server admitted, whose upgrade then failed, so it never started). A request whose `Origin` the relay refuses is never sent to the auth server. The end report is best effort: one attempt with a 2 s timeout, sent after the close, so a slow auth server can't hold a session open. A lost one costs at most one revalidate interval of usage. Reporting bytes on revalidate as well as end is qumo's one extension of moq-auth, so billing sees a long session before it ends.
+- **`prefix`** confines the key: a token signed with it may grant only paths at or beneath it.
+- **`"publish": false`** starts no new sessions that may publish, for example while the key's owner is at a limit on broadcasts. Sessions that only subscribe still start, and live sessions continue.
+
+**Live sessions are re-checked every 30 s** against the current set: a session whose key has left the set ends, with MoQ `0x2` (Unauthorized), so removing a key cuts its sessions off within about a minute at worst (one refresh plus one re-check), about 30 s on average. If the set can't be refreshed, the relay keeps the last one and logs an error; after 6 hours without a refresh it admits no new sessions, while live ones run to their expiry. Before the first successful load it admits nothing. With `QUMO_AUTH_KEYS_CACHE` set, the last downloaded set is loaded at startup, and its age counts toward the 6 hours, so a restart doesn't extend how long an old set is trusted. A key set *file* that can't be read stops the relay at startup, rather than leaving it running and refusing everyone.
+
+### Usage reports
+With `QUMO_USAGE_URL` set, the relay POSTs a JSON array of records to it every 10 s:
+
+```json
+[{"type": "session_open", "session_id": "…", "kid": "…", "role": "publish", "ts": "…"},
+ {"type": "usage", "session_id": "…", "kid": "…", "role": "publish",
+  "metrics": {"gateway.ingress_bytes": 10162, "gateway.egress_bytes": 9223}, "ts": "…"},
+ {"type": "session_close", "session_id": "…", "kid": "…", "role": "publish",
+  "metrics": {"gateway.ingress_bytes": 10438, "gateway.egress_bytes": 9165}, "reason": "closed", "ts": "…"}]
+```
+
+`role` is `publish`, `subscribe` or `both`, from what the token grants. Byte counts are cumulative and from the relay's point of view (what it received is ingress), so a receiver can take a resent record without counting it twice.
+
+**Sessions that may publish are reported one by one,** as above: an open, usage every 30 s, and a close.
+
+**Sessions that only subscribe are reported together.** Viewers outnumber publishers by orders of magnitude, and a record per viewer would make the receiver's load grow with the audience. Their bytes are added up per key into one running total since the relay started, sent as a `usage` record whose `session_id` is `viewers.<run>.<kid>`, where `<run>` is new each time the relay starts (so a restart begins new totals rather than lowering old ones). There is no open or close for them, and a total is sent only when it has changed.
+
+Records go out in batches of at most 500. A failed send, a 401, 403, 408, 413 or 429 included, keeps the records and retries them (logged once, then again when it recovers); only a batch the receiver can't read (400 or 422) is dropped. When the relay shuts down, it waits up to 5 s for its last sessions to record their end before the final send.
+
+### What a session may do
+- **Refusal:** a WebTransport client gets the HTTP status before the upgrade: 401 for a credential that can't be accepted, 403 for a valid one that may not do what it asks, or 503 while the relay has no usable key set. A native-QUIC session is closed with `0x2` (Unauthorized).
+- **Announcements** are routed only if the token's publish path covers their path.
+- **Subscriptions** are served only if the token's subscribe path covers their path. A refused subscription gets the same answer as a path that doesn't exist (`NotFound`).
+- **Expiry:** a session ends when its token expires (its `exp` plus the leeway), closed with `0x2` (Unauthorized) and reason `expired`. This covers publishers and subscribers. The client reconnects with a fresh credential, ideally shortly before the credential's `exp`. The deadline is taken on the relay's monotonic clock when the session is admitted, so a wall-clock jump doesn't move it.
+- **Why a session ended** is the `reason` of its usage record: `expired`, `refused` (its key left the set), `closed` (the client or relay closed it normally), `dropped` (the connection was lost) or `upgrade_failed` (a WebTransport session that was admitted, whose upgrade then failed, so it never started).
 - **Trusted peers**, and peers this relay dials, are never checked.
 - **Not yet enforced:** which paths a session can discover (qumo-dev/qumo#450). Announce interest lists every path under the requested prefix, and a TRACK request returns a track's publisher properties (TRACK_INFO) for any path. Both reveal path names and metadata, never media.
 
-Metrics: `qumo_relay_auth_requests_total{event,result}` (`admitted`, `refused`, `invalid`, `error`, and `unchecked` with auth off), `qumo_relay_announcements_refused_total`, `qumo_relay_subscribe_authorizations_total{result}` (`admitted`, `not_covered`) and `qumo_relay_sessions_ended_total{reason}` (`expired`, `refused`, `invalid`). `auth_requests_total`'s `event` is `connect`, `revalidate` or `end`; an `end` report's `result` is `ok` or `error`.
+Metrics: `qumo_relay_auth_requests_total{event,result}` (`admitted`, `refused`, `error`, and `unchecked` with auth off), `qumo_relay_announcements_refused_total`, `qumo_relay_subscribe_authorizations_total{result}` (`admitted`, `not_covered`) and `qumo_relay_sessions_ended_total{reason}` (`expired`, `refused`). `auth_requests_total`'s `event` is `connect`, `revalidate` or `end`; an `end`'s `result` is `ok` or `error`.

@@ -4,19 +4,21 @@ package integration
 
 import (
 	"context"
-	"encoding/json"
 	"sync"
+	"testing"
+	"time"
 
 	"github.com/qumo-dev/qumo/internal/auth"
+	"github.com/stretchr/testify/require"
 )
 
 // fakeAuth answers every session through its authorize method, which is what
-// relay.Server.Authorize takes: err when set, otherwise the grant in body
-// (JSON, as an auth server sends it). The zero value admits every session
-// with a grant that covers nothing. It records every request.
+// relay.Server.Authorize takes: err when set, otherwise grant. The zero value
+// admits every session with a grant that covers nothing. It records every
+// request.
 // revalidateErr, when set, answers every revalidate instead.
 type fakeAuth struct {
-	body          string
+	grant         *auth.Grant
 	err           error
 	revalidateErr error
 
@@ -50,14 +52,26 @@ func (f *fakeAuth) authorize(_ context.Context, req auth.Request) (*auth.Grant, 
 	if f.err != nil {
 		return nil, f.err
 	}
-	var g auth.Grant
-	if f.body == "" {
-		return &g, nil
+	if f.grant == nil {
+		return &auth.Grant{}, nil
 	}
-	if err := json.Unmarshal([]byte(f.body), &g); err != nil {
-		return nil, err
+	return f.grant, nil
+}
+
+// testGrant returns a grant for one publish and one subscribe pattern ("" for
+// none), ending at expires and checked again every revalidate.
+func testGrant(tb testing.TB, publish, subscribe string, expires time.Time, revalidate time.Duration) *auth.Grant {
+	tb.Helper()
+	var pub, sub []string
+	if publish != "" {
+		pub = []string{publish}
 	}
-	return &g, nil
+	if subscribe != "" {
+		sub = []string{subscribe}
+	}
+	g, err := auth.NewGrant(pub, sub, expires, revalidate)
+	require.NoError(tb, err)
+	return g
 }
 
 // received returns a copy of the requests seen so far.
@@ -68,7 +82,7 @@ func (f *fakeAuth) received() []auth.Request {
 }
 
 // authOff admits every session unchecked, as a relay with auth off does
-// (QUMO_AUTH_URL unset): a nil grant with a nil error.
+// (QUMO_AUTH_KEYS unset): a nil grant with a nil error.
 func authOff(context.Context, auth.Request) (*auth.Grant, error) {
 	return nil, nil
 }

@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [v0.11.261005] - 2026-10-05
+
+> **Breaking for operators.** The auth server is removed: the relay no longer asks one (`QUMO_AUTH_URL`), and `qumo auth` no longer runs one. The relay verifies credentials itself against a key set. To move over, unset `QUMO_AUTH_URL`, set `QUMO_AUTH_KEYS` to the key set the auth server was reading, and stop the `qumo auth` process; tokens and signing keys are unchanged. A relay with `QUMO_AUTH_URL` still set refuses to start. See **Removed** below.
+
 ### Added
 
 - **The playground can publish a test pattern, with no camera (`playground/src/publish/pattern.ts`).** "Test pattern" is a third source next to Camera and Screen: colour bars, the time of day to the millisecond, a frame counter and a marker that crosses the picture once a second, with a 440 Hz tone. Each second the picture flashes as the tone beeps, so sound and picture can be checked against each other, and the clock can be read off two screens for the delay. It needs no permission, is exactly the size and frame rate chosen, and keeps its frame rate in a background tab. The frame count, the flash and the marker are all read off the clock, so a timer that runs fast or slow cannot shift them.
@@ -22,9 +26,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **The ingest no longer busy-loops in the moment between a new group being counted and being stored (`internal/ingest`).** A subscriber that looked in that moment asked for the group again in a tight loop until it appeared; the moment is normally a few instructions long, but lasts as long as the pushing goroutine is held up. It now waits for the notification that follows every push, as it does when there is nothing new at all. The step that picks a subscriber's next group is its own function, with tests for falling behind and for a group that is counted but not yet stored.
 - **A playground opened at a host other than localhost dials that host, not localhost (#456).** `qumo playground` already answered `/config` with the relay URL for the host the UI was opened at, but the UI took only the cert hash from it and built the address from a build-time variable that is unset in the shipped bundle. The relay address and the ffmpeg push command shown for RTMP and RTSP now use the host from `/config`. Under `mage web` they use `VITE_RELAY_URL`'s host, as before. The HLS scenario still reads `VITE_HLS_URL`, since `/config` does not name the HLS egress.
 - **The playground's viewer no longer drops seconds of audio as it starts.** The audio output is started before the audio track is subscribed to: starting it can take seconds the first time, and everything that arrived meanwhile was handed over at once and thrown away. A backlog passed over before anything has played is no longer counted as lost audio, and silence before playback begins is no longer counted as starvation.
 - **Raising the playback delay interrupts the sound less often.** Every raise holds playback while the buffer fills, and the delay used to creep up a few milliseconds at a time, a short silence each. It now moves only for a raise of 10 ms or more, and then a little further.
+
+### Removed
+
+- **Breaking: the auth server is gone: the relay no longer asks one (`QUMO_AUTH_URL`), and `qumo auth` no longer runs one.** The relay verifies credentials itself against a key set (`QUMO_AUTH_KEYS`), which does the same checks in the relay process.
+  - **To move over:** unset `QUMO_AUTH_URL` on the relay, set `QUMO_AUTH_KEYS` to the key set the auth server was reading, and stop the `qumo auth` process. Tokens and signing keys are unchanged.
+  - **A relay with `QUMO_AUTH_URL` still set refuses to start,** rather than starting with auth off.
+  - `qumo auth` needs a command (`keygen` or `token`); `QUMO_AUTH_ADDR` and `QUMO_AUTH_KEYS_FILE` are no longer read.
+  - Metrics: the `invalid` result of `qumo_relay_auth_requests_total` and the `invalid` reason of `qumo_relay_sessions_ended_total` are gone; only an auth server's reply could cause them.
 
 ### Changed
 
