@@ -799,7 +799,17 @@ input[type="range"] {
 
 .devtools-spans {
 	display: inline-flex;
+	align-items: center;
 	gap: 4px;
+}
+
+/* How much time is in view, next to the buttons that change it. */
+.devtools-span {
+	min-width: 3.5em;
+	color: var(--text-muted);
+	font-size: 0.8rem;
+	font-variant-numeric: tabular-nums;
+	text-align: right;
 }
 
 .devtools-controls .copy-btn[aria-pressed="true"] {
@@ -826,6 +836,15 @@ input[type="range"] {
 .devtools-plot {
 	display: block;
 	width: 100%;
+	/* It is dragged to look further back, so the page must not take the
+	   gesture for a scroll, and text must not be selected under it. */
+	cursor: grab;
+	touch-action: none;
+	user-select: none;
+}
+
+.devtools-plot:active {
+	cursor: grabbing;
 }
 
 /* What the pointer is on, under the lane so it does not cover the mark. */

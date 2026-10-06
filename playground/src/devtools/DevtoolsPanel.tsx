@@ -41,18 +41,37 @@ import {
 	trackLane,
 	withBands,
 } from "./timeline.ts";
+import {
+	isLive,
+	LIVE,
+	MAX_SPAN_MS,
+	MIN_SPAN_MS,
+	panned,
+	spanned,
+	type View,
+	wheelFactor,
+	windowOf,
+	zoomed,
+} from "./view.ts";
 
 const STORAGE_KEY = "qumo.devtools.open";
 
 // Rates are measured over at least this long, however often the panel redraws.
 const RATE_MS = 1000;
-// How much time the timeline can show. The shorter spans are what make a busy
+// Spans the timeline can be put at with one press. Any span between the least
+// and the most can be reached by zooming; the short ones are what make a busy
 // track readable: at 60 s audio is tens of groups a second and is drawn as
 // columns, at 2 s each of its groups is a bar on its own lane.
 const SPANS = [60_000, 10_000, 2_000] as const;
-type Span = typeof SPANS[number];
-// A short span scrolls too fast to follow at one redraw a second.
-const TICK_MS: Record<Span, number> = { 60_000: 1000, 10_000: 250, 2_000: 100 };
+// How much one press of a zoom button changes the span.
+const ZOOM_STEP = 1.5;
+
+// How often the panel redraws for a span: a short one scrolls too fast to
+// follow at one redraw a second.
+function tickFor(span: number): number {
+	if (span >= 30_000) return 1000;
+	return span >= 5000 ? 250 : 100;
+}
 
 interface TrackRates {
 	/** Received media, in bits per second. */
@@ -116,7 +135,10 @@ export function DevtoolsPanel(props: { recorder: Recorder; session: Promise<Sess
 		log: [],
 	});
 	const [session, setSession] = createSignal<SessionReading>();
-	const [span, setSpan] = createSignal<Span>(60_000);
+	const [view, setView] = createSignal<View>(LIVE);
+	// Redrawing follows the span, but not every step of a zoom: the timer is
+	// only restarted when the rate it should run at changes.
+	const tick = createMemo(() => tickFor(view().span));
 	const [paused, setPaused] = createSignal(false);
 	const [focus, setFocus] = createSignal<Focus>();
 	// The log item the pointer is on, so its time can be found on the timeline.
@@ -179,7 +201,7 @@ export function DevtoolsPanel(props: { recorder: Recorder; session: Promise<Sess
 		};
 
 		sample();
-		const timer = setInterval(sample, TICK_MS[span()]);
+		const timer = setInterval(sample, tick());
 		onCleanup(() => {
 			stopped = true;
 			clearInterval(timer);
@@ -232,8 +254,8 @@ export function DevtoolsPanel(props: { recorder: Recorder; session: Promise<Sess
 						<TrackTable reading={reading()} />
 						<Timeline
 							reading={reading()}
-							span={span()}
-							onSpan={setSpan}
+							view={view()}
+							onView={setView}
 							paused={paused()}
 							onPause={() => setPaused((p) => !p)}
 							focus={focus()}
@@ -641,8 +663,8 @@ function TrackTable(props: { reading: Reading }) {
 
 function Timeline(props: {
 	reading: Reading;
-	span: Span;
-	onSpan: (span: Span) => void;
+	view: View;
+	onView: (view: View) => void;
 	paused: boolean;
 	onPause: () => void;
 	focus: Focus | undefined;
@@ -661,9 +683,26 @@ function Timeline(props: {
 			style: "marker" as const,
 		}];
 	});
-	const banded = (lane: Lane) => withBands(lane, bands(), props.reading.now, props.span);
-	const axisTime = (ago: number) =>
-		clockTime(wallClock(props.reading.now - ago)).slice(0, CLOCK_SECONDS);
+	// The stretch of time in view, and how much that is.
+	const shown = createMemo(() => windowOf(props.view, props.reading.now));
+	const span = () => shown().to - shown().from;
+	const live = () => isLive(props.view, props.reading.now);
+
+	const banded = (lane: Lane) => withBands(lane, bands(), props.reading.now, span(), shown().to);
+	// A short span needs the fraction of the second to tell its ends apart.
+	const axisTime = (at: number) =>
+		clockTime(wallClock(at)).slice(0, span() < 10_000 ? CLOCK_TENTHS : CLOCK_SECONDS);
+
+	const zoom = (factor: number, anchor: number) =>
+		props.onView(zoomed(props.view, props.reading.now, factor, anchor));
+	// Dragging the timeline by a share of its width moves the view by that
+	// share of its span, the other way: the picture follows the pointer.
+	const pan = (share: number) =>
+		props.onView(panned(props.view, props.reading.now, -share * span()));
+	const describeSpan = () =>
+		live()
+			? `over the last ${formatSeconds(span())}`
+			: `from ${axisTime(shown().from)} to ${axisTime(shown().to)}`;
 
 	// The marks are painted in the page's theme tokens. Reading them with each
 	// new reading keeps the canvases right when the theme changes.
@@ -681,22 +720,55 @@ function Timeline(props: {
 							<button
 								type="button"
 								class="copy-btn"
-								aria-pressed={props.span === ms}
-								onClick={() => props.onSpan(ms)}
+								aria-pressed={props.view.span === ms}
+								onClick={() =>
+									props.onView(spanned(props.view, props.reading.now, ms))}
 							>
 								{ms / 1000} s
 							</button>
 						)}
 					</For>
+					<button
+						type="button"
+						class="copy-btn"
+						title="Show more time"
+						aria-label="Zoom out"
+						disabled={props.view.span >= MAX_SPAN_MS}
+						onClick={() => zoom(ZOOM_STEP, 0.5)}
+					>
+						−
+					</button>
+					<button
+						type="button"
+						class="copy-btn"
+						title="Show less time"
+						aria-label="Zoom in"
+						disabled={props.view.span <= MIN_SPAN_MS}
+						onClick={() => zoom(1 / ZOOM_STEP, 0.5)}
+					>
+						+
+					</button>
+					<output class="devtools-span">{formatSeconds(span())}</output>
 				</div>
-				<button
-					type="button"
-					class="copy-btn"
-					aria-pressed={props.paused}
-					onClick={() => props.onPause()}
-				>
-					{props.paused ? "Resume" : "Pause"}
-				</button>
+				<div class="devtools-spans">
+					<button
+						type="button"
+						class="copy-btn"
+						title="Show the present, and follow it"
+						aria-pressed={live()}
+						onClick={() => props.onView({ span: props.view.span, end: undefined })}
+					>
+						Live
+					</button>
+					<button
+						type="button"
+						class="copy-btn"
+						aria-pressed={props.paused}
+						onClick={() => props.onPause()}
+					>
+						{props.paused ? "Resume" : "Pause"}
+					</button>
+				</div>
 			</div>
 
 			{
@@ -707,13 +779,16 @@ function Timeline(props: {
 				{(track) => (
 					<LaneCanvas
 						name={track().name}
-						label={`${track().name}: groups over the last ${props.span / 1000} seconds`}
+						label={`${track().name}: groups ${describeSpan()}`}
 						lane={banded(trackLane(
 							track().groups,
 							track().renders,
 							props.reading.now,
-							props.span,
+							span(),
+							shown().to,
 						))}
+						onZoom={zoom}
+						onPan={pan}
 						palette={palette()}
 						focus={props.focus?.track === track().name
 							? props.focus.sequence
@@ -728,15 +803,16 @@ function Timeline(props: {
 			<Show when={props.reading.audio.length > 0}>
 				<LaneCanvas
 					name="audio buffer"
-					label={`Audio buffer: its level, and where sound was lost, over the last ${
-						props.span / 1000
-					} seconds`}
+					label={`Audio buffer: its level, and where sound was lost, ${describeSpan()}`}
 					lane={banded(audioLane(
 						props.reading.audio,
 						props.reading.delays,
 						props.reading.now,
-						props.span,
+						span(),
+						shown().to,
 					))}
+					onZoom={zoom}
+					onPan={pan}
 					palette={palette()}
 					focus={undefined}
 				/>
@@ -745,9 +821,9 @@ function Timeline(props: {
 			<div class="devtools-lane devtools-axis" aria-hidden="true">
 				<span />
 				<div>
-					<span>{axisTime(props.span)}</span>
-					<span>{axisTime(props.span / 2)}</span>
-					<span>{axisTime(0)} (now)</span>
+					<span>{axisTime(shown().from)}</span>
+					<span>{axisTime((shown().from + shown().to) / 2)}</span>
+					<span>{axisTime(shown().to)}{live() ? " (now)" : ""}</span>
 				</div>
 			</div>
 
@@ -771,7 +847,8 @@ function Timeline(props: {
 				</For>
 			</dl>
 			<p class="devtools-hint">
-				Point at a mark on the timeline for what it is and when it happened.
+				Point at a mark on the timeline for what it is and when it happened. Scroll on the
+				timeline to zoom, and drag it to look further back; Live returns to the present.
 			</p>
 		</div>
 	);
@@ -786,8 +863,17 @@ function LaneCanvas(props: {
 	palette: Palette;
 	focus: number | undefined;
 	onFocus?: (group: number | undefined) => void;
+	/**
+	 * Asks for `factor` times as much time in view, keeping the moment
+	 * `anchor` of the way along the lane (0 to 1) where it is.
+	 */
+	onZoom: (factor: number, anchor: number) => void;
+	/** Asks for the view to follow a drag of `share` of the lane's width. */
+	onPan: (share: number) => void;
 }) {
 	let canvas: HTMLCanvasElement | undefined;
+	// Where the pointer was at the last step of a drag, while one is under way.
+	let dragged: number | undefined;
 	const [width, setWidth] = createSignal(0);
 	const lane = createMemo(() => props.lane);
 	// What the pointer is on, and where along the lane, in pixels.
@@ -799,15 +885,47 @@ function LaneCanvas(props: {
 		const observer = new ResizeObserver(([entry]) => setWidth(entry?.contentRect.width ?? 0));
 		observer.observe(canvas);
 		onCleanup(() => observer.disconnect());
+
+		// Listened for here and not in the markup: the page must not scroll
+		// while the wheel zooms, and only a listener that is not passive can
+		// stop it.
+		const target = canvas;
+		const wheel = (event: WheelEvent) => {
+			event.preventDefault();
+			const box = target.getBoundingClientRect();
+			const anchor = box.width > 0 ? (event.clientX - box.left) / box.width : 0.5;
+			props.onZoom(wheelFactor(event.deltaY, event.deltaMode), anchor);
+		};
+		target.addEventListener("wheel", wheel, { passive: false });
+		onCleanup(() => target.removeEventListener("wheel", wheel));
 	});
 
 	createEffect(() => {
 		if (canvas && width() > 0) drawLane(canvas, lane(), width(), props.palette, props.focus);
 	});
 
-	const point = (event: MouseEvent) => {
+	const grab = (event: PointerEvent) => {
+		if (event.button !== 0) return;
+		dragged = event.clientX;
+		event.currentTarget instanceof Element &&
+			event.currentTarget.setPointerCapture(event.pointerId);
+	};
+
+	const release = () => {
+		dragged = undefined;
+	};
+
+	const point = (event: PointerEvent) => {
 		if (!canvas) return;
 		const box = canvas.getBoundingClientRect();
+		if (dragged !== undefined) {
+			// A drag moves the view; what is under the pointer keeps changing,
+			// so nothing is pointed at meanwhile.
+			if (box.width > 0) props.onPan((event.clientX - dragged) / box.width);
+			dragged = event.clientX;
+			leave();
+			return;
+		}
 		const hit = shapeAt(
 			lane(),
 			event.clientX - box.left,
@@ -841,8 +959,11 @@ function LaneCanvas(props: {
 					role="img"
 					aria-label={props.label}
 					style={{ height: `${lane().height}px` }}
-					onMouseMove={point}
-					onMouseLeave={leave}
+					onPointerDown={grab}
+					onPointerMove={point}
+					onPointerUp={release}
+					onPointerCancel={release}
+					onPointerLeave={leave}
 				/>
 				<Show when={tip()}>
 					{(shown) => (
@@ -861,8 +982,16 @@ function LaneCanvas(props: {
 	);
 }
 
-// The log's times are shown to the millisecond; the axis to the second.
+// The log's times are shown to the millisecond; the axis to the second, or to
+// the tenth of one when little time is in view.
 const CLOCK_SECONDS = "HH:MM:SS".length;
+const CLOCK_TENTHS = "HH:MM:SS.t".length;
+
+// A span of time in seconds, with a decimal only where it says something.
+function formatSeconds(ms: number): string {
+	const seconds = ms / 1000;
+	return `${seconds >= 10 ? Math.round(seconds) : Number(seconds.toFixed(1))} s`;
+}
 // A log item's stretch is widened by this on the timeline, so a single moment
 // is a band wide enough to see.
 const MARK_PAD_MS = 250;
