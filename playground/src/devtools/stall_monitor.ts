@@ -14,6 +14,8 @@ const log = createLogger("devtools");
 const TICK_MS = 20;
 // A stop shorter than this is ordinary: a frame, a small collection.
 const MIN_STALL_MS = 30;
+// How many ticks apart two ticks may be sent with the ticker still running.
+const LATE_TICKS = 5;
 
 /**
  * Tells, from when each tick was sent and when it was handled, whether the
@@ -33,6 +35,12 @@ export class StallDetector {
 	// for themselves and need not agree; the tick that waited least waited
 	// next to nothing, so what it seemed to wait is the disagreement.
 	#skew = Infinity;
+	readonly #tickMs: number;
+
+	/** @param tickMs - How often the ticks are sent, in milliseconds. */
+	constructor(tickMs: number) {
+		this.#tickMs = tickMs;
+	}
 
 	/**
 	 * Takes one tick.
@@ -49,11 +57,23 @@ export class StallDetector {
 		// keeps the ticks that queued up behind a stop from each being taken
 		// for the whole of it: the first is handled as the stop ends, and
 		// the rest right after.
-		const since = Math.max(sentAt + this.#skew, this.#handledAt ?? -Infinity);
+		const sent = sentAt + this.#skew;
+		const last = this.#handledAt;
 		this.#handledAt = now;
 
-		const waited = now - since;
-		return waited >= MIN_STALL_MS ? waited : undefined;
+		const waited = now - Math.max(sent, last ?? -Infinity);
+		if (waited < MIN_STALL_MS) return undefined;
+
+		// The stop began some time after the last tick was handled and
+		// before this one was sent. Counting from when this one was sent
+		// leaves that stretch out, and reads every stop short by up to a
+		// tick; the middle of it is the fairest guess. A worker's timer does
+		// not keep exact time, so the stretch may be a few ticks long. After
+		// a longer silence the ticker had paused, and nothing is known about
+		// the time in between.
+		const unseen = last === undefined ? 0 : sent - last;
+		const within = unseen > 0 && unseen <= this.#tickMs * LATE_TICKS;
+		return waited + (within ? unseen / 2 : 0);
 	}
 }
 
@@ -63,7 +83,7 @@ export class StallDetector {
  * the watch.
  */
 export function watchMainThread(report: (duration: number) => void): () => void {
-	const detector = new StallDetector();
+	const detector = new StallDetector(TICK_MS);
 	try {
 		return workerTicker(TICK_MS, (sentAt) => {
 			const stopped = detector.handled(sentAt, performance.timeOrigin + performance.now());
