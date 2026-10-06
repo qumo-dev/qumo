@@ -10,8 +10,12 @@ export interface Scenario {
 	label: string;
 	/** One-line description shown below the scenario picker. */
 	description: string;
-	/** WebTransport origin port for this scenario. */
-	port: number;
+	/**
+	 * The port of this scenario's WebTransport origin, when it is an ingest
+	 * with a port of its own. Absent for the scenarios served by the relay
+	 * itself, whose port comes from the runtime config.
+	 */
+	port?: number;
 	mode: ScenarioMode;
 	/** Ingest-only: scheme + port an external encoder pushes to. */
 	pushScheme?: "rtmp" | "rtsp";
@@ -24,7 +28,6 @@ export const SCENARIOS: Record<ScenarioId, Scenario> = {
 		label: "Webcam",
 		description:
 			"Publish from your camera or screen, and subscribe back — full MoQ round-trip in the browser.",
-		port: 4433,
 		mode: "publish-subscribe",
 	},
 	camera: {
@@ -57,7 +60,6 @@ export const SCENARIOS: Record<ScenarioId, Scenario> = {
 		id: "hls",
 		label: "HLS",
 		description: "Publish from your camera over MoQ and play it back through the HLS egress.",
-		port: 4433,
 		mode: "publish-subscribe",
 	},
 };
@@ -68,10 +70,11 @@ export function isScenarioId(x: string): x is ScenarioId {
 	return x in SCENARIOS;
 }
 
-// Each scenario is a distinct WebTransport origin (different port) on the one
-// host the runtime config names (see relayHost in config.ts).
-export function relayUrlFor(id: ScenarioId, host: string): string {
-	return `https://${host}:${SCENARIOS[id].port}`;
+// Each scenario is a WebTransport origin on the one host the runtime config
+// names (see relayEndpoint in config.ts): the relay itself, on the port it was
+// started on, or an ingest on a port of its own.
+export function relayUrlFor(id: ScenarioId, relay: { host: string; port: number }): string {
+	return `https://${relay.host}:${SCENARIOS[id].port ?? relay.port}`;
 }
 
 // ffmpeg source pipeline shared by the RTMP/RTSP push instructions.

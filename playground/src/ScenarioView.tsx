@@ -7,7 +7,7 @@ import { HlsPlayer } from "./HlsPlayer.tsx";
 import { type ConnectionState, ConnectionStatus, friendlyConnError } from "./ConnectionStatus.tsx";
 import { sanitizeReason } from "./errors.ts";
 import { buildTransportOptions, type CertHashProblem } from "./cert.ts";
-import { getConfig, relayHost } from "./config.ts";
+import { getConfig, type RelayEndpoint, relayEndpoint } from "./config.ts";
 import { relayUrlFor, type ScenarioId, SCENARIOS } from "./scenarios.ts";
 import { PushInstructions } from "./PushInstructions.tsx";
 import { CameraPullForm, type PullState } from "./CameraPullForm.tsx";
@@ -37,7 +37,7 @@ export function ScenarioView(props: {
 	const mux = DefaultTrackMux;
 	// Where the relay and the ingest origins are reached; unknown until the
 	// runtime config has been read.
-	const [host, setHost] = createSignal<string>();
+	const [relay, setRelay] = createSignal<RelayEndpoint>();
 
 	const [connState, setConnState] = createSignal<ConnectionState>("connecting");
 	const [connError, setConnError] = createSignal<string | null>(null);
@@ -58,7 +58,7 @@ export function ScenarioView(props: {
 	// the pull is active. For non-camera scenarios it fires immediately in
 	// onMount.
 	const doDial = () => {
-		const to = host();
+		const to = relay();
 		if (!certReady || to === undefined) return;
 		setConnState("connecting");
 		const connected = connect(relayUrlFor(props.scenario, to), {
@@ -101,7 +101,7 @@ export function ScenarioView(props: {
 		cachedProblem = problem;
 		certReady = true;
 		setCertHashProblem(problem);
-		setHost(relayHost(cfg));
+		setRelay(relayEndpoint(cfg));
 
 		// Non-camera scenarios connect immediately. Camera waits for pullActive.
 		if (!isCamera) {
@@ -136,7 +136,7 @@ export function ScenarioView(props: {
 					onStateChange={(s: PullState) => setPullActive(s === "active")}
 				/>
 			</Show>
-			<Show when={ingest && !isCamera ? host() : undefined}>
+			<Show when={ingest && !isCamera ? relay()?.host : undefined}>
 				{(reached) => (
 					<PushInstructions
 						scenario={props.scenario}
@@ -157,8 +157,8 @@ export function ScenarioView(props: {
 				<Show when={showsSubscriber()}>
 					<SubscribeBoard session={session} path={props.path} observer={recorder} />
 				</Show>
-				<Show when={isHls}>
-					<HlsPlayer path={props.path} />
+				<Show when={isHls ? relay()?.host : undefined}>
+					{(reached) => <HlsPlayer path={props.path} host={reached()} />}
 				</Show>
 				<Show when={isCamera && !pullActive()}>
 					<div class="video-empty">

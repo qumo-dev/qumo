@@ -19,12 +19,43 @@ export interface ResolvedConfig {
 
 const DEFAULT_RELAY_URL = "https://localhost:4433";
 
+// The port an https URL has when it names none.
+const HTTPS_PORT = 443;
+// The port `qumo hls` listens on unless told otherwise.
+const HLS_PORT = 8081;
+
+/** Where the relay is reached: the host, and the port it listens on. */
+export interface RelayEndpoint {
+	/**
+	 * The host the relay and the ingest origins are reached on: the one the
+	 * UI was opened at when `qumo playground` serves it, VITE_RELAY_URL's
+	 * under Vite.
+	 */
+	host: string;
+	/** The port of the relay itself; the ingest origins have their own. */
+	port: number;
+}
+
+/** Where the runtime config says the relay is. */
+export function relayEndpoint(config: ResolvedConfig): RelayEndpoint {
+	const url = new URL(config.relayUrl);
+	return { host: url.hostname, port: url.port === "" ? HTTPS_PORT : Number(url.port) };
+}
+
 /**
- * The host the relay and the ingest origins are reached on: the one the UI
- * was opened at when `qumo playground` serves it, VITE_RELAY_URL's under Vite.
+ * The base URL of the HLS egress (`qumo hls`), with no trailing slash.
+ *
+ * The egress is a separate process that nothing tells the page about, so it
+ * is taken to be on the host the relay is on, at its default port, and
+ * served the way the page is: a page on https cannot load it over http.
+ *
+ * @param host - The host the relay is reached on.
+ * @param pageProtocol - The page's own protocol, such as `location.protocol`.
+ * @param override - A base URL that replaces the guess, such as VITE_HLS_URL.
  */
-export function relayHost(config: ResolvedConfig): string {
-	return new URL(config.relayUrl).hostname;
+export function hlsBaseUrl(host: string, pageProtocol: string, override?: string): string {
+	if (override !== undefined && override !== "") return override.replace(/\/+$/, "");
+	return `${pageProtocol === "https:" ? "https:" : "http:"}//${host}:${HLS_PORT}`;
 }
 
 /**

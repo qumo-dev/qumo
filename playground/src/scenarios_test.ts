@@ -3,15 +3,31 @@
 import { assertEquals } from "@std/assert";
 import { pushCommandFor, pushTargetFor, relayUrlFor } from "./scenarios.ts";
 
-Deno.test("relayUrlFor dials the scenario's port on the given host", () => {
+Deno.test("relayUrlFor dials the relay's own port for the scenarios the relay serves", () => {
 	const cases = [
-		{ id: "echo", host: "localhost", want: "https://localhost:4433" },
-		{ id: "rtmp", host: "example.com", want: "https://example.com:4443" },
-		{ id: "rtsp", host: "[::1]", want: "https://[::1]:4543" },
+		{ id: "echo", relay: { host: "localhost", port: 4433 }, want: "https://localhost:4433" },
+		{
+			id: "echo",
+			relay: { host: "example.com", port: 5000 },
+			want: "https://example.com:5000",
+		},
+		{ id: "hls", relay: { host: "example.com", port: 5000 }, want: "https://example.com:5000" },
 	] as const;
 
 	for (const c of cases) {
-		assertEquals(relayUrlFor(c.id, c.host), c.want);
+		assertEquals(relayUrlFor(c.id, c.relay), c.want);
+	}
+});
+
+Deno.test("relayUrlFor dials an ingest's own port, whatever the relay's is", () => {
+	const cases = [
+		{ id: "rtmp", host: "example.com", want: "https://example.com:4443" },
+		{ id: "rtsp", host: "[::1]", want: "https://[::1]:4543" },
+		{ id: "camera", host: "localhost", want: "https://localhost:4543" },
+	] as const;
+
+	for (const c of cases) {
+		assertEquals(relayUrlFor(c.id, { host: c.host, port: 5000 }), c.want);
 	}
 });
 
