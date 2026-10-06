@@ -28,26 +28,32 @@ const MIN_STALL_MS = 30;
 export class StallDetector {
 	// When the last tick was handled.
 	#handledAt: number | undefined;
+	// How far the sender's clock reads ahead of this one, at most: the least
+	// any tick has seemed to wait. The two threads each work out the time
+	// for themselves and need not agree; the tick that waited least waited
+	// next to nothing, so what it seemed to wait is the disagreement.
+	#skew = Infinity;
 
 	/**
-	 * Takes one tick. Both times are milliseconds on the same clock.
+	 * Takes one tick.
 	 *
-	 * @param sentAt - When the tick was sent.
-	 * @param now - When it is being handled.
+	 * @param sentAt - When the tick was sent, on the sender's clock.
+	 * @param now - When it is being handled, on this thread's clock.
 	 * @returns How long the main thread had stopped, if this tick shows that
 	 *   it had; undefined otherwise.
 	 */
 	handled(sentAt: number, now: number): number | undefined {
-		const sinceLast = this.#handledAt === undefined ? Infinity : now - this.#handledAt;
+		this.#skew = Math.min(this.#skew, now - sentAt);
+		// The main thread was free when it handled the last tick, so it can
+		// only have been stopped since then. Counting from there is what
+		// keeps the ticks that queued up behind a stop from each being taken
+		// for the whole of it: the first is handled as the stop ends, and
+		// the rest right after.
+		const since = Math.max(sentAt + this.#skew, this.#handledAt ?? -Infinity);
 		this.#handledAt = now;
 
-		const waited = now - sentAt;
-		if (waited < MIN_STALL_MS) return undefined;
-		// The ticks that queued up behind a stop are handled together once it
-		// ends, each having waited a little less. The first is the stop; the
-		// rest, handled right after it, are the same one.
-		if (sinceLast < MIN_STALL_MS) return undefined;
-		return waited;
+		const waited = now - since;
+		return waited >= MIN_STALL_MS ? waited : undefined;
 	}
 }
 
@@ -62,6 +68,10 @@ export function watchMainThread(report: (duration: number) => void): () => void 
 		return workerTicker(TICK_MS, (sentAt) => {
 			const stopped = detector.handled(sentAt, performance.timeOrigin + performance.now());
 			if (stopped !== undefined) report(stopped);
+		}, (err) => {
+			// A worker the browser refuses may say so only once it has been
+			// made. The panel then shows no stops, and says nothing false.
+			log.warn("the page's stops are no longer watched", { err });
 		});
 	} catch (err) {
 		// Without the ticker there is nothing to measure against; the panel
