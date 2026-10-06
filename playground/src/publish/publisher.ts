@@ -142,9 +142,25 @@ export class Publisher {
 				this.#end(run);
 				this.onended?.();
 			};
+			// An encoder that fails produces nothing more. Before the
+			// announce that would leave start() waiting for a keyframe that
+			// never comes; after it, a broadcast with no video.
+			let failure: { err: unknown } | undefined;
+			let announced = false;
+			video.onerror = (err) => {
+				if (run.stopped) return;
+				failure = { err };
+				this.#end(run);
+				if (announced) this.onerror?.(err);
+			};
+			// Whether to give up starting: throws if the video failed.
+			const halted = (): boolean => {
+				if (failure !== undefined) throw failure.err;
+				return run.stopped;
+			};
 
 			const audioTrack = await this.#startAudio(run, clock);
-			if (run.stopped) return undefined;
+			if (halted()) return undefined;
 
 			const videoTrack: Track = {
 				name: "video",
@@ -239,13 +255,13 @@ export class Publisher {
 			if (audioTrack !== undefined) {
 				await broadcast.registerTrack(audioTrack, serve(audioFanout));
 			}
-			if (run.stopped) return undefined;
+			if (halted()) return undefined;
 
 			// Encoding runs from here, not from the first subscription: the
 			// first keyframe is what completes the catalog.
 			video.start();
 			await catalogReady;
-			if (run.stopped) return undefined;
+			if (halted()) return undefined;
 
 			log.info("publish: announcing broadcast", { path: settings.path });
 			// reason: the path is taken as typed by the user; the relay is
@@ -257,6 +273,7 @@ export class Publisher {
 					this.#end(run);
 					this.onerror?.(err);
 				});
+			announced = true;
 
 			return { width: video.config.width, height: video.config.height };
 		} catch (err) {

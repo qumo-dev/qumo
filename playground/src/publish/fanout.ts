@@ -139,11 +139,15 @@ export class Fanout<F> {
 			if (subscriber.pending >= this.#maxPending) {
 				if (!subscriber.needsKey) {
 					subscriber.needsKey = true;
-					// The group this frame belonged to is the one open once
-					// the frames ahead of it have been written.
-					subscriber.tail = subscriber.tail.then(() => {
-						subscriber.torn = true;
-					});
+					// A dropped keyframe would have begun a group of its own:
+					// the one open is whole, and only what follows is lost.
+					if (!info.key) {
+						// The group this frame belonged to is the one open once
+						// the frames ahead of it have been written.
+						subscriber.tail = subscriber.tail.then(() => {
+							subscriber.torn = true;
+						});
+					}
 				}
 				return subscriber.tail;
 			}

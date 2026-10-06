@@ -287,3 +287,20 @@ Deno.test("the observer is told how a group that was not sent whole ended", asyn
 		assertEquals(observer.calls.includes("complete video 1"), false, c.name);
 	}
 });
+
+Deno.test("a dropped keyframe leaves the group before it whole", async () => {
+	const observer = new FakeObserver();
+	const fanout = new Fanout<string>({ grouping: "keyframe", observer, maxPending: 1 });
+	const track = new FakeTrack();
+	fanout.add("video", track);
+
+	await fanout.send("k1", key());
+	// The keyframe is dropped while the frame before it is still being written.
+	await Promise.all([fanout.send("d1", delta()), fanout.send("k2", key())]);
+	await fanout.send("d2", delta());
+	await fanout.send("k3", key());
+
+	assertEquals(track.written, [["k1", "d1"], ["k3"]]);
+	assertEquals(observer.calls.includes("complete video 1"), true);
+	assertEquals(observer.calls.includes("aborted video 1"), false);
+});

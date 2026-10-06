@@ -42,6 +42,11 @@ function framesOf(track: MediaStreamTrack): ReadableStream<VideoFrame> {
 	// the element presents is taken from there.
 	const video = document.createElement("video");
 	video.muted = true;
+	// Settles when the track ends by itself. The element presents nothing
+	// after that, so a picture being waited for would never come.
+	const ended = new Promise<undefined>((resolve) => {
+		track.addEventListener("ended", () => resolve(undefined), { once: true });
+	});
 	return new ReadableStream<VideoFrame>({
 		async start() {
 			video.srcObject = new MediaStream([track]);
@@ -52,9 +57,16 @@ function framesOf(track: MediaStreamTrack): ReadableStream<VideoFrame> {
 				controller.close();
 				return;
 			}
-			const presented = await new Promise<number>((resolve) => {
-				video.requestVideoFrameCallback((now) => resolve(now));
-			});
+			const presented = await Promise.race([
+				new Promise<number>((resolve) => {
+					video.requestVideoFrameCallback((now) => resolve(now));
+				}),
+				ended,
+			]);
+			if (presented === undefined) {
+				controller.close();
+				return;
+			}
 			controller.enqueue(new VideoFrame(video, { timestamp: presented * 1000 }));
 		},
 		cancel() {
@@ -83,6 +95,12 @@ export class VideoInput {
 	/** Called when the track ends by itself, such as sharing being stopped. */
 	onended: (() => void) | undefined;
 
+	/**
+	 * Called when the encoder fails or the track can no longer be read.
+	 * Nothing is encoded after it.
+	 */
+	onerror: ((err: unknown) => void) | undefined;
+
 	/** What the encoder was configured with, as the browser normalised it. */
 	readonly config: VideoEncoderConfig;
 
@@ -95,6 +113,10 @@ export class VideoInput {
 	readonly #cadence = new KeyframeCadence(KEYFRAME_INTERVAL);
 	// The frame read while opening, until start() takes it.
 	#first: VideoFrame | undefined;
+	// The run's clock when that frame was read. The timeline is fixed there,
+	// not at start(): stamping a frame read earlier as if it had just arrived
+	// would put every later frame ahead of the audio by the time in between.
+	readonly #firstAt: number;
 	// The frame waiting for the next animation frame, to be shown.
 	#pending: VideoFrame | undefined;
 	#animation: number | undefined;
@@ -120,6 +142,7 @@ export class VideoInput {
 			const { value } = await reader.read();
 			if (value === undefined) throw new NoVideoFrameError();
 			first = value;
+			const firstAt = clock();
 
 			const candidates = videoCandidates(
 				{ width: first.displayWidth, height: first.displayHeight, ...wanted },
@@ -127,7 +150,7 @@ export class VideoInput {
 				!navigator.userAgent.includes("Firefox"),
 			);
 			const config = await pickVideoConfig(candidates);
-			return new VideoInput(canvas, reader, first, config, wanted.framerate, clock);
+			return new VideoInput(canvas, reader, first, firstAt, config, wanted.framerate, clock);
 		} catch (err) {
 			first?.close();
 			// reason: the capture is being abandoned; a failed cancel changes nothing.
@@ -140,6 +163,7 @@ export class VideoInput {
 		canvas: HTMLCanvasElement,
 		reader: ReadableStreamDefaultReader<VideoFrame>,
 		first: VideoFrame,
+		firstAt: number,
 		config: VideoEncoderConfig,
 		framerate: number,
 		clock: () => number,
@@ -147,12 +171,16 @@ export class VideoInput {
 		this.#canvas = canvas;
 		this.#reader = reader;
 		this.#first = first;
+		this.#firstAt = firstAt;
 		this.config = config;
 		this.#limiter = new FrameLimiter(framerate);
 		this.#clock = clock;
 		this.#encoder = new VideoEncoder({
 			output: (chunk, meta) => this.onchunk?.(chunk, meta?.decoderConfig),
-			error: (err) => log.error("video encoder error", { err }),
+			error: (err) => {
+				log.error("video encoder error", { err });
+				if (!this.#closed) this.onerror?.(err);
+			},
 		});
 		this.#encoder.configure(config);
 	}
@@ -168,7 +196,9 @@ export class VideoInput {
 		if (first === undefined || this.#closed) return;
 		this.#first = undefined;
 		this.#pump(first).catch((err: unknown) => {
-			if (!this.#closed) log.error("video capture ended", { err });
+			if (this.#closed) return;
+			log.error("video capture ended", { err });
+			this.onerror?.(err);
 		});
 	}
 
@@ -187,7 +217,7 @@ export class VideoInput {
 	}
 
 	async #pump(first: VideoFrame): Promise<void> {
-		this.#take(first);
+		this.#take(first, this.#firstAt);
 		while (!this.#closed) {
 			const { value } = await this.#reader.read();
 			if (value === undefined) break;
@@ -195,14 +225,15 @@ export class VideoInput {
 				value.close();
 				return;
 			}
-			this.#take(value);
+			this.#take(value, this.#clock());
 		}
 		if (!this.#closed) this.onended?.();
 	}
 
 	// Encodes and shows one captured frame, which this takes ownership of.
-	#take(frame: VideoFrame): void {
-		const timestamp = this.#rebase.at(frame.timestamp, this.#clock());
+	// `now` is the run's clock when the frame was read.
+	#take(frame: VideoFrame, now: number): void {
+		const timestamp = this.#rebase.at(frame.timestamp, now);
 		if (!this.#limiter.takes(timestamp)) {
 			frame.close();
 			return;
