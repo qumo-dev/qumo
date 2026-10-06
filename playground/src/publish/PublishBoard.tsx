@@ -17,7 +17,7 @@ import type { Recorder } from "../devtools/recorder.ts";
 import { friendlyMessage } from "../errors.ts";
 import { createStatsTicker } from "../stats.ts";
 import { getMediaStream, type MediaSourceType } from "./media.ts";
-import { Publisher } from "./publisher.ts";
+import { Publisher, VideoFailedError } from "./publisher.ts";
 
 const log = createLogger("publish");
 
@@ -35,7 +35,14 @@ type Framerate = (typeof FRAMERATES)[number];
 
 // What a <select> hands back is a string; these say whether it is one of the picks.
 function isResolution(value: string): value is Resolution {
-	return value in RESOLUTIONS;
+	return Object.hasOwn(RESOLUTIONS, value);
+}
+
+// What to tell the user about a failed run. The message is chosen by what
+// went wrong underneath, which a VideoFailedError carries as its cause: an
+// encoder that rejects a codec says so by name.
+function failureMessage(err: unknown): string {
+	return friendlyMessage(err instanceof VideoFailedError ? err.cause : err);
 }
 
 function isFramerate(value: number): value is Framerate {
@@ -99,7 +106,7 @@ export function PublishBoard(
 		// own controls, or the camera was unplugged.
 		publisher.onended = stopped;
 		publisher.onerror = (err) => {
-			setError(friendlyMessage(err));
+			setError(failureMessage(err));
 			stopped();
 		};
 	});
@@ -149,7 +156,7 @@ export function PublishBoard(
 			videoStats.start();
 			log.info("started streaming", { source: sourceType() });
 		} catch (err) {
-			setError(friendlyMessage(err));
+			setError(failureMessage(err));
 			log.error("failed to start streaming", { err });
 		}
 	};

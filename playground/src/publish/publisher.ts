@@ -25,7 +25,7 @@ export class NoVideoTrackError extends Error {
 export class VideoFailedError extends Error {
 	constructor(cause: unknown) {
 		const why = cause instanceof Error ? cause.message : String(cause);
-		super(`the video could not be encoded: ${why}`, { cause });
+		super(`the video could not be captured or encoded: ${why}`, { cause });
 		this.name = "VideoFailedError";
 	}
 }
