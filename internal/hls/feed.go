@@ -35,9 +35,9 @@ type feedConfig struct {
 	// InsecureSkipVerify short-circuits verification regardless of RootCAs.
 	insecure bool
 	// certFile and keyFile, when set, are the egress's client certificate
-	// and key (PEM), from the private CA the relay trusts as CA_FILE. The
-	// relay then serves the egress as a trusted peer, which needs no
-	// credential and has no grant to expire (ADR 0035, Decision 7). Only a
+	// and key (PEM), from the relay CA the relay trusts as CA_FILE. The
+	// relay then serves the egress as an internal client, which needs no
+	// credential and has no grant to expire, and may only subscribe. Only a
 	// native-QUIC (moqt://) relayURL presents it.
 	certFile, keyFile string
 
@@ -111,7 +111,7 @@ func (c feedConfig) validate() error {
 		return errors.New("RELAY_CERT_FILE and RELAY_KEY_FILE must be set together")
 	}
 	if u.Scheme != "moqt" {
-		// A WebTransport session is never a trusted peer: the relay checks
+		// A WebTransport session presents no certificate: the relay checks
 		// the credential of every one.
 		return fmt.Errorf("RELAY_CERT_FILE needs a native-QUIC RELAY_URL (moqt://), got %q", u.Scheme)
 	}
@@ -152,6 +152,7 @@ func connect(ctx context.Context, cfg feedConfig) (*moqt.Session, mediaInfo, err
 
 	catalog, err := fetchCatalog(ctx, session, cfg.trackPath)
 	if err != nil {
+		err = sessionRefusal(session, err)
 		// not actionable: the close outcome is irrelevant once the catalog read failed.
 		_ = session.CloseWithError(moqt.NoError, "catalog fetch failed")
 		return nil, mediaInfo{}, err
@@ -203,6 +204,24 @@ func packagerForTrack(c msf.Catalog, t *msf.Track) (*cmaf.Packager, error) {
 		// the track's initRef.
 		Description: initFromTrack(c, t),
 	})
+}
+
+// sessionRefusal returns what to report for a subscribe that failed with
+// err. A relay that won't serve a session closes it with "unauthorized"
+// before answering anything, so a subscribe in flight fails with that
+// close; the session's cause then says so, and the two ways in are named.
+// Any other close by the relay is reported as such; otherwise err.
+func sessionRefusal(session *moqt.Session, err error) error {
+	// moqt.Cause gives the close as a SessionError on either transport.
+	cause := moqt.Cause(session.Context())
+	sessErr, ok := errors.AsType[*moqt.SessionError](cause)
+	if !ok || !sessErr.Remote {
+		return err
+	}
+	if sessErr.SessionErrorCode() == moqt.UnauthorizedSessionErrorCode {
+		return fmt.Errorf("hls: the relay refused the session (%w): connect with a credential (?jwt= in RELAY_URL) or a client certificate from its CA (RELAY_CERT_FILE)", cause)
+	}
+	return fmt.Errorf("hls: the relay closed the session: %w", cause)
 }
 
 // fetchCatalog subscribes to the reserved catalog track and parses its first

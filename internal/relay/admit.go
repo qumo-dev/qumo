@@ -24,8 +24,13 @@ import (
 // arriving before then waits.
 type admission struct {
 	decided chan struct{}
-	// grant is set before decided closes. nil is unchecked: a trusted peer.
+	// grant is set before decided closes. nil is unchecked: a relay peer, or
+	// any session with auth off.
 	grant *auth.Grant
+	// internal marks an internal client (peer_trust.go): grant restricts
+	// what it may do, but it has no credential to re-check and no usage to
+	// report.
+	internal bool
 	// req is the connect request that admitted the session, set with
 	// grant. A revalidate re-sends it, with the same id.
 	req auth.Request
@@ -41,6 +46,18 @@ type admissionKey struct{}
 
 // refusedGrant is the grant of a refused session: it covers nothing.
 var refusedGrant = &auth.Grant{}
+
+// internalGrant is what an internal client may do: subscribe to anything,
+// announce nothing.
+var internalGrant = mustGrant(nil, []string{"**"})
+
+func mustGrant(publish, subscribe []string) *auth.Grant {
+	g, err := auth.NewGrant(publish, subscribe, time.Time{}, 0)
+	if err != nil {
+		panic(err) // fixed patterns, checked at init
+	}
+	return g
+}
 
 func pendingAdmission() *admission {
 	return &admission{decided: make(chan struct{})}
@@ -59,6 +76,13 @@ func (a *admission) decide(g *auth.Grant, req auth.Request) {
 	a.req = req
 	a.deadline = deadlineOf(g)
 	close(a.decided)
+}
+
+// decideInternal records an internal client's admission: internalGrant,
+// with no connect request behind it.
+func (a *admission) decideInternal() {
+	a.internal = true
+	a.decide(internalGrant, auth.Request{})
 }
 
 // deadlineOf returns when a session holding g must end: its expires, taken
@@ -82,7 +106,7 @@ func admissionFrom(ctx context.Context) *admission {
 
 // sessionGrant returns the grant of the session ctx belongs to, waiting for a
 // pending admission. nil is unchecked; so is a context with no admission,
-// which only a session this relay dialed has (a trusted peer).
+// which only a session this relay dialed has (a relay peer).
 func sessionGrant(ctx context.Context) (*auth.Grant, error) {
 	a := admissionFrom(ctx)
 	if a == nil {
@@ -108,6 +132,10 @@ func authorizeSubscribe(tw *moqt.TrackWriter) bool {
 		// The subscription ended before its session was admitted.
 		return false
 	case g == nil:
+		return true
+	case admissionFrom(tw.Context()).internal:
+		// An internal client's grant covers every path and came from no
+		// credential: there is nothing to count as an authorization.
 		return true
 	case g.Subscribe.Contains(tw.BroadcastPath):
 		metricSubscribeAuthorizations.WithLabelValues("admitted").Inc()
@@ -182,7 +210,7 @@ func (s *Server) nodeID() string {
 
 // admitUnchecked admits every session without asking anyone: the relay runs
 // with auth off (QUMO_AUTH_KEYS unset). Its sessions are unchecked, like a
-// trusted peer's.
+// relay peer's.
 func admitUnchecked(context.Context, auth.Request) (*auth.Grant, error) {
 	return nil, nil
 }

@@ -101,6 +101,10 @@ qumo's servers (`relay`, `rtmp`, `rtsp`, `rtsp-push`, `playground`) present TLS 
 
 `cmd/seed-moq`, the dev seeder, presents an ephemeral self-signed certificate — point the egress at it with `RELAY_TLS_INSECURE=true`.
 
+### Relay peers — mutual TLS under a relay CA
+
+Relays authenticate each other with certificates a CA of yours issued (`CA_FILE`, `PEER_CERT_FILE`, `PEER_KEY_FILE`), separate from the public certificate they serve browsers. A relay with `PEERS` refuses to start without them. `mage cert` writes development ones; see [Deployment → TLS & mTLS](docs/site/content/en/docs/deployment/tls.md) for what a peer certificate must contain.
+
 ## Architecture
 
 ### System Overview

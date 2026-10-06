@@ -10,7 +10,6 @@ package integration
 import (
 	"context"
 	"crypto/tls"
-	"crypto/x509"
 	"errors"
 	"fmt"
 	"net/http"
@@ -27,11 +26,11 @@ import (
 
 // startAuthRelay stands up a real relay that admits client sessions through
 // auth, wired the way the relay command does (WebTransport through
-// HandleWebTransport). peerCA, when set, plays CA_FILE: a client certificate
-// it verifies makes the session a trusted peer. opts adjust the Server before
-// it starts, such as setting End. It returns the relay's loopback address and
-// the server.
-func startAuthRelay(t *testing.T, authorize func(context.Context, auth.Request) (*auth.Grant, error), peerCA *tls.Certificate, opts ...func(*relay.Server)) (string, *relay.Server) {
+// HandleWebTransport). trust, when set, is the relay's peer trust (CA_FILE,
+// and a peer identity or not), applied as the relay command applies it. opts
+// adjust the Server before it starts, such as setting End. It returns the
+// relay's loopback address and the server.
+func startAuthRelay(t *testing.T, authorize func(context.Context, auth.Request) (*auth.Grant, error), trust *relay.PeerTrust, opts ...func(*relay.Server)) (string, *relay.Server) {
 	t.Helper()
 	cert := loadTempCert(t)
 
@@ -41,16 +40,18 @@ func startAuthRelay(t *testing.T, authorize func(context.Context, auth.Request) 
 		NextProtos:   []string{"h3", moqt.NextProtoMOQ},
 		MinVersion:   tls.VersionTLS13,
 	}
-	if peerCA != nil {
-		pool := x509.NewCertPool()
-		pool.AddCert(peerCA.Leaf)
-		serverTLS.ClientAuth = tls.VerifyClientCertIfGiven
-		serverTLS.ClientCAs = pool
-	}
 	dialerTLS := &tls.Config{
 		NextProtos:         []string{moqt.NextProtoMOQ},
 		InsecureSkipVerify: true, //nolint:gosec // test-only self-signed cert
 		MinVersion:         tls.VersionTLS13,
+	}
+	var own []byte
+	if trust != nil {
+		serverTLS = trust.ServerTLS(serverTLS)
+		own = trust.OwnCertificate()
+		if own != nil {
+			dialerTLS = trust.DialerTLS()
+		}
 	}
 
 	addr := fmt.Sprintf("127.0.0.1:%d", freeUDPPort(t))
@@ -66,8 +67,9 @@ func startAuthRelay(t *testing.T, authorize func(context.Context, auth.Request) 
 		Config:    &relay.Config{NodeID: "relay-auth-test", Role: "relay"},
 		// A per-relay hop id, as the relay command uses: with two relays
 		// peered, it stops an announcement looping between them.
-		TrackMux:  moqt.NewTrackMux(moqt.NewHopID()),
-		Authorize: authorize,
+		TrackMux:        moqt.NewTrackMux(moqt.NewHopID()),
+		Authorize:       authorize,
+		PeerCertificate: own,
 	}
 	for _, opt := range opts {
 		opt(srv)
@@ -204,11 +206,16 @@ func TestRelay_SessionAuth_WebTransport(t *testing.T) {
 
 func TestRelay_SessionAuth_NativeQUIC(t *testing.T) {
 	const path = moqt.BroadcastPath("/acme/app/live")
-	peerCert := loadTempCert(t)
-	otherCert := loadTempCert(t)
+	ca := newTestCA(t)
+	otherCA := newTestCA(t)
+	own := ca.issue(t, "relay-under-test", true)
+	peer := ca.issue(t, "relay-2", true)
+	internal := ca.issue(t, "egress-1", false)
+	foreign := otherCA.issue(t, "relay-x", true)
+	refuse := func() *fakeAuth { return &fakeAuth{err: auth.RefusedError{Status: http.StatusUnauthorized}} }
 	tests := map[string]struct {
 		server       *fakeAuth
-		peerCA       *tls.Certificate // the relay's CA_FILE; nil means unset
+		trust        *relay.PeerTrust // the relay's CA_FILE and peer identity; nil means unset
 		clientCert   *tls.Certificate // what the dialing session presents
 		wantRoute    bool
 		wantRequests bool
@@ -219,29 +226,42 @@ func TestRelay_SessionAuth_NativeQUIC(t *testing.T) {
 			wantRequests: true,
 		},
 		"untrusted, refused": {
-			server:       &fakeAuth{err: auth.RefusedError{Status: http.StatusUnauthorized}},
+			server:       refuse(),
 			wantRequests: true,
 		},
-		"peer certificate verified by CA_FILE": {
-			server:     &fakeAuth{err: auth.RefusedError{Status: http.StatusUnauthorized}},
-			peerCA:     &peerCert,
-			clientCert: &peerCert,
+		"a peer certificate from the CA": {
+			server:     refuse(),
+			trust:      ca.trust(t, &own),
+			clientCert: &peer,
 			wantRoute:  true,
 		},
-		"certificate from another CA fails the handshake": {
-			server:     &fakeAuth{err: auth.RefusedError{Status: http.StatusUnauthorized}},
-			peerCA:     &peerCert,
-			clientCert: &otherCert,
+		"an internal client's certificate announces nothing": {
+			server:     refuse(),
+			trust:      ca.trust(t, &own),
+			clientCert: &internal,
+			// Not asked for a credential, and its announcement is refused.
 		},
-		"certificate without CA_FILE is not a peer": {
-			server:       &fakeAuth{err: auth.RefusedError{Status: http.StatusUnauthorized}},
-			clientCert:   &peerCert,
+		"a peer certificate from another CA fails the handshake": {
+			server:     refuse(),
+			trust:      ca.trust(t, &own),
+			clientCert: &foreign,
+			// A certificate the CA can't verify is refused, not ignored.
+		},
+		"a peer certificate without CA_FILE is a client": {
+			server:       refuse(),
+			clientCert:   &peer,
 			wantRequests: true,
+		},
+		"CA_FILE without a peer identity still knows peers": {
+			server:     refuse(),
+			trust:      ca.trust(t, nil),
+			clientCert: &peer,
+			wantRoute:  true,
 		},
 	}
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
-			addr, srv := startAuthRelay(t, tt.server.authorize, tt.peerCA)
+			addr, srv := startAuthRelay(t, tt.server.authorize, tt.trust)
 
 			// A refused native session still completes SETUP; the relay closes it
 			// right after, so the dial itself may succeed either way.
@@ -261,7 +281,7 @@ func TestRelay_SessionAuth_NativeQUIC(t *testing.T) {
 				}
 			}
 			if !tt.wantRequests {
-				assert.Empty(t, reqs, "a trusted peer, or a failed handshake, is never asked")
+				assert.Empty(t, reqs, "a peer, an internal client, or a failed handshake is never asked")
 				return
 			}
 			require.NotEmpty(t, reqs)

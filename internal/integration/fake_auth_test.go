@@ -21,6 +21,9 @@ type fakeAuth struct {
 	grant         *auth.Grant
 	err           error
 	revalidateErr error
+	// hold, when set, keeps every answer back until it is closed: a
+	// session's admission stays pending for as long.
+	hold chan struct{}
 
 	mu       sync.Mutex
 	requests []auth.Request
@@ -42,10 +45,17 @@ func (f *fakeAuth) ended() []auth.Request {
 	return append([]auth.Request(nil), f.ends...)
 }
 
-func (f *fakeAuth) authorize(_ context.Context, req auth.Request) (*auth.Grant, error) {
+func (f *fakeAuth) authorize(ctx context.Context, req auth.Request) (*auth.Grant, error) {
 	f.mu.Lock()
 	f.requests = append(f.requests, req)
 	f.mu.Unlock()
+	if f.hold != nil {
+		select {
+		case <-f.hold:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
 	if req.Event == auth.EventRevalidate && f.revalidateErr != nil {
 		return nil, f.revalidateErr
 	}
