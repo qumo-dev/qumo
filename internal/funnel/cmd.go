@@ -133,7 +133,7 @@ func Run(_ []string) error {
 		go verifier.Run(ctx)
 		authName = verifier.Source()
 	} else {
-		slog.Warn("funnel: auth is off: no key set (QUMO_AUTH_KEYS), so every contributor is accepted unchecked")
+		slog.Warn("funnel: auth is off: no key set (QUMO_AUTH_KEYS), so every request is accepted unchecked and records carry no sender")
 	}
 
 	trackMux := moqt.NewTrackMux(0)

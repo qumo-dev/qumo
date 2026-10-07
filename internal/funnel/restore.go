@@ -19,8 +19,8 @@ import (
 const rootObject = "root.manifest"
 
 // restore announces the tracks objects already holds that ingest recorded,
-// each with its latest record, so a subscriber reaches them before any
-// contributor announces again. It returns how many tracks it restored. A
+// each with its latest record, so a subscriber reaches them before anyone
+// records again. It returns how many tracks it restored. A
 // store that cannot list its keys restores nothing.
 func restore(ctx context.Context, objects store.Store, out *egress) (int, error) {
 	lister, ok := objects.(store.Lister)
