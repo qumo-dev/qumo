@@ -139,7 +139,7 @@ func NewHandler(ctx context.Context, objects store.Store, trackMux *moqt.TrackMu
 		OnRecord: func(_ context.Context, rec ingest.Recorded) {
 			payload, err := json.Marshal(rec.Record)
 			if err != nil {
-				slog.Error("httpingest: encode record", "track", rec.Track, "error", err)
+				slog.Error("httpingest: encode record", "track", rec.Track(), "error", err)
 				return
 			}
 			out.publish(moqt.BroadcastPath(rec.BroadcastPath), moqt.TrackName(rec.TrackName), group{
