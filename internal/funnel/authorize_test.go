@@ -18,23 +18,23 @@ import (
 )
 
 // newVerifier returns a Verifier trusting a fresh key, and the key.
-func newVerifier(t *testing.T) (*auth.Verifier, token.SigningKey) {
-	t.Helper()
+func newVerifier(tb testing.TB) (*auth.Verifier, token.SigningKey) {
+	tb.Helper()
 	key, err := token.GenerateKey("")
-	require.NoError(t, err)
+	require.NoError(tb, err)
 	set, err := token.MarshalKeySet(key.Public())
-	require.NoError(t, err)
-	keys := filepath.Join(t.TempDir(), "keys.json")
-	require.NoError(t, os.WriteFile(keys, set, 0o600))
+	require.NoError(tb, err)
+	keys := filepath.Join(tb.TempDir(), "keys.json")
+	require.NoError(tb, os.WriteFile(keys, set, 0o600))
 	v, err := auth.NewVerifier(auth.VerifierConfig{Keys: keys})
-	require.NoError(t, err)
+	require.NoError(tb, err)
 	return v, key
 }
 
-func sign(t *testing.T, key token.SigningKey, g token.Grant) string {
-	t.Helper()
+func sign(tb testing.TB, key token.SigningKey, g token.Grant) string {
+	tb.Helper()
 	credential, err := token.Sign(key, g, time.Minute)
-	require.NoError(t, err)
+	require.NoError(tb, err)
 	return credential
 }
 
