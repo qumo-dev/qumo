@@ -45,7 +45,7 @@ const (
 //
 //	FUNNEL_ADDR          - HTTP listen address for announce and record (default: ":8090")
 //	FUNNEL_SERVE_ADDR    - MoQT listen address (default: ":4433")
-//	LEDGER_URI           - where records are stored: "file:///var/lib/qumo" for a directory, empty for memory (default: memory, lost on exit)
+//	LEDGER_URI           - where records are stored: "file:///var/lib/qumo", "postgres://...", "s3://bucket/prefix?region=...", or empty for memory (default: memory, lost on exit)
 //	CERT_FILE            - TLS certificate file for MoQT (default: "certs/server.crt")
 //	KEY_FILE             - TLS key file for MoQT (default: "certs/server.key")
 //	CORS_ALLOWED_ORIGINS - comma-separated origins allowed to POST and to open WebTransport (default: same-origin only; "*" allows any)
@@ -60,13 +60,13 @@ func Run(_ []string) error {
 	keyFile := envconfig.String("KEY_FILE", "certs/server.key")
 	allowedOrigins := cors.LoadAllowed()
 
-	objects, storeName, err := openStore(ledgerURI)
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer cancel()
+
+	objects, storeName, err := openStore(ctx, ledgerURI)
 	if err != nil {
 		return err
 	}
-
-	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer cancel()
 
 	trackMux := moqt.NewTrackMux(0)
 	handler, err := NewHandler(ctx, objects, trackMux)

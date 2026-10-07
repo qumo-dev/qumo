@@ -83,7 +83,7 @@ record. A new subscriber starts at the track's latest record.
 |---|---|---|
 | `FUNNEL_ADDR` | `:8090` | HTTP listen address for `announce` and `record`. |
 | `FUNNEL_SERVE_ADDR` | `:4433` | MoQT listen address. |
-| `LEDGER_URI` | (unset) | Where records are stored. The scheme selects the backend: `file:///var/lib/qumo` is a directory (`file:ledger` for a relative one), and unset or empty is memory. A bare path or any other scheme is an error. |
+| `LEDGER_URI` | (unset) | Where records are stored. The scheme selects the backend: `file:///var/lib/qumo` is a directory (`file:ledger` for a relative one); `postgres://user@host:26257/qumo` is a table (`ledger_objects`, or `?table=`) in PostgreSQL or CockroachDB; `s3://bucket/prefix?region=…` is a bucket of S3, or of an S3-compatible service with `&endpoint=http://host:9000`, with credentials from `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`; unset or empty is memory. A bare path or any other scheme is an error. |
 | `CERT_FILE` / `KEY_FILE` | `certs/server.crt` / `certs/server.key` | TLS certificate and key for MoQT. |
 | `CORS_ALLOWED_ORIGINS` | (unset) | Comma-separated origins allowed to POST from a browser and to open WebTransport (default: same-origin only; `*` allows any). |
 

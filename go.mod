@@ -4,7 +4,7 @@ go 1.27.0
 
 require (
 	github.com/Eyevinn/mp4ff v0.57.0
-	github.com/okdaichi/qumo-ledger v0.1.1-0.20261007105729-5346f110d971
+	github.com/okdaichi/qumo-ledger v0.1.1-0.20261007112319-124f51a6b957
 	github.com/prometheus/client_golang v1.24.1
 	github.com/prometheus/client_model v0.6.3
 	github.com/quic-go/quic-go v0.63.0
@@ -17,6 +17,10 @@ require (
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/dunglas/httpsfv v1.1.1 // indirect
+	github.com/jackc/pgpassfile v1.0.0 // indirect
+	github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761 // indirect
+	github.com/jackc/pgx/v5 v5.11.0 // indirect
+	github.com/jackc/puddle/v2 v2.2.2 // indirect
 	github.com/kylelemons/godebug v1.1.0 // indirect
 	github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 // indirect
 	github.com/okdaichi/webtransport-go v0.13.0-okdaichi.2 // indirect
