@@ -5,11 +5,13 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/binary"
+	"errors"
 	"io"
 	"net"
 	"strconv"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/qumo-dev/gomoqt/moqt"
@@ -381,113 +383,96 @@ func TestNewRTSPTrackFromMedia(t *testing.T) {
 	})
 }
 
-// TestStartKeepalive_IntervalClamping verifies the keepalive interval
-// calculation: half the session timeout, clamped to [5s, 30s].
-func TestStartKeepalive_IntervalClamping(t *testing.T) {
+func TestKeepaliveInterval(t *testing.T) {
 	tests := map[string]struct {
 		timeout  time.Duration
-		wantMin  time.Duration
-		wantMax  time.Duration
+		expected time.Duration
 	}{
-		"60s timeout → 30s":  {60 * time.Second, 30 * time.Second, 30 * time.Second},
-		"120s timeout → 30s": {120 * time.Second, 30 * time.Second, 30 * time.Second},  // clamped to max 30s
-		"8s timeout → 5s":    {8 * time.Second, 5 * time.Second, 5 * time.Second},       // clamped to min 5s
-		"0 (default) → 30s":  {0, 30 * time.Second, 30 * time.Second},                   // default 60s → 30s
+		"half the timeout":                  {timeout: 40 * time.Second, expected: 20 * time.Second},
+		"the usual 60 s":                    {timeout: 60 * time.Second, expected: 30 * time.Second},
+		"no longer than the most":           {timeout: 120 * time.Second, expected: 30 * time.Second},
+		"no shorter than the least":         {timeout: 8 * time.Second, expected: 5 * time.Second},
+		"just above the least":              {timeout: 11 * time.Second, expected: 5500 * time.Millisecond},
+		"none advertised means the 60 s":    {timeout: 0, expected: 30 * time.Second},
+		"a negative one is none advertised": {timeout: -time.Second, expected: 30 * time.Second},
 	}
-	for name, tc := range tests {
+	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
-			timeout := tc.timeout
-			if timeout == 0 {
-				timeout = defaultSessionTimeout
-			}
-			interval := timeout / 2
-			if interval < 5*time.Second {
-				interval = 5 * time.Second
-			}
-			if interval > 30*time.Second {
-				interval = 30 * time.Second
-			}
-			assert.GreaterOrEqual(t, interval, tc.wantMin)
-			assert.LessOrEqual(t, interval, tc.wantMax)
+			assert.Equal(t, tt.expected, keepaliveInterval(tt.timeout))
 		})
 	}
 }
 
-// TestPullStream_Keepalive verifies that pullStream sends periodic GET_PARAMETER
-// keepalives to the RTSP server. It uses a very short timeout to observe at
-// least one keepalive within the test window.
-func TestPullStream_Keepalive(t *testing.T) {
-	keepaliveReceived := make(chan struct{}, 10)
+func TestStartKeepalive_SendsEveryInterval(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		// A 20 s timeout is kept alive every 10 s.
+		client := &fakeKeepaliver{timeout: 20 * time.Second}
+		stop := startKeepalive(t.Context(), client)
+		defer stop()
 
-	// A fake server that tracks GET_PARAMETER requests.
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = ln.Close() })
+		time.Sleep(35 * time.Second)
+		synctest.Wait()
 
-	go func() {
-		conn, err := ln.Accept()
-		if err != nil {
-			return
+		assert.Equal(t, 3, client.keepalives())
+	})
+}
+
+func TestStartKeepalive_SendsNothingBeforeTheFirstInterval(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		client := &fakeKeepaliver{timeout: 20 * time.Second}
+		stop := startKeepalive(t.Context(), client)
+		defer stop()
+
+		time.Sleep(9 * time.Second)
+		synctest.Wait()
+
+		assert.Zero(t, client.keepalives())
+	})
+}
+
+func TestStartKeepalive_StopEndsIt(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		client := &fakeKeepaliver{timeout: 20 * time.Second}
+		stop := startKeepalive(t.Context(), client)
+		time.Sleep(15 * time.Second)
+
+		stop()
+		time.Sleep(time.Minute)
+		synctest.Wait()
+
+		assert.Equal(t, 1, client.keepalives())
+	})
+}
+
+func TestStartKeepalive_ContextEndsIt(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		ctx, cancel := context.WithCancel(t.Context())
+		client := &fakeKeepaliver{timeout: 20 * time.Second}
+		stop := startKeepalive(ctx, client)
+		time.Sleep(15 * time.Second)
+
+		cancel()
+		time.Sleep(time.Minute)
+		synctest.Wait()
+
+		assert.Equal(t, 1, client.keepalives())
+		// stop still returns after the goroutine has gone by itself.
+		stop()
+	})
+}
+
+func TestStartKeepalive_KeepsTryingAfterAFailure(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		client := &fakeKeepaliver{
+			timeout: 20 * time.Second,
+			results: []error{errors.New("write: broken pipe"), nil},
 		}
-		defer conn.Close()
-		rc := rtsp.NewConn(conn)
-		for {
-			req, _, err := rc.ReadRequest()
-			if err != nil {
-				return
-			}
-			resp := rtsp.NewResponse(rtsp.StatusOK, req)
-			if cseq := req.Header.Get("CSeq"); cseq != "" {
-				resp.Header.Set("CSeq", cseq)
-			}
-			switch req.Method {
-			case rtsp.MethodDescribe:
-				body := []byte(buildTestSDP(false))
-				resp.Header.Set("Content-Type", "application/sdp")
-				resp.Header.Set("Content-Length", strconv.Itoa(len(body)))
-				resp.Body = io.NopCloser(bytes.NewReader(body))
-			case rtsp.MethodSetup:
-				resp.Header.Set("Transport", req.Header.Get("Transport"))
-				// Use a very short timeout so the keepalive goroutine fires quickly.
-				resp.Header.Set("Session", "test-keepalive;timeout=10")
-			case rtsp.MethodGetParameter:
-				keepaliveReceived <- struct{}{}
-			case rtsp.MethodPlay:
-				_ = rc.WriteResponse(resp)
-				// Send one video frame, then keep the connection open.
-				f := rtsp.InterleavedFrame{Channel: 0, Payload: buildTestVideoRTP()}
-				_ = rc.WriteInterleavedFrame(&f)
-				// Keep reading; detect GET_PARAMETER keepalives.
-				for {
-					req2, _, err := rc.ReadRequest()
-					if err != nil {
-						return
-					}
-					if req2 != nil && req2.Method == rtsp.MethodGetParameter {
-						keepaliveReceived <- struct{}{}
-					}
-				}
-			}
-			_ = rc.WriteResponse(resp)
-		}
-	}()
+		stop := startKeepalive(t.Context(), client)
+		defer stop()
 
-	addr := ln.Addr().String()
-	trackMux := moqt.NewTrackMux(0)
-	sess, err := NewSession(trackMux, "/live/cam")
-	require.NoError(t, err)
-	defer sess.Close()
+		time.Sleep(35 * time.Second)
+		synctest.Wait()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	go pullStream(ctx, "rtsp://"+addr+"/test", sess)
-
-	// Wait for at least one keepalive to arrive.
-	select {
-	case <-keepaliveReceived:
-		// Success: keepalive was sent.
-	case <-time.After(8 * time.Second):
-		t.Fatal("expected a GET_PARAMETER keepalive but none arrived")
-	}
-	cancel()
+		assert.Equal(t, 3, client.keepalives())
+	})
 }

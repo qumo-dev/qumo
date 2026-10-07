@@ -35,6 +35,7 @@ const (
 	StatusSessionNotFound      = 454
 	StatusUnsupportedTransport = 461
 	StatusInternalServerError  = 500
+	StatusNotImplemented       = 501
 )
 
 // Request represents an RTSP request.
@@ -91,6 +92,8 @@ func statusText(code int) string {
 		return "Unsupported Transport"
 	case 500:
 		return "Internal Server Error"
+	case 501:
+		return "Not Implemented"
 	default:
 		return "Unknown"
 	}

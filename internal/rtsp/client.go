@@ -2,6 +2,7 @@ package rtsp
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -9,8 +10,19 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
+
+// controlWriteTimeout bounds a request written while the session streams: a
+// keepalive, or the TEARDOWN on close. Nothing waits for their responses, so
+// only the write can hang, and it must not hold up the reader or the close.
+const controlWriteTimeout = 5 * time.Second
+
+// ErrSessionNotFound is returned by [Client.ReadInterleaved] when the server
+// answers a keepalive with 454: it no longer knows the session, so nothing
+// more will arrive on it.
+var ErrSessionNotFound = errors.New("rtsp: session not found")
 
 // Client is an RTSP client connected to a server (e.g. an IP camera). It speaks
 // the client side of DESCRIBE/SETUP/PLAY over a single TCP-interleaved
@@ -19,9 +31,19 @@ type Client struct {
 	conn           *Conn
 	url            *url.URL
 	cred           Credentials
-	cseq           int
 	sessionID      string        // sent on SETUP/PLAY/TEARDOWN after the first SETUP.
 	sessionTimeout time.Duration // parsed from Session header; 0 means not specified.
+
+	// mu guards what the keepalive goroutine and the reading goroutine both
+	// touch once the session streams.
+	mu   sync.Mutex
+	cseq int
+	// challenge is the server's last authentication challenge, kept so that
+	// a keepalive, which is not retried on a 401, can answer it up front.
+	challenge *AuthChallenge
+	// keepalive is the method keepalives are sent with: GET_PARAMETER, until
+	// the server says it does not implement it.
+	keepalive Method
 }
 
 // Dial connects to the RTSP server at rawURL (which may carry user:pass for
@@ -50,14 +72,16 @@ func Dial(ctx context.Context, rawURL string) (*Client, error) {
 	}
 	// Strip credentials from the URL so they don't appear in request lines.
 	u.User = nil
-	return &Client{conn: NewConn(nc), url: u, cred: cred}, nil
+	return &Client{conn: NewConn(nc), url: u, cred: cred, keepalive: MethodGetParameter}, nil
 }
 
 // Close sends TEARDOWN (best-effort) and closes the underlying connection.
 func (c *Client) Close() error {
 	if c.sessionID != "" {
 		req := c.newRequest(MethodTeardown, c.url.String())
-		_ = c.conn.WriteRequest(req) // best-effort; ignore response/errors.
+		// not actionable: TEARDOWN is a courtesy to the server; the
+		// connection is closed whether or not it could be sent.
+		_ = c.conn.writeRequestBy(req, time.Now().Add(controlWriteTimeout))
 	}
 	return c.conn.Close()
 }
@@ -139,19 +163,51 @@ func (c *Client) Play(ctx context.Context) error {
 }
 
 // ReadInterleaved blocks until the next interleaved frame (RTP or RTCP) arrives
-// on the connection. It returns io.EOF/err when the connection closes.
+// on the connection. It returns io.EOF/err when the connection closes, and
+// [ErrSessionNotFound] when the server reports the session gone.
+//
+// The responses to [Client.SendKeepalive] arrive between the frames and are
+// taken care of here. A request from the server is read and ignored.
 func (c *Client) ReadInterleaved() (*InterleavedFrame, error) {
 	for {
-		_, frame, err := c.conn.ReadRequest()
+		frame, resp, err := c.conn.readStreamed()
 		if err != nil {
 			return nil, err
 		}
 		if frame != nil {
 			return frame, nil
 		}
-		// A non-interleaved RTSP request arrived on the control channel — RTSP
-		// servers rarely send server-initiated requests; ignore and keep reading.
+		if resp == nil {
+			continue
+		}
+		if err := c.keepaliveAnswered(resp); err != nil {
+			return nil, err
+		}
 	}
+}
+
+// keepaliveAnswered acts on the server's answer to a keepalive, which is the
+// only request sent while streaming.
+func (c *Client) keepaliveAnswered(resp *Response) error {
+	switch resp.StatusCode {
+	case StatusSessionNotFound:
+		return fmt.Errorf("%w: keepalive answered %s", ErrSessionNotFound, resp.Status)
+	case StatusUnauthorized:
+		// The server authenticates every request. The next keepalive
+		// answers this challenge; this one did not refresh the session.
+		if ch, ok := ParseAuthChallenge(resp.Header.Get("WWW-Authenticate")); ok {
+			c.mu.Lock()
+			c.challenge = &ch
+			c.mu.Unlock()
+		}
+	case StatusMethodNotAllowed, StatusNotImplemented:
+		// GET_PARAMETER is optional. OPTIONS is not, and refreshes the
+		// session as well.
+		c.mu.Lock()
+		c.keepalive = MethodOptions
+		c.mu.Unlock()
+	}
+	return nil
 }
 
 // SessionTimeout returns the session timeout advertised by the server in the
@@ -161,32 +217,57 @@ func (c *Client) SessionTimeout() time.Duration {
 	return c.sessionTimeout
 }
 
-// SendKeepalive sends a GET_PARAMETER request to keep the RTSP session alive.
-// The server's 200 OK response is harmlessly consumed by [Client.ReadInterleaved]
-// (parsed as a non-interleaved message and discarded), so it is safe to call
-// from a goroutine concurrent with ReadInterleaved.
+// SendKeepalive sends a request that keeps the RTSP session alive:
+// GET_PARAMETER, or OPTIONS once the server has refused that. It does not wait
+// for the response, which [Client.ReadInterleaved] reads and acts on, so it is
+// safe to call from a goroutine concurrent with ReadInterleaved.
+//
+// The write is given up after a few seconds, so a peer that has stopped
+// reading cannot hold it.
 //
 // Callers should send keepalives at an interval shorter than [Client.SessionTimeout]
 // (typically timeout/2) to prevent the server from tearing down the session.
 func (c *Client) SendKeepalive() error {
-	req := c.newRequest(MethodGetParameter, c.url.String())
+	c.mu.Lock()
+	method, challenge := c.keepalive, c.challenge
+	c.mu.Unlock()
+
+	req := c.newRequest(method, c.url.String())
 	if c.sessionID != "" {
 		req.Header.Set("Session", c.sessionID)
 	}
-	return c.conn.WriteRequest(req)
+	if challenge != nil && c.cred.HasCredentials() {
+		auth, err := BuildAuthorization(string(method), req.URL.String(), c.cred, *challenge)
+		if err != nil {
+			return fmt.Errorf("rtsp: build keepalive auth: %w", err)
+		}
+		req.Header.Set("Authorization", auth)
+	}
+	if err := c.conn.writeRequestBy(req, time.Now().Add(controlWriteTimeout)); err != nil {
+		return fmt.Errorf("rtsp: write %s: %w", method, err)
+	}
+	return nil
 }
 
 // --- internal helpers ---
 
-func (c *Client) newRequest(method Method, uri string) *Request {
+// nextCSeq returns the sequence number for the next request. Requests are made
+// from the keepalive goroutine as well as the caller's.
+func (c *Client) nextCSeq() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	c.cseq++
+	return c.cseq
+}
+
+func (c *Client) newRequest(method Method, uri string) *Request {
 	req := &Request{
 		Method: method,
 		URL:    mustParseURL(uri),
 		Proto:  "RTSP/1.0",
 		Header: make(http.Header),
 	}
-	req.Header.Set("CSeq", strconv.Itoa(c.cseq))
+	req.Header.Set("CSeq", strconv.Itoa(c.nextCSeq()))
 	req.Header.Set("User-Agent", "qumo-rtsp-client")
 	return req
 }
@@ -209,9 +290,12 @@ func (c *Client) do(req *Request) (*Response, error) {
 			return resp, fmt.Errorf("rtsp: build auth: %w", err)
 		}
 		req.Header.Set("Authorization", authVal)
+		// Keepalives are not retried, so they answer this challenge up front.
+		c.mu.Lock()
+		c.challenge = &ch
+		c.mu.Unlock()
 		// Resend with a new CSeq.
-		c.cseq++
-		req.Header.Set("CSeq", strconv.Itoa(c.cseq))
+		req.Header.Set("CSeq", strconv.Itoa(c.nextCSeq()))
 		return c.roundtrip(req)
 	}
 	return resp, nil
