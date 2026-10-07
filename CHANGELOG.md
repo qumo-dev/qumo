@@ -56,6 +56,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **The playground's DevTools count the page's stops in a background tab too (`playground/src/devtools/stall_monitor.ts`).** The watch ran on the page's own timer, which the browser slows to once a second in a background tab, so stops there were left out rather than miscounted. It now takes its ticks from a worker and measures how long each waited for the main thread, which is the same in view and out of it. A ticker that itself pauses, as in a frozen tab, reads as no stop. The worker timer is shared with the test pattern (`playground/src/worker_ticker.ts`).
 - **The playground dials the relay on the port it was started on, and looks for the HLS egress on the host the page was opened at.** Two leftovers of #456, for a playground opened anywhere but `localhost:4433`:
   - **Relay port:** `qumo playground --relay-addr` with a port other than 4433 served that port in `/config`, but the Webcam and HLS scenarios dialled 4433 regardless. They now take the port from `/config`. The ingest scenarios keep their own ports.
   - **HLS egress:** the HLS scenario fetched its playlist from `http://localhost:8081` whatever host the page was opened at. It now uses the page's own host at port 8081: over http on this machine, and over https from an https page anywhere else, which holds only if something in front of the egress terminates TLS on that port. `VITE_HLS_URL` still replaces that under `mage web`.

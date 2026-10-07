@@ -3,6 +3,8 @@
 // the picture shows its own frame number and the time it was drawn, and once
 // a second it flashes as the tone beeps.
 
+import { workerTicker } from "../worker_ticker.ts";
+
 /** What the pattern is to look like. */
 export interface PatternSettings {
 	/** The picture's size, in pixels. */
@@ -29,20 +31,6 @@ const BEEP_SECONDS = 0.08;
 
 // SMPTE-style bars, left to right.
 const BARS = ["#c0c0c0", "#c0c000", "#00c0c0", "#00c000", "#c000c0", "#c00000", "#0000c0"];
-
-// A timer on a worker. A page's own timers are slowed to one a second while
-// its tab is in the background, which would freeze the picture; a worker's
-// are not.
-function ticker(intervalMs: number, tick: () => void): () => void {
-	const source = `setInterval(() => postMessage(0), ${intervalMs});`;
-	const url = URL.createObjectURL(new Blob([source], { type: "text/javascript" }));
-	const worker = new Worker(url);
-	worker.onmessage = tick;
-	return () => {
-		worker.terminate();
-		URL.revokeObjectURL(url);
-	};
-}
 
 function pad(value: number, digits: number): string {
 	return String(value).padStart(digits, "0");
@@ -170,7 +158,8 @@ export function patternStream(settings: PatternSettings): MediaStream {
 		let flashed = first.second;
 		draw(context, width, height, first, new Date(), false);
 
-		const stop = ticker(1000 / frameRate / TICKS_PER_FRAME, () => {
+		// From a worker, so the picture does not freeze in a background tab.
+		const stop = workerTicker(1000 / frameRate / TICKS_PER_FRAME, () => {
 			// The track is stopped by whoever was given the stream; there is
 			// no event for that, so it is looked for here.
 			if (video.readyState === "ended") {
