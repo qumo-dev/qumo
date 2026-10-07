@@ -30,6 +30,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **The playground's DevTools timeline can be zoomed and moved (`playground/src/devtools/view.ts`).** It showed the last 60, 10 or 2 seconds and nothing in between, always up to the present.
+  - **Zoom:** scroll on the timeline, or press − and +, for any span from half a second to the full minute that is kept. The 60 s, 10 s and 2 s buttons remain as shortcuts, and the span in view is shown next to them.
+  - **Move:** drag the timeline to look further back. A moved view stays on the moment it was put on while new media keeps arriving, so something that just happened can be looked at without pausing. Zooming a moved view keeps what is under the pointer under the pointer.
+  - **Live:** returns to the present and follows it again. A live view zooms from the present and stays live.
+  - **The axis** shows the times of what is in view, to the tenth of a second when little is.
 - **The playground can publish a test pattern, with no camera (`playground/src/publish/pattern.ts`).** "Test pattern" is a third source next to Camera and Screen: colour bars, the time of day to the millisecond, a frame counter and a marker that crosses the picture once a second, with a 440 Hz tone. Each second the picture flashes as the tone beeps, so sound and picture can be checked against each other, and the clock can be read off two screens for the delay. It needs no permission, is exactly the size and frame rate chosen, and keeps its frame rate in a background tab. The frame count, the flash and the marker are all read off the clock, so a timer that runs fast or slow cannot shift them.
 - **The relay verifies credentials itself, against a key set (`QUMO_AUTH_KEYS`).** No other process is needed: `QUMO_AUTH_KEYS=keys.json qumo relay` with the key set `qumo auth keygen` writes. The value's form says where the set is: an `https://` URL (or `http://` on a loopback host) is downloaded, a path or `file://` URL is read, and any other scheme is refused at startup.
   - **The checks** are the `token` package's: a known `kid`, the EdDSA signature, exactly the allowed claims, the times (60 s leeway, at most an hour), and every granted path within the key's `prefix`. A session may publish and subscribe where its token says and ends when the token expires.

@@ -228,27 +228,36 @@ const STACK_ORDER: readonly GroupState[] = [
 ];
 
 /**
- * One track's lane over the `span` milliseconds up to `now`: its groups as
+ * One track's lane over the `span` milliseconds up to `to`: its groups as
  * they arrived (the network view) above a strip of what was rendered. A track
  * with few groups in view shows each as a bar, one row unless they overlap; a
  * track with many shows a stacked column per slice of time. A track that is
  * sent, not played, has no rendered strip.
+ *
+ * @param now - The present, which is where a group still arriving reaches to.
+ * @param to - Where the view ends: the present, unless it has been moved back.
  */
 export function trackLane(
 	groups: readonly GroupRecord[],
 	renders: boolean,
 	now: number,
 	span: number,
+	to: number = now,
 ): Lane {
-	const from = now - span;
+	const from = to - span;
 	const x = (time: number) => Math.min(1, Math.max(0, (time - from) / span));
-	const visible = groups.filter((g) => (g.ended ?? now) >= from);
+	const visible = groups.filter((g) => (g.ended ?? now) >= from && g.arrived <= to);
 	const shapes: Shape[] = [];
 
 	const dense = visible.length > BAR_LIMIT;
 	const bars = dense ? [] : packLanes(visible, now);
 	const lanes = Math.min(MAX_LANES, bars.reduce((most, bar) => Math.max(most, bar.lane + 1), 1));
-	const networkHeight = dense ? COLUMN_HEIGHT : lanes * (LANE_HEIGHT + LANE_GAP) - LANE_GAP;
+	// Never lower than the columns are, whichever way the groups are drawn:
+	// zooming moves a track between the two, and a lane that changed height
+	// with it would shift every lane below while the pointer is on them.
+	const networkHeight = dense
+		? COLUMN_HEIGHT
+		: Math.max(COLUMN_HEIGHT, lanes * (LANE_HEIGHT + LANE_GAP) - LANE_GAP);
 	const renderTop = networkHeight + RENDER_GAP;
 
 	if (renders) {
@@ -270,6 +279,9 @@ export function trackLane(
 		if (!renders) continue;
 
 		if (group.renderStart !== undefined) {
+			// Played after a moved view ends: not in this view, and not
+			// "not played" either.
+			if (group.renderStart > to) continue;
 			shapes.push({
 				x0: x(group.renderStart),
 				x1: x(group.renderEnd ?? group.renderStart),
@@ -299,7 +311,9 @@ export function trackLane(
 	}
 
 	if (dense) {
-		const cols = columns(visible, from, now, span / COLUMN_COUNT);
+		// A span that is not a round number can divide into one column too
+		// many, which would lie past the end of the lane.
+		const cols = columns(visible, from, to, span / COLUMN_COUNT).slice(0, COLUMN_COUNT);
 		const tallest = cols.reduce((most, c) => Math.max(most, total(c.states)), 1);
 		cols.forEach((col, i) => {
 			if (total(col.states) === 0) return;
@@ -349,13 +363,26 @@ export function audioLane(
 	delays: readonly DelayRecord[],
 	now: number,
 	span: number,
+	to: number = now,
 ): Lane {
-	const from = now - span;
+	const from = to - span;
 	const x = (time: number) => Math.min(1, Math.max(0, (time - from) / span));
-	const visible = history.filter((s) => s.at >= from);
+	const visible = history.filter((s) => s.at >= from && s.at <= to);
 	const ceiling = visible.reduce((most, s) => Math.max(most, s.buffered), MIN_AUDIO_CEILING_MS);
+	// The graph runs to both edges of the lane: the sample just outside each
+	// end stands in at the edge. With little time in view the samples are far
+	// apart, and the graph would otherwise stop short of the edges.
+	const before = history.findLast((s) => s.at < from);
+	const after = history.find((s) => s.at > to);
+	const graphed = [
+		...(before === undefined ? [] : [before]),
+		...visible,
+		...(after === undefined ? [] : [after]),
+	];
 
-	const strips = delays.filter((d) => d.track === "audio" && d.at >= from).map((d): Shape => ({
+	const strips = delays.filter((d) =>
+		d.track === "audio" && d.at >= from && d.at - d.duration <= to
+	).map((d): Shape => ({
 		x0: x(d.at - d.duration),
 		x1: x(d.at),
 		y: d.kind === "arrival" ? 0 : DELAY_HEIGHT,
@@ -372,9 +399,14 @@ export function audioLane(
 	return {
 		height: AUDIO_HEIGHT,
 		// The bottom of each swing, not the level at the moment of the report.
-		level: visible.map((s) => [x(s.at), AUDIO_HEIGHT - s.low / ceiling * AUDIO_HEIGHT]),
+		level: graphed.map((s) => [
+			x(s.at),
+			AUDIO_HEIGHT - Math.min(s.low, ceiling) / ceiling * AUDIO_HEIGHT,
+		]),
 		shapes: [
-			...audioGlitches(history).filter((g) => g.at >= from).map((glitch): Shape => ({
+			...audioGlitches(history).filter((g) => g.at >= from && g.at <= to).map((
+				glitch,
+			): Shape => ({
 				x0: x(glitch.at),
 				x1: x(glitch.at),
 				y: 0,
@@ -412,10 +444,16 @@ export function stallBands(stalls: readonly StallRecord[]): Band[] {
  * behind its marks, since they explain them, and the marker over them, since
  * it has to be found. A band that has partly scrolled out is cut at the edge.
  */
-export function withBands(lane: Lane, bands: readonly Band[], now: number, span: number): Lane {
-	const from = now - span;
+export function withBands(
+	lane: Lane,
+	bands: readonly Band[],
+	now: number,
+	span: number,
+	to: number = now,
+): Lane {
+	const from = to - span;
 	const x = (time: number) => Math.min(1, Math.max(0, (time - from) / span));
-	const shapes = bands.filter((band) => band.to >= from && band.from <= now).map((
+	const shapes = bands.filter((band) => band.to >= from && band.from <= to).map((
 		band,
 	): Shape => ({
 		x0: x(band.from),

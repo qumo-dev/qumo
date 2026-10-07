@@ -202,12 +202,12 @@ Deno.test("trackLane draws a bar per group and a strip of what was rendered", ()
 	const lane = trackLane(groups, true, 4000, 4000);
 
 	assertEquals(drawn(lane), [
-		"track@0-100/15",
+		"track@0-100/27",
 		"complete@0-50/0",
-		"rendered@3-53/15",
+		"rendered@3-53/27",
 		"receiving@50-100/0",
 	]);
-	assertEquals(lane.height, 21);
+	assertEquals(lane.height, 33);
 });
 
 Deno.test("trackLane puts overlapping groups on separate rows", () => {
@@ -220,7 +220,7 @@ Deno.test("trackLane puts overlapping groups on separate rows", () => {
 Deno.test("trackLane marks a group that ended with nothing rendered", () => {
 	const lane = trackLane([group(0, 1000, 1500, { state: "skipped" })], true, 4000, 4000);
 
-	assertEquals(drawn(lane).at(-1), "unrendered@25-25/15");
+	assertEquals(drawn(lane).at(-1), "unrendered@25-25/27");
 });
 
 Deno.test("trackLane gives a sent track no rendered strip", () => {
@@ -295,7 +295,7 @@ Deno.test("shapeAt finds the topmost titled shape under a point", () => {
 	);
 
 	const onBar = shapeAt(lane, 100, 5, 400, 2);
-	const onStrip = shapeAt(lane, 100, 17, 400, 2);
+	const onStrip = shapeAt(lane, 100, 29, 400, 2);
 	const onNothing = shapeAt(lane, 300, 5, 400, 2);
 
 	assertEquals([onBar?.style, onStrip?.style, onNothing], ["complete", "rendered", undefined]);
@@ -304,7 +304,7 @@ Deno.test("shapeAt finds the topmost titled shape under a point", () => {
 Deno.test("shapeAt gives a mark with no width something to point at", () => {
 	const lane = trackLane([group(0, 1000, 1500, { state: "skipped" })], true, 4000, 4000);
 
-	const hit = shapeAt(lane, 101, 17, 400, 3);
+	const hit = shapeAt(lane, 101, 29, 400, 3);
 
 	assertEquals(hit?.style, "unrendered");
 });
@@ -368,4 +368,116 @@ Deno.test("stallBands turns each stop of the main thread into the stretch it las
 	assertEquals(stallBands([{ at: 1000, duration: 200 }]), [
 		{ from: 800, to: 1000, style: "stall", title: "The page stopped for 200 ms" },
 	]);
+});
+
+// A view that has been moved back ends before the present: the lanes are
+// laid out over the span up to where it ends, not up to now.
+
+Deno.test("trackLane lays a moved view out over the span up to where it ends", () => {
+	const groups = [group(0, 1000, 2000), group(1, 3000, 3500)];
+
+	// The present is 10 000; the view is the two seconds up to 4000.
+	const lane = trackLane(groups, false, 10_000, 2000, 4000);
+
+	assertEquals(drawn(lane), ["complete@0-0/0", "complete@50-75/0"]);
+});
+
+Deno.test("trackLane leaves out of a moved view the groups that arrived after it ends", () => {
+	const groups = [group(0, 3000, 3500), group(1, 5000, 5500), group(2, 9000, undefined)];
+
+	const lane = trackLane(groups, false, 10_000, 2000, 4000);
+
+	assertEquals(lane.shapes.map((s) => s.group), [0]);
+});
+
+Deno.test("trackLane cuts a group still arriving at the end of a moved view", () => {
+	// It began inside the view and has not ended by the present.
+	const lane = trackLane([group(0, 3000, undefined)], false, 10_000, 2000, 4000);
+
+	assertEquals(drawn(lane), ["receiving@50-100/0"]);
+});
+
+Deno.test("audioLane marks only the glitches inside a moved view", () => {
+	const history = [
+		sample(1000, { buffered: 100, low: 100 }),
+		sample(3000, { buffered: 100, low: 50, starved: 30 }),
+		sample(5000, { buffered: 100, low: 20, starved: 80 }),
+	];
+
+	// The view is the two seconds up to 4000; the present is 6000.
+	const lane = audioLane(history, [], 6000, 2000, 4000);
+
+	assertEquals(lane.shapes.map((s) => [s.style, s.x0]), [["glitch", 0.5]]);
+});
+
+Deno.test("audioLane runs its graph to both edges of the view", () => {
+	const history = [
+		sample(1000, { buffered: 100, low: 100 }),
+		sample(3000, { buffered: 100, low: 50 }),
+		sample(5000, { buffered: 100, low: 20 }),
+	];
+
+	// One sample in view; the ones just outside stand in at the edges.
+	const lane = audioLane(history, [], 6000, 2000, 4000);
+
+	assertEquals(lane.level?.map(([x]) => x), [0, 0.5, 1]);
+});
+
+Deno.test("audioLane has nothing to run to an edge with no sample beyond it", () => {
+	const lane = audioLane([sample(3000, { buffered: 100, low: 50 })], [], 6000, 2000, 4000);
+
+	assertEquals(lane.level?.map(([x]) => x), [0.5]);
+});
+
+Deno.test("a track is as tall drawn as bars as it is drawn as columns", () => {
+	const many = Array.from({ length: 400 }, (_, i) => group(i, i * 10, i * 10 + 8));
+
+	// The same track over a minute, where it is columns, and zoomed to a
+	// stretch short enough for bars.
+	const columns = trackLane(many, true, 4000, 4000);
+	const bars = trackLane(many, true, 4000, 100);
+
+	assertEquals(bars.height, columns.height);
+});
+
+Deno.test("withBands leaves out of a moved view a band that began after it ends", () => {
+	const lane = { height: 10, shapes: [] };
+
+	const banded = withBands(
+		lane,
+		[{ from: 2500, to: 3000, style: "stall" }, { from: 5000, to: 6000, style: "stall" }],
+		10_000,
+		2000,
+		4000,
+	);
+
+	assertEquals(banded.shapes.map((s) => [s.x0, s.x1]), [[0.25, 0.5]]);
+});
+
+Deno.test("trackLane leaves out of a moved view what was played after it ends", () => {
+	const groups = [
+		group(0, 3000, 3200, { frames: 6, rendered: 6, renderStart: 3300, renderEnd: 3500 }),
+		// Arrived in view, played 400 ms later, which is after the view ends.
+		group(1, 3900, 3950, { frames: 6, rendered: 6, renderStart: 4300, renderEnd: 4500 }),
+	];
+
+	const lane = trackLane(groups, true, 10_000, 2000, 4000);
+
+	assertEquals(
+		lane.shapes.filter((s) => s.style === "rendered" || s.style === "unrendered").map((s) => [
+			s.style,
+			s.group,
+		]),
+		[["rendered", 0]],
+	);
+});
+
+Deno.test("trackLane never draws a column past the end of the lane", () => {
+	// Enough groups to be drawn as columns, over a span that is not round.
+	const span = 2227.6162154068797;
+	const groups = Array.from({ length: 400 }, (_, i) => group(i, i * 5, i * 5 + 4));
+
+	const lane = trackLane(groups, false, 2000, span);
+
+	assertEquals(lane.shapes.filter((s) => s.x0 >= 1 || s.x1 > 1), []);
 });
