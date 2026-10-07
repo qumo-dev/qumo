@@ -6,10 +6,10 @@ import (
 	"net/url"
 
 	"github.com/okdaichi/qumo-ledger/ledger/store"
-	_ "github.com/okdaichi/qumo-ledger/ledger/store/fsstore"  // file:
-	_ "github.com/okdaichi/qumo-ledger/ledger/store/memstore" // mem:
-	_ "github.com/okdaichi/qumo-ledger/ledger/store/s3store"  // s3:
-	_ "github.com/okdaichi/qumo-ledger/ledger/store/sqlstore" // postgres:, postgresql:
+	_ "github.com/okdaichi/qumo-ledger/ledger/store/bucket" // s3:
+	_ "github.com/okdaichi/qumo-ledger/ledger/store/db"     // postgres:, postgresql:
+	_ "github.com/okdaichi/qumo-ledger/ledger/store/fs"     // file:
+	_ "github.com/okdaichi/qumo-ledger/ledger/store/mem"    // mem:
 )
 
 // openStore opens the ledger store a URI names, and returns it with a name for

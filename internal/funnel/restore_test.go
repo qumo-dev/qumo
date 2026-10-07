@@ -7,7 +7,7 @@ import (
 	"github.com/okdaichi/qumo-ledger/ingest"
 	"github.com/okdaichi/qumo-ledger/ledger"
 	"github.com/okdaichi/qumo-ledger/ledger/store"
-	"github.com/okdaichi/qumo-ledger/ledger/store/memstore"
+	"github.com/okdaichi/qumo-ledger/ledger/store/mem"
 	"github.com/qumo-dev/gomoqt/moqt"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -29,7 +29,7 @@ func recordInto(tb testing.TB, objects store.Store, broadcastPath string, payloa
 }
 
 func TestRestore(t *testing.T) {
-	objects := memstore.New()
+	objects := mem.New()
 	recordInto(t, objects, "/room/123", `"one"`, `"two"`)
 	recordInto(t, objects, "/room/9")
 	_, err := ledger.Create(t.Context(), objects, "live/cam1/video", ledger.TrackSchema{
@@ -63,7 +63,7 @@ func TestRestore(t *testing.T) {
 }
 
 func TestRestore_StoreWithoutListing(t *testing.T) {
-	objects := memstore.New()
+	objects := mem.New()
 	recordInto(t, objects, "/room/123", `"one"`)
 	mux := moqt.NewTrackMux(0)
 
@@ -83,7 +83,7 @@ func TestRestore_ListingFails(t *testing.T) {
 }
 
 func TestNewHandler_RestoresBeforeServing(t *testing.T) {
-	objects := memstore.New()
+	objects := mem.New()
 	recordInto(t, objects, "/room/123", `"before the restart"`)
 	mux := moqt.NewTrackMux(0)
 

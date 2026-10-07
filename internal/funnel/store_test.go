@@ -6,8 +6,8 @@ import (
 	"testing"
 
 	"github.com/okdaichi/qumo-ledger/ledger/store"
-	"github.com/okdaichi/qumo-ledger/ledger/store/fsstore"
-	"github.com/okdaichi/qumo-ledger/ledger/store/memstore"
+	"github.com/okdaichi/qumo-ledger/ledger/store/fs"
+	"github.com/okdaichi/qumo-ledger/ledger/store/mem"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -16,7 +16,7 @@ func TestOpenStore_EmptyIsMemory(t *testing.T) {
 	objects, name, err := openStore(t.Context(), "")
 
 	require.NoError(t, err)
-	assert.IsType(t, &memstore.Store{}, objects)
+	assert.IsType(t, &mem.Store{}, objects)
 	assert.Contains(t, name, "memory")
 }
 
@@ -27,7 +27,7 @@ func TestOpenStore_FileIsADirectory(t *testing.T) {
 	objects, name, err := openStore(t.Context(), uri)
 
 	require.NoError(t, err)
-	assert.IsType(t, &fsstore.Store{}, objects)
+	assert.IsType(t, &fs.Store{}, objects)
 	assert.Equal(t, uri, name)
 	assert.DirExists(t, dir)
 }

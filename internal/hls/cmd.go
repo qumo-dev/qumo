@@ -18,7 +18,7 @@ import (
 	"github.com/qumo-dev/qumo/internal/envconfig"
 
 	"github.com/okdaichi/qumo-ledger/ledger"
-	"github.com/okdaichi/qumo-ledger/ledger/store/fsstore"
+	"github.com/okdaichi/qumo-ledger/ledger/store/fs"
 	"github.com/okdaichi/qumo-ledger/stream"
 )
 
@@ -104,7 +104,7 @@ func Run(_ []string) error {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
-	store, err := fsstore.New(root)
+	store, err := fs.New(root)
 	if err != nil {
 		return fmt.Errorf("hls: open ledger store: %w", err)
 	}
@@ -203,7 +203,7 @@ func Run(_ []string) error {
 // Wallclock from its own clock). The second result reports that an existing
 // track was adopted rather than created, which the caller needs because a track
 // with someone else's groups in it cannot simply be written to.
-func openTrack(ctx context.Context, store *fsstore.Store, path ledger.TrackPath, schema ledger.TrackSchema) (*ledger.Track, bool, error) {
+func openTrack(ctx context.Context, store *fs.Store, path ledger.TrackPath, schema ledger.TrackSchema) (*ledger.Track, bool, error) {
 	track, err := ledger.Create(ctx, store, path, schema, ledger.Config{})
 	if err == nil {
 		return track, false, nil

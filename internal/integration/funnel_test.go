@@ -19,7 +19,7 @@ import (
 	"time"
 
 	"github.com/okdaichi/qumo-ledger/ledger/store"
-	"github.com/okdaichi/qumo-ledger/ledger/store/memstore"
+	"github.com/okdaichi/qumo-ledger/ledger/store/mem"
 	"github.com/qumo-dev/gomoqt/moqt"
 	"github.com/qumo-dev/qumo/internal/auth"
 	"github.com/qumo-dev/qumo/internal/funnel"
@@ -167,7 +167,7 @@ func writeKeys(t *testing.T) (token.SigningKey, string, string) {
 }
 
 func TestFunnel_RecordsReachAMoQSubscriber(t *testing.T) {
-	ingestURL, serveURL := startFunnel(t, memstore.New(), nil)
+	ingestURL, serveURL := startFunnel(t, mem.New(), nil)
 	require.Equal(t, http.StatusCreated, record(t, ingestURL, "", `{"user":"alice","text":"hello"}`))
 
 	tr := subscribeChat(t, serveURL)
@@ -190,7 +190,7 @@ func TestFunnel_RecordsReachAMoQSubscriber(t *testing.T) {
 // TestFunnel_CreatedTrackWaitsForItsFirstRecord subscribes to a track created
 // ahead of its first record, then records into it.
 func TestFunnel_CreatedTrackWaitsForItsFirstRecord(t *testing.T) {
-	ingestURL, serveURL := startFunnel(t, memstore.New(), nil)
+	ingestURL, serveURL := startFunnel(t, mem.New(), nil)
 	require.Equal(t, http.StatusCreated, createChat(t, ingestURL, ""))
 	require.Equal(t, http.StatusNoContent, createChat(t, ingestURL, ""), "creating it again succeeds")
 
@@ -219,7 +219,7 @@ func TestFunnel_CreatedTrackWaitsForItsFirstRecord(t *testing.T) {
 }
 
 func TestFunnel_UnknownTrackIsNotFound(t *testing.T) {
-	ingestURL, serveURL := startFunnel(t, memstore.New(), nil)
+	ingestURL, serveURL := startFunnel(t, mem.New(), nil)
 	require.Equal(t, http.StatusCreated, createChat(t, ingestURL, ""))
 	sess := dialOver(t, serveURL, nil, moqt.NewTrackMux(0))
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -235,7 +235,7 @@ func TestFunnel_UnknownTrackIsNotFound(t *testing.T) {
 // previous run recorded into: subscribers reach the track before anyone
 // records again, starting at its latest record, and numbering continues.
 func TestFunnel_RestartServesRecordedTracks(t *testing.T) {
-	objects := memstore.New()
+	objects := mem.New()
 	firstURL, _ := startFunnel(t, objects, nil)
 	require.Equal(t, http.StatusCreated, record(t, firstURL, "", `"before"`))
 
@@ -260,7 +260,7 @@ func TestFunnel_CredentialsNameSendersAndReaders(t *testing.T) {
 	key, _, keysFile := writeKeys(t)
 	verifier, err := auth.NewVerifier(auth.VerifierConfig{Keys: keysFile})
 	require.NoError(t, err)
-	ingestURL, serveURL := startFunnel(t, memstore.New(), verifier)
+	ingestURL, serveURL := startFunnel(t, mem.New(), verifier)
 	credential := func(g token.Grant) string {
 		c, err := token.Sign(key, g, time.Minute)
 		require.NoError(t, err)
@@ -312,7 +312,7 @@ func TestFunnel_PublishesThroughTheRelay(t *testing.T) {
 	relayAddr, relaySrv := startAuthRelay(t, verifier.Authorize, nil)
 
 	mux := moqt.NewTrackMux(0)
-	ingestURL := startFunnelHTTP(t, memstore.New(), mux, nil)
+	ingestURL := startFunnelHTTP(t, mem.New(), mux, nil)
 	ctx, cancel := context.WithCancel(context.Background())
 	published := make(chan error, 1)
 	go func() {
@@ -360,7 +360,7 @@ func TestFunnel_RedialsWhenTheRelayEndsTheSession(t *testing.T) {
 	}, nil)
 
 	mux := moqt.NewTrackMux(0)
-	ingestURL := startFunnelHTTP(t, memstore.New(), mux, nil)
+	ingestURL := startFunnelHTTP(t, mem.New(), mux, nil)
 	ctx, cancel := context.WithCancel(context.Background())
 	published := make(chan error, 1)
 	go func() {

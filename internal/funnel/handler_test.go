@@ -7,7 +7,7 @@ import (
 	"testing"
 
 	"github.com/okdaichi/qumo-ledger/ingest"
-	"github.com/okdaichi/qumo-ledger/ledger/store/memstore"
+	"github.com/okdaichi/qumo-ledger/ledger/store/mem"
 	"github.com/qumo-dev/gomoqt/moqt"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -32,7 +32,7 @@ func serve(h http.Handler, method, target, body string, credential ...string) *h
 
 func TestNewHandler_PublishesCommittedRecords(t *testing.T) {
 	mux := moqt.NewTrackMux(0)
-	h, err := NewHandler(t.Context(), memstore.New(), mux, HandlerOptions{})
+	h, err := NewHandler(t.Context(), mem.New(), mux, HandlerOptions{})
 	require.NoError(t, err)
 
 	for _, payload := range []string{`{"text":"hello"}`, `"again"`} {
@@ -52,7 +52,7 @@ func TestNewHandler_PublishesCommittedRecords(t *testing.T) {
 func TestNewHandler_SenderComesFromTheCredential(t *testing.T) {
 	v, key := newVerifier(t)
 	mux := moqt.NewTrackMux(0)
-	h, err := NewHandler(t.Context(), memstore.New(), mux, HandlerOptions{Verifier: v})
+	h, err := NewHandler(t.Context(), mem.New(), mux, HandlerOptions{Verifier: v})
 	require.NoError(t, err)
 
 	rr := serve(h, http.MethodPost, chatURL, `{"user":"mallory","text":"hi"}`,
@@ -68,7 +68,7 @@ func TestNewHandler_SenderComesFromTheCredential(t *testing.T) {
 
 func TestNewHandler_CreatePublishesTheTrack(t *testing.T) {
 	mux := moqt.NewTrackMux(0)
-	h, err := NewHandler(t.Context(), memstore.New(), mux, HandlerOptions{})
+	h, err := NewHandler(t.Context(), mem.New(), mux, HandlerOptions{})
 	require.NoError(t, err)
 
 	rr := serve(h, http.MethodPut, chatURL, "")
@@ -86,7 +86,7 @@ func TestNewHandler_CreatePublishesTheTrack(t *testing.T) {
 func TestNewHandler_RefusedRecordIsNotPublished(t *testing.T) {
 	v, _ := newVerifier(t)
 	mux := moqt.NewTrackMux(0)
-	h, err := NewHandler(t.Context(), memstore.New(), mux, HandlerOptions{Verifier: v})
+	h, err := NewHandler(t.Context(), mem.New(), mux, HandlerOptions{Verifier: v})
 	require.NoError(t, err)
 
 	rr := serve(h, http.MethodPost, chatURL, `"unsigned"`)
@@ -99,7 +99,7 @@ func TestNewHandler_RefusedRecordIsNotPublished(t *testing.T) {
 
 func TestNewHandler_HistoryNeedsASubscriber(t *testing.T) {
 	v, key := newVerifier(t)
-	h, err := NewHandler(t.Context(), memstore.New(), moqt.NewTrackMux(0), HandlerOptions{Verifier: v})
+	h, err := NewHandler(t.Context(), mem.New(), moqt.NewTrackMux(0), HandlerOptions{Verifier: v})
 	require.NoError(t, err)
 	require.Equal(t, http.StatusCreated,
 		serve(h, http.MethodPost, chatURL, `"hello"`, sign(t, key, token.Grant{Publish: "/room/123/user-42"})).Code)
@@ -113,7 +113,7 @@ func TestNewHandler_HistoryNeedsASubscriber(t *testing.T) {
 }
 
 func TestNewHandler_Limits(t *testing.T) {
-	h, err := NewHandler(t.Context(), memstore.New(), moqt.NewTrackMux(0), HandlerOptions{
+	h, err := NewHandler(t.Context(), mem.New(), moqt.NewTrackMux(0), HandlerOptions{
 		TrackLimit: ingest.Limit{Rate: 1, Burst: 1},
 	})
 	require.NoError(t, err)

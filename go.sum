@@ -25,8 +25,8 @@ github.com/kylelemons/godebug v1.1.0 h1:RPNrshWIDI6G2gRW9EHilWtl7Z6Sb1BR0xunSBf0
 github.com/kylelemons/godebug v1.1.0/go.mod h1:9/0rRGxNHcop5bhtWyNeEfOS8JIWk580+fNqagV/RAw=
 github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 h1:C3w9PqII01/Oq1c1nUAm88MOHcQC9l5mIlSMApZMrHA=
 github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822/go.mod h1:+n7T8mK8HuQTcFwEeznm/DIxMOiR9yIdICNftLE1DvQ=
-github.com/okdaichi/qumo-ledger v0.1.1-0.20261007145231-58633c329479 h1:RlRjJLr7HxIiMZF86ocKnBURcaKS9bFp3XeEzzZ7cHA=
-github.com/okdaichi/qumo-ledger v0.1.1-0.20261007145231-58633c329479/go.mod h1:5K3XXM6wvn6IuEguSZVLbdlxZ/vm4fnXnZhbmBTeCDQ=
+github.com/okdaichi/qumo-ledger v0.1.1-0.20261007150911-255e8de1b5da h1:K14ovzigBr0VcLuLatsp07ZVeEhIT3qHzL8Z+KlaXys=
+github.com/okdaichi/qumo-ledger v0.1.1-0.20261007150911-255e8de1b5da/go.mod h1:5K3XXM6wvn6IuEguSZVLbdlxZ/vm4fnXnZhbmBTeCDQ=
 github.com/okdaichi/webtransport-go v0.13.0-okdaichi.2 h1:INtTyplF3uLquFDyIa6unkQ7T7fJRCJ01FfX9abE+dE=
 github.com/okdaichi/webtransport-go v0.13.0-okdaichi.2/go.mod h1:TTvw4NOrc4R62weL6rkqNxyN0hFluy5KFFzm90pf1vE=
 github.com/pmezard/go-difflib v1.0.0/go.mod h1:iKH77koFhYxTK1pcRnkKkqfTogsbg7gZNVY4sRDYZ/4=

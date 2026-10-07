@@ -5,7 +5,7 @@ import (
 	"testing"
 
 	"github.com/okdaichi/qumo-ledger/ledger"
-	"github.com/okdaichi/qumo-ledger/ledger/store/fsstore"
+	"github.com/okdaichi/qumo-ledger/ledger/store/fs"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -14,7 +14,7 @@ import (
 // adopts an existing one on the second, so the egress can restart against a
 // track it (or the seeder) already populated.
 func Test_openTrack_createsThenOpens(t *testing.T) {
-	store, err := fsstore.New(t.TempDir())
+	store, err := fs.New(t.TempDir())
 	require.NoError(t, err)
 
 	const path ledger.TrackPath = "test/video"
