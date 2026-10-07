@@ -2,8 +2,6 @@ package funnel
 
 import (
 	"net/http"
-	"net/http/httptest"
-	"strings"
 	"testing"
 
 	"github.com/okdaichi/qumo-ledger/ingest"
@@ -15,19 +13,17 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// recordInto announces the chat track of broadcastPath through an
-// ingest handler over objects, then records each payload.
+// recordInto creates the chat track of broadcastPath through an ingest handler
+// over objects, then records each payload.
 func recordInto(tb testing.TB, objects store.Store, broadcastPath string, payloads ...string) {
 	tb.Helper()
 	h, err := ingest.NewHandler(objects, ingest.Options{})
 	require.NoError(tb, err)
-	rr := httptest.NewRecorder()
-	h.ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/announce", strings.NewReader(
-		`{"broadcast_path":"`+broadcastPath+`","track_name":"chat"}`)))
+	target := "/tracks" + broadcastPath + "/chat"
+	rr := serve(h, http.MethodPut, target, "")
 	require.Equal(tb, http.StatusCreated, rr.Code, rr.Body.String())
 	for _, payload := range payloads {
-		rec := httptest.NewRecorder()
-		h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/"+rr.Header().Get("Location")+"/records", strings.NewReader(payload)))
+		rec := serve(h, http.MethodPost, target, payload)
 		require.Equal(tb, http.StatusCreated, rec.Code, rec.Body.String())
 	}
 }
@@ -59,7 +55,7 @@ func TestRestore(t *testing.T) {
 	_, handler = mux.TrackHandler("/room/9")
 	require.NotNil(t, handler)
 	empty, ok := handler.(*broadcast).lookup("chat")
-	require.True(t, ok, "an announced track with no record is restored")
+	require.True(t, ok, "a created track with no record is restored")
 	assert.Nil(t, empty.latest)
 
 	ann, _ := mux.TrackHandler("/live/cam1")

@@ -4,10 +4,9 @@
 // qumo-ledger track first and then sent to the track's MoQ subscribers, so a
 // subscriber only ever sees a record that is stored.
 //
-//	POST   /announce                    {"broadcast_path": "/room/123", "track_name": "chat"}
-//	                                    → 201, Location: contributions/{id}
-//	POST   /contributions/{id}/records  the record's payload, one JSON value
-//	DELETE /contributions/{id}          end the contribution
+//	POST /tracks/room/123/chat  the record's payload, one JSON value, into the track
+//	                            "chat" of the broadcast "/room/123"
+//	PUT  /tracks/room/123/chat  create the track before its first record
 //
 // With a key set, every request carries a qumo credential as a bearer token,
 // and the credential must grant publishing at the broadcast path.
@@ -53,7 +52,7 @@ const (
 //
 // Configuration is read from environment variables:
 //
-//	FUNNEL_ADDR          - HTTP listen address for announce and record (default: ":8090")
+//	FUNNEL_ADDR          - HTTP listen address for records (default: ":8090")
 //	RELAY_URL            - the relay to publish through, dialed as a client, e.g. "https://relay:4433" or "moqt://relay:4433"; it may carry a credential as ?jwt=
 //	RELAY_SIGNING_KEY    - a signing key (qumo auth keygen) the funnel signs a fresh relay credential with on every dial, replacing ?jwt=
 //	RELAY_PUBLISH        - the path that credential grants publishing at, e.g. "room"; set with RELAY_SIGNING_KEY
@@ -219,10 +218,11 @@ func orNone(s string) string {
 	return s
 }
 
-// NewHandler builds the announce and record handler over objects, wired to
-// publish what it commits on trackMux. Tracks objects already holds are
-// published with their latest record first. Broadcasts stay announced until
-// ctx ends. A nil verifier accepts every contributor.
+// NewHandler builds the record handler over objects, wired to publish what it
+// commits on trackMux. A track is published once the handler opens it, and
+// tracks objects already holds are published with their latest record first.
+// Broadcasts stay published until ctx ends. A nil verifier accepts every
+// sender.
 func NewHandler(ctx context.Context, objects store.Store, trackMux *moqt.TrackMux, verifier *auth.Verifier) (http.Handler, error) {
 	out := newEgress(ctx, trackMux)
 	restored, err := restore(ctx, objects, out)
@@ -235,7 +235,7 @@ func NewHandler(ctx context.Context, objects store.Store, trackMux *moqt.TrackMu
 	return ingest.NewHandler(objects, ingest.Options{
 		Authorize: authorizer(verifier),
 		Challenge: "Bearer",
-		OnAnnounce: func(_ context.Context, t ingest.Track) {
+		OnOpen: func(_ context.Context, t ingest.Track) {
 			out.announce(moqt.BroadcastPath(t.BroadcastPath)).track(moqt.TrackName(t.TrackName))
 		},
 		OnRecord: func(_ context.Context, t ingest.Track, g ledger.GroupInfo, payload []byte) {
@@ -248,18 +248,16 @@ func NewHandler(ctx context.Context, objects store.Store, trackMux *moqt.TrackMu
 	})
 }
 
-// withCORS lets a browser on an allowed origin call h with a bearer
-// credential and read the Location of a contribution, and answers its
-// preflight request.
+// withCORS lets a browser on an allowed origin call h with a bearer credential
+// and an idempotency key, and answers its preflight request.
 func withCORS(h http.Handler, allowed []string) http.Handler {
 	allow := cors.NewChecker(allowed)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Add("Vary", "Origin")
 		if origin := r.Header.Get("Origin"); origin != "" && allow(r) {
 			w.Header().Set("Access-Control-Allow-Origin", origin)
-			w.Header().Set("Access-Control-Allow-Methods", "POST, DELETE, OPTIONS")
+			w.Header().Set("Access-Control-Allow-Methods", "POST, PUT, OPTIONS")
 			w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, Idempotency-Key")
-			w.Header().Set("Access-Control-Expose-Headers", "Location")
 		}
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)

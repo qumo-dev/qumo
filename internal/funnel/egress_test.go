@@ -1,12 +1,8 @@
 package funnel
 
 import (
-	"net/http"
-	"net/http/httptest"
-	"strings"
 	"testing"
 
-	"github.com/okdaichi/qumo-ledger/ledger/store/memstore"
 	"github.com/qumo-dev/gomoqt/moqt"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -63,24 +59,6 @@ func TestBroadcast_Track_IsCreatedOnceByName(t *testing.T) {
 	assert.Same(t, chat, looked)
 	assert.Same(t, chat, b.track("chat"))
 	assert.NotSame(t, chat, b.track("reactions"))
-}
-
-func TestNewHandler_AnnounceCreatesTheTrack(t *testing.T) {
-	mux := moqt.NewTrackMux(0)
-	h, err := NewHandler(t.Context(), memstore.New(), mux, nil)
-	require.NoError(t, err)
-
-	rr := httptest.NewRecorder()
-	h.ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/announce",
-		strings.NewReader(chatAnnouncement)))
-
-	require.Equal(t, http.StatusCreated, rr.Code)
-	_, handler := mux.TrackHandler("/room/123")
-	require.NotNil(t, handler)
-	_, ok := handler.(*broadcast).lookup("chat")
-	assert.True(t, ok, "a subscriber to the announced track waits for its first record")
-	_, ok = handler.(*broadcast).lookup("nosuch")
-	assert.False(t, ok, "a subscriber to any other name is not found")
 }
 
 func TestTrack_Publish(t *testing.T) {
