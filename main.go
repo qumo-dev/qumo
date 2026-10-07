@@ -9,6 +9,7 @@ import (
 	"github.com/qumo-dev/qumo/internal/auth"
 	"github.com/qumo-dev/qumo/internal/doctor"
 	"github.com/qumo-dev/qumo/internal/hls"
+	"github.com/qumo-dev/qumo/internal/httpingest"
 	"github.com/qumo-dev/qumo/internal/ingest"
 	"github.com/qumo-dev/qumo/internal/loadgen"
 	"github.com/qumo-dev/qumo/internal/playground"
@@ -20,6 +21,7 @@ import (
 var (
 	// overridable command handlers for easier unit-testing
 	runHLS        = hls.Run
+	runHTTP       = httpingest.Run
 	runRelay      = relay.Run
 	runRTMP       = ingest.RunRTMP
 	runRTSP       = ingest.RunRTSP     // push server (ANNOUNCE/RECORD)
@@ -87,6 +89,8 @@ func run(args []string) int {
 		err = runAuth(cmdArgs)
 	case "hls":
 		err = runHLS(cmdArgs)
+	case "http":
+		err = runHTTP(cmdArgs)
 	case "relay":
 		err = runRelay(cmdArgs)
 	case "rtmp":
@@ -122,7 +126,8 @@ func printUsage() {
 	fmt.Fprintln(os.Stderr, "Commands:")
 	fmt.Fprintln(os.Stderr, "  auth       Set up the credentials a relay verifies (keygen, token)")
 	fmt.Fprintln(os.Stderr, "  hls        Start the HLS/DASH egress server")
-	fmt.Fprintln(os.Stderr, "  relay      Start the MoQ relay server (--role hub|edge; default flat)")
+	fmt.Fprintln(os.Stderr, "  http       Start the HTTP ingest server (announce/record over POST, served as MoQT)")
+	fmt.Fprintln(os.Stderr, "  relay     Start the MoQ relay server (--role hub|edge; default flat)")
 	fmt.Fprintln(os.Stderr, "  rtmp       Start the RTMP ingest server")
 	fmt.Fprintln(os.Stderr, "  rtsp       Pull from an RTSP source (e.g. IP camera) and republish as MoQT")
 	fmt.Fprintln(os.Stderr, "  rtsp-push  Start the RTSP push ingest server (ANNOUNCE/RECORD)")

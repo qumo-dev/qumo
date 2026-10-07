@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`qumo http`: an HTTP ingest server that records what it is sent and serves it as MoQT (`internal/httpingest`).**
+  Many contributors POST records into one track, and a subscriber receives all of them on one subscription. It is a standalone origin like `qumo rtmp` and does not join the relay mesh.
+  - **Requests.** `POST /announce` and `POST /record`, each with a JSON body naming the track and the contributor: `{"broadcast_path": "/room/123", "track_name": "chat", "name": "alice"}`. `record` also carries `payload`, any JSON value. `announce` creates the track when it does not exist; a `record` to a track nobody announced answers `404`.
+  - **Recorded, then sent.** Each record is committed to a qumo-ledger track (`LEDGER_ROOT`) through qumo-ledger's new `ingest` package, and only then sent to MoQT subscribers, in commit order.
+  - **On the wire.** One record is one group holding one frame, the JSON object `{"name": ..., "payload": ...}`. A group's sequence is one more than the sequence of the ledger group that stores the record. A new subscriber starts at the track's latest record.
+  - **Configuration.** `HTTP_INGEST_ADDR` (default `:8090`), `HTTP_SERVE_ADDR` (default `:4433`), `LEDGER_ROOT` (default `./ledger`), `CERT_FILE` / `KEY_FILE`, and `CORS_ALLOWED_ORIGINS`, which also governs browser POSTs.
+  - **Limits.** The HTTP listener checks no credentials, so it must run behind a service that authenticates contributors. Records of a track are ordered within one process only. Recorded tracks carry no duration and are not served by `qumo hls`.
+  - **Dependency.** qumo-ledger moves to a pre-release commit that adds the `ingest` package (okdaichi/qumo-ledger#18).
+
 ### Changed
 
 - **Breaking: relay peers authenticate with certificates a relay CA issued, in both directions, and a relay's peer identity is separate from its public certificate (`internal/relay/peer_trust.go`).**
