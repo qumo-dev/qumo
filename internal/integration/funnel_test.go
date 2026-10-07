@@ -1,7 +1,8 @@
 //go:build integration
 
 // Black-box tests of the funnel: records POSTed over HTTP are committed to a
-// ledger track and reach a MoQ subscriber over a real QUIC session.
+// ledger track and reach a MoQ subscriber over a real QUIC session, served by
+// the funnel itself or through a relay it publishes to.
 package integration
 
 import (
@@ -13,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -26,20 +28,29 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// startFunnel stands up the announce and record handler and a MoQT origin
-// that share one TrackMux, as funnel.Run does. It returns the HTTP base URL
-// and the WebTransport URL subscribers dial. Records are stored in objects. A
-// nil verifier accepts every contributor.
-func startFunnel(t *testing.T, objects store.Store, verifier *auth.Verifier) (ingestURL, serveURL string) {
+const chatAnnouncement = `{"broadcast_path":"/room/123","track_name":"chat"}`
+
+// startFunnelHTTP stands up the announce and record handler over objects,
+// publishing on mux. It returns the HTTP base URL. A nil verifier accepts every
+// contributor.
+func startFunnelHTTP(t *testing.T, objects store.Store, mux *moqt.TrackMux, verifier *auth.Verifier) string {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
-
-	mux := moqt.NewTrackMux(0)
 	handler, err := funnel.NewHandler(ctx, objects, mux, verifier)
 	require.NoError(t, err)
 	httpSrv := httptest.NewServer(handler)
 	t.Cleanup(httpSrv.Close)
+	return httpSrv.URL
+}
+
+// startFunnel stands up the announce and record handler and a MoQT origin
+// that share one TrackMux, as funnel.Run does without a relay. It returns the
+// HTTP base URL and the WebTransport URL subscribers dial.
+func startFunnel(t *testing.T, objects store.Store, verifier *auth.Verifier) (ingestURL, serveURL string) {
+	t.Helper()
+	mux := moqt.NewTrackMux(0)
+	ingestURL = startFunnelHTTP(t, objects, mux, verifier)
 
 	certFile, keyFile := createTempCert(t)
 	wtHandler := &moqt.WebTransportHandler{
@@ -78,11 +89,11 @@ func startFunnel(t *testing.T, objects store.Store, verifier *auth.Verifier) (in
 		return true
 	}, 5*time.Second, 100*time.Millisecond, "subscriber endpoint never became reachable")
 
-	return httpSrv.URL, serveURL
+	return ingestURL, serveURL
 }
 
-// postFunnel POSTs body to the funnel at path with credential as a bearer
-// token (none when empty), and returns the response with its body read.
+// postFunnel POSTs body to the funnel at url with credential as a bearer token
+// (none when empty), and returns the response with its body read.
 func postFunnel(t *testing.T, url, credential, body string) (*http.Response, string) {
 	t.Helper()
 	req, err := http.NewRequest(http.MethodPost, url, strings.NewReader(body))
@@ -99,12 +110,11 @@ func postFunnel(t *testing.T, url, credential, body string) (*http.Response, str
 	return resp, string(data)
 }
 
-// announce starts a contribution of name to the chat track of /room/123 and
-// returns the status and the URL records are posted to.
-func announce(t *testing.T, ingestURL, credential, name string) (int, string) {
+// announce starts a contribution to the chat track of /room/123 and returns
+// the status and the URL records are posted to.
+func announce(t *testing.T, ingestURL, credential string) (int, string) {
 	t.Helper()
-	resp, _ := postFunnel(t, ingestURL+"/announce", credential,
-		`{"broadcast_path":"/room/123","track_name":"chat","name":"`+name+`"}`)
+	resp, _ := postFunnel(t, ingestURL+"/announce", credential, chatAnnouncement)
 	if resp.StatusCode != http.StatusCreated {
 		return resp.StatusCode, ""
 	}
@@ -133,10 +143,10 @@ func nextRecord(t *testing.T, tr *moqt.TrackReader) (moqt.GroupSequence, string)
 	return gr.GroupSequence(), string(frame.Body())
 }
 
-// subscribeChat subscribes to the chat track of /room/123.
-func subscribeChat(t *testing.T, serveURL string) *moqt.TrackReader {
+// subscribeChat subscribes to the chat track of /room/123 over url.
+func subscribeChat(t *testing.T, url string) *moqt.TrackReader {
 	t.Helper()
-	sess := dialOver(t, serveURL, nil, moqt.NewTrackMux(0))
+	sess := dialOver(t, url, nil, moqt.NewTrackMux(0))
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	tr, err := sess.Subscribe(ctx, "/room/123", "chat", nil)
@@ -145,28 +155,47 @@ func subscribeChat(t *testing.T, serveURL string) *moqt.TrackReader {
 	return tr
 }
 
+// writeKeys writes a fresh signing key and the key set that trusts it, and
+// returns the key, its file and the key set's file.
+func writeKeys(t *testing.T) (token.SigningKey, string, string) {
+	t.Helper()
+	key, err := token.GenerateKey("")
+	require.NoError(t, err)
+	dir := t.TempDir()
+	raw, err := key.MarshalJWK()
+	require.NoError(t, err)
+	keyFile := filepath.Join(dir, "signing-key.jwk")
+	require.NoError(t, os.WriteFile(keyFile, raw, 0o600))
+	set, err := token.MarshalKeySet(key.Public())
+	require.NoError(t, err)
+	keysFile := filepath.Join(dir, "keys.json")
+	require.NoError(t, os.WriteFile(keysFile, set, 0o600))
+	return key, keyFile, keysFile
+}
+
 func TestFunnel_RecordsReachAMoQSubscriber(t *testing.T) {
 	ingestURL, serveURL := startFunnel(t, memstore.New(), nil)
-	status, alice := announce(t, ingestURL, "", "alice")
+	status, first := announce(t, ingestURL, "")
 	require.Equal(t, http.StatusCreated, status)
-	require.Equal(t, http.StatusCreated, record(t, alice, "", `{"text":"hello"}`))
+	require.Equal(t, http.StatusCreated, record(t, first, "", `{"user":"alice","text":"hello"}`))
 
 	tr := subscribeChat(t, serveURL)
 
-	// A new subscriber starts at the track's latest record.
+	// A new subscriber starts at the track's latest record, sent as it was
+	// recorded.
 	seq, got := nextRecord(t, tr)
 	assert.Equal(t, moqt.GroupSequence(1), seq)
-	assert.JSONEq(t, `{"name":"alice","payload":{"text":"hello"}}`, got)
+	assert.Equal(t, `{"user":"alice","text":"hello"}`, got)
 
-	// Another contributor records into the same track, and the subscriber
+	// Another contribution records into the same track, and the subscriber
 	// receives it on the one subscription.
-	status, bob := announce(t, ingestURL, "", "bob")
+	status, second := announce(t, ingestURL, "")
 	require.Equal(t, http.StatusCreated, status)
-	require.Equal(t, http.StatusCreated, record(t, bob, "", `"hi"`))
+	require.Equal(t, http.StatusCreated, record(t, second, "", `"hi"`))
 
 	seq, got = nextRecord(t, tr)
 	assert.Equal(t, moqt.GroupSequence(2), seq, "groups follow the ledger's commit order")
-	assert.JSONEq(t, `{"name":"bob","payload":"hi"}`, got)
+	assert.Equal(t, `"hi"`, got)
 }
 
 func TestFunnel_UnknownContributionIsRefused(t *testing.T) {
@@ -179,7 +208,7 @@ func TestFunnel_UnknownContributionIsRefused(t *testing.T) {
 
 func TestFunnel_UnknownTrackIsNotFound(t *testing.T) {
 	ingestURL, serveURL := startFunnel(t, memstore.New(), nil)
-	status, _ := announce(t, ingestURL, "", "alice")
+	status, _ := announce(t, ingestURL, "")
 	require.Equal(t, http.StatusCreated, status)
 	sess := dialOver(t, serveURL, nil, moqt.NewTrackMux(0))
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -197,35 +226,31 @@ func TestFunnel_UnknownTrackIsNotFound(t *testing.T) {
 func TestFunnel_RestartServesRecordedTracks(t *testing.T) {
 	objects := memstore.New()
 	firstURL, _ := startFunnel(t, objects, nil)
-	status, alice := announce(t, firstURL, "", "alice")
+	status, before := announce(t, firstURL, "")
 	require.Equal(t, http.StatusCreated, status)
-	require.Equal(t, http.StatusCreated, record(t, alice, "", `"before"`))
+	require.Equal(t, http.StatusCreated, record(t, before, "", `"before"`))
 
 	ingestURL, serveURL := startFunnel(t, objects, nil)
 	tr := subscribeChat(t, serveURL)
 
 	seq, got := nextRecord(t, tr)
 	assert.Equal(t, moqt.GroupSequence(1), seq)
-	assert.JSONEq(t, `{"name":"alice","payload":"before"}`, got)
+	assert.Equal(t, `"before"`, got)
 
-	status, alice = announce(t, ingestURL, "", "alice")
+	status, after := announce(t, ingestURL, "")
 	require.Equal(t, http.StatusCreated, status)
-	require.Equal(t, http.StatusCreated, record(t, alice, "", `"after"`))
+	require.Equal(t, http.StatusCreated, record(t, after, "", `"after"`))
 	seq, got = nextRecord(t, tr)
 	assert.Equal(t, moqt.GroupSequence(2), seq)
-	assert.JSONEq(t, `{"name":"alice","payload":"after"}`, got)
+	assert.Equal(t, `"after"`, got)
 }
 
-// TestFunnel_CredentialNamesTheContributor verifies contributors against a key
-// set as the relay does: a credential publishes as the name its path ends in.
-func TestFunnel_CredentialNamesTheContributor(t *testing.T) {
-	key, err := token.GenerateKey("")
-	require.NoError(t, err)
-	set, err := token.MarshalKeySet(key.Public())
-	require.NoError(t, err)
-	keys := filepath.Join(t.TempDir(), "keys.json")
-	require.NoError(t, os.WriteFile(keys, set, 0o600))
-	verifier, err := auth.NewVerifier(auth.VerifierConfig{Keys: keys})
+// TestFunnel_CredentialGrantsTheBroadcast verifies contributors against a key
+// set as the relay does: a credential records into the broadcasts it may
+// publish at.
+func TestFunnel_CredentialGrantsTheBroadcast(t *testing.T) {
+	key, _, keysFile := writeKeys(t)
+	verifier, err := auth.NewVerifier(auth.VerifierConfig{Keys: keysFile})
 	require.NoError(t, err)
 	ingestURL, serveURL := startFunnel(t, memstore.New(), verifier)
 	credential := func(path string) string {
@@ -233,21 +258,106 @@ func TestFunnel_CredentialNamesTheContributor(t *testing.T) {
 		require.NoError(t, err)
 		return c
 	}
-	alice := credential("/room/123/alice")
+	room := credential("/room/123")
 
-	status, _ := announce(t, ingestURL, "", "alice")
+	status, _ := announce(t, ingestURL, "")
 	assert.Equal(t, http.StatusUnauthorized, status, "no credential")
-	status, _ = announce(t, ingestURL, alice, "bob")
-	assert.Equal(t, http.StatusForbidden, status, "alice's credential does not name bob")
+	status, _ = announce(t, ingestURL, credential("/room/9"))
+	assert.Equal(t, http.StatusForbidden, status, "a credential for another room")
 
-	status, records := announce(t, ingestURL, alice, "alice")
+	status, records := announce(t, ingestURL, room)
 	require.Equal(t, http.StatusCreated, status)
 	assert.Equal(t, http.StatusUnauthorized, record(t, records, "", `"unsigned"`))
-	assert.Equal(t, http.StatusForbidden, record(t, records, credential("/room/123/bob"), `"bob's"`))
-	require.Equal(t, http.StatusCreated, record(t, records, alice, `"signed"`))
+	assert.Equal(t, http.StatusForbidden, record(t, records, credential("/room/9"), `"elsewhere"`))
+	require.Equal(t, http.StatusCreated, record(t, records, room, `"signed"`))
 
 	tr := subscribeChat(t, serveURL)
 	seq, got := nextRecord(t, tr)
-	assert.Equal(t, moqt.GroupSequence(1), seq, "only alice's signed record was committed")
-	assert.JSONEq(t, `{"name":"alice","payload":"signed"}`, got)
+	assert.Equal(t, moqt.GroupSequence(1), seq, "only the signed record was committed")
+	assert.Equal(t, `"signed"`, got)
+}
+
+// TestFunnel_PublishesThroughTheRelay runs the funnel with no listener of its
+// own: it dials a relay that verifies credentials, signing a fresh one, and a
+// subscriber of the relay receives what the funnel records.
+func TestFunnel_PublishesThroughTheRelay(t *testing.T) {
+	key, keyFile, keysFile := writeKeys(t)
+	verifier, err := auth.NewVerifier(auth.VerifierConfig{Keys: keysFile})
+	require.NoError(t, err)
+	relayAddr, relaySrv := startAuthRelay(t, verifier.Authorize, nil)
+
+	mux := moqt.NewTrackMux(0)
+	ingestURL := startFunnelHTTP(t, memstore.New(), mux, nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	published := make(chan error, 1)
+	go func() {
+		published <- funnel.PublishThroughRelay(ctx, funnel.RelayConfig{
+			URL:            nativeURL(relayAddr),
+			Insecure:       true,
+			SigningKeyFile: keyFile,
+			Publish:        "room",
+		}, mux)
+	}()
+	t.Cleanup(func() {
+		cancel()
+		assert.NoError(t, <-published, "the funnel stops publishing when its context ends")
+	})
+
+	status, records := announce(t, ingestURL, "")
+	require.Equal(t, http.StatusCreated, status)
+	require.Eventually(t, routed(relaySrv, "/room/123"), 5*time.Second, 25*time.Millisecond,
+		"the relay routes the announced broadcast to the funnel")
+	require.Equal(t, http.StatusCreated, record(t, records, "", `"first"`))
+
+	viewer, err := token.Sign(key, token.Grant{Subscribe: "room/123"}, time.Minute)
+	require.NoError(t, err)
+	tr := subscribeChat(t, nativeURL(relayAddr)+"?jwt="+viewer)
+
+	seq, got := nextRecord(t, tr)
+	assert.Equal(t, moqt.GroupSequence(1), seq, "the relay's subscriber starts at the latest record")
+	assert.Equal(t, `"first"`, got)
+
+	require.Equal(t, http.StatusCreated, record(t, records, "", `"second"`))
+	seq, got = nextRecord(t, tr)
+	assert.Equal(t, moqt.GroupSequence(2), seq)
+	assert.Equal(t, `"second"`, got)
+}
+
+// TestFunnel_RedialsWhenTheRelayEndsTheSession gives each session a grant that
+// expires a moment later: the relay ends the funnel's session, the funnel
+// dials again, and a subscriber that arrives afterwards still reaches the
+// track through the relay.
+func TestFunnel_RedialsWhenTheRelayEndsTheSession(t *testing.T) {
+	var connects atomic.Int32
+	relayAddr, relaySrv := startAuthRelay(t, func(_ context.Context, req auth.Request) (*auth.Grant, error) {
+		if req.Event == auth.EventConnect {
+			connects.Add(1)
+		}
+		return auth.NewGrant([]string{"**"}, []string{"**"}, time.Now().Add(time.Second), 0)
+	}, nil)
+
+	mux := moqt.NewTrackMux(0)
+	ingestURL := startFunnelHTTP(t, memstore.New(), mux, nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	published := make(chan error, 1)
+	go func() {
+		published <- funnel.PublishThroughRelay(ctx, funnel.RelayConfig{URL: nativeURL(relayAddr), Insecure: true}, mux)
+	}()
+	t.Cleanup(func() {
+		cancel()
+		assert.NoError(t, <-published)
+	})
+	status, records := announce(t, ingestURL, "")
+	require.Equal(t, http.StatusCreated, status)
+	require.Equal(t, http.StatusCreated, record(t, records, "", `"kept"`))
+
+	// The funnel's first session expires; the relay sees it dial again.
+	require.Eventually(t, func() bool { return connects.Load() >= 2 }, 10*time.Second, 50*time.Millisecond,
+		"the funnel dials again after the relay ends its session")
+	require.Eventually(t, routed(relaySrv, "/room/123"), 5*time.Second, 25*time.Millisecond)
+
+	tr := subscribeChat(t, nativeURL(relayAddr))
+	seq, got := nextRecord(t, tr)
+	assert.Equal(t, moqt.GroupSequence(1), seq)
+	assert.Equal(t, `"kept"`, got)
 }

@@ -42,25 +42,25 @@ func TestAuthorizer(t *testing.T) {
 	v, key := newVerifier(t)
 	other, err := token.GenerateKey("")
 	require.NoError(t, err)
-	alice := ingest.Announcement{BroadcastPath: "/room/123", TrackName: "chat", Name: "alice"}
+	chat := ingest.Track{BroadcastPath: "/room/123/comments", TrackName: "comments"}
 
 	tests := map[string]struct {
 		header      string
 		wantErr     bool
 		wantUnauthn bool
 	}{
-		"alice's credential":           {header: "Bearer " + sign(t, key, token.Grant{Publish: "/room/123/alice"})},
-		"a credential for the room":    {header: "Bearer " + sign(t, key, token.Grant{Publish: "/room/123"})},
-		"lower-case scheme":            {header: "bearer " + sign(t, key, token.Grant{Publish: "/room/123/alice"})},
-		"bob's credential":             {header: "Bearer " + sign(t, key, token.Grant{Publish: "/room/123/bob"}), wantErr: true},
-		"a subscribe-only credential":  {header: "Bearer " + sign(t, key, token.Grant{Subscribe: "/room/123"}), wantErr: true},
-		"no credential":                {wantErr: true, wantUnauthn: true},
-		"not a bearer credential":      {header: "Basic YWxpY2U6c2VjcmV0", wantErr: true, wantUnauthn: true},
-		"signed by an unknown key":     {header: "Bearer " + sign(t, other, token.Grant{Publish: "/room/123/alice"}), wantErr: true, wantUnauthn: true},
-		"not a credential at all":      {header: "Bearer hello", wantErr: true, wantUnauthn: true},
-		"a credential for a sibling":   {header: "Bearer " + sign(t, key, token.Grant{Publish: "/room/1234"}), wantErr: true},
-		"a credential for a sub-path":  {header: "Bearer " + sign(t, key, token.Grant{Publish: "/room/123/alice/phone"}), wantErr: true},
-		"a credential for another one": {header: "Bearer " + sign(t, key, token.Grant{Publish: "/room/9/alice"}), wantErr: true},
+		"a credential for the broadcast": {header: "Bearer " + sign(t, key, token.Grant{Publish: "/room/123/comments"})},
+		"a credential for the room":      {header: "Bearer " + sign(t, key, token.Grant{Publish: "/room/123"})},
+		"a credential for every room":    {header: "Bearer " + sign(t, key, token.Grant{Publish: "/room"})},
+		"lower-case scheme":              {header: "bearer " + sign(t, key, token.Grant{Publish: "/room/123"})},
+		"a subscribe-only credential":    {header: "Bearer " + sign(t, key, token.Grant{Subscribe: "/room/123"}), wantErr: true},
+		"no credential":                  {wantErr: true, wantUnauthn: true},
+		"not a bearer credential":        {header: "Basic YWxpY2U6c2VjcmV0", wantErr: true, wantUnauthn: true},
+		"signed by an unknown key":       {header: "Bearer " + sign(t, other, token.Grant{Publish: "/room/123"}), wantErr: true, wantUnauthn: true},
+		"not a credential at all":        {header: "Bearer hello", wantErr: true, wantUnauthn: true},
+		"a credential for a sibling":     {header: "Bearer " + sign(t, key, token.Grant{Publish: "/room/1234"}), wantErr: true},
+		"a credential for a sub-path":    {header: "Bearer " + sign(t, key, token.Grant{Publish: "/room/123/comments/alice"}), wantErr: true},
+		"a credential for another room":  {header: "Bearer " + sign(t, key, token.Grant{Publish: "/room/9"}), wantErr: true},
 	}
 	authorize := authorizer(v)
 	for name, tt := range tests {
@@ -70,7 +70,7 @@ func TestAuthorizer(t *testing.T) {
 				r.Header.Set("Authorization", tt.header)
 			}
 
-			err := authorize(r, alice)
+			err := authorize(r, chat)
 
 			if !tt.wantErr {
 				assert.NoError(t, err)

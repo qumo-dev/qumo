@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
-	"path"
 	"strings"
 
 	"github.com/okdaichi/qumo-ledger/ingest"
@@ -16,15 +15,14 @@ import (
 
 // authorizer returns the check a contributor's requests pass: the bearer
 // credential must be one the relay would admit, and must grant publishing at
-// the contributor's path, the broadcast path joined with its name
-// ("/room/123" and "alice": "/room/123/alice"). The credential is checked on
-// every request, so one that expires or whose key leaves the set stops the
-// contribution. A nil verifier checks nothing.
-func authorizer(v *auth.Verifier) func(*http.Request, ingest.Announcement) error {
+// the track's broadcast path. The credential is checked on every request, so
+// one that expires or whose key leaves the set stops the contribution. A nil
+// verifier checks nothing.
+func authorizer(v *auth.Verifier) func(*http.Request, ingest.Track) error {
 	if v == nil {
 		return nil
 	}
-	return func(r *http.Request, a ingest.Announcement) error {
+	return func(r *http.Request, t ingest.Track) error {
 		credential, ok := bearer(r)
 		if !ok {
 			return fmt.Errorf("funnel: no bearer credential: %w", ingest.ErrUnauthenticated)
@@ -41,9 +39,8 @@ func authorizer(v *auth.Verifier) func(*http.Request, ingest.Announcement) error
 			}
 			return fmt.Errorf("funnel: %w", err)
 		}
-		contributor := moqt.BroadcastPath(path.Join(a.BroadcastPath, a.Name))
-		if !grant.Publish.Contains(contributor) {
-			return fmt.Errorf("funnel: the credential may not publish at %s", contributor)
+		if path := moqt.BroadcastPath(t.BroadcastPath); !grant.Publish.Contains(path) {
+			return fmt.Errorf("funnel: the credential may not publish at %s", path)
 		}
 		return nil
 	}

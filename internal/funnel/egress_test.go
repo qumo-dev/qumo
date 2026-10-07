@@ -72,7 +72,7 @@ func TestNewHandler_AnnounceCreatesTheTrack(t *testing.T) {
 
 	rr := httptest.NewRecorder()
 	h.ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/announce",
-		strings.NewReader(`{"broadcast_path":"/room/123","track_name":"chat","name":"alice"}`)))
+		strings.NewReader(chatAnnouncement)))
 
 	require.Equal(t, http.StatusCreated, rr.Code)
 	_, handler := mux.TrackHandler("/room/123")

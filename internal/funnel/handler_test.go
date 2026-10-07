@@ -1,7 +1,6 @@
 package funnel
 
 import (
-	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -13,14 +12,15 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+const chatAnnouncement = `{"broadcast_path":"/room/123","track_name":"chat"}`
+
 func TestNewHandler_PublishesCommittedRecords(t *testing.T) {
 	mux := moqt.NewTrackMux(0)
 	h, err := NewHandler(t.Context(), memstore.New(), mux, nil)
 	require.NoError(t, err)
 
 	announce := httptest.NewRecorder()
-	h.ServeHTTP(announce, httptest.NewRequest(http.MethodPost, "/announce",
-		strings.NewReader(`{"broadcast_path":"/room/123","track_name":"chat","name":"alice"}`)))
+	h.ServeHTTP(announce, httptest.NewRequest(http.MethodPost, "/announce", strings.NewReader(chatAnnouncement)))
 	require.Equal(t, http.StatusCreated, announce.Code)
 
 	_, handler := mux.TrackHandler("/room/123")
@@ -28,7 +28,7 @@ func TestNewHandler_PublishesCommittedRecords(t *testing.T) {
 	chat := handler.(*broadcast).track("chat")
 	assert.Nil(t, chat.latest, "nothing is sent before a record")
 
-	for _, payload := range []string{`{"text":"hello"}`, `"again"`} {
+	for _, payload := range []string{`{"user":"alice","text":"hello"}`, `"again"`} {
 		rr := httptest.NewRecorder()
 		h.ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/"+announce.Header().Get("Location")+"/records",
 			strings.NewReader(payload)))
@@ -37,13 +37,7 @@ func TestNewHandler_PublishesCommittedRecords(t *testing.T) {
 
 	require.NotNil(t, chat.latest)
 	assert.Equal(t, moqt.GroupSequence(2), chat.latest.seq, "the second ledger group (sequence 1) is group 2")
-	var sent struct {
-		Name    string          `json:"name"`
-		Payload json.RawMessage `json:"payload"`
-	}
-	require.NoError(t, json.Unmarshal(chat.latest.payload, &sent))
-	assert.Equal(t, "alice", sent.Name)
-	assert.JSONEq(t, `"again"`, string(sent.Payload))
+	assert.Equal(t, `"again"`, string(chat.latest.payload), "the payload is sent as it was recorded")
 }
 
 func TestNewHandler_RefusedAnnounceIsNotPublished(t *testing.T) {
@@ -53,8 +47,7 @@ func TestNewHandler_RefusedAnnounceIsNotPublished(t *testing.T) {
 	require.NoError(t, err)
 
 	rr := httptest.NewRecorder()
-	h.ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/announce",
-		strings.NewReader(`{"broadcast_path":"/room/123","track_name":"chat","name":"alice"}`)))
+	h.ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/announce", strings.NewReader(chatAnnouncement)))
 
 	assert.Equal(t, http.StatusUnauthorized, rr.Code)
 	assert.Equal(t, "Bearer", rr.Header().Get("WWW-Authenticate"))

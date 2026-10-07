@@ -15,15 +15,15 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// recordInto announces name into the chat track of broadcastPath through an
+// recordInto announces the chat track of broadcastPath through an
 // ingest handler over objects, then records each payload.
-func recordInto(tb testing.TB, objects store.Store, broadcastPath, name string, payloads ...string) {
+func recordInto(tb testing.TB, objects store.Store, broadcastPath string, payloads ...string) {
 	tb.Helper()
 	h, err := ingest.NewHandler(objects, ingest.Options{})
 	require.NoError(tb, err)
 	rr := httptest.NewRecorder()
 	h.ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/announce", strings.NewReader(
-		`{"broadcast_path":"`+broadcastPath+`","track_name":"chat","name":"`+name+`"}`)))
+		`{"broadcast_path":"`+broadcastPath+`","track_name":"chat"}`)))
 	require.Equal(tb, http.StatusCreated, rr.Code, rr.Body.String())
 	for _, payload := range payloads {
 		rec := httptest.NewRecorder()
@@ -34,8 +34,8 @@ func recordInto(tb testing.TB, objects store.Store, broadcastPath, name string, 
 
 func TestRestore(t *testing.T) {
 	objects := memstore.New()
-	recordInto(t, objects, "/room/123", "alice", `"one"`, `"two"`)
-	recordInto(t, objects, "/room/9", "bob")
+	recordInto(t, objects, "/room/123", `"one"`, `"two"`)
+	recordInto(t, objects, "/room/9")
 	_, err := ledger.Create(t.Context(), objects, "live/cam1/video", ledger.TrackSchema{
 		Timescale: 90000, TimeSource: ledger.TimeSourceFrame, MIME: "video/mp4", Encoding: "fmp4",
 	}, ledger.Config{})
@@ -54,7 +54,7 @@ func TestRestore(t *testing.T) {
 	require.True(t, ok)
 	require.NotNil(t, chat.latest, "the latest record is replayed to a new subscriber")
 	assert.Equal(t, moqt.GroupSequence(2), chat.latest.seq)
-	assert.JSONEq(t, `{"name":"alice","payload":"two"}`, string(chat.latest.payload))
+	assert.Equal(t, `"two"`, string(chat.latest.payload))
 
 	_, handler = mux.TrackHandler("/room/9")
 	require.NotNil(t, handler)
@@ -68,7 +68,7 @@ func TestRestore(t *testing.T) {
 
 func TestRestore_StoreWithoutListing(t *testing.T) {
 	objects := memstore.New()
-	recordInto(t, objects, "/room/123", "alice", `"one"`)
+	recordInto(t, objects, "/room/123", `"one"`)
 	mux := moqt.NewTrackMux(0)
 
 	restored, err := restore(t.Context(), fakeUnlistedStore{objects}, newEgress(t.Context(), mux))
@@ -88,7 +88,7 @@ func TestRestore_ListingFails(t *testing.T) {
 
 func TestNewHandler_RestoresBeforeServing(t *testing.T) {
 	objects := memstore.New()
-	recordInto(t, objects, "/room/123", "alice", `"before the restart"`)
+	recordInto(t, objects, "/room/123", `"before the restart"`)
 	mux := moqt.NewTrackMux(0)
 
 	_, err := NewHandler(t.Context(), objects, mux, nil)
@@ -99,7 +99,7 @@ func TestNewHandler_RestoresBeforeServing(t *testing.T) {
 	chat, ok := handler.(*broadcast).lookup("chat")
 	require.True(t, ok)
 	require.NotNil(t, chat.latest)
-	assert.JSONEq(t, `{"name":"alice","payload":"before the restart"}`, string(chat.latest.payload))
+	assert.Equal(t, `"before the restart"`, string(chat.latest.payload))
 
 	_, err = NewHandler(t.Context(), fakeFailingLister{}, moqt.NewTrackMux(0), nil)
 	assert.ErrorIs(t, err, errListing)
