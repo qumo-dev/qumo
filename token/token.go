@@ -127,8 +127,9 @@ func signAt(key SigningKey, g Grant, ttl time.Duration, now time.Time) (string, 
 	return input + "." + base64.RawURLEncoding.EncodeToString(ed25519.Sign(key.Private, []byte(input))), nil
 }
 
-// Verify checks token against the trusted keys at now, in order: the kid is
-// trusted and the alg is EdDSA; the signature verifies; the claims are
+// Verify checks token against the trusted keys at now, in order: the header
+// carries no crit, the alg is EdDSA and the kid is trusted; the signature
+// verifies; the claims are
 // exactly the allowed set (path_auth, iat, nbf, exp, and an optional jti)
 // with no duplicate members; exp, nbf and iat hold within Leeway and the
 // lifetime is at most MaxLifetime; and every path the token grants lies
@@ -139,12 +140,18 @@ func Verify(token string, keys map[string]Key, now time.Time) (Claims, error) {
 		return Claims{}, invalid("not a JWS compact serialization")
 	}
 	var header struct {
-		Alg string `json:"alg"`
-		Kid string `json:"kid"`
-		Typ string `json:"typ"`
+		Alg  string         `json:"alg"`
+		Kid  string         `json:"kid"`
+		Typ  string         `json:"typ"`
+		Crit jsontext.Value `json:"crit"`
 	}
 	if err := decodeSegment(parts[0], &header); err != nil {
 		return Claims{}, invalid("header: %v", err)
+	}
+	// RFC 7515 4.1.11: crit lists headers the verifier must understand. This
+	// one understands none beyond alg, kid and typ, so any crit is refused.
+	if len(header.Crit) > 0 {
+		return Claims{}, invalid("header: crit is not supported")
 	}
 	if header.Alg != "EdDSA" {
 		return Claims{}, invalid("alg %q is not EdDSA", header.Alg)

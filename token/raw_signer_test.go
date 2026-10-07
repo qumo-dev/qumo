@@ -47,16 +47,15 @@ func (s *rawSigner) sign(tb testing.TB, claims map[string]any) string {
 // signer's key whatever the header claims.
 func (s *rawSigner) signWithHeader(tb testing.TB, header, claims map[string]any) string {
 	tb.Helper()
-	s.trusted(tb)
-	enc := func(v any) string {
-		b, err := json.Marshal(v)
-		if err != nil {
-			tb.Fatalf("encode: %v", err)
-		}
-		return base64.RawURLEncoding.EncodeToString(b)
-	}
-	input := enc(header) + "." + enc(claims)
-	return input + "." + base64.RawURLEncoding.EncodeToString(ed25519.Sign(s.private, []byte(input)))
+	return s.signSegments(tb, encodeJSON(tb, header), encodeJSON(tb, claims))
+}
+
+// signWithRawHeader mints a token with valid claims at now whose header is the
+// JSON text rawHeader, so a test can sign a header a map can't express (a
+// member given twice, or one that isn't an object).
+func (s *rawSigner) signWithRawHeader(tb testing.TB, rawHeader string, now time.Time) string {
+	tb.Helper()
+	return s.signSegments(tb, encodeRaw(tb, rawHeader), encodeJSON(tb, validClaims(now)))
 }
 
 // signWithRawClaims mints a token whose claims segment is rawClaims, already
@@ -64,12 +63,26 @@ func (s *rawSigner) signWithHeader(tb testing.TB, header, claims map[string]any)
 // member).
 func (s *rawSigner) signWithRawClaims(tb testing.TB, rawClaims string) string {
 	tb.Helper()
-	header, err := json.Marshal(map[string]any{"alg": "EdDSA", "kid": s.trusted(tb).ID})
+	return s.signSegments(tb, encodeJSON(tb, map[string]any{"alg": "EdDSA", "kid": s.trusted(tb).ID}), rawClaims)
+}
+
+// signSegments signs a header and a claims segment, each already
+// base64url-encoded, with this signer's key.
+func (s *rawSigner) signSegments(tb testing.TB, header, claims string) string {
+	tb.Helper()
+	s.trusted(tb)
+	input := header + "." + claims
+	return input + "." + base64.RawURLEncoding.EncodeToString(ed25519.Sign(s.private, []byte(input)))
+}
+
+// encodeJSON encodes v as JSON, base64url-encoded for a token segment.
+func encodeJSON(tb testing.TB, v any) string {
+	tb.Helper()
+	b, err := json.Marshal(v)
 	if err != nil {
 		tb.Fatalf("encode: %v", err)
 	}
-	input := base64.RawURLEncoding.EncodeToString(header) + "." + rawClaims
-	return input + "." + base64.RawURLEncoding.EncodeToString(ed25519.Sign(s.private, []byte(input)))
+	return base64.RawURLEncoding.EncodeToString(b)
 }
 
 // encodeRaw base64url-encodes raw JSON for a token segment.

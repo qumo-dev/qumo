@@ -212,6 +212,9 @@ func TestPeerTrust_ServerTLS(t *testing.T) {
 	other := issue(t, ca, peerLeaf("relay-2"))
 	internal := issue(t, ca, devcert.Leaf{CommonName: "egress-1"})
 	foreign := issue(t, otherCA, peerLeaf("relay-x"))
+	// Certificates the CA did issue, and that a relay must still refuse.
+	expired := issue(t, ca, devcert.Leaf{CommonName: "relay-old", DNSNames: []string{PeeringName}, Validity: -time.Minute})
+	serverOnly := issue(t, ca, devcert.Leaf{CommonName: "relay-srv", DNSNames: []string{PeeringName}, ExtKeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}})
 	caPool := rootsOf(ca)
 	withIdentity := &PeerTrust{ca: caPool, cert: &own, own: own.Certificate[0]}
 	caOnly := &PeerTrust{ca: caPool}
@@ -252,6 +255,21 @@ func TestPeerTrust_ServerTLS(t *testing.T) {
 		"a native client with a credential":           {trust: withIdentity, dialer: viaPublicName(native, nil), wantServed: &public, wantClass: classClient},
 		"an internal client, through the public name": {trust: withIdentity, dialer: viaPublicName(native, &internal), wantServed: &public, wantClass: classInternal},
 		"a peer certificate, through the public name": {trust: withIdentity, dialer: viaPublicName(native, &other), wantServed: &public, wantClass: classPeer},
+		// Offering h3 as well makes it a browser's handshake: its certificate isn't asked for, so it earns nothing.
+		"a peer certificate, offering h3 too": {trust: withIdentity, dialer: viaPublicName([]string{"h3", moqt.NextProtoMOQ}, &other), wantServed: &public, wantClass: classClient},
+		// The peering name alone makes no peer: the certificate must carry it.
+		"an internal client asks for the peering name": {trust: withIdentity, dialer: viaPeeringName(&internal), wantServed: &own, wantClass: classInternal},
+		// A relay with the CA alone still tells the two classes apart.
+		"an internal client, relay with the CA only": {trust: caOnly, dialer: viaPublicName(native, &internal), wantServed: &public, wantClass: classInternal},
+		"a peer certificate, relay with the CA only": {trust: caOnly, dialer: viaPublicName(native, &other), wantServed: &public, wantClass: classPeer},
+		// A certificate the relay can't verify ends the handshake. It is never
+		// taken for a client without one, which a credential could then admit.
+		"a foreign certificate, through the public name":     {trust: withIdentity, dialer: viaPublicName(native, &foreign), wantDialedErr: "certificate signed by unknown authority"},
+		"an expired certificate, through the public name":    {trust: withIdentity, dialer: viaPublicName(native, &expired), wantDialedErr: "certificate has expired or is not yet valid"},
+		"a server-only certificate, through the public name": {trust: withIdentity, dialer: viaPublicName(native, &serverOnly), wantDialedErr: "certificate specifies an incompatible key usage"},
+		"the peering name with an expired certificate":       {trust: withIdentity, dialer: viaPeeringName(&expired), wantDialedErr: "certificate has expired or is not yet valid"},
+		"the peering name with a server-only certificate":    {trust: withIdentity, dialer: viaPeeringName(&serverOnly), wantDialedErr: "certificate specifies an incompatible key usage"},
+		"a foreign certificate, relay with the CA only":      {trust: caOnly, dialer: viaPublicName(native, &foreign), wantDialedErr: "certificate signed by unknown authority"},
 		// The relay refuses: the peering name is for holders of a certificate from its CA.
 		"the peering name without a certificate":      {trust: withIdentity, dialer: viaPeeringName(nil), wantDialedErr: "client didn't provide a certificate"},
 		"the peering name with a foreign certificate": {trust: withIdentity, dialer: viaPeeringName(&foreign), wantDialedErr: "certificate signed by unknown authority"},
@@ -283,6 +301,58 @@ func TestPeerTrust_ServerTLS(t *testing.T) {
 				// is the one it was shown.
 				assert.True(t, isSelf(dialerState, tt.trust.own), "the dialing side sees it too")
 			}
+		})
+	}
+}
+
+// A relay dialing a peer refuses a relay that isn't one: whatever answers
+// the peering name must show a certificate the CA issued for that name, for
+// a server, valid now. The dialed relays here hold certificates that
+// NewPeerTrust would have refused at startup, as an impostor's would be.
+func TestPeerTrust_DialerTLS(t *testing.T) {
+	ca := testCA(t)
+	otherCA := testCA(t)
+	public := issue(t, otherCA, devcert.Leaf{CommonName: "localhost", DNSNames: []string{"localhost"}, ExtKeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}})
+	publicCfg := &tls.Config{MinVersion: tls.VersionTLS13, Certificates: []tls.Certificate{public}, NextProtos: []string{"h3", moqt.NextProtoMOQ}}
+	caPool := rootsOf(ca)
+	own := issue(t, ca, peerLeaf("relay-1"))
+	dialer := &PeerTrust{ca: caPool, cert: &own, own: own.Certificate[0]}
+
+	good := issue(t, ca, peerLeaf("relay-2"))
+	foreign := issue(t, otherCA, peerLeaf("relay-2"))
+	nameless := issue(t, ca, devcert.Leaf{CommonName: "relay-2", DNSNames: []string{"relay-2.example"}})
+	expired := issue(t, ca, devcert.Leaf{CommonName: "relay-2", DNSNames: []string{PeeringName}, Validity: -time.Minute})
+	clientOnly := issue(t, ca, devcert.Leaf{CommonName: "relay-2", DNSNames: []string{PeeringName}, ExtKeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}})
+
+	tests := map[string]struct {
+		dialed        *tls.Certificate
+		wantDialerErr string
+	}{
+		"a peer":                                 {dialed: &good},
+		"a certificate from another CA":          {dialed: &foreign, wantDialerErr: "certificate signed by unknown authority"},
+		"a certificate without the peering name": {dialed: &nameless, wantDialerErr: "certificate is valid for relay-2.example, not " + PeeringName},
+		"an expired certificate":                 {dialed: &expired, wantDialerErr: "certificate has expired or is not yet valid"},
+		"a certificate for clients only":         {dialed: &clientOnly, wantDialerErr: "certificate specifies an incompatible key usage"},
+	}
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			dialed := &PeerTrust{ca: caPool, cert: tt.dialed, own: tt.dialed.Certificate[0]}
+
+			dialerState, dialedState, dialerErr, dialedErr := handshake(t, dialer.DialerTLS(), dialed.ServerTLS(publicCfg))
+
+			if tt.wantDialerErr != "" {
+				assert.ErrorContains(t, dialerErr, tt.wantDialerErr)
+				assert.Nil(t, dialerState, "no session to a relay that isn't a peer")
+				assert.Error(t, dialedErr, "the dialed relay learns it was refused")
+				assert.Nil(t, dialedState, "and holds no session either")
+				return
+			}
+			require.NoError(t, dialerErr)
+			require.NoError(t, dialedErr)
+			assert.Equal(t, tt.dialed.Certificate[0], dialerState.PeerCertificates[0].Raw)
+			class, identity := classify(dialedState)
+			assert.Equal(t, classPeer, class, "the dialed relay takes the dialer for a peer")
+			assert.Equal(t, "relay-1", identity)
 		})
 	}
 }

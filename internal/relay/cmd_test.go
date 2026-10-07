@@ -210,3 +210,24 @@ func TestParseRelayArgs(t *testing.T) {
 		})
 	}
 }
+
+// A setting printed in the startup banner can't start a line of its own, and
+// so can't pass for one the relay logged.
+func Test_sanitizeLog(t *testing.T) {
+	tests := map[string]struct {
+		in   string
+		want string
+	}{
+		"nothing to strip":     {in: "relay-1", want: "relay-1"},
+		"empty":                {in: "", want: ""},
+		"a line feed":          {in: "relay-1\nlevel=ERROR msg=forged", want: "relay-1level=ERROR msg=forged"},
+		"a carriage return":    {in: "relay-1\rforged", want: "relay-1forged"},
+		"both, more than once": {in: "\r\na\r\nb\n\r", want: "ab"},
+		"other whitespace":     {in: "a\tb c", want: "a\tb c"},
+	}
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			assert.Equal(t, tt.want, sanitizeLog(tt.in))
+		})
+	}
+}

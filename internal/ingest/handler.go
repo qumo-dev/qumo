@@ -330,6 +330,20 @@ type trackBuffer struct {
 	pos  atomic.Uint64 // monotonically increasing; first group = 1
 
 	notify broadcastNotify
+
+	// frameCleaner is an optional callback for frame pooling.
+	frameCleaner func(*moqt.Frame)
+}
+
+// SetFrameCleaner sets an optional callback that is called when a frame is no
+// longer needed after being served to a subscriber. This enables frame pooling
+// in the ingest path to reduce allocations.
+//
+// The callback is called synchronously during serve() after each frame is written
+// to the TrackWriter. It must be safe for concurrent use if the same frame pool
+// is shared across multiple trackBuffers.
+func (b *trackBuffer) SetFrameCleaner(cleaner func(*moqt.Frame)) {
+	b.frameCleaner = cleaner
 }
 
 func newTrackBuffer(ctx context.Context, name string) *trackBuffer {
