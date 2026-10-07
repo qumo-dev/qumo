@@ -1,21 +1,25 @@
 // Package funnel records what arrives over HTTP and serves it as MoQ tracks.
 //
-// Many contributors POST records into one track. Each record is committed to a
+// Many senders POST records into one track. Each record is committed to a
 // qumo-ledger track first and then sent to the track's MoQ subscribers, so a
 // subscriber only ever sees a record that is stored.
 //
 //	POST /tracks/room/123/chat  the record's payload, one JSON value, into the track
 //	                            "chat" of the broadcast "/room/123"
 //	PUT  /tracks/room/123/chat  create the track before its first record
+//	GET  /tracks/room/123/chat  a page of its records, newest or ?before= a group
 //
-// With a key set, every request carries a qumo credential as a bearer token,
-// and the credential must grant publishing at the broadcast path.
+// With a key set, every request carries a qumo credential as a bearer token. A
+// read needs it to grant subscribing at the broadcast path; a write, publishing
+// at the broadcast path, or at one segment beneath it, which names the sender
+// its records carry.
 //
 // The funnel publishes through a relay it dials as a client, so subscribers
 // reach its tracks on the relay, and it can also serve them itself. A
 // subscriber reads the track at that broadcast path and track name. Each record
-// is one group holding one frame, the payload as it was sent, and the group's
-// sequence is one more than the sequence of the ledger group that stores it.
+// is one group holding one frame, {"sender": ..., "payload": ...}, and the
+// group's sequence is one more than the sequence of the ledger group that
+// stores it.
 package funnel
 
 import (
@@ -28,6 +32,8 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
+	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -46,7 +52,7 @@ const (
 	defaultServeAddr  = ":4433"
 )
 
-// Run starts the funnel: the HTTP server contributors POST to, a session to
+// Run starts the funnel: the HTTP server senders POST to and readers GET from, a session to
 // the relay that publishes what it records, and, optionally, its own MoQT
 // listener. It does not join a relay mesh as a peer.
 //
@@ -63,9 +69,11 @@ const (
 //	CERT_FILE            - TLS certificate file for the MoQT listener (default: "certs/server.crt")
 //	KEY_FILE             - TLS key file for the MoQT listener (default: "certs/server.key")
 //	CORS_ALLOWED_ORIGINS - comma-separated origins allowed to call the HTTP endpoints and to open WebTransport (default: same-origin only; "*" allows any)
-//	QUMO_AUTH_KEYS       - the key set contributors' credentials are verified against, as the relay reads it (default: none, every request is accepted)
+//	QUMO_AUTH_KEYS       - the key set senders' and readers' credentials are verified against, as the relay reads it (default: none, every request is accepted)
 //	QUMO_AUTH_KEYS_CACHE - a file a downloaded key set is kept in between runs
 //	QUMO_RELAY_TOKEN     - bearer token sent to a key-set URL
+//	FUNNEL_SENDER_LIMIT  - records each sender may send into a track, as "RATE,BURST": per second, and at once (default: no limit)
+//	FUNNEL_TRACK_LIMIT   - records a track takes from every sender together, as "RATE,BURST" (default: no limit)
 //
 // The HTTP listener is plain HTTP: terminate TLS in front of it.
 func Run(_ []string) error {
@@ -80,10 +88,17 @@ func Run(_ []string) error {
 	certFile := envconfig.String("CERT_FILE", "certs/server.crt")
 	keyFile := envconfig.String("KEY_FILE", "certs/server.key")
 	allowedOrigins := cors.LoadAllowed()
+	senderLimit, err := parseLimit(envconfig.String("FUNNEL_SENDER_LIMIT", ""))
+	if err != nil {
+		return fmt.Errorf("funnel: FUNNEL_SENDER_LIMIT: %w", err)
+	}
+	trackLimit, err := parseLimit(envconfig.String("FUNNEL_TRACK_LIMIT", ""))
+	if err != nil {
+		return fmt.Errorf("funnel: FUNNEL_TRACK_LIMIT: %w", err)
+	}
 
 	var up *upstream
 	if relayURL != "" {
-		var err error
 		up, err = newUpstream(RelayConfig{
 			URL:            relayURL,
 			CAFile:         envconfig.String("RELAY_CA_FILE", ""),
@@ -122,7 +137,11 @@ func Run(_ []string) error {
 	}
 
 	trackMux := moqt.NewTrackMux(0)
-	handler, err := NewHandler(ctx, objects, trackMux, verifier)
+	handler, err := NewHandler(ctx, objects, trackMux, HandlerOptions{
+		Verifier:    verifier,
+		SenderLimit: senderLimit,
+		TrackLimit:  trackLimit,
+	})
 	if err != nil {
 		return err
 	}
@@ -223,7 +242,7 @@ func orNone(s string) string {
 // tracks objects already holds are published with their latest record first.
 // Broadcasts stay published until ctx ends. A nil verifier accepts every
 // sender.
-func NewHandler(ctx context.Context, objects store.Store, trackMux *moqt.TrackMux, verifier *auth.Verifier) (http.Handler, error) {
+func NewHandler(ctx context.Context, objects store.Store, trackMux *moqt.TrackMux, opts HandlerOptions) (http.Handler, error) {
 	out := newEgress(ctx, trackMux)
 	restored, err := restore(ctx, objects, out)
 	if err != nil {
@@ -233,19 +252,47 @@ func NewHandler(ctx context.Context, objects store.Store, trackMux *moqt.TrackMu
 		slog.Info("funnel: restored recorded tracks", "tracks", restored)
 	}
 	return ingest.NewHandler(objects, ingest.Options{
-		Authorize: authorizer(verifier),
-		Challenge: "Bearer",
+		Authorize:   authorizer(opts.Verifier),
+		Challenge:   "Bearer",
+		SenderLimit: opts.SenderLimit,
+		TrackLimit:  opts.TrackLimit,
 		OnOpen: func(_ context.Context, t ingest.Track) {
 			out.announce(moqt.BroadcastPath(t.BroadcastPath)).track(moqt.TrackName(t.TrackName))
 		},
-		OnRecord: func(_ context.Context, t ingest.Track, g ledger.GroupInfo, payload []byte) {
+		OnRecord: func(_ context.Context, t ingest.Track, g ledger.GroupInfo, record []byte) {
 			out.publish(moqt.BroadcastPath(t.BroadcastPath), moqt.TrackName(t.TrackName), group{
 				seq:     moqt.GroupSequence(g.ID.Sequence() + 1),
-				payload: payload,
+				payload: record,
 			})
 		},
 		Logger: slog.Default(),
 	})
+}
+
+// HandlerOptions configures [NewHandler]. The zero value accepts every request
+// with no limit.
+type HandlerOptions struct {
+	// Verifier checks the credential of every request; nil checks none.
+	Verifier *auth.Verifier
+	// SenderLimit bounds each sender's records into a track, and TrackLimit
+	// all of a track's.
+	SenderLimit ingest.Limit
+	TrackLimit  ingest.Limit
+}
+
+// parseLimit reads a limit written "RATE,BURST", records per second and at
+// once. Empty is no limit.
+func parseLimit(s string) (ingest.Limit, error) {
+	if s == "" {
+		return ingest.Limit{}, nil
+	}
+	rate, burst, ok := strings.Cut(s, ",")
+	r, rerr := strconv.ParseFloat(strings.TrimSpace(rate), 64)
+	b, berr := strconv.Atoi(strings.TrimSpace(burst))
+	if !ok || rerr != nil || berr != nil || r <= 0 || b < 1 {
+		return ingest.Limit{}, fmt.Errorf("%q: want RATE,BURST, as \"1,5\"", s)
+	}
+	return ingest.Limit{Rate: r, Burst: b}, nil
 }
 
 // withCORS lets a browser on an allowed origin call h with a bearer credential
@@ -256,7 +303,7 @@ func withCORS(h http.Handler, allowed []string) http.Handler {
 		w.Header().Add("Vary", "Origin")
 		if origin := r.Header.Get("Origin"); origin != "" && allow(r) {
 			w.Header().Set("Access-Control-Allow-Origin", origin)
-			w.Header().Set("Access-Control-Allow-Methods", "POST, PUT, OPTIONS")
+			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, OPTIONS")
 			w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, Idempotency-Key")
 		}
 		if r.Method == http.MethodOptions {

@@ -61,6 +61,16 @@ func (ps Patterns) Contains(path moqt.BroadcastPath) bool {
 	return false
 }
 
+// Bases returns the path each pattern covers, relative to "/": "a/b" for
+// "a/b/**", and "" for "**".
+func (ps Patterns) Bases() []string {
+	bases := make([]string, len(ps))
+	for i, p := range ps {
+		bases[i] = p.base
+	}
+	return bases
+}
+
 // pattern is a subtree pattern: "**" (everything) or "a/b/**" (a/b and
 // everything beneath it, on "/" boundaries). base is "" for "**".
 type pattern struct {

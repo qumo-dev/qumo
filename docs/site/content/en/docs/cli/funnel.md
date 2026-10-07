@@ -44,10 +44,13 @@ broadcast path and the track name:
 
 ```console
 $ curl -X POST localhost:8090/tracks/room/123/chat \
-    -H "Authorization: Bearer $CREDENTIAL" \
+    -H "Authorization: Bearer $ALICE" \
     -H "Idempotency-Key: 7f9c2b" \
-    -d '{"user": "alice", "text": "hello"}'
+    -d '{"text": "hello"}'
 {"group":"e000001-g00000000","wallclock":1791370000000000000}
+
+$ curl localhost:8090/tracks/room/123/chat?limit=50 -H "Authorization: Bearer $VIEWER"
+{"records":[{"group":"e000001-g00000000","wallclock":1791370000000000000,"sender":"alice","payload":{"text":"hello"}}]}
 ```
 
 Subscribers consume the track `chat` of the broadcast `/room/123`. Any number
@@ -60,27 +63,40 @@ on one subscription.
 |---|---|---|
 | `POST /tracks/{broadcast path}/{track name}` | The record's payload, one JSON value in UTF-8 | `201` once the record is committed. Creates the track when it does not exist. |
 | `PUT /tracks/{broadcast path}/{track name}` | — | Creates the track ahead of its first record, so subscribers can wait on it: `201`, or `204` when it exists. |
+| `GET /tracks/{broadcast path}/{track name}` | — | A page of records, oldest first: the newest, or those before `?before=<group>`, at most `?limit=` (default 50, at most 200). `before` in the answer is the cursor for the next older page. |
 
 The last segment of the URL is the track name; the segments before it are the
-broadcast path. The payload is stored and sent as it was posted: whatever
-identifies its author belongs in it.
+broadcast path.
+
+Each record is stored as `{"sender": …, "payload": …}`: the payload as it was
+posted, and the sender its credential names (below). A record whose
+credential names no sender has no `sender`.
 
 A record sent with an `Idempotency-Key` header is stored once per track: a
 retry with the same key is answered as the first was and stores nothing. A
 track remembers its 1024 most recent keys.
 
+With `FUNNEL_SENDER_LIMIT` and `FUNNEL_TRACK_LIMIT`, records are limited per
+sender and per track; past either, a record is answered `429` with a
+`Retry-After`.
+
 ## Credentials
 
 With a key set (`QUMO_AUTH_KEYS`), every request carries a qumo credential as
 `Authorization: Bearer`, the same kind the relay admits sessions with and
-verified against the same key set. Its publish grant must cover the broadcast
-path: a credential for `/room/123`, or for `/room`, may record into
-`/room/123`.
+verified against the same key set:
+
+- **Reading** history needs a grant to subscribe at the broadcast path, as a
+  viewer subscribing through the relay has.
+- **Recording** needs a grant to publish either at the broadcast path, or at
+  one segment beneath it, which names the sender. A credential publishing at
+  `/room/123/alice` records into `/room/123` as `alice`, whatever the payload
+  claims; one publishing at `/room/123`, or `/room`, records with no sender,
+  for a party trusted with the whole broadcast.
 
 The credential is checked on every request: once it expires or its key leaves
-the key set, its records are refused.
-A missing or invalid credential answers `401` with `WWW-Authenticate: Bearer`,
-and one that does not cover the broadcast `403`.
+the key set, it is refused. A missing or invalid credential answers `401` with
+`WWW-Authenticate: Bearer`, and one that does not cover the broadcast `403`.
 
 ## Publishing through a relay
 
@@ -98,8 +114,9 @@ its broadcasts anew.
 
 ## What a subscriber receives
 
-Each record is one group holding one frame, the payload as it was posted. A
-record is sent only after it is committed, in commit order. A group's
+Each record is one group holding one frame, the record as it was stored,
+`{"sender": …, "payload": …}`. A record is sent only after it is committed, in
+commit order. A group's
 sequence is one more than the sequence of the ledger group that stores the
 record. A new subscriber starts at the track's latest record.
 
@@ -115,7 +132,9 @@ restart before anyone records again.
 
 | Variable | Default | Description |
 |---|---|---|
-| `FUNNEL_ADDR` | `:8090` | HTTP listen address for records. |
+| `FUNNEL_ADDR` | `:8090` | HTTP listen address for records and history. |
+| `FUNNEL_SENDER_LIMIT` | (unset) | Records each sender may send into a track, as `RATE,BURST`: per second, and at once, e.g. `1,5`. Unset is no limit. |
+| `FUNNEL_TRACK_LIMIT` | (unset) | Records a track takes from all senders together, as `RATE,BURST`, e.g. `20,40`. Unset is no limit. |
 | `RELAY_URL` | (unset) | The relay to publish through, dialed as a client: `https://relay:4433` for WebTransport or `moqt://relay:4433` for native QUIC. It may carry a credential as `?jwt=`. |
 | `RELAY_SIGNING_KEY` / `RELAY_PUBLISH` | (unset) | A signing key file and the path its credentials grant publishing at, e.g. `room`. Set together; the funnel signs a fresh relay credential for every session in place of `?jwt=`. |
 | `RELAY_CA_FILE` | (unset) | PEM certificate to trust as the relay's root, instead of the system roots. |
@@ -124,7 +143,7 @@ restart before anyone records again.
 | `LEDGER_URI` | (unset) | Where records are stored. The scheme selects the backend: `file:///var/lib/qumo` is a directory (`file:ledger` for a relative one); `postgres://user@host:26257/qumo` is a table (`ledger_objects`, or `?table=`) in PostgreSQL or CockroachDB; `s3://bucket/prefix?region=…` is a bucket of S3, or of an S3-compatible service with `&endpoint=http://host:9000`, with credentials from `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`; unset or empty is memory. A bare path or any other scheme is an error. |
 | `CERT_FILE` / `KEY_FILE` | `certs/server.crt` / `certs/server.key` | TLS certificate and key for the funnel's own MoQT listener. |
 | `CORS_ALLOWED_ORIGINS` | (unset) | Comma-separated origins allowed to call the HTTP endpoints from a browser and to open WebTransport (default: same-origin only; `*` allows any). |
-| `QUMO_AUTH_KEYS` | (unset) | The key set senders' credentials are verified against, as the relay reads it: a file, or an https URL. Unset accepts every sender. |
+| `QUMO_AUTH_KEYS` | (unset) | The key set senders' and readers' credentials are verified against, as the relay reads it: a file, or an https URL. Unset accepts every request, with no sender. |
 | `QUMO_AUTH_KEYS_CACHE` | (unset) | A file a downloaded key set is kept in between runs. |
 | `QUMO_RELAY_TOKEN` | (unset) | Bearer token sent to a key-set URL. |
 

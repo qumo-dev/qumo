@@ -50,7 +50,7 @@ func TestRestore(t *testing.T) {
 	require.True(t, ok)
 	require.NotNil(t, chat.latest, "the latest record is replayed to a new subscriber")
 	assert.Equal(t, moqt.GroupSequence(2), chat.latest.seq)
-	assert.Equal(t, `"two"`, string(chat.latest.payload))
+	assert.Equal(t, `{"payload":"two"}`, string(chat.latest.payload))
 
 	_, handler = mux.TrackHandler("/room/9")
 	require.NotNil(t, handler)
@@ -87,7 +87,7 @@ func TestNewHandler_RestoresBeforeServing(t *testing.T) {
 	recordInto(t, objects, "/room/123", `"before the restart"`)
 	mux := moqt.NewTrackMux(0)
 
-	_, err := NewHandler(t.Context(), objects, mux, nil)
+	_, err := NewHandler(t.Context(), objects, mux, HandlerOptions{})
 
 	require.NoError(t, err)
 	_, handler := mux.TrackHandler("/room/123")
@@ -95,8 +95,8 @@ func TestNewHandler_RestoresBeforeServing(t *testing.T) {
 	chat, ok := handler.(*broadcast).lookup("chat")
 	require.True(t, ok)
 	require.NotNil(t, chat.latest)
-	assert.Equal(t, `"before the restart"`, string(chat.latest.payload))
+	assert.Equal(t, `{"payload":"before the restart"}`, string(chat.latest.payload))
 
-	_, err = NewHandler(t.Context(), fakeFailingLister{}, moqt.NewTrackMux(0), nil)
+	_, err = NewHandler(t.Context(), fakeFailingLister{}, moqt.NewTrackMux(0), HandlerOptions{})
 	assert.ErrorIs(t, err, errListing)
 }

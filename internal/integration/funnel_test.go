@@ -38,7 +38,7 @@ func startFunnelHTTP(t *testing.T, objects store.Store, mux *moqt.TrackMux, veri
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
-	handler, err := funnel.NewHandler(ctx, objects, mux, verifier)
+	handler, err := funnel.NewHandler(ctx, objects, mux, funnel.HandlerOptions{Verifier: verifier})
 	require.NoError(t, err)
 	httpSrv := httptest.NewServer(handler)
 	t.Cleanup(httpSrv.Close)
@@ -176,7 +176,7 @@ func TestFunnel_RecordsReachAMoQSubscriber(t *testing.T) {
 	// recorded.
 	seq, got := nextRecord(t, tr)
 	assert.Equal(t, moqt.GroupSequence(1), seq)
-	assert.Equal(t, `{"user":"alice","text":"hello"}`, got)
+	assert.Equal(t, `{"payload":{"user":"alice","text":"hello"}}`, got)
 
 	// Another sender records into the same track, and the subscriber receives
 	// it on the one subscription.
@@ -184,7 +184,7 @@ func TestFunnel_RecordsReachAMoQSubscriber(t *testing.T) {
 
 	seq, got = nextRecord(t, tr)
 	assert.Equal(t, moqt.GroupSequence(2), seq, "groups follow the ledger's commit order")
-	assert.Equal(t, `"hi"`, got)
+	assert.Equal(t, `{"payload":"hi"}`, got)
 }
 
 // TestFunnel_CreatedTrackWaitsForItsFirstRecord subscribes to a track created
@@ -215,7 +215,7 @@ func TestFunnel_CreatedTrackWaitsForItsFirstRecord(t *testing.T) {
 
 	seq, got := nextRecord(t, sub.tr)
 	assert.Equal(t, moqt.GroupSequence(1), seq)
-	assert.Equal(t, `"first"`, got)
+	assert.Equal(t, `{"payload":"first"}`, got)
 }
 
 func TestFunnel_UnknownTrackIsNotFound(t *testing.T) {
@@ -244,38 +244,62 @@ func TestFunnel_RestartServesRecordedTracks(t *testing.T) {
 
 	seq, got := nextRecord(t, tr)
 	assert.Equal(t, moqt.GroupSequence(1), seq)
-	assert.Equal(t, `"before"`, got)
+	assert.Equal(t, `{"payload":"before"}`, got)
 
 	require.Equal(t, http.StatusCreated, record(t, ingestURL, "", `"after"`))
 	seq, got = nextRecord(t, tr)
 	assert.Equal(t, moqt.GroupSequence(2), seq)
-	assert.Equal(t, `"after"`, got)
+	assert.Equal(t, `{"payload":"after"}`, got)
 }
 
-// TestFunnel_CredentialGrantsTheBroadcast verifies senders against a key set as
-// the relay does: a credential records into the broadcasts it may publish at.
-func TestFunnel_CredentialGrantsTheBroadcast(t *testing.T) {
+// TestFunnel_CredentialsNameSendersAndReaders verifies requests against a key
+// set as the relay does: a credential publishing one segment beneath the
+// broadcast records as that sender, one for the broadcast records with none,
+// and one subscribing at the broadcast reads its history.
+func TestFunnel_CredentialsNameSendersAndReaders(t *testing.T) {
 	key, _, keysFile := writeKeys(t)
 	verifier, err := auth.NewVerifier(auth.VerifierConfig{Keys: keysFile})
 	require.NoError(t, err)
 	ingestURL, serveURL := startFunnel(t, memstore.New(), verifier)
-	credential := func(path string) string {
-		c, err := token.Sign(key, token.Grant{Publish: path}, time.Minute)
+	credential := func(g token.Grant) string {
+		c, err := token.Sign(key, g, time.Minute)
 		require.NoError(t, err)
 		return c
 	}
-	room := credential("/room/123")
+	alice := credential(token.Grant{Publish: "/room/123/alice"})
+	system := credential(token.Grant{Publish: "/room/123"})
+	viewer := credential(token.Grant{Subscribe: "/room/123"})
 
 	assert.Equal(t, http.StatusUnauthorized, createChat(t, ingestURL, ""), "no credential")
-	assert.Equal(t, http.StatusForbidden, createChat(t, ingestURL, credential("/room/9")), "a credential for another room")
+	assert.Equal(t, http.StatusForbidden, createChat(t, ingestURL, credential(token.Grant{Publish: "/room/9"})), "another room")
 	assert.Equal(t, http.StatusUnauthorized, record(t, ingestURL, "", `"unsigned"`))
-	assert.Equal(t, http.StatusForbidden, record(t, ingestURL, credential("/room/9"), `"elsewhere"`))
-	require.Equal(t, http.StatusCreated, record(t, ingestURL, room, `"signed"`))
+	assert.Equal(t, http.StatusForbidden, record(t, ingestURL, viewer, `"a viewer"`), "subscribing does not grant recording")
+	require.Equal(t, http.StatusCreated, record(t, ingestURL, alice, `{"name":"bob","text":"hi"}`))
+	require.Equal(t, http.StatusCreated, record(t, ingestURL, system, `{"type":"delete"}`))
 
 	tr := subscribeChat(t, serveURL)
 	seq, got := nextRecord(t, tr)
-	assert.Equal(t, moqt.GroupSequence(1), seq, "only the signed record was committed")
-	assert.Equal(t, `"signed"`, got)
+	assert.Equal(t, moqt.GroupSequence(2), seq, "only the signed records were committed")
+	assert.Equal(t, `{"payload":{"type":"delete"}}`, got)
+
+	history := func(credential string) (int, string) {
+		req, err := http.NewRequest(http.MethodGet, ingestURL+chatPath, nil)
+		require.NoError(t, err)
+		req.Header.Set("Authorization", "Bearer "+credential)
+		resp, err := http.DefaultClient.Do(req)
+		require.NoError(t, err)
+		defer resp.Body.Close()
+		body, err := io.ReadAll(resp.Body)
+		require.NoError(t, err)
+		return resp.StatusCode, string(body)
+	}
+	status, body := history(viewer)
+	require.Equal(t, http.StatusOK, status)
+	assert.Contains(t, body, `"sender":"alice","payload":{"name":"bob","text":"hi"}`,
+		"the sender is the credential's, whatever the payload says")
+	assert.Contains(t, body, `"payload":{"type":"delete"}`)
+	status, _ = history(alice)
+	assert.Equal(t, http.StatusForbidden, status, "publishing does not grant reading")
 }
 
 // TestFunnel_PublishesThroughTheRelay runs the funnel with no listener of its
@@ -314,12 +338,12 @@ func TestFunnel_PublishesThroughTheRelay(t *testing.T) {
 
 	seq, got := nextRecord(t, tr)
 	assert.Equal(t, moqt.GroupSequence(1), seq, "the relay's subscriber starts at the latest record")
-	assert.Equal(t, `"first"`, got)
+	assert.Equal(t, `{"payload":"first"}`, got)
 
 	require.Equal(t, http.StatusCreated, record(t, ingestURL, "", `"second"`))
 	seq, got = nextRecord(t, tr)
 	assert.Equal(t, moqt.GroupSequence(2), seq)
-	assert.Equal(t, `"second"`, got)
+	assert.Equal(t, `{"payload":"second"}`, got)
 }
 
 // TestFunnel_RedialsWhenTheRelayEndsTheSession gives each session a grant that
@@ -356,5 +380,5 @@ func TestFunnel_RedialsWhenTheRelayEndsTheSession(t *testing.T) {
 	tr := subscribeChat(t, nativeURL(relayAddr))
 	seq, got := nextRecord(t, tr)
 	assert.Equal(t, moqt.GroupSequence(1), seq)
-	assert.Equal(t, `"kept"`, got)
+	assert.Equal(t, `{"payload":"kept"}`, got)
 }
