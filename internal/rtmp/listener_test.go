@@ -5,101 +5,53 @@ import (
 	"net"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestListen(t *testing.T) {
 	t.Run("success", func(t *testing.T) {
 		l, err := Listen("tcp", "127.0.0.1:0")
-		if err != nil {
-			t.Fatalf("Listen failed: %v", err)
-		}
+		require.NoError(t, err)
 		defer l.Close()
+		require.NotNil(t, l.Addr())
 
-		if l.Addr() == nil {
-			t.Fatal("expected non-nil Addr()")
+		type accepted struct {
+			conn *Conn
+			err  error
 		}
-
-		errCh := make(chan error, 1)
-		connCh := make(chan *Conn, 1)
-
+		acceptCh := make(chan accepted, 1)
 		go func() {
 			conn, err := l.Accept()
-			if err != nil {
-				errCh <- err
-				return
-			}
-			connCh <- conn
+			acceptCh <- accepted{conn: conn, err: err}
 		}()
 
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
-
 		clientConn, err := Dial(ctx, l.Addr().String())
-		if err != nil {
-			t.Fatalf("Dial failed: %v", err)
-		}
+		require.NoError(t, err)
 		defer clientConn.Close()
 
 		select {
-		case err := <-errCh:
-			t.Fatalf("Accept failed: %v", err)
-		case conn := <-connCh:
-			defer conn.Close()
+		case got := <-acceptCh:
+			require.NoError(t, got.err)
+			// A nil connection with a nil error would otherwise only show
+			// up as a panic when it is closed.
+			require.NotNil(t, got.conn)
+			defer got.conn.Close()
 		case <-time.After(2 * time.Second):
-			t.Fatal("timeout waiting for Accept")
+			require.FailNow(t, "timeout waiting for Accept")
 		}
 	})
 
 	t.Run("error", func(t *testing.T) {
-		// Trying to listen on an invalid address should fail
-		_, err := Listen("tcp", "invalid-address:-1")
-		if err == nil {
-			t.Fatal("expected error listening on invalid address")
-		}
+		// A port that cannot exist, on an address that needs no lookup: the
+		// failure is the port's, whatever the resolver would do with a name.
+		_, err := Listen("tcp", "127.0.0.1:-1")
+
+		assert.Error(t, err)
 	})
-}
-
-func TestListener_Accept(t *testing.T) {
-	l, err := Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("Listen failed: %v", err)
-	}
-	defer l.Close()
-
-	addr := l.Addr().String()
-
-	errCh := make(chan error, 1)
-	connCh := make(chan *Conn, 1)
-
-	// Accept in background
-	go func() {
-		conn, err := l.Accept()
-		if err != nil {
-			errCh <- err
-			return
-		}
-		connCh <- conn
-	}()
-
-	// Dial using RTMP dialer to perform client-side handshake
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-
-	clientConn, err := Dial(ctx, addr)
-	if err != nil {
-		t.Fatalf("Dial failed: %v", err)
-	}
-	defer clientConn.Close()
-
-	// Wait for server to accept
-	select {
-	case err := <-errCh:
-		t.Fatalf("Accept failed: %v", err)
-	case conn := <-connCh:
-		defer conn.Close()
-	case <-time.After(2 * time.Second):
-		t.Fatal("timeout waiting for Accept")
-	}
 }
 
 func TestListener_Close(t *testing.T) {
