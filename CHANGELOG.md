@@ -32,6 +32,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **A credential whose header carries `crit` is refused** (`token.Verify`, and so the relay). `crit` lists headers a verifier must understand (RFC 7515 4.1.11); the relay understands none beyond `alg`, `kid` and `typ`, and took such a token as valid. No token `token.Sign` or `qumo auth token` makes carries one.
 - **Every answer of the HLS egress carries `Vary: Origin`** (`internal/hls/cors.go`), not only one to an allowed origin. A manifest or segment fetched with no `Origin`, or from an origin that isn't allowed, was answered without it, so a shared cache or CDN in front of the egress could keep that answer and serve it to a page on an allowed origin, whose browser then refused it.
 
+### Removed
+
+- **`trackBuffer.SetFrameCleaner` (`internal/ingest`), added for frame pooling to come.** Nothing called the callback it stored, and its comment said the egress loop did. Called as described, it would have handed a frame back to a pool while other subscribers of the same track were still being sent it. It returns with the pool, when there is a point at which a frame is known to be done with.
+
 ## [v0.11.261005] - 2026-10-05
 
 > **Breaking for operators.** The auth server is removed: the relay no longer asks one (`QUMO_AUTH_URL`), and `qumo auth` no longer runs one. The relay verifies credentials itself against a key set. To move over, unset `QUMO_AUTH_URL`, set `QUMO_AUTH_KEYS` to the key set the auth server was reading, and stop the `qumo auth` process; tokens and signing keys are unchanged. A relay with `QUMO_AUTH_URL` still set refuses to start. See **Removed** below.
@@ -82,7 +86,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Removed
 
-- **`trackBuffer.SetFrameCleaner` (`internal/ingest`), added for frame pooling to come.** Nothing called the callback it stored, and its comment said the egress loop did. Called as described, it would have handed a frame back to a pool while other subscribers of the same track were still being sent it. It returns with the pool, when there is a point at which a frame is known to be done with.
 - **Breaking: the auth server is gone: the relay no longer asks one (`QUMO_AUTH_URL`), and `qumo auth` no longer runs one.** The relay verifies credentials itself against a key set (`QUMO_AUTH_KEYS`), which does the same checks in the relay process.
   - **To move over:** unset `QUMO_AUTH_URL` on the relay, set `QUMO_AUTH_KEYS` to the key set the auth server was reading, and stop the `qumo auth` process. Tokens and signing keys are unchanged.
   - **A relay with `QUMO_AUTH_URL` still set refuses to start,** rather than starting with auth off.
