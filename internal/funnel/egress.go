@@ -1,4 +1,4 @@
-package httpingest
+package funnel
 
 import (
 	"context"
@@ -118,7 +118,7 @@ func (t *track) serve(tw *moqt.TrackWriter) {
 			return
 		case g := <-ch:
 			if err := writeGroup(tw, g); err != nil {
-				slog.Debug("httpingest: subscriber ended", "broadcast_path", tw.BroadcastPath, "track_name", tw.TrackName, "error", err)
+				slog.Debug("funnel: subscriber ended", "broadcast_path", tw.BroadcastPath, "track_name", tw.TrackName, "error", err)
 				return
 			}
 		}

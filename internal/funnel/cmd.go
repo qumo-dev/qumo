@@ -1,5 +1,4 @@
-// Package httpingest records what arrives over HTTP and serves it as MoQ
-// tracks.
+// Package funnel records what arrives over HTTP and serves it as MoQ tracks.
 //
 // Many contributors POST records into one track. Each record is committed to a
 // qumo-ledger track first and then sent to the track's MoQ subscribers, so a
@@ -12,7 +11,7 @@
 // record is one group holding one frame, the JSON object
 // {"name": ..., "payload": ...}, and the group's sequence is one more than the
 // sequence of the ledger group that stores the record.
-package httpingest
+package funnel
 
 import (
 	"context"
@@ -39,13 +38,13 @@ const (
 	defaultServeAddr  = ":4433"
 )
 
-// Run starts the HTTP ingest server and the MoQT origin that serves what it
-// records. It does not join a relay mesh.
+// Run starts the funnel: the HTTP server contributors POST to, and the MoQT
+// origin that serves what it records. It does not join a relay mesh.
 //
 // Configuration is read from environment variables:
 //
-//	HTTP_INGEST_ADDR     - HTTP listen address for announce and record (default: ":8090")
-//	HTTP_SERVE_ADDR      - MoQT listen address (default: ":4433")
+//	FUNNEL_ADDR          - HTTP listen address for announce and record (default: ":8090")
+//	FUNNEL_SERVE_ADDR    - MoQT listen address (default: ":4433")
 //	LEDGER_URI           - where records are stored: "file:///var/lib/qumo" for a directory, empty for memory (default: memory, lost on exit)
 //	CERT_FILE            - TLS certificate file for MoQT (default: "certs/server.crt")
 //	KEY_FILE             - TLS key file for MoQT (default: "certs/server.key")
@@ -54,8 +53,8 @@ const (
 // The HTTP listener is plain HTTP and checks no credentials: run it behind
 // whatever authenticates contributors.
 func Run(_ []string) error {
-	ingestAddr := envconfig.String("HTTP_INGEST_ADDR", defaultIngestAddr)
-	serveAddr := envconfig.String("HTTP_SERVE_ADDR", defaultServeAddr)
+	ingestAddr := envconfig.String("FUNNEL_ADDR", defaultIngestAddr)
+	serveAddr := envconfig.String("FUNNEL_SERVE_ADDR", defaultServeAddr)
 	ledgerURI := envconfig.String("LEDGER_URI", "")
 	certFile := envconfig.String("CERT_FILE", "certs/server.crt")
 	keyFile := envconfig.String("KEY_FILE", "certs/server.key")
@@ -102,7 +101,7 @@ func Run(_ []string) error {
 
 	go func() {
 		if err := httpSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			slog.Error("HTTP ingest server error", "err", err)
+			slog.Error("funnel HTTP server error", "err", err)
 			cancel()
 		}
 	}()
@@ -136,7 +135,7 @@ func NewHandler(ctx context.Context, objects store.Store, trackMux *moqt.TrackMu
 		OnRecord: func(_ context.Context, rec ingest.Recorded) {
 			payload, err := json.Marshal(rec.Record)
 			if err != nil {
-				slog.Error("httpingest: encode record", "track", rec.Track(), "error", err)
+				slog.Error("funnel: encode record", "track", rec.Track(), "error", err)
 				return
 			}
 			out.publish(moqt.BroadcastPath(rec.BroadcastPath), moqt.TrackName(rec.TrackName), group{

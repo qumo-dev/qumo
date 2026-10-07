@@ -1,4 +1,4 @@
-package httpingest
+package funnel
 
 import (
 	"net/url"

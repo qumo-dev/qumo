@@ -1,7 +1,7 @@
 //go:build integration
 
-// Black-box tests of the HTTP ingest: records POSTed over HTTP are committed
-// to a ledger track and reach a MoQ subscriber over a real QUIC session.
+// Black-box tests of the funnel: records POSTed over HTTP are committed to a
+// ledger track and reach a MoQ subscriber over a real QUIC session.
 package integration
 
 import (
@@ -15,21 +15,21 @@ import (
 
 	"github.com/okdaichi/qumo-ledger/ledger/store/memstore"
 	"github.com/qumo-dev/gomoqt/moqt"
-	"github.com/qumo-dev/qumo/internal/httpingest"
+	"github.com/qumo-dev/qumo/internal/funnel"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-// startHTTPIngest stands up the announce and record handler and a MoQT origin
-// that share one TrackMux, as httpingest.Run does. It returns the HTTP base URL
+// startFunnel stands up the announce and record handler and a MoQT origin
+// that share one TrackMux, as funnel.Run does. It returns the HTTP base URL
 // and the WebTransport URL subscribers dial.
-func startHTTPIngest(t *testing.T) (ingestURL, serveURL string) {
+func startFunnel(t *testing.T) (ingestURL, serveURL string) {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 
 	mux := moqt.NewTrackMux(0)
-	handler, err := httpingest.NewHandler(ctx, memstore.New(), mux)
+	handler, err := funnel.NewHandler(ctx, memstore.New(), mux)
 	require.NoError(t, err)
 	httpSrv := httptest.NewServer(handler)
 	t.Cleanup(httpSrv.Close)
@@ -101,8 +101,8 @@ func nextRecord(t *testing.T, tr *moqt.TrackReader) (moqt.GroupSequence, string)
 	return gr.GroupSequence(), string(frame.Body())
 }
 
-func TestHTTPIngest_RecordsReachAMoQSubscriber(t *testing.T) {
-	ingestURL, serveURL := startHTTPIngest(t)
+func TestFunnel_RecordsReachAMoQSubscriber(t *testing.T) {
+	ingestURL, serveURL := startFunnel(t)
 	require.Equal(t, http.StatusCreated, postIngest(t, ingestURL, "announce", "alice", ""))
 	require.Equal(t, http.StatusCreated, postIngest(t, ingestURL, "record", "alice", `{"text":"hello"}`))
 
@@ -128,8 +128,8 @@ func TestHTTPIngest_RecordsReachAMoQSubscriber(t *testing.T) {
 	assert.JSONEq(t, `{"name":"bob","payload":"hi"}`, record)
 }
 
-func TestHTTPIngest_UnannouncedTrackIsRefused(t *testing.T) {
-	ingestURL, _ := startHTTPIngest(t)
+func TestFunnel_UnannouncedTrackIsRefused(t *testing.T) {
+	ingestURL, _ := startFunnel(t)
 
 	status := postIngest(t, ingestURL, "record", "alice", `"hello"`)
 

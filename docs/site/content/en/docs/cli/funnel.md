@@ -1,11 +1,11 @@
 ---
-title: http
-description: Start the HTTP ingest server, recording POSTed records and serving them as MoQT tracks.
+title: funnel
+description: Funnel many HTTP senders into one MoQT track, recording each record before it is sent.
 weight: 5
 ---
 
-Starts a standalone HTTP ingest server. Many contributors POST records into
-one track; each record is committed to a [qumo-ledger](https://github.com/okdaichi/qumo-ledger)
+Starts a standalone server that funnels many HTTP senders into one MoQT
+track. Contributors POST records into a track; each record is committed to a [qumo-ledger](https://github.com/okdaichi/qumo-ledger)
 track and then sent to the track's MoQT subscribers. Like [rtmp]({{< relref "rtmp" >}}),
 this is a self-contained origin and does not join the relay peer mesh.
 
@@ -15,7 +15,7 @@ one stream, such as chat, reactions or presence.
 ## Usage
 
 ```
-qumo http
+qumo funnel
 ```
 
 Takes no flags or arguments — configured entirely through environment
@@ -24,7 +24,7 @@ variables.
 ## Example
 
 ```console
-$ LEDGER_URI=file:///var/lib/qumo qumo http
+$ LEDGER_URI=file:///var/lib/qumo qumo funnel
 	Ingest  : :8090
 	Serve   : :4433
 	Ledger  : /var/lib/qumo
@@ -81,8 +81,8 @@ record. A new subscriber starts at the track's latest record.
 
 | Variable | Default | Description |
 |---|---|---|
-| `HTTP_INGEST_ADDR` | `:8090` | HTTP listen address for `announce` and `record`. |
-| `HTTP_SERVE_ADDR` | `:4433` | MoQT listen address. |
+| `FUNNEL_ADDR` | `:8090` | HTTP listen address for `announce` and `record`. |
+| `FUNNEL_SERVE_ADDR` | `:4433` | MoQT listen address. |
 | `LEDGER_URI` | (unset) | Where records are stored. The scheme selects the backend: `file:///var/lib/qumo` is a directory (`file:ledger` for a relative one), and unset or empty is memory. A bare path or any other scheme is an error. |
 | `CERT_FILE` / `KEY_FILE` | `certs/server.crt` / `certs/server.key` | TLS certificate and key for MoQT. |
 | `CORS_ALLOWED_ORIGINS` | (unset) | Comma-separated origins allowed to POST from a browser and to open WebTransport (default: same-origin only; `*` allows any). |
