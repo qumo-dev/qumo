@@ -21,6 +21,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **An RTSP pull no longer drops a healthy stream on the server's answer to a keepalive (`internal/rtsp`, `internal/ingest`).** The keepalive added to stop servers timing a session out was read back as if it were a request, so several ordinary answers ended the pull and forced a reconnect every 5 to 30 seconds:
+  - **Any answer with a reason of more than one word** ("405 Method Not Allowed", "454 Session Not Found") failed to parse. Responses are now read as responses.
+  - **Any answer with a body** left the body on the connection, where it was taken for the next message. It is now read to its end.
+  - **A camera that does not implement `GET_PARAMETER`** (405 or 501) is kept alive with `OPTIONS` from then on.
+  - **A camera that authenticates every request** answered the keepalive with 401 and the session was never refreshed. Keepalives now carry the credentials once the server has challenged.
+  - **454 Session Not Found** ends the pull with `rtsp.ErrSessionNotFound`, so it reconnects at once and not when the stream dries up.
+  - **A peer that stops reading** can no longer hold a keepalive, and with it the close of the connection, for ever: the write gives up after 5 seconds. Stopping the keepalive waits for it to finish, and a keepalive that fails is logged as a warning and tried again at the next interval.
+  - **A data race** on the request sequence number between the keepalive and the close is gone.
 - **A credential whose header carries `crit` is refused** (`token.Verify`, and so the relay). `crit` lists headers a verifier must understand (RFC 7515 4.1.11); the relay understands none beyond `alg`, `kid` and `typ`, and took such a token as valid. No token `token.Sign` or `qumo auth token` makes carries one.
 - **Every answer of the HLS egress carries `Vary: Origin`** (`internal/hls/cors.go`), not only one to an allowed origin. A manifest or segment fetched with no `Origin`, or from an origin that isn't allowed, was answered without it, so a shared cache or CDN in front of the egress could keep that answer and serve it to a page on an allowed origin, whose browser then refused it.
 
@@ -74,6 +82,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Removed
 
+- **`trackBuffer.SetFrameCleaner` (`internal/ingest`), added for frame pooling to come.** Nothing called the callback it stored, and its comment said the egress loop did. Called as described, it would have handed a frame back to a pool while other subscribers of the same track were still being sent it. It returns with the pool, when there is a point at which a frame is known to be done with.
 - **Breaking: the auth server is gone: the relay no longer asks one (`QUMO_AUTH_URL`), and `qumo auth` no longer runs one.** The relay verifies credentials itself against a key set (`QUMO_AUTH_KEYS`), which does the same checks in the relay process.
   - **To move over:** unset `QUMO_AUTH_URL` on the relay, set `QUMO_AUTH_KEYS` to the key set the auth server was reading, and stop the `qumo auth` process. Tokens and signing keys are unchanged.
   - **A relay with `QUMO_AUTH_URL` still set refuses to start,** rather than starting with auth off.

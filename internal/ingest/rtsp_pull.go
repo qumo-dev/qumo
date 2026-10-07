@@ -279,33 +279,55 @@ func pullStream(ctx context.Context, srcURL string, sess *Session) error {
 // timeout in the Session header (RFC 2326 §12.37 defaults to 60 seconds).
 const defaultSessionTimeout = 60 * time.Second
 
-// startKeepalive launches a background goroutine that sends periodic
-// GET_PARAMETER requests to keep the RTSP session alive. It returns a stop
-// function that cancels the goroutine. The keepalive interval is half the
-// session timeout, clamped to [5s, 30s].
-func startKeepalive(ctx context.Context, client *rtsp.Client) func() {
-	timeout := client.SessionTimeout()
-	if timeout == 0 {
+// The keepalive interval is never shorter or longer than these, whatever
+// timeout the server advertises: a tiny timeout must not turn into a stream of
+// requests, and a huge one must not leave a dead session unnoticed for long.
+const (
+	minKeepaliveInterval = 5 * time.Second
+	maxKeepaliveInterval = 30 * time.Second
+)
+
+// keepaliver is the part of an RTSP client the keepalive loop needs.
+type keepaliver interface {
+	SessionTimeout() time.Duration
+	SendKeepalive() error
+}
+
+var _ keepaliver = (*rtsp.Client)(nil)
+
+// keepaliveInterval returns how often to send a keepalive for a session with
+// the given timeout: half of it, so that one lost keepalive does not cost the
+// session, within [minKeepaliveInterval, maxKeepaliveInterval]. A timeout of
+// zero means the server named none.
+func keepaliveInterval(timeout time.Duration) time.Duration {
+	if timeout <= 0 {
 		timeout = defaultSessionTimeout
 	}
-	interval := timeout / 2
-	if interval < 5*time.Second {
-		interval = 5 * time.Second
-	}
-	if interval > 30*time.Second {
-		interval = 30 * time.Second
-	}
+	return min(max(timeout/2, minKeepaliveInterval), maxKeepaliveInterval)
+}
+
+// startKeepalive launches a goroutine that sends a keepalive every
+// [keepaliveInterval] until ctx ends or the returned stop function is called.
+// stop returns once the goroutine has exited, so that no keepalive is written
+// after it: the caller goes on to close the connection.
+//
+// A keepalive that cannot be sent is logged and the next one is still tried.
+// If the connection is gone, the read loop finds out and ends the pull.
+func startKeepalive(ctx context.Context, client keepaliver) (stop func()) {
+	interval := keepaliveInterval(client.SessionTimeout())
 
 	done := make(chan struct{})
+	exited := make(chan struct{})
 	go func() {
+		defer close(exited)
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
 		for {
 			select {
 			case <-ticker.C:
 				if err := client.SendKeepalive(); err != nil {
-					slog.Debug("RTSP keepalive failed", "error", err)
-					return
+					slog.Warn("RTSP keepalive failed", "error", err, "interval", interval)
+					continue
 				}
 				slog.Debug("RTSP keepalive sent", "interval", interval)
 			case <-ctx.Done():
@@ -316,7 +338,10 @@ func startKeepalive(ctx context.Context, client *rtsp.Client) func() {
 		}
 	}()
 
-	return func() { close(done) }
+	return func() {
+		close(done)
+		<-exited
+	}
 }
 
 // resolveControlURL resolves an SDP media's a=control URL against the session
