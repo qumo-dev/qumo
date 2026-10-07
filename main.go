@@ -8,6 +8,7 @@ import (
 
 	"github.com/qumo-dev/qumo/internal/auth"
 	"github.com/qumo-dev/qumo/internal/doctor"
+	"github.com/qumo-dev/qumo/internal/funnel"
 	"github.com/qumo-dev/qumo/internal/hls"
 	"github.com/qumo-dev/qumo/internal/ingest"
 	"github.com/qumo-dev/qumo/internal/loadgen"
@@ -19,6 +20,7 @@ import (
 
 var (
 	// overridable command handlers for easier unit-testing
+	runFunnel     = funnel.Run
 	runHLS        = hls.Run
 	runRelay      = relay.Run
 	runRTMP       = ingest.RunRTMP
@@ -85,6 +87,8 @@ func run(args []string) int {
 	switch cmd {
 	case "auth":
 		err = runAuth(cmdArgs)
+	case "funnel":
+		err = runFunnel(cmdArgs)
 	case "hls":
 		err = runHLS(cmdArgs)
 	case "relay":
@@ -121,8 +125,9 @@ func printUsage() {
 	fmt.Fprintln(os.Stderr, "")
 	fmt.Fprintln(os.Stderr, "Commands:")
 	fmt.Fprintln(os.Stderr, "  auth       Set up the credentials a relay verifies (keygen, token)")
+	fmt.Fprintln(os.Stderr, "  funnel     Funnel many HTTP senders into one MoQT track (announce/record over POST)")
 	fmt.Fprintln(os.Stderr, "  hls        Start the HLS/DASH egress server")
-	fmt.Fprintln(os.Stderr, "  relay      Start the MoQ relay server (--role hub|edge; default flat)")
+	fmt.Fprintln(os.Stderr, "  relay     Start the MoQ relay server (--role hub|edge; default flat)")
 	fmt.Fprintln(os.Stderr, "  rtmp       Start the RTMP ingest server")
 	fmt.Fprintln(os.Stderr, "  rtsp       Pull from an RTSP source (e.g. IP camera) and republish as MoQT")
 	fmt.Fprintln(os.Stderr, "  rtsp-push  Start the RTSP push ingest server (ANNOUNCE/RECORD)")

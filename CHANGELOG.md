@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`qumo funnel`: funnels many HTTP senders into one MoQT track, recording each record before it is sent (`internal/funnel`).**
+  Many senders POST records into one track, and a subscriber receives all of them on one subscription. The funnel publishes through a relay it dials as a client, and can also serve subscribers itself; it does not join the relay mesh as a peer.
+  - **Requests.** A record is the body of `POST /tracks/room/123/chat` — the track `chat` of the broadcast `/room/123` — one JSON value in UTF-8; it creates the track when it does not exist. `PUT` to the same URL creates the track ahead of its first record, and `GET` answers a page of its history, oldest first: the newest records, or those `?before=` a group, at most `?limit=`.
+  - **Records.** Each is stored and sent as `{"sender": …, "payload": …}`: the payload as posted, and the sender its credential names.
+  - **Retries and limits.** A record with an `Idempotency-Key` header is stored once per sender and track; a retry with the same key gets the first reply. `FUNNEL_SENDER_LIMIT` and `FUNNEL_TRACK_LIMIT` (`RATE,BURST`) limit records per sender and per track, answering `429` with `Retry-After`.
+  - **Credentials.** With `QUMO_AUTH_KEYS`, every request carries a qumo credential as `Authorization: Bearer`, verified against the relay's key set. Reading needs a grant to subscribe at the broadcast path. Recording needs a grant to publish at the broadcast path, which records with no sender, or one segment beneath it, which names the sender: `/room/123/alice` records into `/room/123` as `alice`. It is checked on every request, so an expired or revoked credential is refused at once. A `401` carries `WWW-Authenticate: Bearer`. Without a key set, every request is accepted with no sender.
+  - **Through a relay.** With `RELAY_URL`, the funnel dials the relay as a client and announces its broadcasts there, so subscribers use the relay they already reach. Its credential is the `?jwt=` in the URL, or, with `RELAY_SIGNING_KEY` and `RELAY_PUBLISH`, one it signs afresh for every session. When the session ends, as the relay ends it when its credential expires, the funnel dials again. Its own MoQT listener (`FUNNEL_SERVE_ADDR`) is then off unless set.
+  - **Recorded, then sent.** Each record is committed to a qumo-ledger track through qumo-ledger's new `ingest` package, and only then sent to MoQT subscribers, in commit order.
+  - **Where records go.** `LEDGER_URI` names the store, and its scheme selects one of qumo-ledger's backends: `file:///var/lib/qumo` is a directory, `postgres://…` a table in PostgreSQL or CockroachDB, `s3://bucket/prefix?region=…` an S3 or S3-compatible bucket, and unset or empty is memory, lost on exit and not bounded. A bare path or any other scheme is an error.
+  - **On the wire.** One record is one group holding one frame, the record as stored. A group's sequence is one more than the sequence of the ledger group that stores the record. A new subscriber starts at the track's latest record. Only created tracks are served; another track name is refused as not found.
+  - **Restarts.** At startup the funnel lists its store and publishes every track it recorded before, with its latest record, so subscribers reach them before anyone records again. Idempotency keys do not survive a restart.
+  - **Configuration.** `FUNNEL_ADDR` (default `:8090`), `RELAY_URL`, `RELAY_SIGNING_KEY` / `RELAY_PUBLISH`, `RELAY_CA_FILE`, `RELAY_TLS_INSECURE`, `FUNNEL_SERVE_ADDR` (default `:4433` without a relay), `LEDGER_URI` (default memory), `CERT_FILE` / `KEY_FILE`, `CORS_ALLOWED_ORIGINS`, which also governs browser requests, and `QUMO_AUTH_KEYS` / `QUMO_AUTH_KEYS_CACHE` / `QUMO_RELAY_TOKEN` as the relay reads them, and `FUNNEL_SENDER_LIMIT` / `FUNNEL_TRACK_LIMIT`.
+  - **Limits.** The HTTP listener is plain HTTP; terminate TLS in front of it. Records of a track are ordered within one process only, so one funnel writes a track. A track idle for 10 minutes is closed and opened again from the store on its next record. Recorded tracks carry no duration and are not served by `qumo hls`.
+  - **Dependency.** qumo-ledger moves to v0.2.0, which adds the `ingest` package and `store.Open`.
+
 ### Changed
 
 - **Breaking: relay peers authenticate with certificates a relay CA issued, in both directions, and a relay's peer identity is separate from its public certificate (`internal/relay/peer_trust.go`).**

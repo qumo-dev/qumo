@@ -8,7 +8,7 @@ import (
 	"testing"
 
 	"github.com/okdaichi/qumo-ledger/ledger"
-	"github.com/okdaichi/qumo-ledger/ledger/store/memstore"
+	"github.com/okdaichi/qumo-ledger/ledger/store/mem"
 	"github.com/okdaichi/qumo-ledger/stream"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -20,7 +20,7 @@ import (
 // packaging into fMP4, and sample-accurate timestamps are separate concerns.
 func Test_serve_playlist(t *testing.T) {
 	ctx := context.Background()
-	store := memstore.New()
+	store := mem.New()
 	track, err := ledger.Create(ctx, store, "live/cam1/video", ledger.TrackSchema{
 		Timescale: 90000, TimeSource: ledger.TimeSourceIngest,
 		MIME: "video/mp4", Encoding: "fmp4",

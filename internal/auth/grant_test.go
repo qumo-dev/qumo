@@ -69,6 +69,14 @@ func TestNewGrant(t *testing.T) {
 	assert.Equal(t, 30*time.Second, g.Revalidate())
 }
 
+func TestPatterns_Bases(t *testing.T) {
+	g, err := NewGrant([]string{"acme/app/**", "**"}, nil, time.Time{}, 0)
+	require.NoError(t, err)
+
+	assert.Equal(t, []string{"acme/app", ""}, g.Publish.Bases())
+	assert.Empty(t, g.Subscribe.Bases())
+}
+
 func TestNewGrant_Empty(t *testing.T) {
 	g, err := NewGrant(nil, nil, time.Time{}, 0)
 

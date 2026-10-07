@@ -77,6 +77,7 @@ qumo rtmp        # Start RTMP ingest server (bridges RTMP → MoQT)
 qumo rtsp        # Pull from an RTSP source (e.g. IP camera) and republish as MoQT
 qumo rtsp-push   # Start the RTSP push ingest server (bridges RTSP → MoQT)
 qumo hls         # Start the HLS/DASH egress server (subscribes to a MoQ relay, serves HLS/DASH)
+qumo funnel      # Funnel many HTTP senders into one MoQT track (records each POSTed record, then serves it)
 qumo playground  # One-command local demo: in-process relay + embedded web UI on http://127.0.0.1:8080
 qumo loadgen     # Out-of-process capacity load generator (publish|subscribe) — see Benchmarking
 qumo update      # Update qumo to the latest release (--check to verify without applying)
