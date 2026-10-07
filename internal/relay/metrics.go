@@ -48,6 +48,16 @@ var (
 		Help:      "Announcements not routed because the session's grant doesn't cover the path.",
 	})
 
+	// metricContributions counts the requests to contribute a track that
+	// reached a route's handler, by what became of them (contribute.go). A
+	// request for a path with no route is refused by gomoqt and not counted.
+	metricContributions = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "qumo",
+		Subsystem: "relay",
+		Name:      "contributions_total",
+		Help:      "Requests to contribute a track, by outcome: admitted, replaced (the earlier request for the same track), not_covered or too_many.",
+	}, []string{"outcome"})
+
 	// metricSubscribeAuthorizations counts subscriptions checked against the
 	// session's grant. A relay peer's and an internal client's subscriptions
 	// aren't checked against a credential, and aren't counted.

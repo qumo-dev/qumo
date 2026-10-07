@@ -109,6 +109,12 @@ type relayHandler struct {
 	trackInfoCache sync.Map           // moqt.TrackName -> moqt.PublishInfo
 	infoFlights    singleflight.Group // deduplicates concurrent upstream TrackInfo queries
 
+	// contributed is the server's table of requests to contribute a track
+	// (contribute.go), which ServeContribute fills for this route's path. A
+	// contributed track is served by its contributor, not by session. nil
+	// takes no contribution, for a handler built without a Server.
+	contributed *contributionTable
+
 	// sampler is the server-wide stats sampler, passed to each track
 	// distributor this handler creates (see subscribe). nil is valid (nil-safe
 	// methods) for a handler built without a Server.
@@ -333,6 +339,17 @@ func (h *relayHandler) TrackInfo(name moqt.TrackName) (pubInfo moqt.PublishInfo,
 
 	path := announcement.BroadcastPath()
 
+	// A contributed track's properties come from its contributor. They are
+	// not cached: a later offer of the same track may come from another
+	// session with other properties.
+	if w := h.contributed.get(path, name); w != nil {
+		info, err := w.TrackInfo(ctx)
+		if err != nil || info == nil {
+			return moqt.PublishInfo{}, false
+		}
+		return *info, true
+	}
+
 	defer func() {
 		if r := recover(); r != nil {
 			pubInfo = moqt.PublishInfo{}
@@ -440,7 +457,17 @@ func (h *relayHandler) subscribe(name moqt.TrackName) *trackDistributor {
 	track := string(name)
 	metricTrackUpstreamRequestsTotal.WithLabelValues(path, track).Inc()
 	start := time.Now()
-	src, err := session.Subscribe(h.ctx, announcement.BroadcastPath(), name, nil)
+	var (
+		src *moqt.TrackReader
+		err error
+	)
+	// A contribution of this track takes precedence over the route: the
+	// subscription goes to the contributor, on its Contribute Stream.
+	if w := h.contributed.get(announcement.BroadcastPath(), name); w != nil {
+		src, err = w.Subscribe(h.ctx, nil)
+	} else {
+		src, err = session.Subscribe(h.ctx, announcement.BroadcastPath(), name, nil)
+	}
 	metricTrackUpstreamRequestDuration.WithLabelValues(path, track).Observe(time.Since(start).Seconds())
 	if err != nil {
 		metricTrackUpstreamRequestErrorsTotal.WithLabelValues(path, track).Inc()

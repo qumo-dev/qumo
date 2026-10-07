@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **The relay takes contributions: a publisher can add a track to a broadcast another publisher announces (#485).**
+  A contributor sends `CONTRIBUTE_REQUEST` on a Contribute Stream (qumo-dev/gomoqt#450). The relay holds the request and subscribes on that stream only when a subscriber asks for the track, so a contribution with no subscribers carries nothing. A contributed track takes precedence over the route when its track is requested; every other track of the broadcast still comes from the announcer.
+  - **Experimental, single relay.** A contributed track is reachable only on the relay its contributor is connected to: contributions are not forwarded to peers yet.
+  - **Where.** Only a broadcast path with a route announced for exactly that path takes contributions. A broader route is not enough.
+  - **Authorization.** A contribution is checked against the session's `Publish` grant as the path `<broadcast>/<track name>`. A credential that may publish `room/1/chat/alice/**` can contribute the track `alice` to `/room/1/chat` and cannot announce `/room/1/chat` itself. With auth off, every request to an announced path is admitted.
+  - A later request for the same path and track replaces the earlier one. A session may hold 128 requests open.
+  - New metric `qumo_relay_contributions_total`, by `outcome`: `admitted`, `replaced`, `not_covered`, `too_many`.
+
 ### Changed
 
 - **Breaking: relay peers authenticate with certificates a relay CA issued, in both directions, and a relay's peer identity is separate from its public certificate (`internal/relay/peer_trust.go`).**

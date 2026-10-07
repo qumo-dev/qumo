@@ -94,6 +94,11 @@ type Server struct {
 	routeMu    sync.Mutex
 	alternates map[moqt.BroadcastPath]*alternate
 
+	// contributed holds the requests to contribute a track that sessions made
+	// on Contribute Streams (contribute.go). Created in init(), and shared
+	// with every route's relayHandler, which admits them.
+	contributed *contributionTable
+
 	// pathStatusMu guards pathStatus, the deploy-facing snapshot of active
 	// broadcast paths and their route metrics.
 	pathStatusMu sync.Mutex
@@ -169,6 +174,7 @@ func (s *Server) init() {
 		if s.TrackMux == nil {
 			s.TrackMux = moqt.NewTrackMux(0)
 		}
+		s.contributed = newContributionTable()
 
 		if s.statusHandler == nil {
 			s.statusHandler = newStatusHandler()
@@ -718,6 +724,7 @@ func (s *Server) serveSession(sess *moqt.Session) {
 
 		handler := newRelayHandler(ann, sess, s.Config.NodeID,
 			s.Config.GroupCacheSize, s.framePool, s.sampler)
+		handler.contributed = s.contributed
 
 		slog.Debug("relay: created relayHandler",
 			"node", s.Config.NodeID,

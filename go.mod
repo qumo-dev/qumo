@@ -30,3 +30,8 @@ require (
 	golang.org/x/text v0.41.0 // indirect
 	google.golang.org/protobuf v1.36.12 // indirect
 )
+
+// TEMPORARY, for review of the Contribute Stream (qumo-dev/qumo#485): the
+// gomoqt change it needs (qumo-dev/gomoqt#450) is unreleased and lives in a
+// sibling worktree. Replace with a released gomoqt version before merging.
+replace github.com/qumo-dev/gomoqt => ../gomoqt-contribute
