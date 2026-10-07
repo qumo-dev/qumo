@@ -11,13 +11,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **`qumo funnel`: funnels many HTTP senders into one MoQT track, recording each record before it is sent (`internal/funnel`).**
   Many contributors POST records into one track, and a subscriber receives all of them on one subscription. It is a standalone origin like `qumo rtmp` and does not join the relay mesh.
-  - **Requests.** `POST /announce` and `POST /record`, each with a JSON body naming the track and the contributor: `{"broadcast_path": "/room/123", "track_name": "chat", "name": "alice"}`. `record` also carries `payload`, any JSON value. `announce` creates the track when it does not exist; a `record` to a track nobody announced answers `404`.
+  - **Requests.** `POST /announce` with `{"broadcast_path": "/room/123", "track_name": "chat", "name": "alice"}` creates the track when it does not exist and starts a contribution: `201` with `Location: contributions/{id}`. Records are the bodies of `POST /contributions/{id}/records`, any JSON value, and `DELETE /contributions/{id}` ends the contribution. Announcing again under the same name, or five idle minutes, also ends it; an ended contribution answers `410`.
+  - **Credentials.** With `QUMO_AUTH_KEYS`, every request carries a qumo credential as `Authorization: Bearer`, verified against the relay's key set. Its publish grant must cover the broadcast path joined with the contributor's name (`/room/123/alice`), so the name is the one the credential grants. It is checked on every request, so an expired or revoked credential stops a live contribution. Without a key set, every contributor is accepted.
   - **Recorded, then sent.** Each record is committed to a qumo-ledger track through qumo-ledger's new `ingest` package, and only then sent to MoQT subscribers, in commit order.
   - **Where records go.** `LEDGER_URI` names the store, and its scheme selects one of qumo-ledger's backends: `file:///var/lib/qumo` is a directory, `postgres://…` a table in PostgreSQL or CockroachDB, `s3://bucket/prefix?region=…` an S3 or S3-compatible bucket, and unset or empty is memory, lost on exit and not bounded. A bare path or any other scheme is an error.
   - **On the wire.** One record is one group holding one frame, the JSON object `{"name": ..., "payload": ...}`. A group's sequence is one more than the sequence of the ledger group that stores the record. A new subscriber starts at the track's latest record.
-  - **Configuration.** `FUNNEL_ADDR` (default `:8090`), `FUNNEL_SERVE_ADDR` (default `:4433`), `LEDGER_URI` (default memory), `CERT_FILE` / `KEY_FILE`, and `CORS_ALLOWED_ORIGINS`, which also governs browser POSTs.
-  - **Limits.** The HTTP listener checks no credentials, so it must run behind a service that authenticates contributors. Records of a track are ordered within one process only. Recorded tracks carry no duration and are not served by `qumo hls`.
-  - **Dependency.** qumo-ledger moves to a pre-release commit that adds the `ingest` package (okdaichi/qumo-ledger#18).
+  - **Configuration.** `FUNNEL_ADDR` (default `:8090`), `FUNNEL_SERVE_ADDR` (default `:4433`), `LEDGER_URI` (default memory), `CERT_FILE` / `KEY_FILE`, `CORS_ALLOWED_ORIGINS`, which also governs browser requests, and `QUMO_AUTH_KEYS` / `QUMO_AUTH_KEYS_CACHE` / `QUMO_RELAY_TOKEN` as the relay reads them.
+  - **Limits.** The HTTP listener is plain HTTP; terminate TLS in front of it. Records of a track are ordered within one process only. Recorded tracks carry no duration and are not served by `qumo hls`.
+  - **Dependency.** qumo-ledger moves to a pre-release commit that adds the `ingest` package and `store.Open` (okdaichi/qumo-ledger#18, #19).
 
 ### Changed
 

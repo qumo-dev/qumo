@@ -4,8 +4,14 @@
 // qumo-ledger track first and then sent to the track's MoQ subscribers, so a
 // subscriber only ever sees a record that is stored.
 //
-//	POST /announce  {"broadcast_path": "/room/123", "track_name": "chat", "name": "alice"}
-//	POST /record    {"broadcast_path": "/room/123", "track_name": "chat", "name": "alice", "payload": ...}
+//	POST   /announce                    {"broadcast_path": "/room/123", "track_name": "chat", "name": "alice"}
+//	                                    → 201, Location: contributions/{id}
+//	POST   /contributions/{id}/records  the record's payload, any JSON value
+//	DELETE /contributions/{id}          end the contribution
+//
+// With a key set, every request carries a qumo credential as a bearer token,
+// and the credential must grant publishing at the broadcast path joined with
+// the contributor's name: "/room/123/alice" above.
 //
 // A subscriber reads the track at that broadcast path and track name. Each
 // record is one group holding one frame, the JSON object
@@ -15,7 +21,6 @@ package funnel
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"log"
 	"log/slog"
@@ -29,6 +34,7 @@ import (
 	"github.com/okdaichi/qumo-ledger/ledger/store"
 	"github.com/qumo-dev/gomoqt/moqt"
 
+	"github.com/qumo-dev/qumo/internal/auth"
 	"github.com/qumo-dev/qumo/internal/cors"
 	"github.com/qumo-dev/qumo/internal/envconfig"
 )
@@ -49,9 +55,11 @@ const (
 //	CERT_FILE            - TLS certificate file for MoQT (default: "certs/server.crt")
 //	KEY_FILE             - TLS key file for MoQT (default: "certs/server.key")
 //	CORS_ALLOWED_ORIGINS - comma-separated origins allowed to POST and to open WebTransport (default: same-origin only; "*" allows any)
+//	QUMO_AUTH_KEYS       - the key set contributors' credentials are verified against, as the relay reads it (default: none, every request is accepted)
+//	QUMO_AUTH_KEYS_CACHE - a file a downloaded key set is kept in between runs
+//	QUMO_RELAY_TOKEN     - bearer token sent to a key-set URL
 //
-// The HTTP listener is plain HTTP and checks no credentials: run it behind
-// whatever authenticates contributors.
+// The HTTP listener is plain HTTP: terminate TLS in front of it.
 func Run(_ []string) error {
 	ingestAddr := envconfig.String("FUNNEL_ADDR", defaultIngestAddr)
 	serveAddr := envconfig.String("FUNNEL_SERVE_ADDR", defaultServeAddr)
@@ -68,8 +76,25 @@ func Run(_ []string) error {
 		return err
 	}
 
+	authName := "off: every request is accepted"
+	var verifier *auth.Verifier
+	if keys := os.Getenv("QUMO_AUTH_KEYS"); keys != "" {
+		verifier, err = auth.NewVerifier(auth.VerifierConfig{
+			Keys:      keys,
+			KeysCache: os.Getenv("QUMO_AUTH_KEYS_CACHE"),
+			Token:     os.Getenv("QUMO_RELAY_TOKEN"),
+		})
+		if err != nil {
+			return err
+		}
+		go verifier.Run(ctx)
+		authName = verifier.Source()
+	} else {
+		slog.Warn("funnel: auth is off: no key set (QUMO_AUTH_KEYS), so every contributor is accepted unchecked")
+	}
+
 	trackMux := moqt.NewTrackMux(0)
-	handler, err := NewHandler(ctx, objects, trackMux)
+	handler, err := NewHandler(ctx, objects, trackMux, verifier)
 	if err != nil {
 		return err
 	}
@@ -98,6 +123,7 @@ func Run(_ []string) error {
 	log.Println("	Ingest  :", ingestAddr)
 	log.Println("	Serve   :", serveAddr)
 	log.Println("	Ledger  :", storeName)
+	log.Println("	Auth    :", authName)
 
 	go func() {
 		if err := httpSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
@@ -125,29 +151,26 @@ func Run(_ []string) error {
 
 // NewHandler builds the announce and record handler over objects, wired to
 // publish what it commits on trackMux. Broadcasts stay announced until ctx
-// ends.
-func NewHandler(ctx context.Context, objects store.Store, trackMux *moqt.TrackMux) (http.Handler, error) {
+// ends. A nil verifier accepts every contributor.
+func NewHandler(ctx context.Context, objects store.Store, trackMux *moqt.TrackMux, verifier *auth.Verifier) (http.Handler, error) {
 	out := newEgress(ctx, trackMux)
 	return ingest.NewHandler(objects, ingest.Options{
+		Authorize: authorizer(verifier),
 		OnAnnounce: func(_ context.Context, a ingest.Announced) {
 			out.announce(moqt.BroadcastPath(a.BroadcastPath))
 		},
 		OnRecord: func(_ context.Context, rec ingest.Recorded) {
-			payload, err := json.Marshal(rec.Record)
-			if err != nil {
-				slog.Error("funnel: encode record", "track", rec.Track(), "error", err)
-				return
-			}
 			out.publish(moqt.BroadcastPath(rec.BroadcastPath), moqt.TrackName(rec.TrackName), group{
 				seq:     moqt.GroupSequence(rec.Group.ID.Sequence() + 1),
-				payload: payload,
+				payload: rec.Data,
 			})
 		},
 		Logger: slog.Default(),
 	})
 }
 
-// withCORS lets a browser on an allowed origin POST to h, and answers its
+// withCORS lets a browser on an allowed origin call h with a bearer
+// credential and read the Location of a contribution, and answers its
 // preflight request.
 func withCORS(h http.Handler, allowed []string) http.Handler {
 	allow := cors.NewChecker(allowed)
@@ -155,8 +178,9 @@ func withCORS(h http.Handler, allowed []string) http.Handler {
 		w.Header().Add("Vary", "Origin")
 		if origin := r.Header.Get("Origin"); origin != "" && allow(r) {
 			w.Header().Set("Access-Control-Allow-Origin", origin)
-			w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
-			w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+			w.Header().Set("Access-Control-Allow-Methods", "POST, DELETE, OPTIONS")
+			w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type")
+			w.Header().Set("Access-Control-Expose-Headers", "Location")
 		}
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)

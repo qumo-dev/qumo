@@ -39,6 +39,11 @@ func TestWithCORS(t *testing.T) {
 			assert.Equal(t, tt.wantStatus, rr.Code)
 			assert.Equal(t, tt.wantAllowed, rr.Header().Get("Access-Control-Allow-Origin"))
 			assert.Equal(t, tt.wantServed, served)
+			if tt.wantAllowed != "" {
+				assert.Contains(t, rr.Header().Get("Access-Control-Allow-Headers"), "Authorization")
+				assert.Contains(t, rr.Header().Get("Access-Control-Allow-Methods"), "DELETE")
+				assert.Equal(t, "Location", rr.Header().Get("Access-Control-Expose-Headers"))
+			}
 		})
 	}
 }
