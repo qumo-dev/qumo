@@ -57,6 +57,7 @@ func TestNewHandler_RefusedAnnounceIsNotPublished(t *testing.T) {
 		strings.NewReader(`{"broadcast_path":"/room/123","track_name":"chat","name":"alice"}`)))
 
 	assert.Equal(t, http.StatusUnauthorized, rr.Code)
+	assert.Equal(t, "Bearer", rr.Header().Get("WWW-Authenticate"))
 	ann, _ := mux.TrackHandler("/room/123")
 	assert.Nil(t, ann)
 }

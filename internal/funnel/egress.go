@@ -60,6 +60,8 @@ type broadcast struct {
 	tracks map[moqt.TrackName]*track
 }
 
+// track returns the named track, creating it. Only an announce, a record or a
+// restore creates tracks; a subscriber never does.
 func (b *broadcast) track(name moqt.TrackName) *track {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -71,10 +73,23 @@ func (b *broadcast) track(name moqt.TrackName) *track {
 	return t
 }
 
+// lookup returns the named track if it exists.
+func (b *broadcast) lookup(name moqt.TrackName) (*track, bool) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	t, ok := b.tracks[name]
+	return t, ok
+}
+
 // ServeTrack sends a subscriber the track's latest record and then each new
-// one, until the subscriber leaves.
+// one, until the subscriber leaves. A track nobody announced is not found.
 func (b *broadcast) ServeTrack(tw *moqt.TrackWriter) {
-	b.track(tw.TrackName).serve(tw)
+	t, ok := b.lookup(tw.TrackName)
+	if !ok {
+		tw.CloseWithError(moqt.SubscribeErrorCodeNotFound)
+		return
+	}
+	t.serve(tw)
 }
 
 // track fans the records of one track out to its subscribers.

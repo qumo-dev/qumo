@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/okdaichi/qumo-ledger/ledger/store"
 	"github.com/okdaichi/qumo-ledger/ledger/store/memstore"
 	"github.com/qumo-dev/gomoqt/moqt"
 	"github.com/qumo-dev/qumo/internal/auth"
@@ -27,15 +28,15 @@ import (
 
 // startFunnel stands up the announce and record handler and a MoQT origin
 // that share one TrackMux, as funnel.Run does. It returns the HTTP base URL
-// and the WebTransport URL subscribers dial. A nil verifier accepts every
-// contributor.
-func startFunnel(t *testing.T, verifier *auth.Verifier) (ingestURL, serveURL string) {
+// and the WebTransport URL subscribers dial. Records are stored in objects. A
+// nil verifier accepts every contributor.
+func startFunnel(t *testing.T, objects store.Store, verifier *auth.Verifier) (ingestURL, serveURL string) {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 
 	mux := moqt.NewTrackMux(0)
-	handler, err := funnel.NewHandler(ctx, memstore.New(), mux, verifier)
+	handler, err := funnel.NewHandler(ctx, objects, mux, verifier)
 	require.NoError(t, err)
 	httpSrv := httptest.NewServer(handler)
 	t.Cleanup(httpSrv.Close)
@@ -145,7 +146,7 @@ func subscribeChat(t *testing.T, serveURL string) *moqt.TrackReader {
 }
 
 func TestFunnel_RecordsReachAMoQSubscriber(t *testing.T) {
-	ingestURL, serveURL := startFunnel(t, nil)
+	ingestURL, serveURL := startFunnel(t, memstore.New(), nil)
 	status, alice := announce(t, ingestURL, "", "alice")
 	require.Equal(t, http.StatusCreated, status)
 	require.Equal(t, http.StatusCreated, record(t, alice, "", `{"text":"hello"}`))
@@ -169,11 +170,50 @@ func TestFunnel_RecordsReachAMoQSubscriber(t *testing.T) {
 }
 
 func TestFunnel_UnknownContributionIsRefused(t *testing.T) {
-	ingestURL, _ := startFunnel(t, nil)
+	ingestURL, _ := startFunnel(t, memstore.New(), nil)
 
 	status := record(t, ingestURL+"/contributions/unknown/records", "", `"hello"`)
 
 	assert.Equal(t, http.StatusNotFound, status)
+}
+
+func TestFunnel_UnknownTrackIsNotFound(t *testing.T) {
+	ingestURL, serveURL := startFunnel(t, memstore.New(), nil)
+	status, _ := announce(t, ingestURL, "", "alice")
+	require.Equal(t, http.StatusCreated, status)
+	sess := dialOver(t, serveURL, nil, moqt.NewTrackMux(0))
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	_, err := sess.Subscribe(ctx, "/room/123", "nosuch", nil)
+
+	require.Error(t, err, "a track nobody announced is refused, not left waiting")
+	assert.NotErrorIs(t, err, context.DeadlineExceeded)
+}
+
+// TestFunnel_RestartServesRecordedTracks restarts the funnel over the store a
+// previous run recorded into: subscribers reach the track before anyone
+// announces again, starting at its latest record, and numbering continues.
+func TestFunnel_RestartServesRecordedTracks(t *testing.T) {
+	objects := memstore.New()
+	firstURL, _ := startFunnel(t, objects, nil)
+	status, alice := announce(t, firstURL, "", "alice")
+	require.Equal(t, http.StatusCreated, status)
+	require.Equal(t, http.StatusCreated, record(t, alice, "", `"before"`))
+
+	ingestURL, serveURL := startFunnel(t, objects, nil)
+	tr := subscribeChat(t, serveURL)
+
+	seq, got := nextRecord(t, tr)
+	assert.Equal(t, moqt.GroupSequence(1), seq)
+	assert.JSONEq(t, `{"name":"alice","payload":"before"}`, got)
+
+	status, alice = announce(t, ingestURL, "", "alice")
+	require.Equal(t, http.StatusCreated, status)
+	require.Equal(t, http.StatusCreated, record(t, alice, "", `"after"`))
+	seq, got = nextRecord(t, tr)
+	assert.Equal(t, moqt.GroupSequence(2), seq)
+	assert.JSONEq(t, `{"name":"alice","payload":"after"}`, got)
 }
 
 // TestFunnel_CredentialNamesTheContributor verifies contributors against a key
@@ -187,7 +227,7 @@ func TestFunnel_CredentialNamesTheContributor(t *testing.T) {
 	require.NoError(t, os.WriteFile(keys, set, 0o600))
 	verifier, err := auth.NewVerifier(auth.VerifierConfig{Keys: keys})
 	require.NoError(t, err)
-	ingestURL, serveURL := startFunnel(t, verifier)
+	ingestURL, serveURL := startFunnel(t, memstore.New(), verifier)
 	credential := func(path string) string {
 		c, err := token.Sign(key, token.Grant{Publish: path}, time.Minute)
 		require.NoError(t, err)

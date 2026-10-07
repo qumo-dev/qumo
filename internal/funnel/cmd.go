@@ -150,14 +150,23 @@ func Run(_ []string) error {
 }
 
 // NewHandler builds the announce and record handler over objects, wired to
-// publish what it commits on trackMux. Broadcasts stay announced until ctx
-// ends. A nil verifier accepts every contributor.
+// publish what it commits on trackMux. Tracks objects already holds are
+// published with their latest record first. Broadcasts stay announced until
+// ctx ends. A nil verifier accepts every contributor.
 func NewHandler(ctx context.Context, objects store.Store, trackMux *moqt.TrackMux, verifier *auth.Verifier) (http.Handler, error) {
 	out := newEgress(ctx, trackMux)
+	restored, err := restore(ctx, objects, out)
+	if err != nil {
+		return nil, err
+	}
+	if restored > 0 {
+		slog.Info("funnel: restored recorded tracks", "tracks", restored)
+	}
 	return ingest.NewHandler(objects, ingest.Options{
 		Authorize: authorizer(verifier),
+		Challenge: "Bearer",
 		OnAnnounce: func(_ context.Context, a ingest.Announced) {
-			out.announce(moqt.BroadcastPath(a.BroadcastPath))
+			out.announce(moqt.BroadcastPath(a.BroadcastPath)).track(moqt.TrackName(a.TrackName))
 		},
 		OnRecord: func(_ context.Context, rec ingest.Recorded) {
 			out.publish(moqt.BroadcastPath(rec.BroadcastPath), moqt.TrackName(rec.TrackName), group{

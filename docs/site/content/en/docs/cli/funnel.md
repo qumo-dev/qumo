@@ -95,6 +95,13 @@ A record is sent only after it is committed, in commit order. A group's
 sequence is one more than the sequence of the ledger group that stores the
 record. A new subscriber starts at the track's latest record.
 
+A subscriber reaches a track once a contributor has announced it. A
+subscription to any other track name of the broadcast is refused as not found.
+
+At startup the funnel lists its store once and publishes every track it
+recorded before, with its latest record, so subscribers reach them across a
+restart before anyone announces again.
+
 ## Configuration
 
 | Variable | Default | Description |
@@ -116,6 +123,8 @@ record. A new subscriber starts at the track's latest record.
   memory until the process exits. Use it for development.
 - **One process per track.** Records of a track are ordered within one process;
   two processes recording into the same track are not coordinated.
+- **Contributions do not survive a restart.** Contributors announce again;
+  the IDs of a previous run answer `404`.
 - **A quiet track answers late.** A subscription to a track with no record yet
   is answered when the first record arrives.
 - **Recorded tracks are not served over HLS.** Records carry no duration, which
