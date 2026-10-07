@@ -24,11 +24,14 @@ variables.
 ## Example
 
 ```console
-$ qumo http
+$ LEDGER_URI=file:///var/lib/qumo qumo http
 	Ingest  : :8090
 	Serve   : :4433
-	Ledger  : ./ledger
+	Ledger  : /var/lib/qumo
 ```
+
+Without `LEDGER_URI`, records are kept in memory and are lost when the
+process exits.
 
 A contributor announces the track, then records into it:
 
@@ -80,7 +83,7 @@ record. A new subscriber starts at the track's latest record.
 |---|---|---|
 | `HTTP_INGEST_ADDR` | `:8090` | HTTP listen address for `announce` and `record`. |
 | `HTTP_SERVE_ADDR` | `:4433` | MoQT listen address. |
-| `LEDGER_ROOT` | `./ledger` | qumo-ledger filesystem store directory. |
+| `LEDGER_URI` | (unset) | Where records are stored. The scheme selects the backend: `file:///var/lib/qumo` is a directory (`file:ledger` for a relative one), and unset or empty is memory. A bare path or any other scheme is an error. |
 | `CERT_FILE` / `KEY_FILE` | `certs/server.crt` / `certs/server.key` | TLS certificate and key for MoQT. |
 | `CORS_ALLOWED_ORIGINS` | (unset) | Comma-separated origins allowed to POST from a browser and to open WebTransport (default: same-origin only; `*` allows any). |
 
@@ -89,6 +92,8 @@ record. A new subscriber starts at the track's latest record.
 - **No authentication.** The HTTP listener is plain HTTP and checks no
   credentials, so anyone who can reach it can record under any name. Run it
   behind a service that authenticates contributors.
+- **Memory is not bounded.** With no `LEDGER_URI`, every record stays in
+  memory until the process exits. Use it for development.
 - **One process per track.** Records of a track are ordered within one process;
   two processes recording into the same track are not coordinated.
 - **A quiet track answers late.** A subscription to a track with no record yet

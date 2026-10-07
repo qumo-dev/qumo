@@ -18,7 +18,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"log"
 	"log/slog"
 	"net/http"
@@ -29,7 +28,6 @@ import (
 
 	"github.com/okdaichi/qumo-ledger/ingest"
 	"github.com/okdaichi/qumo-ledger/ledger/store"
-	"github.com/okdaichi/qumo-ledger/ledger/store/fsstore"
 	"github.com/qumo-dev/gomoqt/moqt"
 
 	"github.com/qumo-dev/qumo/internal/cors"
@@ -39,7 +37,6 @@ import (
 const (
 	defaultIngestAddr = ":8090"
 	defaultServeAddr  = ":4433"
-	defaultLedgerRoot = "./ledger"
 )
 
 // Run starts the HTTP ingest server and the MoQT origin that serves what it
@@ -49,7 +46,7 @@ const (
 //
 //	HTTP_INGEST_ADDR     - HTTP listen address for announce and record (default: ":8090")
 //	HTTP_SERVE_ADDR      - MoQT listen address (default: ":4433")
-//	LEDGER_ROOT          - qumo-ledger filesystem store directory (default: "./ledger")
+//	LEDGER_URI           - where records are stored: "file:///var/lib/qumo" for a directory, empty for memory (default: memory, lost on exit)
 //	CERT_FILE            - TLS certificate file for MoQT (default: "certs/server.crt")
 //	KEY_FILE             - TLS key file for MoQT (default: "certs/server.key")
 //	CORS_ALLOWED_ORIGINS - comma-separated origins allowed to POST and to open WebTransport (default: same-origin only; "*" allows any)
@@ -59,14 +56,14 @@ const (
 func Run(_ []string) error {
 	ingestAddr := envconfig.String("HTTP_INGEST_ADDR", defaultIngestAddr)
 	serveAddr := envconfig.String("HTTP_SERVE_ADDR", defaultServeAddr)
-	root := envconfig.String("LEDGER_ROOT", defaultLedgerRoot)
+	ledgerURI := envconfig.String("LEDGER_URI", "")
 	certFile := envconfig.String("CERT_FILE", "certs/server.crt")
 	keyFile := envconfig.String("KEY_FILE", "certs/server.key")
 	allowedOrigins := cors.LoadAllowed()
 
-	objects, err := fsstore.New(root)
+	objects, storeName, err := openStore(ledgerURI)
 	if err != nil {
-		return fmt.Errorf("open ledger store %s: %w", root, err)
+		return err
 	}
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -101,7 +98,7 @@ func Run(_ []string) error {
 
 	log.Println("	Ingest  :", ingestAddr)
 	log.Println("	Serve   :", serveAddr)
-	log.Println("	Ledger  :", root)
+	log.Println("	Ledger  :", storeName)
 
 	go func() {
 		if err := httpSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
