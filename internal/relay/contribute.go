@@ -7,18 +7,12 @@ import (
 	"github.com/qumo-dev/gomoqt/moqt"
 )
 
-// Contributions (qumo-dev/qumo#485, qumo-dev/gomoqt#450): a publisher asks,
-// on a Contribute Stream, to add one track to a broadcast it does not
-// announce. The relay holds the request and subscribes on that stream only
-// when a subscriber asks for the track, so a contribution with no subscribers
-// carries nothing.
+// A publisher asks, on a Contribute Stream, to add one track to a broadcast it
+// does not announce. The relay holds the request and subscribes on that stream
+// only when a subscriber asks for the track.
 //
-// gomoqt offers a request to the handler registered for exactly its broadcast
-// path, which here is the route's relayHandler. So a path takes contributions
-// only while a route is installed for it, and a broader route is not enough.
-//
-// This relay does not yet forward a contribution to its peers: a subscriber
-// reaches a contributed track only on the relay its contributor is connected to.
+// A request is served by the relayHandler of the route for exactly its
+// broadcast path, so a path takes contributions only while that route lasts.
 
 // maxContributionsPerSession bounds the requests one session may hold open.
 const maxContributionsPerSession = 128

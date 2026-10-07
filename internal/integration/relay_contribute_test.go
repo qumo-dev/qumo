@@ -1,8 +1,8 @@
 //go:build integration
 
-// Black-box tests of contributions (qumo-dev/qumo#485) on a real QUIC/MOQT
-// relay: a session offers one track of a broadcast another session announces,
-// and a subscriber of that track is served by the contributor.
+// Black-box tests of contributions on a real QUIC/MOQT relay: a session offers
+// one track of a broadcast another session announces, and a subscriber of that
+// track is served by the contributor.
 package integration
 
 import (
