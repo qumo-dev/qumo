@@ -36,7 +36,7 @@ func TestTrackDistributor_ByteCounters(t *testing.T) {
 	nodeID := fmt.Sprintf("node-%d", time.Now().UnixNano())
 	trackID := "[" + nodeID + "]/live/cam1/video"
 
-	dist := newTrackDistributor(newTrackManager(0, nil), trackID, nil, nil)
+	dist := newTrackDistributor(newTrackManager(0, nil), trackID, nil)
 	defer close(dist.done)
 
 	// Verify the counters are wired to the correct Prometheus metric+label.
@@ -75,7 +75,7 @@ func TestTrackDistributor_GroupRingIntegration(t *testing.T) {
 
 // TestTrackDistributor_DoneChannel tests that the done channel is closed when ingest stops
 func TestTrackDistributor_DoneChannel(t *testing.T) {
-	dist := newTrackDistributor(newTrackManager(0, nil), "[test-node]/test/test", nil, nil)
+	dist := newTrackDistributor(newTrackManager(0, nil), "[test-node]/test/test", nil)
 
 	// done should not be closed initially
 	select {
@@ -150,7 +150,7 @@ func TestRelayHandler_ConcurrentSubscribe(t *testing.T) {
 	for i := range numTracks {
 		name := moqt.TrackName(fmt.Sprintf("track-%d", i))
 		trackID := "[test-node]/test/" + string(name)
-		d := newTrackDistributor(h.tracks, trackID, nil, nil)
+		d := newTrackDistributor(h.tracks, trackID, nil)
 		defer close(d.done)
 		h.tracks.store(trackID, d)
 	}
@@ -185,7 +185,7 @@ func TestRelayHandler_SingleflightDedup(t *testing.T) {
 	h := newTestRelayHandler(t.Context()) // nil session for test
 
 	// Pre-populate a distributor in the cache
-	existing := newTrackDistributor(newTrackManager(0, nil), "[test-node]/test/video", nil, nil)
+	existing := newTrackDistributor(newTrackManager(0, nil), "[test-node]/test/video", nil)
 	defer close(existing.done) // Cleanup goroutine
 	h.tracks.store("[test-node]/test/video", existing)
 
@@ -288,9 +288,9 @@ func TestRelayHandler_TrackInfo_UseCases(t *testing.T) {
 	t.Run("ConcurrentCalls", func(t *testing.T) {
 		h := newTestRelayHandler(context.Background())
 		expected := moqt.PublishInfo{
-			Priority:   255,
-			Ordered:    true,
-			Timescale:  1000,
+			Priority:  255,
+			Ordered:   true,
+			Timescale: 1000,
 		}
 		// Pre-populate so concurrent calls read safely
 		h.trackInfoCache.Store(moqt.TrackName("catalog"), expected)
@@ -478,17 +478,14 @@ func TestIngest_WaitGroup_BlocksDoneUntilFillComplete(t *testing.T) {
 }
 
 // ============================================================================
-// trackDistributor metering integration tests
+// trackDistributor byte counters
 // ============================================================================
 
-// TestTrackDistributor_MeteringIngress verifies that processGroup accumulates
-// ingress bytes into the attached broadcastSession as well as the Prometheus counter.
-func TestTrackDistributor_MeteringIngress(t *testing.T) {
-	nodeID := fmt.Sprintf("meter-node-%d", time.Now().UnixNano())
-	trackID := "[" + nodeID + "]/live/test/video"
-
-	sess := newBroadcastSession("tok-ingress")
-	dist := newTrackDistributor(newTrackManager(0, nil), trackID, sess, nil)
+// TestTrackDistributor_IngressCounter verifies that processGroup adds the
+// group's bytes to the Prometheus ingress counter.
+func TestTrackDistributor_IngressCounter(t *testing.T) {
+	trackID := fmt.Sprintf("[ingress-node-%d]/live/test/video", time.Now().UnixNano())
+	dist := newTrackDistributor(newTrackManager(0, nil), trackID, nil)
 	t.Cleanup(func() { close(dist.done) })
 
 	payload := []byte("hello-world") // 11 bytes
@@ -497,53 +494,12 @@ func TestTrackDistributor_MeteringIngress(t *testing.T) {
 	ok := dist.processGroup(context.Background(), moqt.GroupSequence(1), src)
 	require.True(t, ok)
 	// processGroup dispatches to a worker; close the job channel and wait so the
-	// fill completes before asserting on its metering side effects.
+	// fill completes before asserting on the counter.
 	close(dist.fillJobs)
 	dist.fillWg.Wait()
 
-	assert.Equal(t, int64(len(payload)), sess.ingressBytes.Load(),
-		"processGroup must add ingress bytes to the broadcast session")
-	assert.Equal(t, 0.0+float64(len(payload)),
-		testutil.ToFloat64(metricRelayIngressBytesTotal.WithLabelValues(trackID)),
-		"Prometheus ingress counter must also be updated")
-}
-
-// TestTrackDistributor_MeteringEgress verifies that the egress path accumulates
-// egress bytes into the attached broadcastSession as well as the Prometheus counter.
-func TestTrackDistributor_MeteringEgress(t *testing.T) {
-	nodeID := fmt.Sprintf("meter-node-egress-%d", time.Now().UnixNano())
-	trackID := "[" + nodeID + "]/live/test/video"
-
-	sess := newBroadcastSession("tok-egress")
-	dist := newTrackDistributor(newTrackManager(0, nil), trackID, sess, nil)
-	t.Cleanup(func() { close(dist.done) })
-
-	// Simulate the egress byte-counting path directly via the session methods,
-	// mirroring what egress() does on each frame write.
-	dist.egressCounter.Add(float64(512))
-	sess.addEgress(512)
-	dist.egressCounter.Add(float64(256))
-	sess.addEgress(256)
-
-	assert.Equal(t, int64(768), sess.egressBytes.Load(),
-		"session egress counter must accumulate across multiple writes")
-	assert.Equal(t, 768.0,
-		testutil.ToFloat64(metricRelayEgressBytesTotal.WithLabelValues(trackID)),
-		"Prometheus egress counter must also be updated")
-}
-
-// TestTrackDistributor_MeteringNilSession verifies that processGroup and the
-// egress path do not panic when no broadcastSession is attached.
-func TestTrackDistributor_MeteringNilSession(t *testing.T) {
-	dist := newTrackDistributor(newTrackManager(0, nil), "nil-session/test", nil, nil)
-	t.Cleanup(func() { close(dist.done) })
-
-	src := &fakeFrameSource{frames: [][]byte{[]byte("frame")}}
-	assert.NotPanics(t, func() {
-		dist.processGroup(context.Background(), moqt.GroupSequence(1), src)
-		close(dist.fillJobs)
-		dist.fillWg.Wait()
-	})
+	assert.Equal(t, float64(len(payload)),
+		testutil.ToFloat64(metricRelayIngressBytesTotal.WithLabelValues(trackID)))
 }
 
 // ============================================================================
@@ -561,7 +517,7 @@ func TestTrackDistributor_ProcessGroup_SemaphoreLimitsConcurrency(t *testing.T) 
 		t.Cleanup(func() { MaxGroupFillsInFlight = orig })
 		MaxGroupFillsInFlight = limit
 
-		dist := newTrackDistributor(newTrackManager(0, nil), "test/sem", nil, nil)
+		dist := newTrackDistributor(newTrackManager(0, nil), "test/sem", nil)
 		t.Cleanup(func() { close(dist.done) }) // release egress waiters
 		require.Equal(t, limit, cap(dist.fillSem), "fillSem capacity must equal MaxGroupFillsInFlight")
 
@@ -634,7 +590,7 @@ func TestTrackDistributor_ProcessGroup_CtxCancelUnblocks(t *testing.T) {
 		t.Cleanup(func() { MaxGroupFillsInFlight = orig })
 		MaxGroupFillsInFlight = 1
 
-		dist := newTrackDistributor(newTrackManager(0, nil), "test/cancel", nil, nil)
+		dist := newTrackDistributor(newTrackManager(0, nil), "test/cancel", nil)
 		t.Cleanup(func() { close(dist.done) }) // release egress waiters
 
 		ctx, cancel := context.WithCancel(context.Background())
@@ -715,64 +671,63 @@ func TestCompareRoutes(t *testing.T) {
 			current:   RouteStats{Alive: true, Hops: 2, EstimatedBitrate: 5_000_000, RTT: 50 * time.Millisecond},
 			want:      false,
 		},
-			// Hysteresis: 5.5Mbps vs 5Mbps = 10% improvement, below 20% margin.
-			"equal hops: small bitrate improvement keeps current (hysteresis)": {
-				candidate: RouteStats{Alive: true, Hops: 2, EstimatedBitrate: 5_500_000},
-				current:   RouteStats{Alive: true, Hops: 2, EstimatedBitrate: 5_000_000},
-				want:      false,
-			},
-			// Hysteresis: 2ms RTT improvement is below 5ms absolute threshold.
-			"equal hops: tiny RTT improvement keeps current (hysteresis)": {
-				candidate: RouteStats{Alive: true, Hops: 2, RTT: 48 * time.Millisecond},
-				current:   RouteStats{Alive: true, Hops: 2, RTT: 50 * time.Millisecond},
-				want:      false,
-			},
-			// Hysteresis: 6ms RTT improvement clears absolute threshold (OR gate) even
-			// though 44/50=0.88 does not clear the 0.8 relative threshold.
-			"equal hops: absolute RTT improvement wins with OR gate": {
-				candidate: RouteStats{Alive: true, Hops: 2, RTT: 44 * time.Millisecond},
-				current:   RouteStats{Alive: true, Hops: 2, RTT: 50 * time.Millisecond},
-				want:      true,
-			},
-			// Hysteresis: 105ms→100ms clears absolute (5ms) but not relative (4.8%).
-			// OR gate still accepts because the absolute threshold is met.
-			"equal hops: high-RTT route with small absolute improvement wins via OR gate": {
-				candidate: RouteStats{Alive: true, Hops: 2, RTT: 100 * time.Millisecond},
-				current:   RouteStats{Alive: true, Hops: 2, RTT: 105 * time.Millisecond},
-				want:      true,
-			},
-			// Hysteresis: 4ms vs 8ms clears relative (0.5 <= 0.8) but not absolute (4ms < 5ms).
-			// OR gate still accepts because the relative threshold is met.
-			"equal hops: relative RTT improvement wins via OR gate": {
-				candidate: RouteStats{Alive: true, Hops: 2, RTT: 4 * time.Millisecond},
-				current:   RouteStats{Alive: true, Hops: 2, RTT: 8 * time.Millisecond},
-				want:      true,
-			},
-			// Bitrate at exactly 1.2x margin: 6Mbps / 5Mbps = 1.2, should win.
-			"equal hops: bitrate at margin boundary wins": {
-				candidate: RouteStats{Alive: true, Hops: 2, EstimatedBitrate: 6_000_000},
-				current:   RouteStats{Alive: true, Hops: 2, EstimatedBitrate: 5_000_000},
-				want:      true,
-			},
-			// Bitrate just below 1.2x margin: 5.99Mbps / 5Mbps ~ 1.198, should lose.
-			"equal hops: bitrate just below margin loses": {
-				candidate: RouteStats{Alive: true, Hops: 2, EstimatedBitrate: 5_990_000},
-				current:   RouteStats{Alive: true, Hops: 2, EstimatedBitrate: 5_000_000},
-				want:      false,
-			},
-			// Candidate has lower bitrate: decisionInferiorBitrate path.
-			"equal hops: lower bitrate loses": {
-				candidate: RouteStats{Alive: true, Hops: 2, EstimatedBitrate: 3_000_000},
-				current:   RouteStats{Alive: true, Hops: 2, EstimatedBitrate: 5_000_000},
-				want:      false,
-			},
-			// Both routes have zero RTT: decisionEqualOrUnknown.
-			"equal hops: both RTT zero keeps existing": {
-				candidate: RouteStats{Alive: true, Hops: 2},
-				current:   RouteStats{Alive: true, Hops: 2},
-				want:      false,
-			},
-
+		// Hysteresis: 5.5Mbps vs 5Mbps = 10% improvement, below 20% margin.
+		"equal hops: small bitrate improvement keeps current (hysteresis)": {
+			candidate: RouteStats{Alive: true, Hops: 2, EstimatedBitrate: 5_500_000},
+			current:   RouteStats{Alive: true, Hops: 2, EstimatedBitrate: 5_000_000},
+			want:      false,
+		},
+		// Hysteresis: 2ms RTT improvement is below 5ms absolute threshold.
+		"equal hops: tiny RTT improvement keeps current (hysteresis)": {
+			candidate: RouteStats{Alive: true, Hops: 2, RTT: 48 * time.Millisecond},
+			current:   RouteStats{Alive: true, Hops: 2, RTT: 50 * time.Millisecond},
+			want:      false,
+		},
+		// Hysteresis: 6ms RTT improvement clears absolute threshold (OR gate) even
+		// though 44/50=0.88 does not clear the 0.8 relative threshold.
+		"equal hops: absolute RTT improvement wins with OR gate": {
+			candidate: RouteStats{Alive: true, Hops: 2, RTT: 44 * time.Millisecond},
+			current:   RouteStats{Alive: true, Hops: 2, RTT: 50 * time.Millisecond},
+			want:      true,
+		},
+		// Hysteresis: 105ms→100ms clears absolute (5ms) but not relative (4.8%).
+		// OR gate still accepts because the absolute threshold is met.
+		"equal hops: high-RTT route with small absolute improvement wins via OR gate": {
+			candidate: RouteStats{Alive: true, Hops: 2, RTT: 100 * time.Millisecond},
+			current:   RouteStats{Alive: true, Hops: 2, RTT: 105 * time.Millisecond},
+			want:      true,
+		},
+		// Hysteresis: 4ms vs 8ms clears relative (0.5 <= 0.8) but not absolute (4ms < 5ms).
+		// OR gate still accepts because the relative threshold is met.
+		"equal hops: relative RTT improvement wins via OR gate": {
+			candidate: RouteStats{Alive: true, Hops: 2, RTT: 4 * time.Millisecond},
+			current:   RouteStats{Alive: true, Hops: 2, RTT: 8 * time.Millisecond},
+			want:      true,
+		},
+		// Bitrate at exactly 1.2x margin: 6Mbps / 5Mbps = 1.2, should win.
+		"equal hops: bitrate at margin boundary wins": {
+			candidate: RouteStats{Alive: true, Hops: 2, EstimatedBitrate: 6_000_000},
+			current:   RouteStats{Alive: true, Hops: 2, EstimatedBitrate: 5_000_000},
+			want:      true,
+		},
+		// Bitrate just below 1.2x margin: 5.99Mbps / 5Mbps ~ 1.198, should lose.
+		"equal hops: bitrate just below margin loses": {
+			candidate: RouteStats{Alive: true, Hops: 2, EstimatedBitrate: 5_990_000},
+			current:   RouteStats{Alive: true, Hops: 2, EstimatedBitrate: 5_000_000},
+			want:      false,
+		},
+		// Candidate has lower bitrate: decisionInferiorBitrate path.
+		"equal hops: lower bitrate loses": {
+			candidate: RouteStats{Alive: true, Hops: 2, EstimatedBitrate: 3_000_000},
+			current:   RouteStats{Alive: true, Hops: 2, EstimatedBitrate: 5_000_000},
+			want:      false,
+		},
+		// Both routes have zero RTT: decisionEqualOrUnknown.
+		"equal hops: both RTT zero keeps existing": {
+			candidate: RouteStats{Alive: true, Hops: 2},
+			current:   RouteStats{Alive: true, Hops: 2},
+			want:      false,
+		},
 
 		// Alive dominates all quality metrics.
 		"alive candidate beats dead current regardless of hops": {

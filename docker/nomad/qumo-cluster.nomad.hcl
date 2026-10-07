@@ -1,11 +1,11 @@
 # Single-region (asia) qumo cluster on Nomad.
 #
-# Purpose: exercise the static UPSTREAM_ADDR edge->hub topology (see
+# Purpose: exercise the static PEERS edge->hub topology (see
 # internal/relay/server.go ConnectPeers) on real Nomad-launched containers,
 # complementing docker-compose.static.yml's plain-Docker-Compose version.
 #
 # There is no dynamic peer discovery; edges are pointed at the hubs via
-# a fixed UPSTREAM_ADDR list, resolved through Docker's embedded DNS
+# a fixed PEERS list, resolved through Docker's embedded DNS
 # using each hub's network_aliases on the shared "qumo-net" network.
 #
 # Cross-region hub<->hub is out of scope here — see docker/nomad/README.md.
@@ -52,6 +52,11 @@ job "qumo-cluster" {
       env {
         RELAY_ADDR = "0.0.0.0:4433"
         RELAY_NAME = "hub-asia-${NOMAD_ALLOC_INDEX}"
+        # Peer trust: the dev relay CA and this relay's own peer identity,
+        # from `mage cert` (PEER_NAMES=hub-asia-0,hub-asia-1,edge-asia-0,edge-asia-1).
+        CA_FILE        = "certs/peer-ca.crt"
+        PEER_CERT_FILE = "certs/peers/hub-asia-${NOMAD_ALLOC_INDEX}.crt"
+        PEER_KEY_FILE  = "certs/peers/hub-asia-${NOMAD_ALLOC_INDEX}.key"
       }
 
       resources {
@@ -91,9 +96,12 @@ job "qumo-cluster" {
       env {
         RELAY_ADDR = "0.0.0.0:4433"
         RELAY_NAME = "edge-asia-${NOMAD_ALLOC_INDEX}"
+        CA_FILE        = "certs/peer-ca.crt"
+        PEER_CERT_FILE = "certs/peers/edge-asia-${NOMAD_ALLOC_INDEX}.crt"
+        PEER_KEY_FILE  = "certs/peers/edge-asia-${NOMAD_ALLOC_INDEX}.key"
         # Static upstream list: both hub aliases from the "hubs" group above.
         # Fixed to match that group's count = 2; bump both together.
-        UPSTREAM_ADDR = "hub-0:4433,hub-1:4433"
+        PEERS = "hub-0:4433,hub-1:4433"
       }
 
       resources {

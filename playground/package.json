@@ -5,7 +5,8 @@
 	"type": "module",
 	"scripts": {
 		"dev": "vite",
-		"build": "deno check src && vite build",
+		"test": "deno test src",
+		"build": "deno test src && deno check src && vite build",
 		"preview": "vite preview"
 	},
 	"dependencies": {

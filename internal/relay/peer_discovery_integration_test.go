@@ -41,13 +41,13 @@ func freeUDPPort(t *testing.T) int {
 	return c.LocalAddr().(*net.UDPAddr).Port
 }
 
-// TestPeerDiscovery_EdgeConnectsToHubViaUpstreamAddr is an in-process
-// integration test for the UPSTREAM_ADDR path: a real edge relay, configured
-// with UpstreamAddr pointing at a real hub relay, completes a QUIC/MOQT
+// TestPeerDiscovery_EdgeConnectsToHubViaPeers is an in-process
+// integration test for the PEERS path: a real edge relay, configured with
+// Peers pointing at a real hub relay, completes a QUIC/MOQT
 // handshake to it. No Docker or Nomad required — this complements the manual
 // docker/nomad simulation and would catch regressions in the dial loop (e.g.
 // the #93 class, where an edge filtered out all hubs).
-func TestPeerDiscovery_EdgeConnectsToHubViaUpstreamAddr(t *testing.T) {
+func TestPeerDiscovery_EdgeConnectsToHubViaPeers(t *testing.T) {
 	certFile, keyFile := createTempCert(t)
 	cert, err := tls.LoadX509KeyPair(certFile, keyFile)
 	require.NoError(t, err)
@@ -74,6 +74,7 @@ func TestPeerDiscovery_EdgeConnectsToHubViaUpstreamAddr(t *testing.T) {
 		MOQServer: &moqt.Server{Addr: hubAddr, TLSConfig: serverTLS, QUICConfig: quicCfg},
 		MOQDialer: &moqt.Dialer{TLSConfig: dialerTLS, QUICConfig: quicCfg},
 		Config:    &Config{NodeID: "hub-1", Role: "hub"},
+		Authorize: admitUnchecked,
 	}
 	go func() { _ = hub.ListenAndServe() }()
 	t.Cleanup(func() {
@@ -99,21 +100,22 @@ func TestPeerDiscovery_EdgeConnectsToHubViaUpstreamAddr(t *testing.T) {
 		return true
 	}, 5*time.Second, 100*time.Millisecond, "hub never became reachable")
 
-	// ── Edge relay: UpstreamAddr pointed directly at the hub ──
+	// ── Edge relay: PEERS pointed directly at the hub ──
 	edge := &Server{
 		MOQServer: &moqt.Server{Addr: "127.0.0.1:0", TLSConfig: serverTLS, QUICConfig: quicCfg},
 		MOQDialer: &moqt.Dialer{TLSConfig: dialerTLS, QUICConfig: quicCfg},
 		Config: &Config{
 			NodeID: "edge-1", Role: "edge",
-			UpstreamAddr: hubAddr,
+			Peers: []Peer{{Address: hubAddr}},
 		},
+		Authorize: admitUnchecked,
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	go edge.ConnectPeers(ctx)
 
-	// ── Assert: the edge dialed UpstreamAddr and completed the handshake ──
+	// ── Assert: the edge dialed its peer and completed the handshake ──
 	require.Eventually(t, func() bool {
 		return testutil.ToFloat64(metricPeerDialAttempts.WithLabelValues(hubAddr, "ok")) >= 1
 	}, 10*time.Second, 200*time.Millisecond, "edge never completed a QUIC handshake to the upstream hub")

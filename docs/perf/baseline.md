@@ -83,13 +83,79 @@ it owns: CPU 30 %/core, GC p99 ≤ 6.7 ms, RSS 3.2 GB, and only **11 open file
 descriptors** (one UDP socket). The attrition above ~13 000 is external to the
 relay.
 
-> **Warning:** The leading hypothesis for the ~13 000 attrition is the **UDP
-> receive buffer**: WSL caps `rmem_max` at ~212 992, so quic-go's requested 7 MB
-> recv buffer is clamped to ~416 KB. At ~15 000 connections the aggregate
-> ACK/keepalive traffic likely overflows it. This is **unconfirmed** — the
-> decisive test (raising `rmem_max` on bare metal) needs privileges this
-> environment cannot supply. Do not treat 13 000 as a recv-buffer finding; treat
-> it as "external to the relay, mechanism pending."
+> **Warning:** The leading hypothesis for the ~13 000 attrition was the **UDP
+> receive buffer**: quic-go requests a 7 MB recv buffer, and a small
+> `rmem_max` clamps it (at ~15 000 connections the aggregate ACK/keepalive
+> traffic could overflow a clamped buffer). Corrections (2026-09-26): current
+> WSL reports `rmem_max` = 4 MiB (not ~212 992), and privilege **is** available
+> here (`wsl -u root`). That raise did not change the *chain-harness* K≥2
+> collapse (ledger C21 — different mechanism: in-process saturation). The
+> decisive test for the HOLD regime **has now been run** on CI (n=2, ledger
+> [C22](optimization-ledger.md)): raising `rmem_max` 4 → 16 MiB during the
+> out-of-process loadgen sweep was **not shown to move the ~13 000-session
+> attrition**. Round 1 showed a large effect (S=13000 connected 72.0 % clamped →
+> 90.1 % raised, plus a verdict flip at S=6000), but round 2 did not reproduce
+> it (91.7 % → 89.4 %, sign flipped; S=6000 no flip) — the round-1 delta was a
+> clamped-arm outlier, not a reproducible buffer effect. Do not treat 13 000 as
+> a recv-buffer finding; keep treating it as "external to the relay, mechanism
+> pending." Operational caveat from C22: single-host A/B probes at S≥6000 carry
+> ~20 pp round-to-run spread — single repeats are unreliable in this regime.
+
+A partial distributed check (2026-09-28, ledger [C23](optimization-ledger.md))
+ran the relay alone inside the WSL2 VM with the load generator on the Windows
+side (two processes, no shared cores). It confirms the relay is not the holding
+bottleneck — ~5400 established sessions cost 0.66–0.73 core at steady state,
+with `receiving == connected` in every probe — but the **establishment burst**
+saturates a single laptop (relay 250–320 % CPU + ~40 % softirq, Windows
+subscribers ~5 cores of handshake crypto) well below CI's reach, so the true
+ceiling (~25 K hypothesis, #342) remains unmeasured pending dedicated hosts.
+A burst-phase CPU profile (ledger [C24](optimization-ledger.md)) found no
+gomoqt-owned region ≥ 5 % of relay burst CPU (gomoqt ≈ 6.75 %, diffuse; quic-go
+≈ 38 %, crypto ≈ 28 %, runtime/syscalls ≈ 39 %) — the establishment ceiling is
+external to gomoqt and to qumo (kernel softirq, handshake crypto, client-side
+crypto).
+
+## CI Linux baseline (bench-relay, 2026-09-26)
+
+Reference numbers for current code (gomoqt v0.20.0, quic-go v0.62.0) from the
+on-demand `bench-relay` run
+[36226116466](https://github.com/qumo-dev/qumo/actions/runs/36226116466)
+(GitHub-hosted `ubuntu-latest` runners — the `bench-relay` workflow sizes the
+sweep for 2 cores — UDP buffers raised to 16 MiB; artifacts
+`relay-bench-30m` + `relay-loadgen-capacity`). The prior baseline tables above
+were measured on the WSL2 dev host; this section anchors the envelope to
+GitHub-hosted Linux.
+
+**Multi-hop chain latency** (`BenchmarkRelayChain_Series`, depth 1→8):
+
+| depth | median | p99 |
+|---|---|---|
+| 1 | 0.81 ms | 1.18 ms |
+| 3 | 1.70 ms | 1.81 ms |
+| 5 | 2.80 ms | 2.89 ms |
+| 8 | 4.07 ms | 4.15 ms |
+
+Linear fit: **0.471 ms/hop (R² = 0.998)**; p99−median shrinks to ≤0.1 ms from
+depth 3 onward (depth 1: +0.37 ms, one-hop tail) — no per-hop tail
+accumulation across a relay chain.
+
+**30-minute soak**: flat sub-millisecond end-to-end latency across the whole
+window (slice medians 0.31–0.32 ms, p99 ≤ 0.42 ms, max 3.3 ms across time
+slices) — no drift and no leak signature.
+
+**Out-of-process capacity sweep** (`qumo loadgen`, relay isolated from the
+load generator): S = 500/1000/2000 sessions all **HOLDS** — 100 % receiving at
+every step, latency p50 11.7 → 23.1 → 46.2 ms, heap 90 → 174 → 333 MB,
+~170–183 KB/session.
+
+**In-process fan-out sweep** (same run): K=1/2 clean (419/398 fps, fairness
+1.0), knee at K=4 (37.9 % loss), K≥32 ≈ 100 % loss. Per [ledger
+C21](optimization-ledger.md) this is the single-process harness artifact
+(publisher + origin + K leaf relays + K subscribers in one test process),
+**not** a relay property — the out-of-process sweep above is the
+decision-grade fanout instrument. Even K=1 saturates at high rates on these
+runners (~240–260 fps against 600–900 fps targets — consistent with the
+workflow's 2-core sizing); the 4-core WSL dev host held 900 fps/K=1 clean.
 
 ## Per-session cost
 

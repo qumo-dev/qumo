@@ -1,4 +1,6 @@
 import { createEffect, createSignal, onCleanup, Show } from "solid-js";
+import { StatsOverlay } from "./components/StatsOverlay.tsx";
+import { hlsBaseUrl } from "./config.ts";
 import type { Accessor } from "solid-js";
 import Hls from "hls.js";
 import { createMediaLogger, MediaTags } from "@okdaichi/media-log";
@@ -44,11 +46,11 @@ function formatLatency(ms: number | undefined): string {
 }
 
 // HlsPlayer plays the HLS egress for a track. The egress (`qumo hls`) is a
-// separate process that subscribes to the relay and serves HLS; its base URL
-// comes from VITE_HLS_URL (default http://localhost:8081 — it must differ from
-// the playground's own web UI port).
+// separate process that subscribes to the relay and serves HLS. It is taken
+// to be on the host the page was opened at, at port 8081 (which must differ
+// from the playground's own web UI port); VITE_HLS_URL replaces that.
 export function HlsPlayer(props: { path: Accessor<string> }) {
-	const base = import.meta.env.VITE_HLS_URL ?? "http://localhost:8081";
+	const base = hlsBaseUrl(globalThis.location, import.meta.env.VITE_HLS_URL);
 	// props.path() already starts with "/" (e.g. "/hls/<id>"); avoid a double
 	// slash when joining it to base.
 	const playlistUrl = () => `${base}${props.path()}/playlist.m3u8`;
@@ -266,12 +268,9 @@ export function HlsPlayer(props: { path: Accessor<string> }) {
 			<div class={ready() ? "video-preview" : "video-preview video-preview--waiting"}>
 				<video ref={videoEle} controls muted playsinline preload="auto" />
 				<Show when={latencyMs() !== undefined}>
-					<dl class="stats-overlay" aria-live="off">
-						<div>
-							<dt>latency</dt>
-							<dd>{formatLatency(latencyMs())}</dd>
-						</div>
-					</dl>
+					<StatsOverlay
+						stats={[{ label: "latency", value: formatLatency(latencyMs()) }]}
+					/>
 				</Show>
 			</div>
 			<Show when={!ready()}>

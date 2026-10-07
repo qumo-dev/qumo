@@ -39,12 +39,14 @@ export function ConnectionStatus(props: {
 				<span class="status-reason">{props.error}</span>
 			</Show>
 
-			{props.certHashProblem && (
-				<span class="status-warn">
-					{CERT_WARN[props.certHashProblem]} Run <code>mage cert</code> and set{" "}
-					<code>VITE_CERT_HASH</code> in <code>playground/.env</code>.
-				</span>
-			)}
+			<Show when={props.certHashProblem}>
+				{(problem) => (
+					<span class="status-warn">
+						{CERT_WARN[problem()]} Run <code>mage cert</code> and set{" "}
+						<code>VITE_CERT_HASH</code> in <code>playground/.env</code>.
+					</span>
+				)}
+			</Show>
 		</div>
 	);
 }

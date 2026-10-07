@@ -3,7 +3,6 @@ package relay
 import (
 	"context"
 	"crypto/tls"
-	"crypto/x509"
 	"errors"
 	"flag"
 	"fmt"
@@ -14,7 +13,6 @@ import (
 	"net/http/pprof"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
@@ -25,6 +23,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/quic-go/quic-go"
 	"github.com/qumo-dev/gomoqt/moqt"
+	"github.com/qumo-dev/qumo/internal/auth"
 	"github.com/qumo-dev/qumo/internal/cors"
 	"github.com/qumo-dev/qumo/internal/envconfig"
 	"github.com/qumo-dev/qumo/internal/gctune"
@@ -44,15 +43,23 @@ func sanitizeLog(s string) string {
 //	                               on hosts where it resolves to ::1)
 //	CERT_FILE                    - TLS certificate file (default: "certs/server.crt")
 //	KEY_FILE                     - TLS key file (default: "certs/server.key")
-//	CA_FILE                      - PEM CA certificate; enables mTLS when set
-//	MTLS_REQUIRED                - "false" to allow connections without a client
-//	                               cert when mTLS is enabled (default: true)
+//	CA_FILE                      - PEM CA certificate (optional): the relay CA.
+//	                               A session whose client certificate it
+//	                               verifies is an internal client, or a relay
+//	                               peer when the certificate carries the
+//	                               peering name (peer_trust.go). Unset: no
+//	                               session is either.
+//	PEER_CERT_FILE, PEER_KEY_FILE - this relay's peer identity (optional), a
+//	                               certificate CA_FILE issued for the peering
+//	                               name; set together, and only with CA_FILE.
+//	                               Needed to dial PEERS and to be dialed.
 //	RELAY_NAME                   - node ID (default: "relay-" + hostname)
 //	GROUP_CACHE_SIZE             - completed groups retained per track (default: 8)
 //	FRAME_CAPACITY               - frame buffer size in bytes (default: 1500)
-//	PEERS                        - comma-separated list of static peer addresses
-//	UPSTREAM_ADDR                - comma-separated list of upstream relay addresses
-//	                               (e.g. "role-hub.qumo-relay.service.consul:4433" or direct IP:port)
+//	PEERS                        - comma-separated relays to dial (host:port);
+//	                               each host is resolved to all its addresses
+//	                               (e.g. "role-hub.qumo-relay.service.consul:4433").
+//	                               Needs CA_FILE and the peer identity.
 //	CORS_ALLOWED_ORIGINS     - comma-separated WebTransport origins allowed to
 //	                           connect (default: same-origin only; "*" allows any;
 //	                           "same-host" allows any port on the request's host).
@@ -68,6 +75,13 @@ func Run(args []string) error {
 			return nil
 		}
 		return err
+	}
+
+	// A relay still configured to ask an auth server must not start with
+	// auth off instead.
+	if os.Getenv("QUMO_AUTH_URL") != "" {
+		return errors.New("QUMO_AUTH_URL is no longer supported: the relay verifies credentials itself; " +
+			"unset it, and set QUMO_AUTH_KEYS to the key set")
 	}
 
 	gctune.Apply()
@@ -93,54 +107,55 @@ func Run(args []string) error {
 		peers = append(peers, Peer{Address: p})
 	}
 
+	// Peer trust (peer_trust.go): a CA and this relay's own peer identity,
+	// checked before anything is loaded so a settings mistake is what fails.
+	trust, err := loadPeerTrust(os.Getenv("CA_FILE"), os.Getenv("PEER_CERT_FILE"), os.Getenv("PEER_KEY_FILE"), len(peers) > 0)
+	if err != nil {
+		return err
+	}
+
 	tlsConfig, err := setupTLS(certFile, keyFile)
 	if err != nil {
 		return fmt.Errorf("failed to setup TLS: %w", err)
 	}
 
-	// mTLS: load CA pool and configure mutual authentication when CA_FILE is set.
-	// Default (MTLS_REQUIRED unset): RequireAndVerifyClientCert — every connection
-	// must present a cert signed by the CA. Set MTLS_REQUIRED=false to relax this
-	// to VerifyClientCertIfGiven (relay peers are verified, browser clients
-	// without a cert are still allowed through — Nginx "optional" mode).
-	caPool, err := loadCACertPool(os.Getenv("CA_FILE"))
-	if err != nil {
-		return fmt.Errorf("failed to load CA_FILE: %w", err)
+	tlsConfig = trust.ServerTLS(tlsConfig)
+	switch {
+	case trust.Identity() != "":
+		slog.Info("relay: peering on: sessions with a certificate from CA_FILE that carries the peering name are peers",
+			"ca_file", os.Getenv("CA_FILE"), "identity", trust.Identity())
+	case trust.HasCA():
+		slog.Info("relay: internal clients on: sessions with a certificate from CA_FILE may subscribe; this relay is no peer (no PEER_CERT_FILE)",
+			"ca_file", os.Getenv("CA_FILE"))
+	default:
+		slog.Info("relay: peering off (no CA_FILE): every inbound session is admitted like a client")
 	}
-	if caPool != nil {
-		clientAuth := tls.RequireAndVerifyClientCert
-		if os.Getenv("MTLS_REQUIRED") == "false" {
-			clientAuth = tls.VerifyClientCertIfGiven
+
+	// Session admission (admit.go): the relay verifies credentials itself
+	// against a key set (QUMO_AUTH_KEYS: a URL or a file), or, without one,
+	// runs with auth off.
+	verifierCfg := auth.VerifierConfig{
+		Keys:      os.Getenv("QUMO_AUTH_KEYS"),
+		KeysCache: os.Getenv("QUMO_AUTH_KEYS_CACHE"),
+		UsageURL:  os.Getenv("QUMO_USAGE_URL"),
+		Token:     os.Getenv("QUMO_RELAY_TOKEN"),
+	}
+	authorize := admitUnchecked
+	var reportEnd func(context.Context, auth.Request) error // nil: auth off reports nothing
+	var verifier *auth.Verifier
+	if verifierCfg.Keys != "" {
+		v, err := auth.NewVerifier(verifierCfg)
+		if err != nil {
+			return err
 		}
-		tlsConfig.ClientAuth = clientAuth
-		tlsConfig.ClientCAs = caPool
-		slog.Info("mTLS enabled on relay server",
-			"ca_file", os.Getenv("CA_FILE"),
-			"strict", clientAuth == tls.RequireAndVerifyClientCert,
-		)
+		verifier = v
+		authorize = v.Authorize
+		reportEnd = v.End
+	} else {
+		slog.Warn("relay: auth is off: no key set (QUMO_AUTH_KEYS), so every session is admitted unchecked")
 	}
-
-	upstreamAddr := os.Getenv("UPSTREAM_ADDR")
-
-	// Nomad-native and remote-cluster peer resolution were retired in favor of
-	// static PEERS/UPSTREAM_ADDR. Warn rather than silently ignore these, so an
-	// operator upgrading a deployment that still sets them notices peer
-	// discovery stopped instead of losing fan-out with no explanation.
-	for _, retired := range []string{
-		"LOCAL_RESOLVER_ADDR", "LOCAL_RESOLVER_SERVICE_NAME", "LOCAL_RESOLVER_INTERVAL",
-		"REMOTE_RESOLVER_URL", "REMOTE_AUTH_TOKEN", "REMOTE_RESOLVE_INTERVAL", "REMOTE_TLS_ENABLED",
-	} {
-		if os.Getenv(retired) != "" {
-			slog.Warn("relay: env var no longer has any effect; peer resolution is now static (PEERS / UPSTREAM_ADDR)",
-				"var", retired)
-		}
-	}
-
-	// Credential client: credential introspection + usage metering (optional).
-	credentialClient := NewCredentialClient()
-	var meter *Meter
-	if credentialClient != nil {
-		meter = newMeter(credentialClient)
+	if verifierCfg.UsageURL != "" && verifier == nil {
+		return errors.New("QUMO_USAGE_URL needs QUMO_AUTH_KEYS: usage is reported for the sessions the relay verifies")
 	}
 
 	relayCfg := Config{
@@ -149,7 +164,6 @@ func Run(args []string) error {
 		GroupCacheSize: groupCacheSize,
 		FrameCapacity:  frameCapacity,
 		Peers:          peers,
-		UpstreamAddr:   upstreamAddr,
 		NextSessionURI: os.Getenv("GOAWAY_REDIRECT_URI"),
 	}
 
@@ -175,18 +189,14 @@ func Run(args []string) error {
 		// stream-object retention and a GC-driven degradation spiral.
 	}
 
-	// Dialer TLS: advertise only moqt ALPN for native QUIC peer connections.
-	// The server TLS config advertises ["h3", "moqt"] to support both
-	// WebTransport (browsers) and native QUIC (peer relays). If the dialer
-	// sends both, TLS ALPN picks "h3" first → QPACK decompression failure.
-	dialerTLS := tlsConfig.Clone()
-	dialerTLS.NextProtos = []string{moqt.NextProtoMOQ}
-	// Carry over mTLS settings: trust only the CA pool and strip client-auth fields
-	// (ClientAuth/ClientCAs are server-side settings; the dialer uses RootCAs).
-	dialerTLS.ClientAuth = tls.NoClientCert
-	dialerTLS.ClientCAs = nil
-	if caPool != nil {
-		dialerTLS.RootCAs = caPool
+	// Dialing peers: the peer identity as the client certificate, the peering
+	// name as the server name, the CA as the only root (peer_trust.go). The
+	// dialer advertises only the moqt ALPN: with "h3" too, ALPN would pick
+	// h3 and QPACK decompression fail. Without a peer identity there are no
+	// PEERS to dial (loadPeerTrust), so the dialer never runs.
+	var dialerTLS *tls.Config
+	if trust.Identity() != "" {
+		dialerTLS = trust.DialerTLS()
 	}
 
 	// Override the QUIC listener's UDP receive buffer (SO_RCVBUF) to a
@@ -213,11 +223,12 @@ func Run(args []string) error {
 			QUICConfig: quicConfig,
 			OnGoaway:   handlePeerGoaway,
 		},
-		Config:           &relayCfg,
-		TrackMux:         trackMux,
-		AllowedOrigins:   cors.LoadAllowed(),
-		credentialClient: credentialClient,
-		meter:            meter,
+		Config:          &relayCfg,
+		TrackMux:        trackMux,
+		AllowedOrigins:  cors.LoadAllowed(),
+		Authorize:       authorize,
+		End:             reportEnd,
+		PeerCertificate: trust.OwnCertificate(),
 	}
 
 	httpMux.HandleFunc("/", relayServer.HandleWebTransport)
@@ -261,20 +272,43 @@ func Run(args []string) error {
 	for _, p := range relayCfg.Peers {
 		log.Printf("\t%-8s: %s\n", "Peer", sanitizeLog(p.Address))
 	}
-	if relayCfg.UpstreamAddr != "" {
-		log.Printf("\t%-8s: %s\n", "Upstream", sanitizeLog(relayCfg.UpstreamAddr))
+	switch {
+	case trust.Identity() != "":
+		log.Printf("\t%-8s: %s, trusting %s\n", "Peering", sanitizeLog(trust.Identity()), sanitizeLog(os.Getenv("CA_FILE")))
+	case trust.HasCA():
+		log.Printf("\t%-8s: internal clients only, trusting %s (no PEER_CERT_FILE)\n", "Peering", sanitizeLog(os.Getenv("CA_FILE")))
+	default:
+		log.Printf("\t%-8s: off (no CA_FILE)\n", "Peering")
 	}
-	if credentialClient != nil {
-		log.Printf("\t%-8s: %s (metering every 30s)\n", "Credentials", sanitizeLog(credentialClient.baseURL))
+	if verifier != nil {
+		log.Printf("\t%-8s: key set %s\n", "Auth", sanitizeLog(verifier.Source()))
+		if verifier.Reporting() {
+			log.Printf("\t%-8s: %s\n", "Usage", sanitizeLog(verifierCfg.UsageURL))
+		}
+	} else {
+		log.Printf("\t%-8s: off (no QUMO_AUTH_KEYS): every session is admitted unchecked\n", "Auth")
 	}
+
+	// The verifier refreshes its key set and sends usage until the relay has
+	// stopped taking sessions, then sends what usage is left once more.
+	verifierDone := make(chan struct{})
+	stopVerifier := func() {}
+	if verifier != nil {
+		vctx, vcancel := context.WithCancel(context.WithoutCancel(ctx))
+		stopVerifier = func() { vcancel(); <-verifierDone }
+		go func() {
+			defer close(verifierDone)
+			verifier.Run(vctx)
+		}()
+	}
+	defer stopVerifier()
+	// Deferred after stopVerifier, so it runs before it: sessions report
+	// their end after their connection closes, which can be after the
+	// servers have shut down, and the last usage send must include them.
+	defer relayServer.waitSessionEnds(endReportGrace)
 
 	// Start peer connections in background
 	go relayServer.ConnectPeers(ctx)
-
-	// Start usage meter if credential features are active.
-	if meter != nil {
-		go meter.Run(ctx)
-	}
 
 	// Delegate to testable helper that runs servers until ctx is cancelled
 	if err := serveComponents(ctx, relayServer, httpServer, 10*time.Second); err != nil {
@@ -285,6 +319,10 @@ func Run(args []string) error {
 
 	return nil
 }
+
+// endReportGrace bounds how long shutdown waits for closed sessions to report
+// their end before the verifier's last usage send.
+const endReportGrace = 5 * time.Second
 
 // server is a minimal interface implemented by both *Server and
 // *http.Server so we can unit-test the run/shutdown flow with fakes.
@@ -389,31 +427,6 @@ func envInt(key string, defaultVal int) (int, error) {
 	return n, nil
 }
 
-// loadCACertPool reads a PEM-encoded CA certificate file into an x509.CertPool.
-// Returns (nil, nil) when caFile is empty — callers treat nil as "mTLS disabled".
-// CA_FILE must be a relative path with no path traversal components.
-func loadCACertPool(caFile string) (*x509.CertPool, error) {
-	if caFile == "" {
-		return nil, nil
-	}
-	if filepath.IsAbs(caFile) {
-		return nil, fmt.Errorf("CA_FILE must be a relative path")
-	}
-	caFile = filepath.Clean(caFile)
-	if caFile == ".." || strings.HasPrefix(caFile, ".."+string(filepath.Separator)) || strings.Contains(caFile, string(filepath.Separator)+".."+string(filepath.Separator)) {
-		return nil, fmt.Errorf("CA_FILE must not contain path traversal")
-	}
-	pemData, err := os.ReadFile(caFile)
-	if err != nil {
-		return nil, fmt.Errorf("read CA file %q: %w", caFile, err)
-	}
-	pool := x509.NewCertPool()
-	if !pool.AppendCertsFromPEM(pemData) {
-		return nil, fmt.Errorf("no valid certificates in CA file %q", caFile)
-	}
-	return pool, nil
-}
-
 func setupTLS(certFile, keyFile string) (*tls.Config, error) {
 	cert, err := tls.LoadX509KeyPair(certFile, keyFile)
 	if err != nil {
@@ -439,7 +452,7 @@ Start the MoQT relay server.
 Flags:
   --role <hub|edge>  node topology role, logged for operator visibility only
                      (default: flat / single-node); connection topology is
-                     controlled by PEERS / UPSTREAM_ADDR, not this flag
+                     controlled by PEERS, not this flag
 
 All other configuration is via environment variables;
 see relay-config.example.env for the full list.
@@ -454,7 +467,7 @@ type relayFlags struct {
 	// Role is an operator-facing label for this node's topology role: "hub"
 	// (inter-region), "edge" (client-facing), or empty for a flat / single-node
 	// relay. It is logged at startup for visibility only — it does not shape
-	// connection behavior; that is controlled by PEERS / UPSTREAM_ADDR.
+	// connection behavior; that is controlled by PEERS.
 	// Flag-only (no env equivalent) to avoid two sources of truth.
 	Role string
 }
@@ -469,7 +482,7 @@ func parseRelayArgs(args []string) (relayFlags, error) {
 		`operator-facing topology label: "hub" (inter-region) or "edge" `+
 			`(client-facing); empty (default) is a flat / single-node relay. `+
 			`Logged for visibility only — does not affect connection behavior `+
-			`(see PEERS / UPSTREAM_ADDR).`)
+			`(see PEERS).`)
 	if err := fs.Parse(args); err != nil {
 		return relayFlags{}, err
 	}

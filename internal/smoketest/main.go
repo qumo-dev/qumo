@@ -5,9 +5,11 @@ import (
 	"context"
 	"crypto/sha256"
 	"crypto/tls"
+	"errors"
 	"flag"
 	"fmt"
 	"log"
+	"net/url"
 	"os"
 	"strconv"
 	"time"
@@ -23,8 +25,8 @@ const (
 )
 
 func main() {
-	pubURL := flag.String("pub", "", "publisher-side relay URL (e.g. moqt://localhost:9002)")
-	subURL := flag.String("sub", "", "subscriber-side relay URL (e.g. moqt://localhost:9006)")
+	pubURL := flag.String("pub", "", "publisher-side relay URL (e.g. moqt://localhost:9002); add ?jwt=… for a relay with auth on")
+	subURL := flag.String("sub", "", "subscriber-side relay URL (e.g. moqt://localhost:9006); add ?jwt=… for a relay with auth on")
 	caFile := flag.String("ca", "", "PEM file of the relays' TLS cert/CA to trust (required unless -insecure)")
 	insecure := flag.Bool("insecure", false, "skip TLS verification (dev; self-signed relays)")
 	timeout := flag.Duration("timeout", 30*time.Second, "overall test timeout")
@@ -45,6 +47,17 @@ func main() {
 		os.Exit(1)
 	}
 
+	pub, err := parseRelayURL(*pubURL)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error: -pub:", err)
+		os.Exit(1)
+	}
+	sub, err := parseRelayURL(*subURL)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error: -sub:", err)
+		os.Exit(1)
+	}
+
 	tlsConf, err := smokeTLSConfig(*caFile, *insecure)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
@@ -54,7 +67,7 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), *timeout)
 	defer cancel()
 
-	os.Exit(run(ctx, *pubURL, *subURL, *numGroups, *numFrames, *frameSize, tlsConf))
+	os.Exit(run(ctx, pub, sub, *numGroups, *numFrames, *frameSize, tlsConf))
 }
 
 // printUsage writes the usage block to stderr.
@@ -65,6 +78,35 @@ func printUsage() {
 	fmt.Fprintln(os.Stderr)
 	fmt.Fprintln(os.Stderr, "Example:")
 	fmt.Fprintln(os.Stderr, "  smoketest -pub moqt://localhost:9002 -sub moqt://localhost:9006 -insecure")
+}
+
+// relayURL is a relay URL from the command line, whose query may carry a
+// credential (?jwt=…). It prints without its query, so it is safe to log.
+type relayURL struct {
+	u *url.URL
+}
+
+// parseRelayURL parses raw. A URL that doesn't parse is reported with only
+// the reason: url.Parse's *url.Error quotes the whole URL, credential and all.
+func parseRelayURL(raw string) (relayURL, error) {
+	u, err := url.Parse(raw)
+	if err != nil {
+		if ue, ok := errors.AsType[*url.Error](err); ok {
+			err = ue.Err
+		}
+		return relayURL{}, fmt.Errorf("invalid URL: %w", err)
+	}
+	return relayURL{u: u}, nil
+}
+
+// String returns the URL's scheme, host and path: everything but its query.
+func (r relayURL) String() string {
+	return r.u.Scheme + "://" + r.u.Host + r.u.Path
+}
+
+// dialURL returns the whole URL, credential included.
+func (r relayURL) dialURL() string {
+	return r.u.String()
 }
 
 // smokeTLSConfig builds the TLS config shared by both dialers: verify against
@@ -80,7 +122,7 @@ func smokeTLSConfig(caFile string, insecure bool) (*tls.Config, error) {
 	return tc, nil
 }
 
-func run(ctx context.Context, pubURL, subURL string, numGroups, numFrames, frameSize int, tlsConf *tls.Config) int {
+func run(ctx context.Context, pubURL, subURL relayURL, numGroups, numFrames, frameSize int, tlsConf *tls.Config) int {
 	testData := generateTestData(numGroups, numFrames, frameSize)
 	sentHash := hashAllFlat(testData, numGroups, numFrames)
 
@@ -117,7 +159,7 @@ func run(ctx context.Context, pubURL, subURL string, numGroups, numFrames, frame
 	})
 
 	pubDialer := &moqt.Dialer{TLSConfig: tlsConf}
-	pubSess, err := pubDialer.Dial(ctx, pubURL, pubMux)
+	pubSess, err := pubDialer.Dial(ctx, pubURL.dialURL(), pubMux)
 	if err != nil {
 		log.Printf("publish: dial %s: %v", pubURL, err)
 		return 1
@@ -136,7 +178,7 @@ func run(ctx context.Context, pubURL, subURL string, numGroups, numFrames, frame
 	// --- Subscriber ---
 	subMux := moqt.NewTrackMux(0)
 	subDialer := &moqt.Dialer{TLSConfig: tlsConf}
-	subSess, err := subDialer.Dial(ctx, subURL, subMux)
+	subSess, err := subDialer.Dial(ctx, subURL.dialURL(), subMux)
 	if err != nil {
 		log.Printf("subscribe: dial %s: %v", subURL, err)
 		return 1

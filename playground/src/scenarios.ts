@@ -1,6 +1,9 @@
-// Scenario registry for the demo. One source of truth for each pipeline's
-// WebTransport origin port, UI mode, and (for ingest scenarios) the push
-// scheme/port used to build the ffmpeg command shown in the UI.
+// Scenario registry for the demo. One source of truth for each pipeline's UI
+// mode, for the WebTransport port of the ones that are ingests (the relay's
+// own port comes from the runtime config), and for the push scheme and port
+// used to build the ffmpeg command shown in the UI.
+
+import type { RelayEndpoint } from "./config.ts";
 
 export type ScenarioId = "echo" | "rtmp" | "rtsp" | "camera" | "hls";
 export type ScenarioMode = "publish-subscribe" | "subscribe";
@@ -10,8 +13,12 @@ export interface Scenario {
 	label: string;
 	/** One-line description shown below the scenario picker. */
 	description: string;
-	/** WebTransport origin port for this scenario. */
-	port: number;
+	/**
+	 * The port of this scenario's WebTransport origin, when it is an ingest
+	 * with a port of its own. Absent for the scenarios served by the relay
+	 * itself, whose port comes from the runtime config.
+	 */
+	port?: number;
 	mode: ScenarioMode;
 	/** Ingest-only: scheme + port an external encoder pushes to. */
 	pushScheme?: "rtmp" | "rtsp";
@@ -24,7 +31,6 @@ export const SCENARIOS: Record<ScenarioId, Scenario> = {
 		label: "Webcam",
 		description:
 			"Publish from your camera or screen, and subscribe back — full MoQ round-trip in the browser.",
-		port: 4433,
 		mode: "publish-subscribe",
 	},
 	camera: {
@@ -57,7 +63,6 @@ export const SCENARIOS: Record<ScenarioId, Scenario> = {
 		id: "hls",
 		label: "HLS",
 		description: "Publish from your camera over MoQ and play it back through the HLS egress.",
-		port: 4433,
 		mode: "publish-subscribe",
 	},
 };
@@ -68,18 +73,11 @@ export function isScenarioId(x: string): x is ScenarioId {
 	return x in SCENARIOS;
 }
 
-// Hostname the ingest origins are reachable on. Defaults to the VITE_RELAY_URL
-// host (localhost in dev; the public domain for a deployed playground).
-export function ingestHost(): string {
-	const base = new URL(import.meta.env.VITE_RELAY_URL ?? "https://localhost:4433");
-	return base.hostname;
-}
-
-// Each scenario is a distinct WebTransport origin (different port). Derive the
-// origin URL from VITE_RELAY_URL's host + the scenario's port.
-export function relayUrlFor(id: ScenarioId): string {
-	const base = new URL(import.meta.env.VITE_RELAY_URL ?? "https://localhost:4433");
-	return `https://${base.hostname}:${SCENARIOS[id].port}`;
+// Each scenario is a WebTransport origin on the one host the runtime config
+// names (see relayEndpoint in config.ts): the relay itself, on the port it was
+// started on, or an ingest on a port of its own.
+export function relayUrlFor(id: ScenarioId, relay: RelayEndpoint): string {
+	return `https://${relay.host}:${SCENARIOS[id].port ?? relay.port}`;
 }
 
 // ffmpeg source pipeline shared by the RTMP/RTSP push instructions.
@@ -89,17 +87,17 @@ const FFMPEG_PIPELINE =
 
 // The push target URL for an ingest scenario, embedding the (unique) path so an
 // external encoder and the subscriber always agree on the stream.
-export function pushTargetFor(id: ScenarioId, path: string): string {
+export function pushTargetFor(id: ScenarioId, path: string, host: string): string {
 	const s = SCENARIOS[id];
 	if (!s.pushScheme || !s.pushPort) return "";
-	return `${s.pushScheme}://${ingestHost()}:${s.pushPort}${path}`;
+	return `${s.pushScheme}://${host}:${s.pushPort}${path}`;
 }
 
 // Full copy-pasteable ffmpeg command that pushes to the given path.
-export function pushCommandFor(id: ScenarioId, path: string): string {
+export function pushCommandFor(id: ScenarioId, path: string, host: string): string {
 	const s = SCENARIOS[id];
 	if (!s.pushScheme) return "";
 	const out = s.pushScheme === "rtmp" ? "-f flv" : "-f rtsp -rtsp_transport tcp";
-	const target = pushTargetFor(id, path);
+	const target = pushTargetFor(id, path, host);
 	return `${FFMPEG_PIPELINE} ${out} ${target}`;
 }

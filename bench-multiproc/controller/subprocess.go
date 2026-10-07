@@ -33,16 +33,20 @@ func httpClient() *http.Client {
 // startRelay launches one relay process with the given configuration.
 func startRelay(ctx context.Context, bin string, node *RelayNode, certDir string, top *Topology) (*ProcessState, error) {
 	args := []string{"relay"}
+	peerCA, peerCert, peerKey := PeerCredentialPaths(certDir, node.Name)
 	env := os.Environ()
 	env = append(env,
 		fmt.Sprintf("RELAY_ADDR=127.0.0.1:%d", node.Port),
 		fmt.Sprintf("CERT_FILE=%s", filepath.Join(certDir, "cert.pem")),
 		fmt.Sprintf("KEY_FILE=%s", filepath.Join(certDir, "key.pem")),
-		fmt.Sprintf("CA_FILE=%s", filepath.Join(certDir, "cert.pem")),
+		// Peer trust: the cell's CA and this relay's own peer certificate
+		// (cert.go). CA_FILE is relative to the relay's working directory.
+		fmt.Sprintf("CA_FILE=%s", peerCA),
+		fmt.Sprintf("PEER_CERT_FILE=%s", peerCert),
+		fmt.Sprintf("PEER_KEY_FILE=%s", peerKey),
 		fmt.Sprintf("RELAY_NAME=%s", node.Name),
 		"RELAY_GOGC=800",
 		"GROUP_CACHE_SIZE=8",
-		"LOCAL_RESOLVER_INTERVAL=0s",
 	)
 	if node.PeerAddr != "" {
 		env = append(env, fmt.Sprintf("PEERS=%s", node.PeerAddr))

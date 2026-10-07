@@ -1,10 +1,11 @@
 package relay
 
-import "strings"
+import (
+	"strings"
+)
 
-// splitAddrList splits a comma-separated address list, trimming whitespace and
-// dropping empty entries. Used for both PEERS and UPSTREAM_ADDR so the two
-// share one parsing rule.
+// splitAddrList splits PEERS, a comma-separated list of host:port entries,
+// trimming whitespace and dropping empty entries.
 func splitAddrList(raw string) []string {
 	var addrs []string
 	for a := range strings.SplitSeq(raw, ",") {
@@ -38,15 +39,12 @@ type Config struct {
 	// falls back to DefaultFramePool (DefaultNewFrameCapacity).
 	FrameCapacity int
 
-	// Peers is the list of upstream relay peers to connect to.
-	// The relay will dial each peer, discover announcements via
-	// ANNOUNCE_PLEASE, and register them on the local TrackMux.
+	// Peers is the list of relays to dial. Each host is resolved to all its
+	// addresses, and each address is dialed, so a DNS name with several
+	// records (e.g. role-hub.qumo-relay.service.consul:4433) connects to
+	// every relay behind it. The relay discovers their announcements via
+	// ANNOUNCE_PLEASE and registers them on the local TrackMux.
 	Peers []Peer
-
-	// UpstreamAddr is the address of an upstream relay to connect to.
-	// Used by edge relays to connect to upstream hub relays (e.g. role-hub.qumo-relay.service.consul:4433),
-	// or any relay connecting upstream. Multiple comma-separated addresses can be specified.
-	UpstreamAddr string
 
 	// NextSessionURI is the redirect URI sent to clients/peers in a GOAWAY
 	// message during graceful shutdown (gomoqt Server.NextSessionURI). Empty
@@ -57,9 +55,7 @@ type Config struct {
 
 // Peer represents a remote relay to connect to for announce discovery.
 type Peer struct {
-	// Address is the dial address used to connect to a remote relay.
-	// It can be a full URL such as "moqt://relay-tokyo:4433"
-	// or a raw host:port string such as "relay-tokyo:4433".
-	// Raw host:port addresses default to the moqt:// scheme.
+	// Address is the remote relay's host:port, such as "relay-tokyo:4433",
+	// dialed over native QUIC (moqt://).
 	Address string
 }

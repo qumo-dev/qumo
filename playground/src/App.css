@@ -72,7 +72,7 @@
 
 .segmented-btn.active {
 	background: var(--accent);
-	color: #fff;
+	color: var(--on-accent);
 	border-color: transparent;
 }
 
@@ -375,7 +375,7 @@ input[type="range"] {
 	display: flex;
 	align-items: center;
 	justify-content: center;
-	background: #000;
+	background: var(--video-bg);
 	border-radius: 0;
 }
 
@@ -391,7 +391,7 @@ input[type="range"] {
 .btn-start {
 	background: var(--ok);
 	border-color: transparent;
-	color: #062a14;
+	color: var(--on-ok);
 	font-weight: 600;
 	transition: filter var(--transition);
 }
@@ -403,7 +403,7 @@ input[type="range"] {
 .btn-stop {
 	background: var(--err);
 	border-color: transparent;
-	color: #2a0606;
+	color: var(--on-err);
 	font-weight: 600;
 	transition: filter var(--transition);
 }
@@ -449,8 +449,8 @@ input[type="range"] {
 	height: auto !important;
 	aspect-ratio: 16 / 9;
 	border: 1px solid var(--border);
-	border-radius: 8px;
-	background: #000;
+	border-radius: var(--radius-sm);
+	background: var(--video-bg);
 }
 
 /* Placeholder for a player waiting on its stream. The video element stays
@@ -471,10 +471,10 @@ input[type="range"] {
 	flex-wrap: wrap;
 	gap: 4px 14px;
 	padding: 5px 10px;
-	background: rgba(0, 0, 0, 0.65);
+	background: var(--overlay-bg);
 	backdrop-filter: blur(6px);
 	border-radius: var(--radius-sm);
-	color: #fff;
+	color: var(--overlay-text);
 	font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 	font-size: 0.75rem;
 	line-height: 1.5;
@@ -488,7 +488,7 @@ input[type="range"] {
 }
 
 .stats-overlay dt {
-	color: rgba(255, 255, 255, 0.6);
+	color: var(--overlay-text-muted);
 }
 
 .stats-overlay dd {
@@ -551,4 +551,444 @@ input[type="range"] {
 
 .camera-pull-status[data-state="error"] {
 	color: var(--err);
+}
+
+/* --- DevTools --- */
+
+.devtools {
+	margin-top: var(--gap);
+	background: var(--surface);
+	border: 1px solid var(--border);
+	border-radius: var(--radius);
+	box-shadow: var(--shadow-sm);
+}
+
+.devtools-toggle {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	width: 100%;
+	padding: 10px 16px;
+	background: none;
+	border: 0;
+	border-radius: var(--radius);
+	color: var(--text);
+	font: inherit;
+	font-weight: 600;
+	text-align: left;
+	cursor: pointer;
+}
+
+.devtools-toggle-mark {
+	color: var(--text-muted);
+}
+
+.devtools-body {
+	display: grid;
+	gap: var(--gap);
+	padding: 4px 16px 16px;
+}
+
+.devtools-empty {
+	margin: 0;
+	color: var(--text-muted);
+	font-size: 0.85rem;
+}
+
+.devtools-session {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 4px 24px;
+	margin: 0;
+	font-size: 0.85rem;
+}
+
+.devtools-session > div {
+	display: inline-flex;
+	gap: 6px;
+}
+
+.devtools-session dt {
+	color: var(--text-muted);
+}
+
+.devtools-session dd {
+	margin: 0;
+	font-variant-numeric: tabular-nums;
+}
+
+.devtools-status {
+	display: flex;
+	align-items: baseline;
+	gap: 8px;
+	margin: 0;
+	font-size: 0.95rem;
+}
+
+.devtools-status-mark {
+	flex: none;
+	width: 0.6em;
+	height: 0.6em;
+	border-radius: 50%;
+	background: var(--text-muted);
+}
+
+.devtools-status.is-ok .devtools-status-mark {
+	background: var(--ok);
+}
+
+.devtools-status.is-warn .devtools-status-mark {
+	background: var(--warn);
+}
+
+.devtools-status.is-bad .devtools-status-mark {
+	background: var(--err);
+}
+
+.devtools-session > div[title],
+.devtools-tracks th[title],
+.devtools-legend [title] {
+	cursor: help;
+}
+
+.devtools-more {
+	font-size: 0.85rem;
+}
+
+.devtools-more summary {
+	width: fit-content;
+	color: var(--text-muted);
+	cursor: pointer;
+}
+
+.devtools-more[open] summary {
+	margin-bottom: 8px;
+}
+
+.devtools-more .devtools-session + .devtools-session {
+	margin-top: 4px;
+}
+
+.devtools-hint {
+	margin: 0;
+	color: var(--text-muted);
+	font-size: 0.8rem;
+}
+
+.devtools-log {
+	display: grid;
+	gap: 8px;
+}
+
+.devtools-heading {
+	margin: 0;
+	font-size: 0.85rem;
+	font-weight: 600;
+}
+
+.devtools-events {
+	max-height: 14em;
+	margin: 0;
+	padding: 8px 12px;
+	overflow-y: auto;
+	list-style: none;
+	background: var(--surface-2);
+	border-radius: var(--radius-sm);
+	font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+	font-size: 0.8rem;
+}
+
+.devtools-events ol {
+	margin: 0;
+	padding: 0 0 4px;
+	list-style: none;
+	color: var(--text-muted);
+}
+
+.devtools-events li,
+.devtools-events summary {
+	display: flex;
+	gap: 12px;
+}
+
+.devtools-events > li {
+	border-left: 2px solid transparent;
+	padding-left: 8px;
+}
+
+.devtools-events > li:hover {
+	background: var(--surface);
+}
+
+.devtools-events details {
+	flex: 1;
+	min-width: 0;
+}
+
+.devtools-events summary {
+	cursor: pointer;
+	list-style: none;
+}
+
+.devtools-events summary::-webkit-details-marker {
+	display: none;
+}
+
+.devtools-events summary > span::after {
+	content: " ▸";
+	color: var(--text-muted);
+}
+
+.devtools-events details[open] summary > span::after {
+	content: " ▾";
+}
+
+.devtools-events time {
+	flex: none;
+	color: var(--text-muted);
+}
+
+.devtools-events li.is-warn {
+	border-left-color: var(--warn);
+}
+
+.devtools-events li.is-bad {
+	border-left-color: var(--err);
+}
+
+.devtools-scroll {
+	overflow-x: auto;
+}
+
+.devtools-tracks {
+	width: 100%;
+	border-collapse: collapse;
+	font-size: 0.85rem;
+	font-variant-numeric: tabular-nums;
+}
+
+.devtools-tracks th,
+.devtools-tracks td {
+	padding: 4px 12px 4px 0;
+	border-bottom: 1px solid var(--border);
+	text-align: right;
+	white-space: nowrap;
+}
+
+.devtools-tracks th:first-child {
+	text-align: left;
+}
+
+.devtools-tracks thead th {
+	color: var(--text-muted);
+	font-weight: 400;
+}
+
+.devtools-timeline {
+	display: grid;
+	gap: 10px;
+}
+
+.devtools-controls {
+	display: flex;
+	flex-wrap: wrap;
+	justify-content: space-between;
+	align-items: center;
+	gap: 8px;
+}
+
+.devtools-spans {
+	display: inline-flex;
+	align-items: center;
+	gap: 4px;
+}
+
+/* How much time is in view, next to the buttons that change it. */
+.devtools-span {
+	min-width: 3.5em;
+	color: var(--text-muted);
+	font-size: 0.8rem;
+	font-variant-numeric: tabular-nums;
+	text-align: right;
+}
+
+.devtools-controls .copy-btn[aria-pressed="true"] {
+	border-color: var(--accent);
+	color: var(--accent);
+}
+
+.devtools-lane {
+	display: grid;
+	grid-template-columns: 6rem minmax(0, 1fr);
+	align-items: start;
+	gap: 8px;
+}
+
+.devtools-lane-name {
+	color: var(--text-muted);
+	font-size: 0.8rem;
+}
+
+.devtools-plot-box {
+	position: relative;
+}
+
+.devtools-plot {
+	display: block;
+	width: 100%;
+	/* It is dragged sideways to look further back. A finger moving up or down
+	   on it still scrolls the page; text must not be selected under it. */
+	cursor: grab;
+	touch-action: pan-y;
+	user-select: none;
+}
+
+.devtools-plot:active {
+	cursor: grabbing;
+}
+
+/* What the pointer is on, under the lane so it does not cover the mark. */
+.devtools-tip {
+	position: absolute;
+	top: calc(100% + 4px);
+	z-index: 1;
+	display: grid;
+	gap: 2px;
+	width: max-content;
+	max-width: 300px;
+	padding: 6px 10px;
+	transform: translateX(-50%);
+	background: var(--surface-2);
+	border: 1px solid var(--border);
+	border-radius: var(--radius-sm);
+	box-shadow: var(--shadow-md);
+	font-size: 0.8rem;
+	pointer-events: none;
+}
+
+.devtools-tip time {
+	color: var(--text-muted);
+	font-variant-numeric: tabular-nums;
+}
+
+.devtools-tip span:first-of-type {
+	font-weight: 600;
+}
+
+.devtools-axis > div {
+	display: flex;
+	justify-content: space-between;
+	color: var(--text-muted);
+	font-size: 0.75rem;
+}
+
+/* One row per kind of timeline row, its name in the column the lane names use. */
+.devtools-legend {
+	display: grid;
+	gap: 4px;
+	margin: 0;
+	color: var(--text-muted);
+	font-size: 0.8rem;
+}
+
+.devtools-legend > div {
+	display: grid;
+	grid-template-columns: 6rem minmax(0, 1fr);
+	gap: 8px;
+}
+
+.devtools-legend dt {
+	color: var(--text);
+}
+
+.devtools-legend dd {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 2px 16px;
+	margin: 0;
+}
+
+.devtools-legend-mark {
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+}
+
+.devtools-swatch {
+	width: 12px;
+	height: 10px;
+}
+
+.devtools-swatch.is-complete {
+	background: var(--group-complete);
+	opacity: 0.55;
+}
+
+.devtools-swatch.is-receiving {
+	background: var(--group-receiving);
+}
+
+.devtools-swatch.is-skipped {
+	background: repeating-linear-gradient(
+		45deg,
+		var(--group-skipped) 0 2px,
+		transparent 2px 4px
+	);
+}
+
+.devtools-swatch.is-aborted {
+	background: var(--group-aborted);
+}
+
+.devtools-swatch.is-late {
+	box-sizing: border-box;
+	border: 1px solid var(--group-late);
+}
+
+.devtools-swatch.is-stopped {
+	background: repeating-linear-gradient(
+		45deg,
+		var(--group-stopped) 0 2px,
+		transparent 2px 4px
+	);
+	opacity: 0.7;
+}
+
+.devtools-swatch.is-level {
+	background: var(--group-receiving);
+	opacity: 0.35;
+}
+
+.devtools-swatch.is-glitch {
+	width: 3px;
+	background: var(--group-aborted);
+}
+
+.devtools-swatch.is-stall {
+	background: var(--group-skipped);
+	opacity: 0.45;
+}
+
+.devtools-swatch.is-marker {
+	background: var(--group-receiving);
+	opacity: 0.45;
+}
+
+.devtools-swatch.is-arrival {
+	height: 4px;
+	background: var(--group-late);
+}
+
+.devtools-swatch.is-held {
+	height: 4px;
+	background: var(--group-skipped);
+}
+
+.devtools-swatch.is-unrendered {
+	width: 3px;
+	background: var(--group-skipped);
+}
+
+.devtools-swatch.is-rendered {
+	background: var(--group-rendered);
 }

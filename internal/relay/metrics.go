@@ -16,6 +16,48 @@ var (
 		Help:      "Current number of active MoQT relay sessions.",
 	})
 
+	// metricAuthRequests counts session admissions by event and result:
+	// admitted, refused (401/403), error (it could not be checked) or
+	// unchecked (auth off).
+	metricAuthRequests = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Namespace: "qumo",
+			Subsystem: "relay",
+			Name:      "auth_requests_total",
+			Help:      "Session admission checks, by event and result.",
+		},
+		[]string{"event", "result"},
+	)
+
+	// metricSessionsEnded counts checked sessions the relay ended because of
+	// their grant, by reason: expired (the grant's expires passed) or
+	// refused (a revalidate was refused).
+	metricSessionsEnded = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "qumo",
+		Subsystem: "relay",
+		Name:      "sessions_ended_total",
+		Help:      "Checked sessions the relay ended because of their grant, by reason.",
+	}, []string{"reason"})
+
+	// metricAnnouncementsRefused counts announcements not routed because the
+	// session's grant doesn't cover their path.
+	metricAnnouncementsRefused = promauto.NewCounter(prometheus.CounterOpts{
+		Namespace: "qumo",
+		Subsystem: "relay",
+		Name:      "announcements_refused_total",
+		Help:      "Announcements not routed because the session's grant doesn't cover the path.",
+	})
+
+	// metricSubscribeAuthorizations counts subscriptions checked against the
+	// session's grant. A relay peer's and an internal client's subscriptions
+	// aren't checked against a credential, and aren't counted.
+	metricSubscribeAuthorizations = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "qumo",
+		Subsystem: "relay",
+		Name:      "subscribe_authorizations_total",
+		Help:      "Subscriptions checked against the session's grant, by result (admitted, not_covered).",
+	}, []string{"result"})
+
 	// metricPeersConnected tracks the number of active outbound relay peer
 	// connections managed by maintainPeer.
 	metricPeersConnected = promauto.NewGauge(prometheus.GaugeOpts{

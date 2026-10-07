@@ -120,7 +120,7 @@ func Help() error {
 	fmt.Println()
 
 	fmt.Println("  �🔧 Utilities:")
-	fmt.Println("    mage cert         - Generate TLS certificates using mkcert")
+	fmt.Println("    mage cert         - Generate the TLS certificate (mkcert) and dev peer credentials (PEER_NAMES=a,b)")
 	fmt.Println("    mage hash         - Compute/write TLS cert SHA-256")
 	fmt.Println()
 	fmt.Println("  ℹ️  Info:")
@@ -331,6 +331,7 @@ func Relay() error {
 // an advertised address (required for the wildcard bind), and CORS allowing the
 // `mage web` Vite origins. It logs which defaults it applied so the relaxation
 // is visible. These affect ONLY this dev wrapper, not the `qumo relay` binary.
+// With no QUMO_AUTH_KEYS the relay runs with auth off, admitting every session.
 func relayDevEnv() []string {
 	defaults := map[string]string{
 		"RELAY_ADDR":           ":4433",
@@ -857,6 +858,17 @@ func WebClean() error {
 // beyond the default localhost/127.0.0.1/::1 — useful for reaching the demo
 // from another device on the LAN (e.g. CERT_HOSTS=192.168.1.10,desktop.local).
 func Cert() error {
+	if err := serverCert(); err != nil {
+		return err
+	}
+	// Peer credentials too (peercert.go): the Compose topologies and the
+	// benchmarks peer relays, and a relay with PEERS refuses to start
+	// without them.
+	return peerCredentials()
+}
+
+// serverCert generates the public TLS certificate the relay serves clients.
+func serverCert() error {
 	fmt.Println("🔐 Generating WebTransport-compatible TLS certificate...")
 
 	if err := os.MkdirAll("certs", 0755); err != nil {

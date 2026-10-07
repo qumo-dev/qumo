@@ -16,6 +16,13 @@
 # see `qumo relay --help`); REGION is deployment-level metadata (Nomad/remote
 # resolver tags) that the relay binary itself doesn't read, so it's omitted here.
 #
+# Relays authenticate each other with mutual TLS under a relay CA: every
+# relay trusts certs/peer-ca.crt (CA_FILE) and presents its own peer
+# certificate (PEER_CERT_FILE/PEER_KEY_FILE), one identity per relay. A relay
+# with PEERS refuses to start without them. `mage cert` writes them all:
+#
+#   PEER_NAMES=relay-hub-asia,relay-edge-asia,relay-hub-europe,relay-edge-europe,relay-hub-americas,relay-edge-americas mage cert
+#
 # Usage:
 #   docker compose -f docker/docker-compose.static.yml up --build
 #
@@ -34,8 +41,9 @@ x-relay-base: &relay-base
   restart: unless-stopped
   environment:
     RELAY_ADDR: "0.0.0.0:4433"
+    CA_FILE: "certs/peer-ca.crt"
   volumes:
-    # Generate certs first: mkcert -cert-file certs/server.crt -key-file certs/server.key localhost
+    # Generate certs first (the server certificate and the peer credentials): see above
     - ../certs:/app/certs:ro
   healthcheck:
     test: ["CMD", "wget", "-q", "-O", "-", "http://localhost:4433/health"]
@@ -56,8 +64,10 @@ services:
     command: ["relay", "--role", "hub"]
     environment:
       RELAY_NAME: "relay-hub-asia"
+      PEER_CERT_FILE: "certs/peers/relay-hub-asia.crt"
+      PEER_KEY_FILE: "certs/peers/relay-hub-asia.key"
       # Connect to hubs in other regions
-      PEERS: "moqt://relay-hub-europe:4433,moqt://relay-hub-americas:4433"
+      PEERS: "relay-hub-europe:4433,relay-hub-americas:4433"
     ports:
       - "9001:4433/udp"
       - "9001:4433/tcp"
@@ -71,8 +81,10 @@ services:
         condition: service_healthy
     environment:
       RELAY_NAME: "relay-edge-asia"
+      PEER_CERT_FILE: "certs/peers/relay-edge-asia.crt"
+      PEER_KEY_FILE: "certs/peers/relay-edge-asia.key"
       # Connect to local hub
-      PEERS: "moqt://relay-hub-asia:4433"
+      PEERS: "relay-hub-asia:4433"
     ports:
       - "9002:4433/udp"
       - "9002:4433/tcp"
@@ -85,8 +97,10 @@ services:
     command: ["relay", "--role", "hub"]
     environment:
       RELAY_NAME: "relay-hub-europe"
+      PEER_CERT_FILE: "certs/peers/relay-hub-europe.crt"
+      PEER_KEY_FILE: "certs/peers/relay-hub-europe.key"
       # Connect to hubs in other regions
-      PEERS: "moqt://relay-hub-asia:4433,moqt://relay-hub-americas:4433"
+      PEERS: "relay-hub-asia:4433,relay-hub-americas:4433"
     ports:
       - "9003:4433/udp"
       - "9003:4433/tcp"
@@ -100,8 +114,10 @@ services:
         condition: service_healthy
     environment:
       RELAY_NAME: "relay-edge-europe"
+      PEER_CERT_FILE: "certs/peers/relay-edge-europe.crt"
+      PEER_KEY_FILE: "certs/peers/relay-edge-europe.key"
       # Connect to local hub
-      PEERS: "moqt://relay-hub-europe:4433"
+      PEERS: "relay-hub-europe:4433"
     ports:
       - "9004:4433/udp"
       - "9004:4433/tcp"
@@ -114,8 +130,10 @@ services:
     command: ["relay", "--role", "hub"]
     environment:
       RELAY_NAME: "relay-hub-americas"
+      PEER_CERT_FILE: "certs/peers/relay-hub-americas.crt"
+      PEER_KEY_FILE: "certs/peers/relay-hub-americas.key"
       # Connect to hubs in other regions
-      PEERS: "moqt://relay-hub-asia:4433,moqt://relay-hub-europe:4433"
+      PEERS: "relay-hub-asia:4433,relay-hub-europe:4433"
     ports:
       - "9005:4433/udp"
       - "9005:4433/tcp"
@@ -129,8 +147,10 @@ services:
         condition: service_healthy
     environment:
       RELAY_NAME: "relay-edge-americas"
+      PEER_CERT_FILE: "certs/peers/relay-edge-americas.crt"
+      PEER_KEY_FILE: "certs/peers/relay-edge-americas.key"
       # Connect to local hub
-      PEERS: "moqt://relay-hub-americas:4433"
+      PEERS: "relay-hub-americas:4433"
     ports:
       - "9006:4433/udp"
       - "9006:4433/tcp"

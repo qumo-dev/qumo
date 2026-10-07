@@ -102,10 +102,9 @@ type relayHandler struct {
 	announcement *moqt.Announcement
 	session      *moqt.Session
 
-	tracks       *trackManager
-	flights      singleflight.Group
-	nodeID       string
-	broadSession *broadcastSession // nil when metering is disabled
+	tracks  *trackManager
+	flights singleflight.Group
+	nodeID  string
 
 	trackInfoCache sync.Map           // moqt.TrackName -> moqt.PublishInfo
 	infoFlights    singleflight.Group // deduplicates concurrent upstream TrackInfo queries
@@ -259,7 +258,7 @@ func compareRoutes(candidate, current RouteStats) routeDecision {
 	return decisionInferiorRTT
 }
 
-func newRelayHandler(ann *moqt.Announcement, sess *moqt.Session, nodeID string, broadSess *broadcastSession, cacheSize int, pool *FramePool, sampler *statsSampler) *relayHandler {
+func newRelayHandler(ann *moqt.Announcement, sess *moqt.Session, nodeID string, cacheSize int, pool *FramePool, sampler *statsSampler) *relayHandler {
 	if sess == nil {
 		panic("relay: session must not be nil")
 	}
@@ -273,7 +272,6 @@ func newRelayHandler(ann *moqt.Announcement, sess *moqt.Session, nodeID string, 
 		session:      sess,
 		tracks:       newTrackManager(cacheSize, pool),
 		nodeID:       nodeID,
-		broadSession: broadSess,
 		sampler:      sampler,
 		ctx:          ctx,
 		cancel:       cancel,
@@ -361,6 +359,9 @@ func (h *relayHandler) TrackInfo(name moqt.TrackName) (pubInfo moqt.PublishInfo,
 }
 
 func (h *relayHandler) ServeTrack(tw *moqt.TrackWriter) {
+	if !authorizeSubscribe(tw) {
+		return
+	}
 	logger := slog.With(
 		"node", h.nodeID,
 		"broadcast_path", tw.BroadcastPath,
@@ -451,7 +452,7 @@ func (h *relayHandler) subscribe(name moqt.TrackName) *trackDistributor {
 		return nil
 	}
 
-	d := newTrackDistributor(h.tracks, trackID, h.broadSession, h.sampler)
+	d := newTrackDistributor(h.tracks, trackID, h.sampler)
 
 	slog.Debug("relay: starting ingest loop",
 		"node", h.nodeID,
@@ -526,9 +527,6 @@ type trackDistributor struct {
 	// Server (tests) simply skips depth sampling.
 	sampler *statsSampler
 
-	// session is non-nil when backend metering is active for this broadcast.
-	session *broadcastSession
-
 	// fillSem is a buffered-channel semaphore acquired BEFORE reserving a ring
 	// slot. This guarantees we never leak a reserved cache on context
 	// cancellation — the send may block but no ring slot has been consumed.
@@ -557,7 +555,7 @@ type trackDistributor struct {
 	done chan struct{} // closed when ingest returns
 }
 
-func newTrackDistributor(manager *trackManager, trackID string, broadSess *broadcastSession, sampler *statsSampler) *trackDistributor {
+func newTrackDistributor(manager *trackManager, trackID string, sampler *statsSampler) *trackDistributor {
 	nWorkers := maxGroupFillsInFlightOrPanic()
 	d := &trackDistributor{
 		trackID:           trackID,
@@ -567,7 +565,6 @@ func newTrackDistributor(manager *trackManager, trackID string, broadSess *broad
 		egressCounter:     metricRelayEgressBytesTotal.WithLabelValues(trackID),
 		deliveryHistogram: metricGroupDeliveryHistogram.WithLabelValues(trackID),
 		sampler:           sampler,
-		session:           broadSess,
 		fillSem:           make(chan struct{}, nWorkers),
 		fillJobs:          make(chan fillJob, nWorkers),
 		stages:            sampler.stagesRef(),
@@ -784,7 +781,7 @@ func (d *trackDistributor) deliverGroup(tw *moqt.TrackWriter, twCtx context.Cont
 		tWrite := d.stages.now()
 		if err := gw.WriteFrame(frame); err != nil {
 			// Flush bytes written before the failure: these frames were already
-			// handed to QUIC, so they count against egress (and metering) even
+			// handed to QUIC, so they count against egress even
 			// though the group is being abandoned. The failing frame is excluded.
 			d.egressCounter.Add(float64(egressTotal))
 			return true
@@ -792,9 +789,6 @@ func (d *trackDistributor) deliverGroup(tw *moqt.TrackWriter, twCtx context.Cont
 		d.stages.egressFrame(tWrite)
 		n := int64(frame.Len())
 		egressTotal += n
-		if d.session != nil {
-			d.session.addEgress(int64(n))
-		}
 	}
 	d.egressCounter.Add(float64(egressTotal))
 	if cancelled {
@@ -879,9 +873,6 @@ func (d *trackDistributor) fillWorker() {
 func (d *trackDistributor) onFrame(n int) {
 	if n > 0 {
 		d.ingressCounter.Add(float64(n))
-		if d.session != nil {
-			d.session.addIngress(int64(n))
-		}
 	}
 	d.broadcast()
 }

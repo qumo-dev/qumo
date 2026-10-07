@@ -7,10 +7,13 @@ import { HlsPlayer } from "./HlsPlayer.tsx";
 import { type ConnectionState, ConnectionStatus, friendlyConnError } from "./ConnectionStatus.tsx";
 import { sanitizeReason } from "./errors.ts";
 import { buildTransportOptions, type CertHashProblem } from "./cert.ts";
-import { getConfig } from "./config.ts";
+import { getConfig, type RelayEndpoint, relayEndpoint } from "./config.ts";
 import { relayUrlFor, type ScenarioId, SCENARIOS } from "./scenarios.ts";
 import { PushInstructions } from "./PushInstructions.tsx";
 import { CameraPullForm, type PullState } from "./CameraPullForm.tsx";
+import { DevtoolsPanel } from "./devtools/DevtoolsPanel.tsx";
+import { Recorder } from "./devtools/recorder.ts";
+import { watchMainThread } from "./devtools/stall_monitor.ts";
 
 // Owns one WebTransport session for the active scenario. Each scenario is a
 // different origin, so the parent <Show> remounts this component (tearing down
@@ -25,8 +28,16 @@ export function ScenarioView(props: {
 	const isHls = props.scenario === "hls";
 	const [pullActive, setPullActive] = createSignal(false);
 
+	// Records what the session's tracks do, for the DevTools panel.
+	// It lives and dies with this component, like the session itself.
+	const recorder = new Recorder();
+	onCleanup(watchMainThread((duration) => recorder.mainThreadStalled(duration)));
+	const showsSubscriber = () => !isHls && (isCamera ? pullActive() : true);
+
 	const mux = DefaultTrackMux;
-	const relayUrl = relayUrlFor(props.scenario);
+	// Where the relay and the ingest origins are reached; unknown until the
+	// runtime config has been read.
+	const [relay, setRelay] = createSignal<RelayEndpoint>();
 
 	const [connState, setConnState] = createSignal<ConnectionState>("connecting");
 	const [connError, setConnError] = createSignal<string | null>(null);
@@ -38,6 +49,9 @@ export function ScenarioView(props: {
 	}).then((s) => s);
 
 	let certReady = false;
+	// The session is dialled once. Everything below holds the one promise, so
+	// a second connection would be used by nothing and closed by nothing.
+	let dialled = false;
 	let cachedTransportOptions:
 		| ReturnType<typeof buildTransportOptions>["transportOptions"]
 		| undefined;
@@ -47,9 +61,14 @@ export function ScenarioView(props: {
 	// the pull is active. For non-camera scenarios it fires immediately in
 	// onMount.
 	const doDial = () => {
-		if (!certReady) return;
+		const to = relay();
+		if (!certReady || to === undefined || dialled) return;
+		dialled = true;
 		setConnState("connecting");
-		const connected = connect(relayUrl, { mux, transportOptions: cachedTransportOptions! });
+		const connected = connect(relayUrlFor(props.scenario, to), {
+			mux,
+			transportOptions: cachedTransportOptions!,
+		});
 		dialSession(connected);
 		connected.then(
 			(s) => {
@@ -86,6 +105,7 @@ export function ScenarioView(props: {
 		cachedProblem = problem;
 		certReady = true;
 		setCertHashProblem(problem);
+		setRelay(relayEndpoint(cfg));
 
 		// Non-camera scenarios connect immediately. Camera waits for pullActive.
 		if (!isCamera) {
@@ -93,9 +113,10 @@ export function ScenarioView(props: {
 		}
 	});
 
-	// Camera: dial when the pull becomes active.
+	// Camera: dial when the pull is active and the config has been read,
+	// whichever comes last.
 	createEffect(() => {
-		if (isCamera && pullActive() && certReady) {
+		if (isCamera && pullActive() && relay() !== undefined) {
 			doDial();
 		}
 	});
@@ -114,37 +135,47 @@ export function ScenarioView(props: {
 				/>
 			</Show>
 
-			{isCamera && (
+			<Show when={isCamera}>
 				<CameraPullForm
 					path={props.path}
 					onStateChange={(s: PullState) => setPullActive(s === "active")}
 				/>
-			)}
-			{ingest && !isCamera && (
-				<PushInstructions
-					scenario={props.scenario}
-					path={props.path}
-				/>
-			)}
+			</Show>
+			<Show when={ingest && !isCamera ? relay()?.host : undefined}>
+				{(reached) => (
+					<PushInstructions
+						scenario={props.scenario}
+						path={props.path}
+						host={reached()}
+					/>
+				)}
+			</Show>
 
 			<div class={ingest ? "boards single" : "boards"}>
-				{!ingest && (
+				<Show when={!ingest}>
 					<PublishBoard
 						mux={mux}
 						path={props.path}
+						recorder={recorder}
 					/>
-				)}
-				{!isHls && (isCamera ? pullActive() : true) && (
-					<SubscribeBoard session={session} path={props.path} />
-				)}
-				{isHls && <HlsPlayer path={props.path} />}
-				{isCamera && !pullActive() && (
+				</Show>
+				<Show when={showsSubscriber()}>
+					<SubscribeBoard session={session} path={props.path} observer={recorder} />
+				</Show>
+				<Show when={isHls}>
+					<HlsPlayer path={props.path} />
+				</Show>
+				<Show when={isCamera && !pullActive()}>
 					<div class="video-empty">
 						<span class="video-empty-icon">📷</span>
 						Enter a camera URL and click "Start Pull" to begin streaming.
 					</div>
-				)}
+				</Show>
 			</div>
+
+			<Show when={showsSubscriber() || !ingest}>
+				<DevtoolsPanel recorder={recorder} session={session} />
+			</Show>
 		</>
 	);
 }

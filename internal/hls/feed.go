@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net/url"
 	"time"
 
 	"github.com/qumo-dev/gomoqt/moqt"
@@ -33,6 +34,12 @@ type feedConfig struct {
 	// relay. It dominates caFile when both are set — matching crypto/tls, where
 	// InsecureSkipVerify short-circuits verification regardless of RootCAs.
 	insecure bool
+	// certFile and keyFile, when set, are the egress's client certificate
+	// and key (PEM), from the relay CA the relay trusts as CA_FILE. The
+	// relay then serves the egress as an internal client, which needs no
+	// credential and has no grant to expire, and may only subscribe. Only a
+	// native-QUIC (moqt://) relayURL presents it.
+	certFile, keyFile string
 
 	// liveTimeout is how long the feed waits for a group before deciding the
 	// publisher is gone. It is also how stale a manifest may be before the
@@ -85,6 +92,32 @@ func connectWithRetry(ctx context.Context, cfg feedConfig) (*moqt.Session, media
 	}
 }
 
+// validate checks the settings that would otherwise fail only at the first
+// dial, or silently: a client certificate the relay would never see.
+func (c feedConfig) validate() error {
+	u, err := url.Parse(c.relayURL)
+	if err != nil {
+		// url.Parse's *url.Error quotes the whole URL, and its query may
+		// carry a credential; report only the reason it wraps.
+		if ue, ok := errors.AsType[*url.Error](err); ok {
+			err = ue.Err
+		}
+		return fmt.Errorf("RELAY_URL: invalid URL: %w", err)
+	}
+	if c.certFile == "" && c.keyFile == "" {
+		return nil
+	}
+	if c.certFile == "" || c.keyFile == "" {
+		return errors.New("RELAY_CERT_FILE and RELAY_KEY_FILE must be set together")
+	}
+	if u.Scheme != "moqt" {
+		// A WebTransport session presents no certificate: the relay checks
+		// the credential of every one.
+		return fmt.Errorf("RELAY_CERT_FILE needs a native-QUIC RELAY_URL (moqt://), got %q", u.Scheme)
+	}
+	return nil
+}
+
 // relayTLSConfig builds the client TLS config for dialing the relay. The egress
 // verifies the relay's certificate by default: against the system root store
 // when caFile is empty, or against a single relay cert when caFile names a PEM.
@@ -107,6 +140,11 @@ func connect(ctx context.Context, cfg feedConfig) (*moqt.Session, mediaInfo, err
 	if err != nil {
 		return nil, mediaInfo{}, fmt.Errorf("hls: relay TLS config: %w", err)
 	}
+	// Loaded on every connect, so a short-lived certificate renewed on disk
+	// is presented at the next reconnect.
+	if err := tlsclient.ApplyClientCert(tc, cfg.certFile, cfg.keyFile); err != nil {
+		return nil, mediaInfo{}, fmt.Errorf("hls: relay client certificate: %w", err)
+	}
 	session, err := (&moqt.Dialer{TLSConfig: tc}).Dial(ctx, cfg.relayURL, moqt.NewTrackMux(0))
 	if err != nil {
 		return nil, mediaInfo{}, fmt.Errorf("hls: dial relay: %w", err)
@@ -114,6 +152,7 @@ func connect(ctx context.Context, cfg feedConfig) (*moqt.Session, mediaInfo, err
 
 	catalog, err := fetchCatalog(ctx, session, cfg.trackPath)
 	if err != nil {
+		err = sessionRefusal(session, err)
 		// not actionable: the close outcome is irrelevant once the catalog read failed.
 		_ = session.CloseWithError(moqt.NoError, "catalog fetch failed")
 		return nil, mediaInfo{}, err
@@ -165,6 +204,24 @@ func packagerForTrack(c msf.Catalog, t *msf.Track) (*cmaf.Packager, error) {
 		// the track's initRef.
 		Description: initFromTrack(c, t),
 	})
+}
+
+// sessionRefusal returns what to report for a subscribe that failed with
+// err. A relay that won't serve a session closes it with "unauthorized"
+// before answering anything, so a subscribe in flight fails with that
+// close; the session's cause then says so, and the two ways in are named.
+// Any other close by the relay is reported as such; otherwise err.
+func sessionRefusal(session *moqt.Session, err error) error {
+	// moqt.Cause gives the close as a SessionError on either transport.
+	cause := moqt.Cause(session.Context())
+	sessErr, ok := errors.AsType[*moqt.SessionError](cause)
+	if !ok || !sessErr.Remote {
+		return err
+	}
+	if sessErr.SessionErrorCode() == moqt.UnauthorizedSessionErrorCode {
+		return fmt.Errorf("hls: the relay refused the session (%w): connect with a credential (?jwt= in RELAY_URL) or a client certificate from its CA (RELAY_CERT_FILE)", cause)
+	}
+	return fmt.Errorf("hls: the relay closed the session: %w", cause)
 }
 
 // fetchCatalog subscribes to the reserved catalog track and parses its first

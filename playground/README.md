@@ -132,6 +132,7 @@ Environment variables live in `playground/.env` (see `.env.example`):
 | Variable          | Description                                              |
 | ----------------- | -------------------------------------------------------- |
 | `VITE_RELAY_URL`  | Relay WebTransport URL (must be HTTPS).                  |
+| `VITE_HLS_URL`    | Base URL of the HLS egress (`qumo hls`). Optional: without it the egress is looked for on the page's host at port 8081. `qumo hls` listens on 8080 by default, so start it with `HLS_ADDR=:8081` and `CORS_ALLOWED_ORIGINS` set to the page's origin. |
 | `VITE_CERT_HASH`  | SHA-256 (hex) of the relay cert. Set by `mage cert` in its self-signed fallback; **not needed** when `mage cert` uses mkcert (browser-trusted). |
 
 The header title is a fixed `qumo` (not configurable).
@@ -169,20 +170,38 @@ browser-trusted for every origin; in the self-signed fallback a single
 
 ## Controls
 
-- **Publish (Echo):** resolution (480p/720p/1080p), framerate (24/30/60), and
-  bitrate (0.5–6 Mbps) picks. These shape the camera capture and the encoder;
-  stop and restart to apply a change mid-session.
+- **Publish (Echo):** source (camera, screen, or a test pattern made in the
+  page, which needs no camera and no permission), resolution
+  (480p/720p/1080p), framerate (24/30/60), and bitrate (0.5–6 Mbps) picks.
+  These shape the capture and the encoder; stop and restart to apply a change
+  mid-session.
 - **Subscribe:** mute, volume, and fullscreen. These are viewer controls only —
   MoQ is live, so there is no pause/seek/scrub.
 - **Stats overlay:** while a stream is active, both boards show a live readout
   over the preview — resolution, fps, media bitrate, and (publish) encoder
   queue / (subscribe) RTT and decoder queue. Updated once per second.
+- **DevTools:** a collapsible panel under the boards, closed until opened. A
+  status line at the top says whether playback is normal or breaking up, and
+  why. Under it are the playback delay, arrival jitter and audio buffer level
+  (the other counters are under "More figures"; every label explains itself
+  when pointed at), a table of tracks (bitrate, frame rate, latest
+  group, and how many groups were received in full, skipped, aborted or late), and a
+  timeline of each track's groups: when each arrived, how it ended, and below
+  that what was played. An "audio buffer" lane shows the audio buffer's level
+  and marks each moment sound was lost; a stop of the page is a band across
+  every lane. Pick 60, 10 or 2 seconds of history (at 2 seconds
+  every audio group is its own mark), pause it, and point at a group to pick
+  out its received bar and its rendered span together. A log at the bottom
+  lists what happened in words, with the time of each, and can be copied as
+  text. Trouble that came together is one item headed by its likely cause and
+  what it cost; pointing at an item marks its time on the timeline.
 
 ## Develop
 
 ```bash
 deno task dev      # Vite dev server
-deno task build    # type-check (deno check) + production build to dist/
+deno task test     # unit tests (deno test)
+deno task build    # unit tests + type-check (deno check) + production build to dist/
 deno task preview  # preview the production build
 
 Install deps first with `deno install` (the project is Deno-managed —
@@ -203,7 +222,17 @@ src/
   ConnectionStatus.tsx WebTransport lifecycle indicator (#134)
   scenarios.ts         Scenario registry (ports, modes, push commands)
   cert.ts              VITE_CERT_HASH parsing + transport options
-  publish/             Publish board: capture → encode → MoQ
-  subscribe/           Subscribe board: MoQ → decode → canvas
+  publish/             Publish board, and the publisher behind it (publisher.ts):
+                       capture → encode → MoQ, with no UI of its own.
+                       fanout.ts sends a track's frames to each subscriber
+    audio/             Capture on the audio thread + WebCodecs encode
+    video/             Track frames → preview canvas + WebCodecs encode
+  subscribe/           Subscribe board: start/stop, controls, stats overlay
+  player/              Viewer: MoQ → decode → canvas, with no UI of its own.
+                       Reads tracks through its own small interface
+                       (source.ts); moq_source.ts adapts @qumo/moq to it
+    audio/             WebCodecs decode + jitter buffer on the audio thread
+    video/             WebCodecs decode + timed drawing on the canvas
+  devtools/            DevTools panel and the recorder that feeds it
   user/                Random-name helper (seeds the Echo default path)
 ```

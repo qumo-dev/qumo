@@ -52,12 +52,13 @@ func TestSourceGroup_IsComplete(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func newTestTrackBuffer() *trackBuffer {
-	return &trackBuffer{
-		name:        "test",
-		ring:        make([]atomic.Pointer[sourceGroup], defaultRingSize),
-		size:        defaultRingSize,
-		subscribers: make(map[chan struct{}]struct{}),
+	b := &trackBuffer{
+		name: "test",
+		ring: make([]atomic.Pointer[sourceGroup], defaultRingSize),
+		size: defaultRingSize,
 	}
+	b.notify.init()
+	return b
 }
 
 func TestTrackBuffer_OpenGroup(t *testing.T) {
@@ -82,6 +83,123 @@ func TestTrackBuffer_Get(t *testing.T) {
 	g := b.openGroup()
 	got := b.get(g.seq)
 	assert.Equal(t, g, got)
+}
+
+func TestTrackBuffer_Get_HeadAdvancedBeforeStore(t *testing.T) {
+	b := newTestTrackBuffer()
+	for range defaultRingSize {
+		b.openGroup()
+	}
+
+	// openGroup advances head, then stores the group. A subscriber that reads
+	// head in between must not be handed the group that still sits in the slot.
+	next := moqt.GroupSequence(b.pos.Add(1))
+
+	assert.Nil(t, b.get(next))
+}
+
+func TestTrackBuffer_Get_SlotTakenOver(t *testing.T) {
+	b := newTestTrackBuffer()
+	first := b.openGroup()
+	for range defaultRingSize {
+		b.openGroup()
+	}
+
+	assert.Nil(t, b.get(first.seq))
+}
+
+func TestTrackBuffer_Next(t *testing.T) {
+	open := func(n int) *trackBuffer {
+		b := newTestTrackBuffer()
+		for range n {
+			b.openGroup()
+		}
+		return b
+	}
+
+	tests := map[string]struct {
+		opened      int
+		last        moqt.GroupSequence
+		wantSeq     moqt.GroupSequence // 0: no group to serve
+		wantServed  moqt.GroupSequence
+		wantSkipped bool
+	}{
+		"nothing published yet": {
+			opened: 0, last: 0, wantSeq: 0, wantServed: 0,
+		},
+		"the first group": {
+			opened: 1, last: 0, wantSeq: 1, wantServed: 1,
+		},
+		"caught up": {
+			opened: 3, last: 3, wantSeq: 0, wantServed: 3,
+		},
+		"the group after the last one served": {
+			opened: 3, last: 1, wantSeq: 2, wantServed: 2,
+		},
+		"the oldest group still in the ring": {
+			opened: 10, last: 2, wantSeq: 3, wantServed: 3,
+		},
+		"fallen out of the ring skips to the newest": {
+			opened: 10, last: 1, wantSeq: 10, wantServed: 10, wantSkipped: true,
+		},
+	}
+
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			b := open(tt.opened)
+
+			g, served, skipped := b.next(tt.last)
+
+			var gotSeq moqt.GroupSequence
+			if g != nil {
+				gotSeq = g.seq
+			}
+			assert.Equal(t, tt.wantSeq, gotSeq)
+			assert.Equal(t, tt.wantServed, served)
+			assert.Equal(t, tt.wantSkipped, skipped)
+		})
+	}
+}
+
+// openGroup advances head before it stores the group. A subscriber that looks
+// in between is told there is nothing yet and keeps its place, so that it
+// waits for the push's notification rather than asking again at once.
+func TestTrackBuffer_Next_HeadAdvancedBeforeStore(t *testing.T) {
+	b := newTestTrackBuffer()
+	b.openGroup()
+	b.pos.Add(1) // head counts group 2, which is not stored yet
+
+	g, served, skipped := b.next(1)
+
+	assert.Nil(t, g)
+	assert.Equal(t, moqt.GroupSequence(1), served)
+	assert.False(t, skipped)
+}
+
+// A subscriber that skips to a newest group not yet stored is counted as
+// having skipped once: it keeps the place just before that group, and the
+// next look serves it without another skip.
+func TestTrackBuffer_Next_SkipToGroupNotYetStored(t *testing.T) {
+	b := newTestTrackBuffer()
+	for range defaultRingSize + 1 {
+		b.openGroup()
+	}
+	newest := moqt.GroupSequence(b.pos.Add(1)) // counted by head, not stored yet
+
+	g, served, skipped := b.next(0)
+
+	assert.Nil(t, g)
+	assert.Equal(t, newest-1, served)
+	assert.True(t, skipped)
+
+	stored := &sourceGroup{seq: newest}
+	b.ring[uint64(newest)%b.size].Store(stored)
+
+	g, served, skipped = b.next(served)
+
+	assert.Same(t, stored, g)
+	assert.Equal(t, newest, served)
+	assert.False(t, skipped)
 }
 
 func TestTrackBuffer_EarliestAvailable(t *testing.T) {
@@ -250,116 +368,108 @@ func TestVideoTrack_Close_NoGroup(t *testing.T) {
 	v.close()
 }
 
-func TestTrackBuffer_SubscribeUnsubscribe(t *testing.T) {
-	synctest.Test(t, func(t *testing.T) {
-		b := newTestTrackBuffer()
+func TestTrackBuffer_Notify_AdvancesSeq(t *testing.T) {
+	b := newTestTrackBuffer()
 
-		ch1 := b.subscribe()
-		ch2 := b.subscribe()
+	state := b.notify.listen()
+	assert.Equal(t, uint64(0), state.seq)
 
-		// Both subscribers receive notifications.
-		b.notify()
-		synctest.Wait()
+	b.broadcast()
+	state = b.notify.listen()
+	assert.Equal(t, uint64(1), state.seq, "notify should advance the sequence")
 
-		select {
-		case <-ch1:
-		default:
-			t.Fatal("subscriber 1 did not receive notification")
-		}
-		select {
-		case <-ch2:
-		default:
-			t.Fatal("subscriber 2 did not receive notification")
-		}
-
-		// Unsubscribe ch1; only ch2 should receive further notifications.
-		b.unsubscribe(ch1)
-
-		b.notify()
-		synctest.Wait()
-
-		select {
-		case <-ch1:
-			t.Fatal("unsubscribed channel should not receive notification")
-		default:
-		}
-		select {
-		case <-ch2:
-		default:
-			t.Fatal("subscriber 2 did not receive notification after ch1 unsubscribed")
-		}
-	})
+	b.broadcast()
+	state = b.notify.listen()
+	assert.Equal(t, uint64(2), state.seq, "second notify should advance to 2")
 }
 
-func TestTrackBuffer_Notify(t *testing.T) {
+// TestTrackBuffer_Notify_WakesListener verifies the wake contract egress
+// relies on: a listener holding the pre-notify state, parking on its channel,
+// is woken by the close when notify advances the sequence. Both the seq
+// comparison (before parking) and the channel close (after) must deliver the
+// event.
+func TestTrackBuffer_Notify_WakesListener(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		b := newTestTrackBuffer()
 
-		ch := b.subscribe()
-		defer b.unsubscribe(ch)
+		before := b.notify.addListener()
+		defer b.notify.removeListener()
 
-		b.notify()
+		// Listener parks on the pre-notify channel.
+		woken := make(chan struct{})
+		go func() {
+			<-before.ch
+			close(woken)
+		}()
+		synctest.Wait() // let the goroutine reach the receive
 
+		b.broadcast()
 		synctest.Wait()
 
 		select {
-		case <-ch:
-			// Expected: notification received.
+		case <-woken:
+			// Expected: parked listener woken by the close.
 		default:
-			t.Fatal("expected notification on subscriber channel")
+			t.Fatal("listener parked on the pre-notify channel was not woken")
 		}
-	})
-}
 
-func TestTrackBuffer_Notify_NonBlocking(t *testing.T) {
-	synctest.Test(t, func(t *testing.T) {
-		b := newTestTrackBuffer()
-
-		ch := b.subscribe()
-		defer b.unsubscribe(ch)
-
-		// Fill the channel buffer.
-		b.notify()
-		synctest.Wait()
-
-		// Second notify should not block.
-		b.notify()
-		synctest.Wait()
-
-		// Drain one.
-		<-ch
-
-		// Channel should be empty now.
+		// And the fresh state is observable.
+		state := b.notify.listen()
+		assert.Greater(t, state.seq, before.seq, "sequence must advance")
 		select {
-		case <-ch:
-			t.Fatal("expected no more notifications")
+		case <-state.ch:
+			t.Fatal("fresh channel must be open")
 		default:
 		}
 	})
 }
 
-func TestTrackBuffer_MultipleSubscribers(t *testing.T) {
+// TestTrackBuffer_Notify_SeqGuardCoversRace verifies the seq-guard path: a
+// listener that checks the sequence before parking still observes a notify
+// that fired between its check and its park — the listen() snapshot's seq
+// exceeds its last-seen value, so it never waits on a channel that closed in
+// the gap (the lost-wakeup window the per-subscriber-channel design could
+// not have).
+func TestTrackBuffer_Notify_SeqGuardCoversRace(t *testing.T) {
+	b := newTestTrackBuffer()
+
+	lastSeen := b.notify.listen() // seq 0
+	b.broadcast()                 // fires after the listener's snapshot
+
+	state := b.notify.listen()
+	assert.Greater(t, state.seq, lastSeen.seq,
+		"seq guard must reveal the notify that fired after the snapshot")
+}
+
+// TestTrackBuffer_Notify_MultipleListeners verifies the broadcast reaches all
+// parked listeners — with per-subscriber channels this required a walk and a
+// buffered slot per subscriber; the close wakes every waiter at once.
+func TestTrackBuffer_Notify_MultipleListeners(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		b := newTestTrackBuffer()
 
-		ch1 := b.subscribe()
-		ch2 := b.subscribe()
-		defer b.unsubscribe(ch1)
-		defer b.unsubscribe(ch2)
+		const listeners = 8
+		woken := make([]chan struct{}, listeners)
+		for i := range woken {
+			state := b.notify.addListener()
+			defer b.notify.removeListener()
+			woken[i] = make(chan struct{})
+			go func(ch chan struct{}, s notifyState) {
+				<-s.ch
+				close(ch)
+			}(woken[i], state)
+		}
+		synctest.Wait() // let every listener park
 
-		b.notify()
+		b.broadcast()
 		synctest.Wait()
 
-		select {
-		case <-ch1:
-		default:
-			t.Fatal("subscriber 1 did not receive notification")
-		}
-
-		select {
-		case <-ch2:
-		default:
-			t.Fatal("subscriber 2 did not receive notification")
+		for i, ch := range woken {
+			select {
+			case <-ch:
+			default:
+				t.Fatalf("listener %d was not woken by the broadcast", i)
+			}
 		}
 	})
 }

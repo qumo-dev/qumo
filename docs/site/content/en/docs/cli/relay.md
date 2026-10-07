@@ -45,7 +45,7 @@ $ curl http://127.0.0.1:4443/health
 ## Configuration
 
 Everything other than `--role` is an environment variable: bind address, TLS
-certificates, peer discovery, capacity tuning, and credential auth. Unlike
+certificates, peer discovery, capacity tuning, and session auth. Unlike
 the ingest commands, the relay's surface is large enough to have its own
 page — see [Configuration]({{< relref "../configuration" >}}) for the full
 reference.

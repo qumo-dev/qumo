@@ -32,7 +32,8 @@ import (
 //	HLS_ADDR           - HTTP listen address (default ":8080")
 //	LEDGER_ROOT        - qumo-ledger filesystem store directory (default "./ledger")
 //	LEDGER_TRACK       - ledger track path (default "live/cam1/video")
-//	RELAY_URL          - MoQ relay URL, e.g. "https://host:4433" (default "https://localhost:4433")
+//	RELAY_URL          - MoQ relay URL, e.g. "https://host:4433" (default "https://localhost:4433").
+//	                     Use "moqt://host:4433" with RELAY_CERT_FILE.
 //	RELAY_TRACK_PATH   - MoQ broadcast path whose catalog to read (default "/hls/live",
 //	                     the playground's HLS scenario)
 //	RELAY_TRACK_NAME   - media track name in the catalog to relay (default "video")
@@ -53,6 +54,15 @@ import (
 //	                     dev relay such as seed-moq (default "false"; the egress
 //	                     verifies the relay's certificate by default). Dominates
 //	                     RELAY_CA_FILE when both are set.
+//	RELAY_CERT_FILE,
+//	RELAY_KEY_FILE      - the egress's client certificate and key (PEM), from
+//	                     the relay CA the relay trusts as CA_FILE, without the
+//	                     peering name. The relay then serves the egress as an
+//	                     internal client: no credential, no expiry, subscribe
+//	                     only. Set both or neither; they need a moqt://
+//	                     RELAY_URL, since only native QUIC sessions present a
+//	                     certificate. Re-read on every reconnect, so a renewed
+//	                     certificate is picked up.
 //	CORS_ALLOWED_ORIGINS - comma-separated origins allowed to fetch manifests
 //	                     and segments, or "*" for any. Unset disables CORS.
 //	                     Required when the player is served from another origin,
@@ -78,8 +88,13 @@ func Run(_ []string) error {
 		trackName: envconfig.String("RELAY_TRACK_NAME", "video"),
 		caFile:    envconfig.String("RELAY_CA_FILE", ""),
 		insecure:  envconfig.String("RELAY_TLS_INSECURE", "false") == "true",
+		certFile:  envconfig.String("RELAY_CERT_FILE", ""),
+		keyFile:   envconfig.String("RELAY_KEY_FILE", ""),
 
 		liveTimeout: liveTimeout,
+	}
+	if err := cfg.validate(); err != nil {
+		return fmt.Errorf("hls: %w", err)
 	}
 
 	// Shared between the feed, which records each committed group, and the

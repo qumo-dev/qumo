@@ -7,7 +7,343 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Breaking: relay peers authenticate with certificates a relay CA issued, in both directions, and a relay's peer identity is separate from its public certificate (`internal/relay/peer_trust.go`).**
+  - **A relay no longer presents `CERT_FILE` to the relays it dials.** Its peer identity is `PEER_CERT_FILE` and `PEER_KEY_FILE`: a certificate `CA_FILE` issued, carrying the DNS name `peer.qumo.internal` and usable for client and server authentication. The subject common name is the relay's identity for logs; the relay never interprets it.
+  - **The dialed relay is verified against the relay CA too.** A dialing relay asks for the server name `peer.qumo.internal`; the dialed relay answers it with its peer certificate, and the dialer verifies that against `CA_FILE` alone. Public certificates play no part in relay identity, and `PEERS` may name peers by any address (a Consul name, an IP).
+  - **A CA-issued certificate authenticates; only the peering name makes a peer.** A session whose certificate `CA_FILE` verifies but lacks the name is an internal client, such as the HLS egress: it may subscribe to anything and announce nothing. One carrying the name is a relay peer, served without a credential.
+  - **Strict settings.** `PEER_CERT_FILE` and `PEER_KEY_FILE` are set together and need `CA_FILE`; `PEERS` needs all three; a peer certificate the CA didn't issue, without the name, or expired stops the relay at startup. `CA_FILE` alone remains valid and authenticates internal clients. There is no fallback to `CERT_FILE`: a relay without the two settings has no peer identity.
+  - **A relay recognizes itself.** With `PEERS` naming a group that resolves to the relay too, it sees its own certificate on that session, drops it and doesn't retry. `PEERS` is still resolved once at startup; a relay that starts later must dial the earlier ones.
+  - **Only native-QUIC clients are asked for a certificate.** A browser never is.
+  - **What the relay asks of the certificate files.** One peer certificate per relay: a relay recognizes itself by its own, so two relays sharing one never peer. A certificate issued by an intermediate CA works with the intermediate after the leaf in `PEER_CERT_FILE` and the root in `CA_FILE`. The files are read once at startup, so a renewed certificate needs a restart.
+  - **To move over:** issue a certificate per relay from your CA as `docs/site/content/en/docs/deployment/tls.md` describes (an OpenSSL example is there), and set the two new variables. For development, `mage cert` now also writes a relay CA and peer certificates (`PEER_NAMES=a,b mage cert`); the Compose topologies, the Nomad simulation and the multi-process benchmark use them.
+
+### Fixed
+
+- **A credential whose header carries `crit` is refused** (`token.Verify`, and so the relay). `crit` lists headers a verifier must understand (RFC 7515 4.1.11); the relay understands none beyond `alg`, `kid` and `typ`, and took such a token as valid. No token `token.Sign` or `qumo auth token` makes carries one.
+- **Every answer of the HLS egress carries `Vary: Origin`** (`internal/hls/cors.go`), not only one to an allowed origin. A manifest or segment fetched with no `Origin`, or from an origin that isn't allowed, was answered without it, so a shared cache or CDN in front of the egress could keep that answer and serve it to a page on an allowed origin, whose browser then refused it.
+
+## [v0.11.261005] - 2026-10-05
+
+> **Breaking for operators.** The auth server is removed: the relay no longer asks one (`QUMO_AUTH_URL`), and `qumo auth` no longer runs one. The relay verifies credentials itself against a key set. To move over, unset `QUMO_AUTH_URL`, set `QUMO_AUTH_KEYS` to the key set the auth server was reading, and stop the `qumo auth` process; tokens and signing keys are unchanged. A relay with `QUMO_AUTH_URL` still set refuses to start. See **Removed** below.
+
 ### Added
+
+- **The playground's DevTools timeline can be zoomed and moved (`playground/src/devtools/view.ts`).** It showed the last 60, 10 or 2 seconds and nothing in between, always up to the present.
+  - **Zoom:** scroll on the timeline, or press − and +, for any span from half a second to the full minute that is kept. The 60 s, 10 s and 2 s buttons remain as shortcuts, and the span in view is shown next to them.
+  - **Move:** drag the timeline to look further back. A moved view stays on the moment it was put on while new media keeps arriving, so something that just happened can be looked at without pausing. Zooming a moved view keeps what is under the pointer under the pointer.
+  - **Live:** returns to the present and follows it again. A live view zooms from the present and stays live.
+  - **The axis** shows the times of what is in view, to the tenth of a second when little is.
+- **The playground can publish a test pattern, with no camera (`playground/src/publish/pattern.ts`).** "Test pattern" is a third source next to Camera and Screen: colour bars, the time of day to the millisecond, a frame counter and a marker that crosses the picture once a second, with a 440 Hz tone. Each second the picture flashes as the tone beeps, so sound and picture can be checked against each other, and the clock can be read off two screens for the delay. It needs no permission, is exactly the size and frame rate chosen, and keeps its frame rate in a background tab. The frame count, the flash and the marker are all read off the clock, so a timer that runs fast or slow cannot shift them.
+- **The relay verifies credentials itself, against a key set (`QUMO_AUTH_KEYS`).** No other process is needed: `QUMO_AUTH_KEYS=keys.json qumo relay` with the key set `qumo auth keygen` writes. The value's form says where the set is: an `https://` URL (or `http://` on a loopback host) is downloaded, a path or `file://` URL is read, and any other scheme is refused at startup.
+  - **The checks** are the `token` package's: a known `kid`, the EdDSA signature, exactly the allowed claims, the times (60 s leeway, at most an hour), and every granted path within the key's `prefix`. A session may publish and subscribe where its token says and ends when the token expires.
+  - **The key set** is a file, re-read when it changes, or a URL, downloaded every 30 s (±10% jitter, so relays restarted together don't poll in step) with `If-None-Match` and `QUMO_RELAY_TOKEN` as a bearer token (https, or http on a loopback host).
+  - **Live sessions are re-checked every 30 s:** one whose key has left the set ends with `0x2` (Unauthorized), so removing a key cuts its sessions off within about a minute.
+  - **Fail-static:** a failed refresh keeps the last set; after 6 h without one, new sessions are refused while live ones run to their expiry. Nothing is admitted before the first load.
+  - **Usage reports (`QUMO_USAGE_URL`):** each verified session's open, its cumulative bytes every 30 s, and its close with the final totals and reason, POSTed as JSON every 10 s with the same bearer token. Usage is coalesced per session and sent in batches of at most 500. A failed send, a 401, 403, 408, 413 or 429 included, keeps the records for the next try; only a batch the receiver can't read (400 or 422) is dropped. At shutdown the relay waits up to 5 s for its last sessions to record their end before the final send.
+  - `qumo auth keygen`'s next steps now point the relay at the key set directly.
+  - **Viewers are reported together.** Sessions that only subscribe no longer send a record each: their bytes are added up per key into one running total per relay run (`session_id` `viewers.<run>.<kid>`), so a usage receiver's load follows the number of keys, not the size of the audience. Sessions that may publish are still reported one by one.
+  - **`"publish": false`** on a key starts no new sessions that may publish, while viewers still connect and live sessions continue: for a limit on broadcasts that must not lock the audience out.
+  - **`QUMO_AUTH_KEYS_CACHE`:** a file the last downloaded key set is kept in and loaded from at startup, so a relay restarted while the key-set URL is unreachable still admits sessions. The file's age counts toward the 6 h limit.
+  - **A key set file that can't be read stops the relay at startup.** It used to start and refuse every session.
+  - **A usage outage is logged once,** and once more when sends recover, not every 10 s.
+
+- **The playground's DevTools panel says how playback is going, and keeps a log in words (`playground/src/devtools/log.ts`).**
+  - **Status:** one line at the top, "Playing normally" or what is wrong and why, from the last ten seconds.
+  - **Log:** what happened, each with its time: the delay set or raised, groups skipped, aborted or late, sound lost and why, the page stopping, nothing arriving. It can be copied as text.
+  - **Incidents:** trouble that came together is one item, headed by its likely cause and what it cost ("Nothing arrived for up to 463 ms: the audio buffer ran dry, 400 ms of sound lost, delay raised to 500 ms"), with its entries underneath. It reads the same a minute later as it did live.
+  - **Log and timeline are tied together:** pointing at a log item marks its time across the timeline, and the timeline's axis shows clock times, the same ones the log uses.
+  - **Readable without the source:** the playback delay, arrival jitter and audio buffer level stay in view and the other counters move under "More figures"; every label, table heading and legend entry explains itself when pointed at.
+  - **One word for one thing:** the table, the legend, the log, the figures and the text shown when pointing at a mark use the same names ("Received", "Played", "Page stopped", "Nothing arriving"). Pointing at a mark on the timeline shows what it is, in a sentence, and the clock time it happened, in the panel's own box.
+  - **A legend that can be looked up:** one row per kind of timeline row, named as on the timeline, and no two marks on a row look alike. "Stopped" is hatched grey and "Waited" a solid strip; they used to look like "Received" and "Skipped".
+  - **Three lanes, not four:** the page's stops are bands across every lane, since nothing in any of them moves meanwhile, in place of a "main thread" lane that was nearly always empty. "audio out" is named "audio buffer", which is what it shows.
+
+### Fixed
+
+- **The playground's DevTools count the page's stops in a background tab too (`playground/src/devtools/stall_monitor.ts`).** The watch ran on the page's own timer, which the browser slows to once a second in a background tab, so stops there were left out rather than miscounted. It now takes its ticks from a worker and measures how long each waited for the main thread, which is the same in view and out of it. A ticker that itself pauses, as in a frozen tab, reads as no stop. The worker timer is shared with the test pattern (`playground/src/worker_ticker.ts`).
+- **The playground dials the relay on the port it was started on, and looks for the HLS egress on the host the page was opened at.** Two leftovers of #456, for a playground opened anywhere but `localhost:4433`:
+  - **Relay port:** `qumo playground --relay-addr` with a port other than 4433 served that port in `/config`, but the Webcam and HLS scenarios dialled 4433 regardless. They now take the port from `/config`. The ingest scenarios keep their own ports.
+  - **HLS egress:** the HLS scenario fetched its playlist from `http://localhost:8081` whatever host the page was opened at. It now uses the page's own host at port 8081: over http on this machine, and over https from an https page anywhere else, which holds only if something in front of the egress terminates TLS on that port. `VITE_HLS_URL` still replaces that under `mage web`.
+  - **Under `mage web`,** a `VITE_RELAY_URL` that is not an https URL falls back to `https://localhost:4433` where it used to leave the page connecting for ever, and a camera pull started before the config has been read is dialled once it has.
+- **A refused native-QUIC session is closed before its subscribes are answered**, so a client learns `unauthorized` rather than `track does not exist` for a path that may well exist; `qumo hls` reports the refusal and the two ways in (a credential in `RELAY_URL`, or `RELAY_CERT_FILE` from the relay's CA) instead of waiting for a publisher that was never the problem.
+- **The ingest no longer busy-loops in the moment between a new group being counted and being stored (`internal/ingest`).** A subscriber that looked in that moment asked for the group again in a tight loop until it appeared; the moment is normally a few instructions long, but lasts as long as the pushing goroutine is held up. It now waits for the notification that follows every push, as it does when there is nothing new at all. The step that picks a subscriber's next group is its own function, with tests for falling behind and for a group that is counted but not yet stored.
+- **A playground opened at a host other than localhost dials that host, not localhost (#456).** `qumo playground` already answered `/config` with the relay URL for the host the UI was opened at, but the UI took only the cert hash from it and built the address from a build-time variable that is unset in the shipped bundle. The relay address and the ffmpeg push command shown for RTMP and RTSP now use the host from `/config`. Under `mage web` they use `VITE_RELAY_URL`'s host, as before. The HLS scenario still reads `VITE_HLS_URL`, since `/config` does not name the HLS egress.
+- **The playground's viewer no longer drops seconds of audio as it starts.** The audio output is started before the audio track is subscribed to: starting it can take seconds the first time, and everything that arrived meanwhile was handed over at once and thrown away. A backlog passed over before anything has played is no longer counted as lost audio, and silence before playback begins is no longer counted as starvation.
+- **Raising the playback delay interrupts the sound less often.** Every raise holds playback while the buffer fills, and the delay used to creep up a few milliseconds at a time, a short silence each. It now moves only for a raise of 10 ms or more, and then a little further.
+
+### Removed
+
+- **Breaking: the auth server is gone: the relay no longer asks one (`QUMO_AUTH_URL`), and `qumo auth` no longer runs one.** The relay verifies credentials itself against a key set (`QUMO_AUTH_KEYS`), which does the same checks in the relay process.
+  - **To move over:** unset `QUMO_AUTH_URL` on the relay, set `QUMO_AUTH_KEYS` to the key set the auth server was reading, and stop the `qumo auth` process. Tokens and signing keys are unchanged.
+  - **A relay with `QUMO_AUTH_URL` still set refuses to start,** rather than starting with auth off.
+  - `qumo auth` needs a command (`keygen` or `token`); `QUMO_AUTH_ADDR` and `QUMO_AUTH_KEYS_FILE` are no longer read.
+  - Metrics: the `invalid` result of `qumo_relay_auth_requests_total` and the `invalid` reason of `qumo_relay_sessions_ended_total` are gone; only an auth server's reply could cause them.
+
+### Changed
+
+- **The playground's boards share their preview and stats overlay, and its colours all come from tokens (`playground/src/components`).** `PreviewCanvas` and `StatsOverlay` replace the markup the publish board, the subscribe board and the HLS player each repeated. The colours that were written into the stylesheet and into inline styles (the black behind a video, the overlay, the text on the Start and Stop buttons) are tokens on `:root`. Conditional and repeated markup uses `<Show>` and `<For>`. The one visible change: the border around a video takes the theme's border colour, where an inline style had made it light grey in both themes.
+- **The playground's publish board captures and encodes by itself; `@okdaichi/av-nodes` is no longer a dependency (`playground/src/publish`).**
+  - **A publisher with no UI:** `Publisher` takes a media stream and a path, and does the rest: capture, encode, catalog, and a group per GOP (video) or per frame (audio) to each subscriber. `PublishBoard` is the controls around it.
+  - **The encoder is sized from the first captured frame,** the one place the true picture size is known. This replaces grabbing a still through `ImageCapture` before starting.
+  - **Video and audio are stamped from one clock** that starts with the run. Each keeps its source's own spacing (the camera's frame times, the count of audio samples), so timestamps do not carry the jitter of arrival.
+  - **Audio reaches the page in 20 ms blocks,** gathered on the audio thread: 50 messages a second through the main thread where there were 375.
+  - **Each subscriber is written to in order, and independently.** A frame is not written to a group before that group has opened, which could happen when a keyframe and the frame after it were encoded close together. A subscriber that falls more than 64 frames behind has frames dropped up to the next keyframe, and the group they were dropped from is recorded as aborted.
+  - **A subscriber that leaves is let go of at once,** not at the end of the run.
+  - **Stopping releases the microphone** as well as the camera, and a share ended from the browser's own controls stops the run.
+- **The playground's viewer decodes and plays by itself; it no longer uses `@okdaichi/av-nodes` (`playground/src/player/audio`, `playground/src/player/video`).**
+  - **Audio** is decoded with WebCodecs and played through the viewer's own jitter buffer, a ring of PCM indexed by media time on the audio thread. It holds playback back until the playback delay is buffered, and holds back again after running dry instead of stuttering on an empty buffer. Blocks whose timestamps are a few samples off the end of the last one (RTMP timestamps are whole milliseconds) are joined to it rather than leaving a hole or an overlap at every block.
+  - **The playback delay follows how the audio arrives.** It is sized from the measured arrival jitter (how late audio arrives against its fastest arrival), and raised by half if the buffer runs dry anyway, up to 500 ms; it stays raised for the rest of the run. An audio group that is late is waited for only 40% of the delay, since giving up one frame costs far less than emptying the buffer waiting for it. The buffer also returns to its target after a burst instead of staying full, and skips audio it has held for two seconds without needing.
+  - **A lost audio frame no longer shortens the buffer for good.** The browser's audio decoder stamps its output by counting samples and ignores later input timestamps, so decoded audio closed up around any frame that was not fed to it, and each one left the buffer a frame shorter until it ran dry. The viewer now notices jumps in the input timestamps and puts them back, so a lost frame is one frame of silence in its own place.
+  - **Video** is decoded with WebCodecs, held until due, and drawn on the canvas. The DevTools "rendered" lane now records frames actually drawn, not frames passed on to be drawn.
+  - **Why:** how long to buffer and when to play are the player's decisions, and they lived half in the viewer and half in a package this repository does not control.
+  - The ring buffer follows the moq-dev reference player's and has unit tests.
+- **The playground's DevTools panel shows playback timing and the audio output, and is drawn on canvas (`playground/src/devtools`).**
+  - **Timing:** the playback delay and the arrival jitter of audio and video, next to the media bitrate.
+  - **Drawn on canvas.** Building an SVG element per mark held the main thread for 50-63 ms every second, which starved the audio the panel was showing.
+  - **Audio output:** a row with the jitter buffer's level and how much sound it has lost (ran dry, missing, too late, overflowed, trimmed), and a timeline lane with the level over time and a mark at each moment sound was lost. The lanes above show what the network delivered; this one shows what reached the speaker.
+
+## [v0.10.261005] - 2026-10-05
+
+> **Breaking for operators.** `qumo_relay_sessions_expired_total` is replaced by `qumo_relay_sessions_ended_total{reason}` (use `reason="expired"` for the old count). Sessions are now revalidated with the auth server, which also receives each session's bytes and an `end` report. The HLS egress can connect as a trusted peer with a client certificate. New: `qumo auth`, a ready-to-run auth server with a key generator and token tool, and the `token` package apps sign with. WebTransport clients now see why the relay ended their session. **Not yet enforced:** which paths a session can discover through announce interest and TRACK_INFO (#450).
+
+### Added
+
+- **`qumo auth`: a ready-to-run auth server, key generator and token tool (#460).** A relay with `QUMO_AUTH_URL` asks an auth server about every session; until now qumo shipped none, so a relay ran either with auth off or against an auth server you wrote yourself. An app now decides only what each client may do, and signs it:
+  - **`qumo auth keygen [-prefix acme/app]`** writes an Ed25519 signing key (private JWK; it stays on the app's server) and the public key set the server trusts. The `kid` is the key's RFC 7638 thumbprint. It prints the kid, the paths the key may grant and the next steps, and never overwrites an existing key.
+  - **`qumo auth`** runs the server that answers the relay (`QUMO_AUTH_KEYS_FILE`; `QUMO_AUTH_ADDR`, default `127.0.0.1:4440`). A session without a token is refused. It checks, in order:
+    1. a trusted `kid` and EdDSA;
+    2. the signature;
+    3. exactly the allowed claims (`path_auth`, `iat`, `nbf`, `exp`, an optional `jti`);
+    4. the time claims, with 60 s leeway and at most a one-hour lifetime;
+    5. every granted path within the key's prefix.
+
+    It answers with the grant's subtree patterns and `expires`: 401 for a token it can't accept, 403 for one that grants a path outside its key's prefix. It prints a startup banner and logs each admitted, refused and ended session; the token is never logged.
+  - **`qumo auth token -publish … -subscribe … -ttl …`** signs a token by hand, for testing: the token on stdout, what it grants on stderr.
+  - **The Go package `github.com/qumo-dev/qumo/token`** is what an app's backend signs with: `token.Sign(key, token.Grant{Publish: …, Subscribe: …}, time.Hour)`. It refuses to sign a path outside the key's prefix, and it is standard-library only.
+
+- **Sessions are revalidated with the auth server (#419).** At the grant's `revalidate` cadence, the relay sends the session's connect request again as `event: "revalidate"`, with the same `id`. This is how key revocation, project suspension and spend limits reach live sessions; the auth server decides, and the relay doesn't know which it was.
+  - **A 401 or 403** ends the session with `0x2` (Unauthorized) and reason `refused`.
+  - **A grant that can't be enforced** ends it with reason `invalid`.
+  - **An admitted grant** keeps the session and moves its `expires` and cadence. Its patterns aren't compared, since they were fixed at connect. A grant without `expires` keeps the deadline the session has: a revalidate never lifts it.
+  - **No answer** (a timeout or a 5xx) is retried with jittered exponential backoff, from about 1 s up to 30 s. The session lives until its current `expires`, and a stalled request is cut off at that deadline.
+  - **One timer per session** drives both expiry (#423) and revalidation, and is stopped when the session ends first.
+- **Session bytes and end reports (#424).** The auth server now sees each checked session's usage, so it can attribute it for billing and count live sessions.
+  - **Every revalidate** carries the session's cumulative `bytes` (`sent` and `received`, from the relay's side), left out while both are zero. Sending them on revalidate as well as end is qumo's one extension of moq-auth, so billing sees a long session before it ends.
+  - **When a checked session closes,** the relay sends `event: "end"` with the connect request's `id`, the final `bytes`, `duration` in whole seconds and a `reason`: `expired`, `refused`, `invalid`, `closed`, `dropped` (an idle timeout or stateless reset) or `upgrade_failed`.
+  - **Every `connect` gets an `end`,** so the auth server's live-session count can't be inflated. A WebTransport session admitted at connect whose upgrade then fails reports `end` with reason `upgrade_failed` and no `bytes`. A request from an `Origin` the relay refuses is no longer sent to the auth server at all.
+  - **The end report is best effort:** one attempt with a 2 s timeout, sent after the close, so a slow or failing auth server can't hold a session open. A lost one costs at most one revalidate interval of usage.
+  - `qumo_relay_auth_requests_total{event="end"}` counts reports, with `result` `ok` or `error`.
+- **The HLS egress connects as a trusted peer (#432, ADR 0035 Decision 7).** It is an HLS origin, and viewers are authorized in front of it, so it holds no credential.
+  - `RELAY_CERT_FILE` and `RELAY_KEY_FILE` set its client certificate from the private CA the relay trusts as `CA_FILE`. The relay then never asks its auth server about it, and the session never expires.
+  - Both settings need a `moqt://` `RELAY_URL`, since only native-QUIC sessions can be trusted peers; the egress refuses to start otherwise.
+  - The certificate is read again on every reconnect, so a renewed one is picked up without a restart.
+- **`qumo loadgen --relay` takes a `moqt://` URL with a credential** (`moqt://host:port/path?jwt=…`) as well as `host:port`, to load a relay with an auth server. `smoketest`'s `-pub` and `-sub` URLs carry one the same way. Neither refreshes it: they run for less than a credential's lifetime.
+- **The playground has a DevTools panel for the subscribed tracks (`playground/src/devtools`).** It sits under the boards, closed until opened, and remembers that choice.
+  - **Session:** the media bitrate being received, plus the connection's round-trip time, byte counts and estimated send rate where the browser reports them.
+  - **Tracks:** per track, the received bitrate and frame rate, the latest group, and how many groups ended complete, skipped, aborted or late.
+  - **Timeline:** the last minute of each track. Groups are drawn as they arrived, one lane unless they overlap, marked by how they ended (complete, skipped, aborted, late, or still open when playback was stopped); below them, one lane shows what was rendered. A track with too many groups to draw singly (audio) is drawn as one column per second.
+  - **Reading it:** the time shown can be 60, 10 or 2 seconds (at 2 seconds each audio group is its own mark), the display can be paused, and pointing at a group picks out both its received bar and its rendered span.
+  - **How it is fed:** the viewer reports group and frame events to an observer it is given, and the publish board records the groups it sends through the same recorder; nothing is measured inside `@qumo/moq`.
+
+### Changed
+
+- **Bumped `github.com/qumo-dev/gomoqt` to v0.22.1.** No relay code change was needed. It brings:
+  - **WebTransport clients see why the relay ended their session.** When the relay ends a session at its grant's `expires` or on a refused revalidate, `moqt.Cause` now gives the client Unauthorized with the reason `expired` or `refused` over WebTransport, as it already did over native QUIC. A client can reconnect with a fresh credential on `expired` and stop on `refused` (#423). The lease integration tests now check this on both transports.
+  - **quic-go v0.63.0,** and webtransport-go `v0.13.0-okdaichi.2` (synced with upstream v0.13.0). Dependabot's quic-go bump (#420) is included.
+- **The playground's viewer is a UI-free module, and it no longer waits on a stalled group (`playground/src/player`).**
+  - **Structure:** playback moved out of `SubscribeBoard` into a `Viewer` that knows nothing about SolidJS. It reads from a small Track / Group / Frame interface it defines itself; `@qumo/moq` is adapted to that interface in one file.
+  - **Groups are read as they arrive,** instead of one at a time. Frames are still delivered in group order, but a missing or stalled group is waited for only so long: once a later group has had a frame ready for the playback delay (100 ms at least) and its media is further ahead than that, the awaited group is cancelled (`ExpiredGroup`) and playback moves on. A group that arrives after playback has passed it is cancelled at once. The scheme follows the moq-dev reference player, with the wait also measured on the clock, so groups that merely arrive together are not mistaken for late ones. Two further rules keep playback at the live edge: a group whose frames are all played and which the next group continues without a gap is finished without waiting for its stream to end, and a group that is already too late when its turn comes is skipped whole if a newer one is ready (so a stall is not followed by its backlog).
+  - **A group aborted part-way no longer ends the track:** its frames so far are played and the next group follows.
+  - **Audio and video are played on a clock.** Both trail the live edge by the same delay: room for one retransmit (1.25 × the connection's round-trip time), and never less than 100 ms. Video frames are held until they are due instead of being drawn as soon as they decode, so video no longer runs ahead of audio. The delay is also how long a group is waited for. It is sized once per Start, and the audio output is opened per Start to match. Each track keeps its own clock, since their timestamps need not start from the same origin.
+  - **Fixed:** a failed start left the other tracks' read loops running, so pressing Start again could feed the decoder twice; the catalog subscription was never closed; stopping before the first catalog arrived left the video and audio subscriptions open.
+  - **Tests:** the group reader, the playback clock and the frame pacer have unit tests (`deno task test`), which `deno task build` now runs first.
+
+### Fixed
+
+- **RTMP and RTSP ingest no longer sends an old group in place of a new one.** A subscriber that asked for the newest group just as it was being opened could be handed the group eight sequences back, and never got the new one. With one audio frame per group this lost about one frame a minute, heard as a click.
+
+### Security
+
+- **A relay URL's credential is never logged (#432).** `loadgen` logs only the relay's `host:port`, `smoketest` a URL without its query, and the HLS egress doesn't log `RELAY_URL`. A URL that doesn't parse is reported without quoting it.
+
+### Changed (breaking)
+
+- **`qumo_relay_sessions_expired_total` is replaced by `qumo_relay_sessions_ended_total{reason}`,** with `reason` `expired`, `refused` or `invalid`. The old metric shipped only in v0.9.261004; use `reason="expired"` for the same count. `qumo_relay_auth_requests_total{event}` now also counts `revalidate`.
+
+## [v0.9.261004] - 2026-10-04
+
+> **Breaking for operators.** Session auth now goes through an external auth server (`QUMO_AUTH_URL`; unset means auth off, with a warning), and introspection is removed. Relay peers are identified by a client certificate verified against `CA_FILE`; `PEER_CIDRS`, `MTLS_REQUIRED` and `UPSTREAM_ADDR` are removed (use `PEERS`). Sessions end at their grant's `expires`. **Not yet enforced:** revalidation (#419), and which paths a session can discover through announce interest and TRACK_INFO (#418).
+
+### Changed (breaking)
+
+- **`relay.Server.Authorize` is exported (`internal/relay`, #444),** so code elsewhere in this module that builds a relay, such as the black-box tests, can supply its admission. A nil grant with a nil error admits unchecked, an `auth.RefusedError` refuses with its status, and any other error refuses as unavailable. A nil `Authorize` still refuses every client session. The package stays `internal/`, so code outside qumo can't import it yet. The admission tests moved to `internal/integration` and test the relay through this exported API; CONTRIBUTING.md now says where integration tests go.
+- **Auth is optional: with `QUMO_AUTH_URL` the relay asks its auth server, without it auth is off; `QUMO_AUTH_PUBLIC` is removed (`internal/relay`, `internal/auth`, #441).** qumo is a data plane that runs on its own: auth is off unless `QUMO_AUTH_URL` is set, like Caddy's or nginx's. What a session may do is otherwise decided only by the auth server, whose policy differs by app, so qumo ships none. A static public grant in the relay was policy in the data plane.
+  - **Auth off:** every session is admitted unchecked, like a trusted peer's, and the relay logs a warning at startup. No auth server is asked, and the admission is counted as `unchecked`.
+  - **In code:** the relay takes its check as a function field, `Authorize`. The relay command sets it to the auth client's `Connect`, or to `admitUnchecked` when auth is off; tests pass a plain function. Removed: the `admitter` interface, `publicGrant`, and `auth.Config.Public`.
+  - **Fail-closed:** a `Server` built without `Authorize` refuses every client session (WebTransport gets 503) and logs an error. Turning auth off is a setting; forgetting `authorize` is a bug.
+  - **Only an upgrade asks:** a request to the WebTransport endpoint that isn't an extended CONNECT goes straight to gomoqt's fallback (400), without asking the auth server.
+  - **Local tools, compose and the Nomad demo** run with auth off; they no longer set `QUMO_AUTH_PUBLIC`.
+  - **Fixed:** `qumo playground` had no auth setting, so its relay stopped at startup. Auth off now applies.
+  - **The auth-server client moves to its own package, `internal/auth`:** `LoadConfig`, the client, the grant (decoded through `json.Unmarshaler`) and its subtree patterns. `internal/relay/admit.go` keeps what is relay-specific: building the request from a WebTransport upgrade or a native-QUIC session, the session's admission, and the metrics.
+- **Subscriptions are checked against the session's grant (`internal/relay`, #418).** A SUBSCRIBE is served only if the grant's `subscribe` patterns cover its path; otherwise it's refused with `NotFound`, the same answer as a path that doesn't exist. The session stays up.
+  - **Every session's context carries its admission:** decided at the upgrade for WebTransport, and pending from `ConnContext` until `relayPeer` decides it for native QUIC. A subscription that arrives before admission finishes waits for it. Announcements are checked against the same admission, so `serveSession` no longer takes a grant.
+  - **Unchanged:** trusted peers and dialed peers are never checked. FETCH stays rejected: the relay registers no fetch handler.
+  - **Still open on #418:** path names and metadata are still discoverable, never media. Announce interest lists every path under the requested prefix, and a TRACK request returns a track's publisher properties (TRACK_INFO) for any path. gomoqt answers both inside the shared `TrackMux`, and `TrackInfoProvider.TrackInfo` has no context to tell which session is asking.
+  - **New metric:** `qumo_relay_subscribe_authorizations_total{result}` (`admitted`, `not_covered`).
+- **Relays ask an auth server when a session connects; introspection is removed (`internal/relay`).** First step of the relay side of the auth redesign (#417, epic #426).
+  - **Setting:** `QUMO_AUTH_URL`, the auth server. (This change first also required one of `QUMO_AUTH_URL` or `QUMO_AUTH_PUBLIC`; auth has since become optional and `QUMO_AUTH_PUBLIC` was removed before release, see #441 above.)
+  - **The contract** is a subset of `moq-auth`. The relay POSTs a `connect` request with the session's path and raw `query`, and enforces the grant's `publish` patterns on announcements. The relay never parses the credential, which clients put in the connect URL (`?jwt=`).
+  - **Refusal:** a WebTransport client gets 401, 403 or 503 before the upgrade; a native-QUIC session is closed with `0x2`.
+  - **Peers:** trusted peers are never asked. Peers this relay dials (`PEERS`) are now trusted too.
+  - **Removed:**
+    - introspection (`POST /v1/credentials/introspect`) and the `auth` track;
+    - local verification against the control plane's JWKS (`internal/credential`);
+    - `QUMO_CREDENTIAL_URL`, `QUMO_RELAY_TOKEN`, `QUMO_RELAY_AUDIENCE`, `QUMO_CREDENTIAL_ISSUER`;
+    - usage reporting to `POST /v1/usage/events`. Session bytes return through the auth contract in #424.
+  - **New metrics:** `qumo_relay_auth_requests_total{event,result}`, `qumo_relay_announcements_refused_total`.
+  - **Requires** gomoqt v0.21.0: the WebTransport upgrade request's context reaches the session, and a native-QUIC client's `?jwt=` reaches the relay in the SETUP path (`Session.RequestURI`).
+  - **Docs:** the remaining "credential auth" wording (README, the `qumo relay` CLI page) now says session auth, and an egress comment no longer mentions the removed metering.
+- **Peers are identified by certificate; peer settings are reduced to `CA_FILE` and `PEERS` (`internal/relay`).**
+  - **Trusted peer:** a session whose client certificate is verified against `CA_FILE`. A client certificate is optional for everyone else, so browsers connect without one. Without `CA_FILE`, no session is a peer.
+  - **Dialing:** relays in `PEERS` are verified against the system roots plus `CA_FILE` (before, `CA_FILE` replaced the system roots). This relay presents its `CERT_FILE` as its client certificate.
+  - **`PEERS`** resolves each host to all its addresses and dials every one, which `UPSTREAM_ADDR` used to do. Entries are plain `host:port`.
+  - **Removed:** `PEER_CIDRS` (network-based trust), `MTLS_REQUIRED` (a client certificate is now always optional, verified when given), `UPSTREAM_ADDR` (use `PEERS`).
+  - **Migration:** a relay that relied on `PEER_CIDRS` needs a private CA, with a client certificate for each relay, before upgrading. Native-QUIC tools (ingest, HLS egress) don't: they connect with `?jwt=` and are admitted by the auth server.
+
+### Added
+
+- **Sessions end at their grant's `expires` (#423).** The auth server sets `expires` to the credential's `exp`. The relay closes the session then, publishers and subscribers alike, with `0x2` (Unauthorized) and reason `expired`. The client reconnects with a fresh credential.
+  - **The deadline** is taken on the monotonic clock when the grant is accepted, so a wall-clock jump doesn't move it. Expiry is exact: any leeway is the auth server's.
+  - **One timer per session,** stopped when the session ends first.
+  - **No deadline** for a grant without `expires`, a trusted peer, or a relay with auth off.
+  - New metric: `qumo_relay_sessions_expired_total`.
+  - Before this, a session outlived its credential indefinitely, and expiry is how an app cuts a user off (ADR 0035).
+
+### Changed
+
+- **Bumped `github.com/qumo-dev/gomoqt` to v0.22.0.** No code change was needed. It brings:
+  - **Tracks the relay forwards end promptly.** The relay forwards groups with `OpenGroupAt`, which made gomoqt's SUBSCRIBE_END name a group that was never sent. Every downstream subscriber then waited out a close grace period before `io.EOF`.
+  - **A native-QUIC client that fails SETUP is disconnected.** Before, the connection stayed open with no error code, and before any auth ran.
+  - **Control messages are capped at 64 KiB.** A peer could make the relay reserve up to 50 MiB per stream by declaring a long message and never sending it.
+  - **GOAWAY is a hint.** After a peer relay's GOAWAY, its session keeps serving subscriptions until it closes, which matches how `handlePeerGoaway` already treats it. Closing the session afterwards now really closes the connection.
+  - **Leak fixes:** a failed subscription no longer leaks its registration or queued group streams, and an announce stream the peer ends releases its reader and ends the broadcasts it announced.
+
+## [v0.8.260929] - 2026-09-29
+
+### Added
+
+- **Local credential verification for self-hosted relays (`internal/credential`, `internal/relay`).**
+  - **What it does:** with `QUMO_RELAY_AUDIENCE` set, the relay verifies publisher credentials itself against the control plane's JWKS instead of calling `POST /v1/credentials/introspect`. It checks the EdDSA signature by `kid`, `exp`/`nbf`/`iat` with 60 s leeway, `iss`, `aud`, and that `path_auth` covers the announced path, matching the control plane's rule.
+  - **Key set:** fetched at start (nothing is admitted until it succeeds), refreshed every 5 minutes, and refetched on an unknown `kid` at most every 30 s. It stays fail-static for up to 6 hours if refreshes fail.
+  - **Intended use:** a relay a customer runs for a dev project (`QUMO_RELAY_AUDIENCE=qumo-relay-dev`). No relay token needed, no revocation feed (a revoked credential stops working at its expiry), no usage reporting.
+  - **Managed relays are unchanged.** `qumo-relay` is refused until they consume the revocation feed (#419).
+
+- **Ramped session admission for capacity probes (`internal/loadgen`, `tools/capacity`).**
+  `qumo loadgen subscribe` gains `--ramp R` (sessions/second; the `tools/capacity`
+  driver passes it through as `--ramp`). The burst remains the default (ramp 0) and
+  `dialWithRetry`'s reactive backoff is unchanged — the new pacing spaces the *first*
+  dials, which is what a steady-state holding measurement needs: a synchronized burst
+  caps on simultaneous QUIC handshakes (relay 250–320 % CPU + 32–45 % softirq; ledger
+  C23/C24) long before the relay's holding ceiling, so burst probes at S≥6000 measure
+  admission capacity, not holding capacity. Ramped runs extend the settle deadline by
+  the pacing window, record `ramp_per_sec` and `launched` in the JSONL row, and
+  compute the verdict over launched sessions so a mid-ramp abort (Ctrl-C) stays
+  well-defined.
+
+## [v0.8.260927] - 2026-09-27
+
+### Changed
+
+- **Native-QUIC sessions are trusted as relay peers only when identified.**
+  With credential auth on (`QUMO_CREDENTIAL_URL`), a native-QUIC session now
+  bypasses per-announcement authentication only if it presents a client
+  certificate verified against `CA_FILE` (mTLS) or connects from a network in
+  the new `PEER_CIDRS` setting (e.g. a mesh overlay such as `100.64.0.0/10`).
+  Any other native-QUIC session authenticates its announcements exactly like a
+  WebTransport client. **Operators running with credential auth must set
+  `PEER_CIDRS` or configure mTLS for their relay-to-relay and ingress links**;
+  the relay logs a warning at startup when neither is set. Relays without
+  credential auth are unaffected.
+
+## [v0.7.260927] - 2026-09-27
+
+### Added
+
+- **Credential introspection includes the announced broadcast path.**
+  `POST /v1/credentials/introspect` now carries `broadcast_path` (the path from
+  the ANNOUNCE) alongside `token`, so a credential server can issue credentials
+  scoped to a path and check them against the actual announcement. The relay
+  still makes no authorization decision itself. Results are cached per
+  (token, path). Credential servers that ignore the field are unaffected.
+- **Interactive console UI for the installer scripts (`install.ps1`, `install.sh`).**
+  A braille spinner animates the release download, milestones report as green
+  check marks, and secondary detail (archive name, install path) is dimmed.
+  Styling is suppressed when output is not an interactive terminal, and the
+  spinner falls back to a plain line where sub-second `sleep` is unavailable.
+  `install.ps1` is kept pure ASCII so Windows PowerShell 5.1 parses it
+  identically under every system codepage.
+
+- **Installer sync gate (`scripts/check-installer-sync.sh`, CI job "Installer
+  scripts").** `install.sh` and `install.ps1` are each published twice — from
+  the repo root via `raw.githubusercontent.com` and from `docs/site/static/`
+  via GitHub Pages — and both URLs are documented, but nothing generated one
+  copy from the other. An unmirrored edit shipped a different installer to
+  whichever half of the docs pointed at the stale URL, and the diff looked
+  complete either way. CI now fails on drift, and separately on any non-ASCII
+  byte in `install.ps1` (the parse hazard behind #400).
+
+### Changed
+
+- **Zero-listener ingest notify fast path (`internal/ingest`).**
+  `broadcastNotify.notify()` used to close and recreate its notification
+  channel on every pushed frame even when no egress goroutine was attached —
+  a mutex round-trip plus two allocations (~128 B) per frame, 37.9 % of
+  alloc-objects in the zero-subscriber publisher profile, spent waking
+  nobody. The sequence number is now authoritative (a plain atomic) and the
+  swap is gated on a listener count registered per `serve()` lifetime: with
+  no listeners a notify is a single atomic add with zero allocations
+  (nolisten 72 ns/2 allocs → 7–11 ns/0); with listeners the wake path is
+  unchanged. Restores the pre-#397 zero-subscriber allocation floor.
+
+### Fixed
+
+- **`TestMetrics_Initialization` failed under `go test -count=N` (N ≥ 2)
+  (`internal/relay`).** The test asserted absolute values on package-global
+  Prometheus counters, which accumulate across repetitions (every counter read
+  exactly 2× on the second run). Counter assertions are now deltas around a
+  single increment; gauge and histogram assertions were already
+  repetition-stable and are unchanged.
+
+## [v0.7.260922] - 2026-09-22
+
+### Changed
+
+- **O(1) ingest fan-out notification (`internal/ingest`).** Replaces
+  `trackBuffer`'s per-subscriber notification channels with the relay's
+  `broadcastNotify` (atomic sequence number + close-and-recreate channel, the
+  mechanism proven in production by #332). Every pushed video/audio frame used
+  to walk one channel per subscriber under an RWMutex — O(N) per frame on the
+  ingest critical path, ~55 µs per frame at 1000 subscribers — and every
+  subscriber cost a channel plus two registry operations on
+  subscribe/unsubscribe. A push now advances a sequence number and closes one
+  channel (~70–130 ns, 2 small allocations, flat in N); egress compares
+  sequences and parks on the current channel, with the timer fallback and
+  cancellation semantics unchanged. Measured (benchstat, n=6, local):
+  notification at 1000 kept-up subscribers 54.9 µs → ~0.8 µs; at 100,
+  3.4 µs → ~0.5 µs; at N ≤ 10 the writer path is ~30–130 ns/frame slower and
+  every frame carries 128 B more garbage — the same trade the relay accepted
+  in #332 (see the optimization ledger, C17). Correctness: no lost wakeup —
+  the seq guard covers a notify that fires between the head check and the
+  park; the intra-group trickle wait keeps its notifyTimeout fallback.
+
+### Added
+- **Zero-prerequisite one-line installation scripts (`install.ps1`, `install.sh`).**
+  Added automated one-line installation scripts for Windows (PowerShell) and
+  Linux / macOS (POSIX shell) that auto-detect OS and architecture, verify SHA-256
+  checksums against GitHub Releases, install the binary to user space (`~/.qumo/bin`),
+  and configure `PATH`. Also hosted on the documentation site (`/install.ps1`, `/install.sh`).
+
 - **Per-track relay subscription and upstream request metrics (`internal/relay`).**
   Adds Prometheus gauges for active subscriptions, distributor reuse and
   upstream request counters, errors, and duration, labeled by observed
@@ -88,6 +424,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   peer-lifecycle follow-ups tracked in #381.
 
 ### Fixed
+- **RTSP pull sessions now send periodic keepalive requests (internal/rtsp,
+  internal/ingest).** Prevents servers that enforce RTSP Session timeouts
+  from dropping healthy but otherwise idle TCP-interleaved streams.
 - **Docs site: corrected claims that contradicted the code** — verified every
   documented default, metric name, and flag against the source and a running
   binary. `RELAY_PPROF` was listed with a default of `0`, implying `0` disables
@@ -465,8 +804,8 @@ Deferred validation (estimates/hypotheses, **not yet measured**):
 
 - **Bootstrap server removed (`internal/bootstrap`):** The bootstrap discovery server
   and client (`qumo bootstrap` command) have been removed from this repository.
-  Bootstrap functionality with traffic engineering is being migrated to the
-  qumo-enterprise repository as a control plane service.
+  Bootstrap functionality with traffic engineering is being migrated to a
+  separate control plane service.
 - **Removed stale `examples/web-demo/`:** An orphan README pointing at a defunct JSR-based demo; the live web demo lives in `playground/` (formerly `solid-deno/`), where all `mage web` targets already pointed.
 
 ### Security
@@ -474,4 +813,4 @@ Deferred validation (estimates/hypotheses, **not yet measured**):
 - **RTMP listener hardened against handshake stalls and bad clients (`internal/rtmp`):** `Listener.Accept` now runs the RTMP handshake under a read deadline (default 10s), so a client that connects and then stalls can no longer hold the accept loop and block every other RTMP connection. Handshake failures (a stalled, half-open, or otherwise-misbehaving client) are closed and skipped instead of returned as an Accept error — previously a single failed handshake took down the whole ingest server, since server accept loops treat any Accept error as fatal. Skipped handshakes are logged at debug level for observability.
 - **Bumped `golang.org/x/crypto` to v0.53.0 (`go.mod`):** Clears a set of `golang.org/x/crypto/ssh` HIGH-severity CVEs (CVE-2026-39829, -39830, -39832, -39835, -42508, -46595, -46597) present in the previously-resolved v0.51.0, which the SHA-pinned Trivy image scan now reports end-to-end — that scan only became functional once `docker.yml` builds are loaded into the local Docker daemon. `govulncheck` confirms the vulnerable `ssh` package is not reached by qumo's code, but bumping the module removes the finding at the source. Also pulls `golang.org/x/sys` → v0.46.0 and `golang.org/x/text` → v0.38.0.
 - **CORS origin check hardened (`internal/ingest`):** `WebTransportHandler.CheckOrigin` no longer accepts every origin for the RTMP and RTSP ingest servers. Origins are validated against a comma-separated `CORS_ALLOWED_ORIGINS` environment variable (supporting a `*` wildcard), with a same-origin fallback, closing a WebTransport cross-site request forgery risk.
-- **TLS configuration hardened (`internal/relay`):** Removed `InsecureSkipVerify` from the relay dial
+- **TLS configuration hardened (`internal/relay`):** Removed `InsecureSkipVerify` from the relay dial

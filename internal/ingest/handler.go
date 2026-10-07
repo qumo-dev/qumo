@@ -238,7 +238,7 @@ func (v *videoTrack) push(f *moqt.Frame, isKeyframe bool, timestampUS int64) {
 	v.current.append(f)
 	v.currentMu.Unlock()
 
-	v.buf.notify()
+	v.buf.broadcast()
 }
 
 // serve writes buffered groups to a single MoQT TrackWriter. It blocks
@@ -256,7 +256,7 @@ func (v *videoTrack) close() {
 	}
 	v.currentMu.Unlock()
 
-	v.buf.notify()
+	v.buf.broadcast()
 }
 
 // ---------------------------------------------------------------------------
@@ -281,7 +281,7 @@ func (s *singleTrack) push(f *moqt.Frame) {
 	g.append(f)
 	g.complete.Store(true)
 
-	s.buf.notify()
+	s.buf.broadcast()
 }
 
 // pushFrames emits multiple frames as a single MoQT group, in slice order. Use
@@ -299,7 +299,7 @@ func (s *singleTrack) pushFrames(frames []*moqt.Frame) {
 	}
 	g.complete.Store(true)
 
-	s.buf.notify()
+	s.buf.broadcast()
 }
 
 // serve writes buffered groups to a single MoQT TrackWriter. It blocks
@@ -315,6 +315,13 @@ func (s *singleTrack) serve(tw *moqt.TrackWriter) {
 // trackBuffer is the shared ring buffer with subscriber fan-out for a
 // single MoQT track. Like [bytes.Buffer], it is a reusable data structure
 // that decouples producers (push side) from consumers (serve side).
+//
+// Fan-out notification is the relay's O(1) broadcastNotify: an atomic
+// sequence number plus a close-and-recreate channel. notify() used to walk
+// every subscriber channel under an RWMutex on every pushed frame — O(N)
+// per frame on the ingest critical path — and each subscriber cost a channel
+// and two registry ops. Now a push advances a sequence number and closes one
+// channel; egress compares sequences and parks on the current channel.
 type trackBuffer struct {
 	name string
 	ctx  context.Context
@@ -322,8 +329,7 @@ type trackBuffer struct {
 	size uint64
 	pos  atomic.Uint64 // monotonically increasing; first group = 1
 
-	subMu       sync.RWMutex
-	subscribers map[chan struct{}]struct{}
+	notify broadcastNotify
 
 	// frameCleaner is an optional callback for frame pooling.
 	frameCleaner func(*moqt.Frame)
@@ -342,12 +348,12 @@ func (b *trackBuffer) SetFrameCleaner(cleaner func(*moqt.Frame)) {
 
 func newTrackBuffer(ctx context.Context, name string) *trackBuffer {
 	b := &trackBuffer{
-		name:        name,
-		ctx:         ctx,
-		ring:        make([]atomic.Pointer[sourceGroup], defaultRingSize),
-		size:        defaultRingSize,
-		subscribers: make(map[chan struct{}]struct{}),
+		name: name,
+		ctx:  ctx,
+		ring: make([]atomic.Pointer[sourceGroup], defaultRingSize),
+		size: defaultRingSize,
 	}
+	b.notify.init()
 	go b.pollCacheDepth()
 	return b
 }
@@ -384,29 +390,14 @@ func (b *trackBuffer) openGroup() *sourceGroup {
 
 // --- subscriber notification ---
 
-func (b *trackBuffer) notify() {
-	b.subMu.RLock()
-	for ch := range b.subscribers {
-		select {
-		case ch <- struct{}{}:
-		default:
-		}
-	}
-	b.subMu.RUnlock()
-}
-
-func (b *trackBuffer) subscribe() chan struct{} {
-	b.subMu.Lock()
-	defer b.subMu.Unlock()
-	ch := make(chan struct{}, 1)
-	b.subscribers[ch] = struct{}{}
-	return ch
-}
-
-func (b *trackBuffer) unsubscribe(ch chan struct{}) {
-	b.subMu.Lock()
-	defer b.subMu.Unlock()
-	delete(b.subscribers, ch)
+// broadcast advances the broadcast sequence, closing the previous notification
+// channel — O(1): no per-subscriber walk, no registry lock on the push path.
+// Egress goroutines see it as a sequence bump (waiters on the old channel are
+// woken by the close). The former per-subscriber channel send loop ran this
+// cost up on every pushed frame; per-frame fan-out measurements now live in
+// BenchmarkTrackBufferNotify_Fanout.
+func (b *trackBuffer) broadcast() {
+	b.notify.notify()
 }
 
 // --- ring buffer access ---
@@ -423,8 +414,46 @@ func (b *trackBuffer) earliestAvailable() moqt.GroupSequence {
 	return h - moqt.GroupSequence(b.size) + 1
 }
 
+// get returns the group with sequence seq, or nil if its slot holds another
+// group. openGroup advances head before it stores the group, so for a moment
+// the slot of the newest sequence still holds the group one ring-length older;
+// a slot can also have been taken over by a newer group since the caller
+// looked. Returning whatever is in the slot would serve that other group in
+// place of the one asked for.
 func (b *trackBuffer) get(seq moqt.GroupSequence) *sourceGroup {
-	return b.ring[uint64(seq)%b.size].Load()
+	g := b.ring[uint64(seq)%b.size].Load()
+	if g == nil || g.seq != seq {
+		return nil
+	}
+	return g
+}
+
+// next returns the group to serve a subscriber that has been served up to
+// last, and the sequence it has then been served up to.
+//
+// A subscriber whose next group has left the ring is moved on to the newest,
+// and skipped reports that. g is nil when there is nothing to serve yet: no
+// group newer than last, or one that head counts but openGroup has not stored.
+// The caller then waits for the next notification, which follows every push.
+func (b *trackBuffer) next(last moqt.GroupSequence) (g *sourceGroup, served moqt.GroupSequence, skipped bool) {
+	latest := b.head()
+	if last >= latest {
+		return nil, last, false
+	}
+
+	seq := last + 1
+	if seq < b.earliestAvailable() {
+		// Subscriber fell behind; skip to latest.
+		seq = latest
+		last = latest - 1
+		skipped = true
+	}
+
+	g = b.get(seq)
+	if g == nil {
+		return nil, last, skipped
+	}
+	return g, seq, skipped
 }
 
 // --- subscriber egress ---
@@ -435,10 +464,14 @@ func (b *trackBuffer) serve(ctx context.Context, tw *moqt.TrackWriter) {
 	twCtx := tw.Context()
 
 	metricSubscribersActive.Inc()
-	defer metricSubscribersActive.Dec()
+	defer metricSubscribersActive.Dec() // Register with the broadcast for the lifetime of this egress goroutine:
+	// any notify() from here on sees this listener and closes the channel we
+	// captured, so no wakeup is lost. Each egress goroutine tracks the notify
+	// sequence it has consumed and compares it to the current one; the channel
+	// is only for parking until the next advance.
 
-	notify := b.subscribe()
-	defer b.unsubscribe(notify)
+	lastState := b.notify.addListener()
+	defer b.notify.removeListener()
 
 	last := b.head()
 	if last > 0 {
@@ -454,26 +487,39 @@ func (b *trackBuffer) serve(ctx context.Context, tw *moqt.TrackWriter) {
 	}
 	defer timer.Stop()
 
+	// waitForNext parks until the notify sequence advances past seq, a timer
+	// fires (the intra-group trickle fallback), or the session ends. Returns
+	// true when the sequence advanced (or data may exist); false when ctx ended.
+	// Mirrors the seq-guarded wait in the relay's deliverGroup: the seq check
+	// catches a notify that already happened, selecting on the captured channel
+	// catches one that happens after — so no wakeup is lost between checking
+	// the head and parking.
+	wait := func(seq uint64) bool {
+		state := b.notify.listen()
+		if state.seq > seq {
+			return true
+		}
+		timer.Reset(notifyTimeout)
+		select {
+		case <-state.ch:
+			return true
+		case <-timer.C:
+			return true
+		case <-ctx.Done():
+			return false
+		case <-twCtx.Done():
+			return false
+		}
+	}
+
 	for {
-		latest := b.head()
+		g, served, skipped := b.next(last)
+		last = served
+		if skipped {
+			metricSubscriberSkipsTotal.Inc()
+		}
 
-		if last < latest {
-			last++
-
-			earliest := b.earliestAvailable()
-			if last < earliest {
-				// Subscriber fell behind; skip to latest.
-				metricSubscriberSkipsTotal.Inc()
-				last = latest - 1
-				continue
-			}
-
-			g := b.get(last)
-			if g == nil {
-				last--
-				continue
-			}
-
+		if g != nil {
 			gw, err := tw.OpenGroupAt(ctx, g.seq)
 			if err != nil {
 				metricSubscribeErrorsTotal.WithLabelValues("open_group_failed").Inc()
@@ -497,18 +543,15 @@ func (b *trackBuffer) serve(ctx context.Context, tw *moqt.TrackWriter) {
 					break
 				}
 
-				// Wait for more frames within this group.
-				timer.Reset(notifyTimeout)
-				select {
-				case <-notify:
-				case <-timer.C:
-				case <-ctx.Done():
-					_ = gw.Close()
-					return
-				case <-twCtx.Done():
+				// Wait for more frames within this group (trickle path). The
+				// seq guard covers notifies that fired since the last frame
+				// read; the timer covers a producer that stays silent past
+				// notifyTimeout.
+				if !wait(lastState.seq) {
 					_ = gw.Close()
 					return
 				}
+				lastState = b.notify.listen()
 			}
 
 			_ = gw.Close()
@@ -516,16 +559,13 @@ func (b *trackBuffer) serve(ctx context.Context, tw *moqt.TrackWriter) {
 			continue
 		}
 
-		// No new groups yet; wait for data.
-		timer.Reset(notifyTimeout)
-		select {
-		case <-notify:
-		case <-timer.C:
-		case <-ctx.Done():
-			return
-		case <-twCtx.Done():
+		// Nothing to serve yet; wait for data (the level-triggered wakeup).
+		// This is also where a group that head counts but that is not yet
+		// stored is waited for, instead of asking for it again in a tight loop.
+		if !wait(lastState.seq) {
 			return
 		}
+		lastState = b.notify.listen()
 	}
 }
 

@@ -20,33 +20,47 @@
 
 ## Installation
 
-#### Option 1: Install via Go
+#### Option 1: One-Line Installer (Recommended)
+
+**Windows (PowerShell):**
+```powershell
+powershell -ExecutionPolicy ByPass -c "irm https://raw.githubusercontent.com/qumo-dev/qumo/main/install.ps1 | iex"
+```
+
+**Linux & macOS:**
+```bash
+curl -fsSL https://raw.githubusercontent.com/qumo-dev/qumo/main/install.sh | sh
+```
+
+*(You can also use `irm https://qumo-dev.github.io/qumo/install.ps1 | iex` or `curl -fsSL https://qumo-dev.github.io/qumo/install.sh | sh`)*
+
+#### Option 2: Install via Go
 
 ```bash
 go install github.com/qumo-dev/qumo@latest
 ```
 
-#### Option 2: Download Binary
+#### Option 3: Download Binary Release
 
 Download the latest archive from [GitHub Releases](https://github.com/qumo-dev/qumo/releases):
 
 ```bash
 # Linux/macOS
-curl -L https://github.com/qumo-dev/qumo/releases/latest/download/qumo_0.4.0_linux_amd64.tar.gz | tar xz
+curl -L https://github.com/qumo-dev/qumo/releases/latest/download/qumo_0.6.260906_linux_amd64.tar.gz | tar xz
 ./qumo playground      # one-command demo: relay + web UI at http://127.0.0.1:8080
 
 # Or for a standalone relay:
 mage cert              # generate a dev cert (mkcert or self-signed)
 ./qumo relay           # start the relay (certs/server.crt + .key)
 
-# Windows: download qumo_0.4.0_windows_amd64.zip from the releases page
+# Windows: download qumo_0.6.260906_windows_amd64.zip from the releases page
 ```
 
-#### Option 3: Docker
+#### Option 4: Docker
 
 See [docker/README.md](docker/README.md) for compose examples, GHCR usage, and deployment options.
 
-#### Option 4: Build from Source
+#### Option 5: Build from Source
 
 ```bash
 git clone https://github.com/qumo-dev/qumo.git
@@ -87,6 +101,10 @@ qumo's servers (`relay`, `rtmp`, `rtsp`, `rtsp-push`, `playground`) present TLS 
 
 `cmd/seed-moq`, the dev seeder, presents an ephemeral self-signed certificate — point the egress at it with `RELAY_TLS_INSECURE=true`.
 
+### Relay peers — mutual TLS under a relay CA
+
+Relays authenticate each other with certificates a CA of yours issued (`CA_FILE`, `PEER_CERT_FILE`, `PEER_KEY_FILE`), separate from the public certificate they serve browsers. A relay with `PEERS` refuses to start without them. `mage cert` writes development ones; see [Deployment → TLS & mTLS](docs/site/content/en/docs/deployment/tls.md) for what a peer certificate must contain.
+
 ## Architecture
 
 ### System Overview
@@ -107,12 +125,7 @@ graph LR
 
 ### Peer Discovery
 
-On startup, each relay dials peer addresses from two static, comma-separated env vars — there is no runtime service discovery:
-
-1. **`PEERS`**: static peer addresses to dial and maintain a connection to.
-2. **`UPSTREAM_ADDR`**: upstream relay address(es) to connect to (e.g. an edge relay dialing a hub, or any relay hierarchy). Accepts a DNS name that resolves to multiple/changing backends (e.g. `role-hub.qumo-relay.service.consul:4433`) as well as direct `host:port`.
-
-Both lists are dialed the same way and merged: each address is dialed once at startup and re-dialed with backoff on disconnect. `--role <hub|edge>` is an operator-facing label logged for visibility only; it does not affect which peers are dialed.
+On startup, each relay dials the static, comma-separated addresses in **`PEERS`** (e.g. an edge relay's hub, or any relay hierarchy) — there is no runtime service discovery. Each host is resolved to all its addresses (e.g. `role-hub.qumo-relay.service.consul:4433` for a group of hubs), and every address is dialed once at startup and re-dialed with backoff on disconnect. `--role <hub|edge>` is an operator-facing label logged for visibility only; it does not affect which peers are dialed.
 
 Each connection dials QUIC with ALPN `moqt`, exchanges `ANNOUNCE_PLEASE` / `ANNOUNCE`, and registers the peer's tracks on the local `TrackMux`. On disconnect the connection is retried with exponential backoff (1s–30s).
 
@@ -121,7 +134,6 @@ graph TD
     Start["Relay Startup"]
 
     Start -->|"for each PEERS address"| ALPN
-    Start -->|"for each UPSTREAM_ADDR address"| ALPN
 
     ALPN["QUIC dial (ALPN: moqt)"] --> Announce["ANNOUNCE_PLEASE / ANNOUNCE"]
     Announce --> TrackMux["Register tracks on local TrackMux"]
@@ -155,12 +167,12 @@ qumo/
 │   ├── docker-compose.yml               # Single relay (local build)
 │   ├── docker-compose.external.yml      # Single relay (GHCR prebuilt)
 │   ├── docker-compose.static.yml        # 3-region topology, static PEERS (no discovery)
-│   ├── docker-compose.nomad.yml         # Single-region Nomad cluster (UPSTREAM_ADDR sim)
+│   ├── docker-compose.nomad.yml         # Single-region Nomad cluster (PEERS sim)
 │   ├── nomad/                           # Nomad agent config + job spec
 │   └── README.md               # Docker usage guide
 │
 ├── internal/                   # Core implementation
-│   ├── relay/                  # Relay server (handlers, peer resolvers, caching, credential auth)
+│   ├── relay/                  # Relay server (handlers, peer resolvers, caching, session auth)
 │   ├── ingest/                 # RTMP & RTSP ingest (push + pull), codec init-data builders
 │   ├── rtmp/                   # RTMP protocol stack
 │   ├── rtsp/                   # RTSP protocol stack & RTP de-packetization

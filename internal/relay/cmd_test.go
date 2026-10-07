@@ -153,6 +153,29 @@ func TestRun_InvalidGroupCacheSize(t *testing.T) {
 	assert.Contains(t, err.Error(), "GROUP_CACHE_SIZE")
 }
 
+// A relay still pointed at an auth server refuses to start, rather than
+// starting with auth off.
+func TestRun_RefusesQUMOAuthURL(t *testing.T) {
+	t.Setenv("QUMO_AUTH_URL", "http://127.0.0.1:4440/")
+
+	err := Run(nil)
+
+	assert.ErrorContains(t, err, "QUMO_AUTH_URL is no longer supported")
+}
+
+// A relay told to dial peers without a CA and a peer identity stops at
+// startup rather than dialing with the wrong certificate.
+func TestRun_RefusesPeersWithoutPeerTrust(t *testing.T) {
+	t.Setenv("PEERS", "hub:4433")
+	t.Setenv("CA_FILE", "")
+	t.Setenv("PEER_CERT_FILE", "")
+	t.Setenv("PEER_KEY_FILE", "")
+
+	err := Run(nil)
+
+	assert.ErrorContains(t, err, "PEERS needs CA_FILE, PEER_CERT_FILE and PEER_KEY_FILE")
+}
+
 // TestParseRelayArgs covers the --role flag: it is the only execution-mode
 // flag (secrets/deployment config stay env), and it is flag-only — there is no
 // ROLE env fallback to misconfigure against.
@@ -184,6 +207,27 @@ func TestParseRelayArgs(t *testing.T) {
 			}
 			require.NoError(t, err)
 			assert.Equal(t, tc.wantRole, flags.Role)
+		})
+	}
+}
+
+// A setting printed in the startup banner can't start a line of its own, and
+// so can't pass for one the relay logged.
+func Test_sanitizeLog(t *testing.T) {
+	tests := map[string]struct {
+		in   string
+		want string
+	}{
+		"nothing to strip":     {in: "relay-1", want: "relay-1"},
+		"empty":                {in: "", want: ""},
+		"a line feed":          {in: "relay-1\nlevel=ERROR msg=forged", want: "relay-1level=ERROR msg=forged"},
+		"a carriage return":    {in: "relay-1\rforged", want: "relay-1forged"},
+		"both, more than once": {in: "\r\na\r\nb\n\r", want: "ab"},
+		"other whitespace":     {in: "a\tb c", want: "a\tb c"},
+	}
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			assert.Equal(t, tt.want, sanitizeLog(tt.in))
 		})
 	}
 }
