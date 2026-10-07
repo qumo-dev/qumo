@@ -59,50 +59,59 @@ func TestListen(t *testing.T) {
 	})
 }
 
-func TestListener_Accept(t *testing.T) {
-	l, err := Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("Listen failed: %v", err)
-	}
-	defer l.Close()
-
-	addr := l.Addr().String()
-
-	errCh := make(chan error, 1)
-	connCh := make(chan *Conn, 1)
-
-	// Accept in background
-	go func() {
-		conn, err := l.Accept()
+func TestListener_Listen(t *testing.T) {
+	t.Run("success", func(t *testing.T) {
+		l, err := Listen("tcp", "127.0.0.1:0")
 		if err != nil {
-			errCh <- err
-			return
+			t.Fatalf("Listen failed: %v", err)
 		}
-		connCh <- conn
-	}()
+		defer l.Close()
 
-	// Dial using RTMP dialer to perform client-side handshake
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
+		if l.Addr() == nil {
+			t.Fatal("expected non-nil Addr()")
+		}
 
-	clientConn, err := Dial(ctx, addr)
-	if err != nil {
-		t.Fatalf("Dial failed: %v", err)
-	}
-	defer clientConn.Close()
+		errCh := make(chan error, 1)
+		connCh := make(chan *Conn, 1)
 
-	// Wait for server to accept
-	select {
-	case err := <-errCh:
-		t.Fatalf("Accept failed: %v", err)
-	case conn := <-connCh:
-		defer conn.Close()
-	case <-time.After(2 * time.Second):
-		t.Fatal("timeout waiting for Accept")
-	}
+		go func() {
+			conn, err := l.Accept()
+			if err != nil {
+				errCh <- err
+				return
+			}
+			connCh <- conn
+		}()
+
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+
+		clientConn, err := Dial(ctx, l.Addr().String())
+		if err != nil {
+			t.Fatalf("Dial failed: %v", err)
+		}
+		defer clientConn.Close()
+
+		select {
+		case err := <-errCh:
+			t.Fatalf("Accept failed: %v", err)
+		case conn := <-connCh:
+			defer conn.Close()
+		case <-time.After(2 * time.Second):
+			t.Fatal("timeout waiting for Accept")
+		}
+	})
+
+	t.Run("error", func(t *testing.T) {
+		// Trying to listen on an invalid address should fail
+		_, err := Listen("tcp", "invalid-address:-1")
+		if err == nil {
+			t.Fatal("expected error listening on invalid address")
+		}
+	})
 }
 
-func TestListener_Close(t *testing.T) {
+func TestListener_Accept(t *testing.T) {
 	l, err := Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("Listen failed: %v", err)
@@ -241,7 +250,7 @@ func TestListener_Accept_StalledHandshakeDoesNotBlock(t *testing.T) {
 // recovers from a burst of consecutive bad clients, not just one. Each must be
 // skipped independently; a loop that only recovered once (e.g. drained a
 // one-slot error path) would pass the single-stall test above but fail here.
-func TestListener_Accept_RepeatedStallsDoNotBlock(t *testing.T) {
+func TestListener_RepeatedStallsDoNotBlock(t *testing.T) {
 	old := handshakeTimeout
 	handshakeTimeout = 100 * time.Millisecond
 	t.Cleanup(func() { handshakeTimeout = old })
