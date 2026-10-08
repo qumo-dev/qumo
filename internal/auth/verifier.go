@@ -43,10 +43,11 @@ type VerifierConfig struct {
 // within its validity (token.Verify). A live session is re-checked every 30 s
 // (token.VerifyLive): a key that has left the set ends its sessions. The
 // credential's expiry decides only whether the session may start, unless the
-// credential carries reval: then the session is revalidated as if it were new
-// and ends at the credential's expiry. A key marked "publish": false starts no
-// new sessions that may publish: a credential with a scope permitting publish.
-// The key set is kept when a refresh fails
+// credential carries reval: then the session also ends at the credential's
+// expiry. A key marked "publish": false starts no new sessions that may
+// publish (a credential with a scope permitting publish); it never ends a
+// live one, with or without reval, since it pauses what is new rather than
+// what is on air. The key set is kept when a refresh fails
 // (fail-static); after 6 h without one, new sessions are refused.
 type Verifier struct {
 	source keySource
@@ -126,8 +127,11 @@ func (v *Verifier) Authorize(_ context.Context, req Request) (*Grant, error) {
 		if err == nil && req.Event == EventConnect {
 			v.usage.open(req.ID, s)
 		}
-		if req.Event == EventRevalidate && (req.Bytes.Sent > 0 || req.Bytes.Received > 0) {
-			v.usage.reportUsage(req.ID, req.Bytes)
+		if req.Event == EventRevalidate {
+			v.usage.touch(req.ID)
+			if req.Bytes.Sent > 0 || req.Bytes.Received > 0 {
+				v.usage.reportUsage(req.ID, req.Bytes)
+			}
 		}
 	}
 	return g, err

@@ -505,6 +505,22 @@ func TestUsageReporter(t *testing.T) {
 		assert.False(t, r.close("old", Bytes{}, ""))
 		assert.True(t, r.close("live", Bytes{}, ""))
 	})
+
+	t.Run("an unbounded session whose end never came is forgotten once no longer revalidated", func(t *testing.T) {
+		now := time.Now()
+		r := newTestUsage(t, &fakeUsageSink{})
+		r.now = func() time.Time { return now }
+		unbounded := usageSession{kid: "k1", role: rolePublish}
+		r.open("gone", unbounded)
+		r.open("live", unbounded)
+
+		now = now.Add(sessionGrace + time.Second)
+		r.touch("live")
+		r.forgetExpired()
+
+		assert.False(t, r.close("gone", Bytes{}, ""), "not revalidated within the grace")
+		assert.True(t, r.close("live", Bytes{}, ""), "revalidated: still remembered")
+	})
 }
 
 func TestUsageRecordWire(t *testing.T) {

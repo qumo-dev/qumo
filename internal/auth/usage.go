@@ -62,8 +62,12 @@ type usageSession struct {
 	kid  string
 	role string
 	// expires is when the session must end, its grant's; zero for one
-	// whose credential doesn't bound it, which only its end forgets.
+	// whose credential doesn't bound it.
 	expires time.Time
+	// seen is when the session was last heard of, at connect or a
+	// revalidate: an unbounded session whose end never came is forgotten
+	// once it stops being revalidated.
+	seen time.Time
 	// counted is how much of a subscribe-only session's bytes its key's
 	// viewer total already holds.
 	counted Bytes
@@ -130,9 +134,20 @@ func newUsageReporter(rawURL, bearer string) (*usageReporter, error) {
 func (r *usageReporter) open(id string, s usageSession) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	s.seen = r.now()
 	r.sessions[id] = s
 	if s.role != roleSubscribe {
 		r.appendEvent(r.record(recordSessionOpen, id, s))
+	}
+}
+
+// touch records that a session it knows is still live.
+func (r *usageReporter) touch(id string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if s, ok := r.sessions[id]; ok {
+		s.seen = r.now()
+		r.sessions[id] = s
 	}
 }
 
@@ -265,13 +280,18 @@ func (r *usageReporter) logOutcome(ctx context.Context, err error) {
 	}
 }
 
-// forgetExpired drops sessions well past their expiry whose end never came.
+// forgetExpired drops sessions whose end never came: one well past its
+// expiry, or, with none, one not revalidated for as long.
 func (r *usageReporter) forgetExpired() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	cutoff := r.now().Add(-sessionGrace)
 	for id, s := range r.sessions {
-		if !s.expires.IsZero() && s.expires.Before(cutoff) {
+		last := s.expires
+		if last.IsZero() {
+			last = s.seen
+		}
+		if last.Before(cutoff) {
 			delete(r.sessions, id)
 		}
 	}
