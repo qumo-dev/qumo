@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 )
 
 // Action is what a scope lets its bearer do.
@@ -58,8 +59,12 @@ func (s Scope) Allows(action Action, broadcast, track string) bool {
 	if s.Track != "" && s.Track != track {
 		return false
 	}
+	// MoQ compares broadcast paths as written, so a path is matched only in
+	// its one canonical spelling, relative to "/". Another spelling (a
+	// doubled or trailing slash, a "." or ".." segment) names a different
+	// broadcast and matches no scope.
 	path, err := normalizePath(broadcast)
-	if err != nil {
+	if err != nil || path != strings.TrimPrefix(broadcast, "/") {
 		return false
 	}
 	if s.Prefix {

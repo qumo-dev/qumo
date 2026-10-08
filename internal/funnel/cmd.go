@@ -9,10 +9,13 @@
 //	PUT  /tracks/room/123/chat  create the track before its first record
 //	GET  /tracks/room/123/chat  a page of its records, newest or ?before= a group
 //
-// With a key set, every request carries a qumo credential as a bearer token. A
-// read needs it to grant subscribing at the broadcast path; a write, publishing
-// at the broadcast path, or at one segment beneath it, which names the sender
-// its records carry.
+// With a key set, every request carries a qumo credential as a bearer token.
+// A credential with scopes names exactly what it reaches: a read needs a
+// "fetch" scope, and a write a "publish" scope, on the track's broadcast and
+// track name; the records carry its "sub" as their sender, or no sender
+// without one. A credential with a path grant reads where it may subscribe,
+// and writes where it may publish: at the broadcast path, with no sender, or
+// one segment beneath it, which names the sender.
 //
 // The funnel publishes through a relay it dials as a client, so subscribers
 // reach its tracks on the relay, and it can also serve them itself. A
