@@ -302,6 +302,52 @@ func TestFunnel_CredentialsNameSendersAndReaders(t *testing.T) {
 	assert.Equal(t, http.StatusForbidden, status, "publishing does not grant reading")
 }
 
+// TestFunnel_ScopedCredentialsNameTracksAndSenders records and reads with
+// credentials whose scopes name the exact track: the sender is the
+// credential's sub, and a scope for another track or action grants nothing.
+func TestFunnel_ScopedCredentialsNameTracksAndSenders(t *testing.T) {
+	key, _, keysFile := writeKeys(t)
+	verifier, err := auth.NewVerifier(auth.VerifierConfig{Keys: keysFile})
+	require.NoError(t, err)
+	ingestURL, _ := startFunnel(t, mem.New(), verifier)
+	credential := func(subject string, actions []token.Action, broadcast, track string) string {
+		c, err := token.Sign(key, token.Grant{Subject: subject, Scopes: []token.Scope{
+			{Actions: actions, Broadcast: broadcast, Track: track},
+		}}, time.Minute)
+		require.NoError(t, err)
+		return c
+	}
+	publish, fetch := []token.Action{token.ActionPublish}, []token.Action{token.ActionFetch}
+	alice := credential("alice", publish, "room/123", "chat")
+	system := credential("", publish, "room/123", "")
+	reader := credential("", fetch, "room/123", "chat")
+
+	assert.Equal(t, http.StatusForbidden, record(t, ingestURL, credential("alice", publish, "room/123", "other"), `"x"`), "another track")
+	assert.Equal(t, http.StatusForbidden, record(t, ingestURL, credential("alice", publish, "room/123/alice", "chat"), `"x"`),
+		"a broadcast beneath grants nothing above it")
+	assert.Equal(t, http.StatusForbidden, record(t, ingestURL, reader, `"x"`), "fetching does not grant recording")
+	require.Equal(t, http.StatusCreated, record(t, ingestURL, alice, `{"name":"bob","text":"hi"}`))
+	require.Equal(t, http.StatusCreated, record(t, ingestURL, system, `{"type":"delete"}`))
+
+	history := func(credential string) (int, string) {
+		req, err := http.NewRequest(http.MethodGet, ingestURL+chatPath, nil)
+		require.NoError(t, err)
+		req.Header.Set("Authorization", "Bearer "+credential)
+		resp, err := http.DefaultClient.Do(req)
+		require.NoError(t, err)
+		defer resp.Body.Close()
+		body, err := io.ReadAll(resp.Body)
+		require.NoError(t, err)
+		return resp.StatusCode, string(body)
+	}
+	status, body := history(reader)
+	require.Equal(t, http.StatusOK, status)
+	assert.Contains(t, body, `"sender":"alice","payload":{"name":"bob","text":"hi"}`, "the sender is the credential's sub")
+	assert.Regexp(t, `"wallclock":\d+,"payload":\{"type":"delete"\}`, body, "a credential without sub records with no sender")
+	status, _ = history(alice)
+	assert.Equal(t, http.StatusForbidden, status, "publishing does not grant fetching")
+}
+
 // TestFunnel_PublishesThroughTheRelay runs the funnel with no listener of its
 // own: it dials a relay that verifies credentials, signing a fresh one, and a
 // subscriber of the relay receives what the funnel records.
