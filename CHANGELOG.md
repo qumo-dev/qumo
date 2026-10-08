@@ -7,16 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+> **Breaking for Go callers and funnel senders.** `token.Grant` is `{Scopes, Subject}`: its `Publish` and `Subscribe` fields are gone, and `token.Sign` writes a `scopes` claim, never `path_auth`. A funnel no longer infers a sender from a credential publishing one segment beneath the broadcast: such a credential no longer records into it, and the sender is the credential's `sub`. See **Changed** below.
+
 ### Added
 
-- **Credentials can grant actions on exact tracks, and name their bearer (`token`, `internal/auth`, `internal/funnel`).**
-  - **`scopes`.** A token may carry a `scopes` claim in place of `path_auth`, the JSON counterpart of CAT-4-MOQT's `moqt` claim: each scope lists `actions` (`publish`, `subscribe`, `fetch`, `announce`), a `broadcast` match (`{"exact": "room/123"}`, or `{"prefix": "room/123"}` for it and every path beneath it on `/` boundaries, within the key's prefix) and an optional `track` match (`{"exact": "chat"}`; omitted, every track). Whatever no scope grants is denied. An unknown action or scope member, an empty scope list, or a token carrying both `path_auth` and `scopes` is refused.
-  - **`sub`.** A token with `scopes` may name its bearer in `sub`; with `path_auth` it is still refused.
-  - **Go.** `token.Grant` gains `Scopes` and `Subject`, which `Sign` and `Verify` carry; `token.Scope.Allows` and `auth.Grant.Allows` answer whether an action reaches a broadcast and track, and `auth.Grant.Subject` returns the bearer.
-  - **`qumo funnel`.** With a scoped credential, recording into a track needs a `publish` scope matching its broadcast and name, and records as the credential's `sub` (no sender without one); reading history needs a `fetch` scope matching them. So a sender's credential reaches only the tracks it names, and the sender is not inferred from path depth. `path_auth` credentials work as before.
-  - **Key sets.** A key marked `"publish": false` also starts no session whose scopes permit `publish` or `announce`.
-  - **`qumo auth token`** signs scoped tokens with `-scope ACTIONS:BROADCAST[:TRACK]` (repeatable; `a/b/**` for a prefix) and `-sub`.
-  - **Not yet on the relay.** The relay admits a session with a scoped credential but enforces only `path_auth`, so such a session may publish and subscribe nothing there.
+- **Credentials grant actions on exact tracks, and name their bearer (`token`, `internal/auth`).**
+  - **`scopes`.** A token grants a `scopes` claim, the JSON counterpart of CAT-4-MOQT's `moqt` claim: each scope lists `actions` (`publish`, `subscribe`, `fetch`), a `broadcast` match (`{"exact": "room/123"}`, or `{"prefix": "room/123"}` for it and every path beneath it on `/` boundaries, within the key's prefix) and an optional `track` match (`{"exact": "chat"}`; omitted, every track). Whatever no scope grants is denied. An unknown action or scope member, an empty scope list, or a token carrying both `path_auth` and `scopes` is refused.
+  - **`sub`.** A token with `scopes` may name its bearer in `sub`.
+  - **Go.** `token.Scope` and its `Allows`, `auth.Grant.Allows` (may this action reach this broadcast and track), `auth.Grant.Announces` and `auth.Grant.Subject`.
+  - **`qumo auth token -scope ACTIONS:BROADCAST[:TRACK]`** (repeatable; `a/b/**` for a prefix) and **`-sub`**.
+
+### Changed
+
+- **One grant model: scopes (`token`, `internal/auth`, `internal/funnel`, `internal/relay`).**
+  - **`token.Grant`** is `{Scopes []Scope; Subject string}`. `Sign` writes only `scopes` (and `sub` when there is a subject).
+  - **`path_auth` is still accepted** from tokens signed elsewhere (the `@moq/token` convention), and read as scopes: `pub` as `publish`, and `sub` as `subscribe` and `fetch`, each on its path and every path beneath it, on every track. `sub` (the claim) with `path_auth` is still refused.
+  - **`qumo auth token -publish PATH` / `-subscribe PATH`** stay, as short for `-scope publish:PATH/**` and `-scope subscribe,fetch:PATH/**`.
+  - **The relay** lets a session announce a broadcast a `publish` scope matches, whatever track that scope names, and subscribe to a track a `subscribe` scope matches, by broadcast and track name. There is no separate announce action. It ignores `fetch`. An internal client's grant is in the same model: a `subscribe` and `fetch` scope prefixing no path, which reaches every broadcast.
+  - **`qumo funnel`.** Recording into a track needs a `publish` scope matching its broadcast and name, and records as the credential's `sub`, or with no sender without one; reading history needs a `fetch` scope matching them. A path never names a sender. With `RELAY_SIGNING_KEY`, the funnel signs its relay credential as a `publish` scope on `RELAY_PUBLISH` and beneath it.
+  - **Key sets.** A key marked `"publish": false` starts no session with a scope permitting `publish`.
 
 ## [v0.12.261008] - 2026-10-08
 

@@ -150,11 +150,11 @@ func removeFile(path string) error {
 func runToken(args []string, out, info io.Writer) error {
 	fs := flag.NewFlagSet("qumo auth token", flag.ContinueOnError)
 	keyPath := fs.String("key", "signing-key.jwk", "the private signing key (qumo auth keygen)")
-	publish := fs.String("publish", "", "the path the bearer may publish at or beneath")
-	subscribe := fs.String("subscribe", "", "the path the bearer may subscribe at or beneath")
+	publish := fs.String("publish", "", "the path the bearer may publish at or beneath: short for -scope publish:PATH/**")
+	subscribe := fs.String("subscribe", "", "the path the bearer may subscribe at or beneath: short for -scope subscribe,fetch:PATH/**")
 	var scopes []token.Scope
-	fs.Func("scope", "a scope, `ACTIONS:BROADCAST[:TRACK]`, instead of -publish and -subscribe (repeatable):\n"+
-		"ACTIONS is a comma-separated list of publish, subscribe, fetch and announce;\n"+
+	fs.Func("scope", "a scope, `ACTIONS:BROADCAST[:TRACK]` (repeatable):\n"+
+		"ACTIONS is a comma-separated list of publish, subscribe and fetch;\n"+
 		"BROADCAST is a path, or a/b/** for it and every path beneath it;\n"+
 		"TRACK is one track name, or omitted for every track",
 		func(v string) error {
@@ -165,7 +165,7 @@ func runToken(args []string, out, info io.Writer) error {
 			scopes = append(scopes, s)
 			return nil
 		})
-	subject := fs.String("sub", "", "who the bearer is (the sub claim), with -scope")
+	subject := fs.String("sub", "", "who the bearer is (the sub claim)")
 	ttl := fs.Duration("ttl", time.Hour, "how long the token is valid (at most 1h)")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -174,7 +174,13 @@ func runToken(args []string, out, info io.Writer) error {
 	if err != nil {
 		return err
 	}
-	grant := token.Grant{Publish: *publish, Subscribe: *subscribe, Scopes: scopes, Subject: *subject}
+	if *publish != "" {
+		scopes = append(scopes, token.Scope{Actions: []token.Action{token.ActionPublish}, Broadcast: *publish, Prefix: true})
+	}
+	if *subscribe != "" {
+		scopes = append(scopes, token.Scope{Actions: []token.Action{token.ActionSubscribe, token.ActionFetch}, Broadcast: *subscribe, Prefix: true})
+	}
+	grant := token.Grant{Scopes: scopes, Subject: *subject}
 	tok, err := token.Sign(key, grant, *ttl)
 	if err != nil {
 		return err
@@ -189,15 +195,10 @@ func runToken(args []string, out, info io.Writer) error {
 	}
 	var b strings.Builder
 	b.WriteString("\n")
-	if c.Scoped() {
-		for _, s := range c.Scopes {
-			fmt.Fprintf(&b, "  %-11s %s\n", "Scope:", scopeLabel(s))
-		}
-		fmt.Fprintf(&b, "  %-11s %s\n", "Subject:", cmp.Or(c.Subject, "-"))
-	} else {
-		fmt.Fprintf(&b, "  %-11s %s\n", "Publish:", grantLabel(c.Publish))
-		fmt.Fprintf(&b, "  %-11s %s\n", "Subscribe:", grantLabel(c.Subscribe))
+	for _, s := range c.Scopes {
+		fmt.Fprintf(&b, "  %-11s %s\n", "Scope:", scopeLabel(s))
 	}
+	fmt.Fprintf(&b, "  %-11s %s\n", "Subject:", cmp.Or(c.Subject, "-"))
 	fmt.Fprintf(&b, "  %-11s %s (in %s)\n", "Expires:", c.ExpiresAt.Format(time.DateTime), time.Until(c.ExpiresAt).Round(time.Second))
 	fmt.Fprintf(&b, "  %-11s %s\n", "Key:", key.ID)
 	fmt.Fprintf(&b, "  %-11s https://<relay>/?jwt=<token>\n", "Connect:")
@@ -237,12 +238,4 @@ func scopeLabel(s token.Scope) string {
 		broadcast += "/**"
 	}
 	return strings.Join(actions, ",") + " " + broadcast + " track " + cmp.Or(s.Track, "*")
-}
-
-// grantLabel describes one role of a grant for the terminal.
-func grantLabel(path string) string {
-	if path == "" {
-		return "-"
-	}
-	return path + "/**"
 }

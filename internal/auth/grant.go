@@ -10,19 +10,13 @@ import (
 	"github.com/qumo-dev/qumo/token"
 )
 
-// Grant is what a session may do: where it may publish and subscribe, from
-// a path_auth credential or an Authorize of its own, or the actions its
-// scopes permit, from a scoped credential, with the subject that names it.
+// Grant is what a session may do: the actions its scopes permit, from its
+// credential or from an Authorize of its own, and the subject that names it.
 type Grant struct {
-	// Publish is where the session may announce broadcasts.
-	Publish Patterns
-	// Subscribe is where the session may subscribe.
-	Subscribe Patterns
-	// scopes are a scoped credential's; such a grant has no Publish or
-	// Subscribe patterns.
+	// scopes are what the session may do; whatever none permits is denied.
 	scopes []token.Scope
-	// subject is a scoped credential's sub: who the bearer is. Empty names
-	// no one.
+	// subject is the credential's sub: who the bearer is. Empty names no
+	// one.
 	subject string
 	// expires is when the session must end; zero means never.
 	expires time.Time
@@ -31,19 +25,32 @@ type Grant struct {
 }
 
 // NewGrant returns a grant for the subtree patterns publish and subscribe
-// ("**" for everything, "a/b/**" for a/b and everything beneath it). The
-// session ends at expires (zero: never) and is checked again every revalidate
-// (zero: never). It is for an Authorize other than the Verifier's.
+// ("**" for everything, "a/b/**" for a/b and everything beneath it). Each
+// becomes a scope on every track of its subtree: a publish pattern permits
+// publishing, and a subscribe pattern subscribing and fetching, as a
+// path_auth credential's pub and sub do. "**" is a prefix scope with an empty
+// broadcast, which reaches every broadcast. The session ends at expires
+// (zero: never) and is checked again every revalidate (zero: never). It is
+// for an Authorize other than the Verifier's.
 func NewGrant(publish, subscribe []string, expires time.Time, revalidate time.Duration) (*Grant, error) {
-	pub, err := parsePatterns(publish)
-	if err != nil {
-		return nil, fmt.Errorf("publish: %w", err)
+	g := &Grant{expires: expires, revalidate: revalidate}
+	for _, role := range []struct {
+		name     string
+		patterns []string
+		actions  []token.Action
+	}{
+		{"publish", publish, []token.Action{token.ActionPublish}},
+		{"subscribe", subscribe, []token.Action{token.ActionSubscribe, token.ActionFetch}},
+	} {
+		for _, raw := range role.patterns {
+			base, err := parsePattern(strings.TrimSpace(raw))
+			if err != nil {
+				return nil, fmt.Errorf("%s: %w", role.name, err)
+			}
+			g.scopes = append(g.scopes, token.Scope{Actions: role.actions, Broadcast: base, Prefix: true})
+		}
 	}
-	sub, err := parsePatterns(subscribe)
-	if err != nil {
-		return nil, fmt.Errorf("subscribe: %w", err)
-	}
-	return &Grant{Publish: pub, Subscribe: sub, expires: expires, revalidate: revalidate}, nil
+	return g, nil
 }
 
 // Expires returns when the session must end: the credential's expiry. The
@@ -58,22 +65,24 @@ func (g *Grant) Subject() string {
 	return g.subject
 }
 
-// Allows reports whether the grant permits action on the track named track
-// of the broadcast at path. An empty track is an action on the broadcast as
-// a whole. A scoped grant answers by its scopes. Otherwise publishing and
-// announcing need Publish to contain path, and subscribing and fetching need
-// Subscribe to.
+// Allows reports whether a scope of the grant permits action on the track
+// named track of the broadcast at path.
 func (g *Grant) Allows(action token.Action, path moqt.BroadcastPath, track moqt.TrackName) bool {
 	for _, s := range g.scopes {
 		if s.Allows(action, path.String(), string(track)) {
 			return true
 		}
 	}
-	switch action {
-	case token.ActionPublish, token.ActionAnnounce:
-		return g.Publish.Contains(path)
-	case token.ActionSubscribe, token.ActionFetch:
-		return g.Subscribe.Contains(path)
+	return false
+}
+
+// Announces reports whether the session may announce the broadcast at path:
+// whether a scope permits publishing on it, whatever track that scope names.
+func (g *Grant) Announces(path moqt.BroadcastPath) bool {
+	for _, s := range g.scopes {
+		if s.Reaches(token.ActionPublish, path.String()) {
+			return true
+		}
 	}
 	return false
 }
@@ -84,69 +93,21 @@ func (g *Grant) Revalidate() time.Duration {
 	return g.revalidate
 }
 
-// Patterns is a set of subtree patterns.
-type Patterns []pattern
-
-// Contains reports whether any of the patterns contains path.
-func (ps Patterns) Contains(path moqt.BroadcastPath) bool {
-	for _, p := range ps {
-		if p.contains(path) {
-			return true
-		}
-	}
-	return false
-}
-
-// Bases returns the path each pattern covers, relative to "/": "a/b" for
-// "a/b/**", and "" for "**".
-func (ps Patterns) Bases() []string {
-	bases := make([]string, len(ps))
-	for i, p := range ps {
-		bases[i] = p.base
-	}
-	return bases
-}
-
-// pattern is a subtree pattern: "**" (everything) or "a/b/**" (a/b and
-// everything beneath it, on "/" boundaries). base is "" for "**".
-type pattern struct {
-	base string
-}
-
-func parsePatterns(raw []string) (Patterns, error) {
-	patterns := make(Patterns, 0, len(raw))
-	for _, s := range raw {
-		p, err := parsePattern(strings.TrimSpace(s))
-		if err != nil {
-			return nil, err
-		}
-		patterns = append(patterns, p)
-	}
-	return patterns, nil
-}
-
-func parsePattern(s string) (pattern, error) {
+// parsePattern returns the path a subtree pattern covers, relative to "/":
+// "a/b" for "a/b/**" (a/b and everything beneath it, on "/" boundaries), and
+// "" for "**" (everything).
+func parsePattern(s string) (string, error) {
 	if s == "**" {
-		return pattern{}, nil
+		return "", nil
 	}
 	base, ok := strings.CutSuffix(s, "/**")
 	if !ok {
-		return pattern{}, fmt.Errorf("pattern %q: only subtree patterns (\"**\", \"a/b/**\") are supported", s)
+		return "", fmt.Errorf("pattern %q: only subtree patterns (\"**\", \"a/b/**\") are supported", s)
 	}
 	for seg := range strings.SplitSeq(base, "/") {
 		if seg == "" || seg == "." || seg == ".." || strings.Contains(seg, "*") {
-			return pattern{}, fmt.Errorf("pattern %q: bad segment %q", s, seg)
+			return "", fmt.Errorf("pattern %q: bad segment %q", s, seg)
 		}
 	}
-	return pattern{base: base}, nil
-}
-
-// contains reports whether path lies at or beneath the pattern's base. A
-// broadcast path is rooted at "/"; patterns are relative to it.
-func (p pattern) contains(path moqt.BroadcastPath) bool {
-	if p.base == "" {
-		return true
-	}
-	rel := strings.TrimPrefix(path.String(), "/")
-	return rel == p.base || strings.HasPrefix(rel, p.base+"/")
+	return base, nil
 }
