@@ -139,11 +139,11 @@ A credential is a token your app signs with its own key, using the Go package [`
 Each key in the set may carry two members besides the standard JWK ones:
 
 ```json
-{"keys": [{"kty": "OKP", "crv": "Ed25519", "x": "…", "kid": "…", "prefix": "acme/app", "publish": false}]}
+{"keys": [{"kty": "OKP", "crv": "Ed25519", "x": "…", "kid": "…", "prefix": "acme/app", "pause": ["publish"]}]}
 ```
 
 - **`prefix`** confines the key: a token signed with it may grant only paths at or beneath it.
-- **`"publish": false`** starts no new sessions that may publish, for example while the key's owner is at a limit on broadcasts. Sessions that only subscribe still start, and live sessions continue.
+- **`"pause": ["publish"]`** starts no new sessions that may publish, for example while the key's owner is at a limit on broadcasts. Sessions that only subscribe still start, and live sessions continue: a pause stops what is new, not what is on air. To cut a key's live sessions off, remove the key from the set. `"publish"` is the only thing a key can pause; any other entry makes the set invalid, so a misspelling can't leave a key unpaused. The older `"publish": false` still means the same and is deprecated.
 
 **Live sessions are re-checked every 30 s** against the current set: a session whose key has left the set ends, with MoQ `0x2` (Unauthorized), so removing a key cuts its sessions off within about a minute at worst (one refresh plus one re-check), about 30 s on average. If the set can't be refreshed, the relay keeps the last one and logs an error; after 6 hours without a refresh it admits no new sessions, while live ones run to their expiry. Before the first successful load it admits nothing. With `QUMO_AUTH_KEYS_CACHE` set, the last downloaded set is loaded at startup, and its age counts toward the 6 hours, so a restart doesn't extend how long an old set is trusted. A key set *file* that can't be read stops the relay at startup, rather than leaving it running and refusing everyone.
 

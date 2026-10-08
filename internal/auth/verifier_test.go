@@ -27,7 +27,8 @@ func genKey(t *testing.T, prefix string) token.SigningKey {
 	return k
 }
 
-// keySetJSON is a JWK Set of keys, with "publish": false on those in noPublish.
+// keySetJSON is a JWK Set of keys, with "pause": ["publish"] on those in
+// noPublish.
 func keySetJSON(t *testing.T, keys []token.SigningKey, noPublish ...token.SigningKey) []byte {
 	t.Helper()
 	public := make([]token.Key, len(keys))
@@ -46,7 +47,7 @@ func keySetJSON(t *testing.T, keys []token.SigningKey, noPublish ...token.Signin
 	for _, entry := range set.Keys {
 		for _, k := range noPublish {
 			if entry["kid"] == k.ID {
-				entry["publish"] = false
+				entry["pause"] = []string{"publish"}
 			}
 		}
 	}
@@ -77,10 +78,36 @@ func TestParseKeySet(t *testing.T) {
 			require.NoError(t, json.Unmarshal(one, &set))
 			return `{"keys":[` + string(set.Keys[0]) + `,` + string(set.Keys[0]) + `]}`
 		}(),
-		"private key": `{"keys":[{"kty":"OKP","crv":"Ed25519","x":"11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo","d":"nWGxne_9WmC6hEr0kuwsxERJxWl7MmkZcDusAxyuf2A"}]}`,
+		"private key":      `{"keys":[{"kty":"OKP","crv":"Ed25519","x":"11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo","d":"nWGxne_9WmC6hEr0kuwsxERJxWl7MmkZcDusAxyuf2A"}]}`,
+		"unknown pause":    `{"keys":[` + keyEntry(t, active, map[string]any{"pause": []string{"publsh"}}) + `]}`,
+		"pause not a list": `{"keys":[` + keyEntry(t, active, map[string]any{"pause": "publish"}) + `]}`,
 	} {
 		_, err := parseKeySet([]byte(raw))
 		assert.Error(t, err, name)
+	}
+}
+
+func TestParseKeySet_Pause(t *testing.T) {
+	key := genKey(t, "acme/app")
+	tests := map[string]struct {
+		members map[string]any
+		paused  bool
+	}{
+		"nothing":                         {members: nil, paused: false},
+		"pause publish":                   {members: map[string]any{"pause": []string{"publish"}}, paused: true},
+		"pause nothing":                   {members: map[string]any{"pause": []string{}}, paused: false},
+		"deprecated publish false":        {members: map[string]any{"publish": false}, paused: true},
+		"deprecated publish true":         {members: map[string]any{"publish": true}, paused: false},
+		"either form pausing is a pause":  {members: map[string]any{"publish": true, "pause": []string{"publish"}}, paused: true},
+		"pause listed twice is one pause": {members: map[string]any{"pause": []string{"publish", "publish"}}, paused: true},
+	}
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			set, err := parseKeySet([]byte(`{"keys":[` + keyEntry(t, key, tt.members) + `]}`))
+
+			require.NoError(t, err)
+			assert.Equal(t, tt.paused, set.noPublish[key.ID])
+		})
 	}
 }
 
