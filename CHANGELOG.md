@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **A key in a key set pauses its new publishing sessions with `"pause": ["publish"]` (`internal/auth/keyset.go`).** The member names what it does: the key starts no new sessions that may publish, while viewers still connect and live sessions continue. `"publish"` is the only entry; any other makes the set invalid, so a misspelling can't leave a key unpaused, and the relay keeps its last good set as with any invalid set.
+
+### Deprecated
+
+- **`"publish": false` on a key** still pauses its publishing, but reads as if the key could never publish. Write `"pause": ["publish"]`; the old member will be removed in a later release.
+
 ## [v0.12.261008] - 2026-10-08
 
 > **Breaking for operators.** Relay peers authenticate with mutual TLS under a relay CA: a relay no longer presents `CERT_FILE` to the relays it dials, and `PEERS` needs `PEER_CERT_FILE`, `PEER_KEY_FILE` and `CA_FILE`. To move over, issue a peer certificate per relay from your CA and set the two new variables. See **Changed** below.
