@@ -13,8 +13,9 @@ import (
 )
 
 // revalidateEvery is how often the relay re-checks a live session against
-// the current key set: how soon a withdrawn key ends its sessions.
-const revalidateEvery = 30 * time.Second
+// the current key set: how soon a withdrawn key ends its sessions. It is the
+// shortest reval a credential may ask for, so every reval is honored.
+const revalidateEvery = token.MinReval
 
 // VerifierConfig configures a relay that verifies credentials itself.
 type VerifierConfig struct {
@@ -38,10 +39,13 @@ type VerifierConfig struct {
 // key set. Its Authorize and End are what the relay's Server takes.
 //
 // A session's credential (the jwt query parameter of its connect URL) must be
-// signed by a key in the set and grant only paths within the key's prefix
-// (token.Verify). A live session is re-checked every 30 s: a key that has left
-// the set ends its sessions. A key marked "publish": false starts no new
-// sessions that may publish: a credential with a scope permitting publish.
+// signed by a key in the set, grant only paths within the key's prefix, and be
+// within its validity (token.Verify). A live session is re-checked every 30 s
+// (token.VerifyLive): a key that has left the set ends its sessions. The
+// credential's expiry decides only whether the session may start, unless the
+// credential carries reval: then the session is revalidated as if it were new
+// and ends at the credential's expiry. A key marked "publish": false starts no
+// new sessions that may publish: a credential with a scope permitting publish.
 // The key set is kept when a refresh fails
 // (fail-static); after 6 h without one, new sessions are refused.
 type Verifier struct {
@@ -149,7 +153,11 @@ func (v *Verifier) decide(req Request) (*Grant, usageSession, error) {
 	if !query.Has("jwt") {
 		return nil, usageSession{}, refuse(http.StatusUnauthorized, "no credential: connect with ?jwt=")
 	}
-	c, err := token.Verify(query.Get("jwt"), set.keys, now)
+	verify := token.VerifyLive
+	if connect {
+		verify = token.Verify
+	}
+	c, err := verify(query.Get("jwt"), set.keys, now)
 	if err != nil {
 		status := http.StatusUnauthorized
 		if errors.Is(err, token.ErrForbidden) {
@@ -163,7 +171,12 @@ func (v *Verifier) decide(req Request) (*Grant, usageSession, error) {
 			"signing key %s starts no new publishing sessions", c.Key.ID)
 	}
 
-	expires := c.ExpiresAt.Add(token.Leeway)
+	// Only a credential with reval bounds its session; without it, the
+	// expiry decided the admission alone.
+	var expires time.Time
+	if c.Reval > 0 {
+		expires = c.ExpiresAt.Add(token.Leeway)
+	}
 	g := &Grant{scopes: c.Scopes, subject: c.Subject, expires: expires, revalidate: revalidateEvery}
 	s := usageSession{kid: c.Key.ID, expires: expires}
 	switch {

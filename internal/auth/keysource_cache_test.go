@@ -120,6 +120,10 @@ func TestVerifier_PublishLimit(t *testing.T) {
 		"limited key, path_auth viewer":    {jwt: signPathAuth(t, limited, "", "acme/app"), wantConnect: 200, wantRevalidate: 200},
 		"another key, path_auth publisher": {jwt: signPathAuth(t, free, "acme/app/live", ""), wantConnect: 200, wantRevalidate: 200},
 		"limited key, publish scope":       {jwt: sign(t, limited, scoped(token.ActionPublish)), wantConnect: 403, wantRevalidate: 200},
+		"limited key, publish scope with reval": {
+			jwt:         sign(t, limited, scoped(token.ActionPublish), token.WithReval(time.Minute)),
+			wantConnect: 403, wantRevalidate: 200,
+		},
 		"limited key, publish one track": {
 			jwt: sign(t, limited, token.Grant{Scopes: []token.Scope{
 				{Actions: []token.Action{token.ActionPublish}, Broadcast: "acme/app/live", Track: "chat"},

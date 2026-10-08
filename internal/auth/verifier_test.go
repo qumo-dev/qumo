@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/qumo-dev/gomoqt/moqt"
@@ -124,9 +125,50 @@ func TestVerifier_Grant(t *testing.T) {
 	assert.False(t, g.Allows(token.ActionPublish, moqt.BroadcastPath("/acme/app/other"), "video"))
 	assert.True(t, g.Allows(token.ActionSubscribe, moqt.BroadcastPath("/acme/app/other"), "video"))
 	assert.False(t, g.Allows(token.ActionSubscribe, moqt.BroadcastPath("/globex/app"), "video"))
+	assert.Equal(t, revalidateEvery, g.Revalidate(), "every session is re-checked against the key set")
+	assert.True(t, g.Expires().IsZero(), "without reval, the credential's expiry doesn't end the session")
+}
+
+func TestVerifier_GrantWithReval(t *testing.T) {
+	k := genKey(t, "acme/app")
+	v := verifierWith(t, keySetJSON(t, []token.SigningKey{k}), time.Now())
+
+	g, err := v.Authorize(context.Background(), sessionReq(EventConnect, sign(t, k, pathGrant("", "acme/app"), token.WithReval(time.Minute))))
+	require.NoError(t, err)
 	assert.Equal(t, revalidateEvery, g.Revalidate())
 	assert.WithinDuration(t, time.Now().Add(10*time.Minute+token.Leeway), g.Expires(), 5*time.Second,
 		"the session ends at the credential's exp plus the leeway")
+}
+
+// TestVerifier_Expiry checks a credential after its expiry: at connect it is
+// refused; for a live session it is refused only when it carries reval.
+func TestVerifier_Expiry(t *testing.T) {
+	tests := map[string]struct {
+		opts           []token.Option
+		wantConnect    int
+		wantRevalidate int
+	}{
+		"without reval": {wantConnect: http.StatusUnauthorized, wantRevalidate: http.StatusOK},
+		"with reval":    {opts: []token.Option{token.WithReval(time.Minute)}, wantConnect: http.StatusUnauthorized, wantRevalidate: http.StatusUnauthorized},
+	}
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				k := genKey(t, "acme/app")
+				v := verifierWith(t, keySetJSON(t, []token.SigningKey{k}), time.Now())
+				jwt := sign(t, k, pathGrant("", "acme/app"), tt.opts...)
+				_, err := v.Authorize(context.Background(), sessionReq(EventConnect, jwt))
+				require.NoError(t, err)
+
+				time.Sleep(10*time.Minute + token.Leeway)
+
+				_, err = v.Authorize(context.Background(), sessionReq(EventConnect, jwt))
+				assert.Equal(t, tt.wantConnect, statusOf(err), "connect: %v", err)
+				_, err = v.Authorize(context.Background(), sessionReq(EventRevalidate, jwt))
+				assert.Equal(t, tt.wantRevalidate, statusOf(err), "revalidate: %v", err)
+			})
+		})
+	}
 }
 
 func TestVerifier_Decisions(t *testing.T) {
@@ -175,19 +217,37 @@ func TestVerifier_FailStatic(t *testing.T) {
 	assert.NoError(t, err, "stale: live sessions continue")
 }
 
+// TestVerifier_WithdrawnKeyEndsSessions checks that a key leaving the set
+// ends its live sessions whatever their credentials carry, before or after
+// their expiry.
 func TestVerifier_WithdrawnKeyEndsSessions(t *testing.T) {
-	k := genKey(t, "acme/app")
-	jwt := sign(t, k, pathGrant("", "acme/app"))
-	v := verifierWith(t, keySetJSON(t, []token.SigningKey{k}), time.Now())
-	_, err := v.Authorize(context.Background(), sessionReq(EventConnect, jwt))
-	require.NoError(t, err)
+	tests := map[string]struct {
+		opts    []token.Option
+		elapsed time.Duration
+	}{
+		"without reval":                {},
+		"without reval, after its exp": {elapsed: 10*time.Minute + token.Leeway},
+		"with reval":                   {opts: []token.Option{token.WithReval(time.Minute)}},
+	}
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				k := genKey(t, "acme/app")
+				jwt := sign(t, k, pathGrant("", "acme/app"), tt.opts...)
+				v := verifierWith(t, keySetJSON(t, []token.SigningKey{k}), time.Now())
+				_, err := v.Authorize(context.Background(), sessionReq(EventConnect, jwt))
+				require.NoError(t, err)
 
-	set, err := parseKeySet([]byte(`{"keys":[]}`))
-	require.NoError(t, err)
-	v.store.replace(set, time.Now())
+				time.Sleep(tt.elapsed)
+				set, err := parseKeySet([]byte(`{"keys":[]}`))
+				require.NoError(t, err)
+				v.store.replace(set, time.Now())
 
-	_, err = v.Authorize(context.Background(), sessionReq(EventRevalidate, jwt))
-	assert.Equal(t, http.StatusUnauthorized, statusOf(err))
+				_, err = v.Authorize(context.Background(), sessionReq(EventRevalidate, jwt))
+				assert.Equal(t, http.StatusUnauthorized, statusOf(err))
+			})
+		})
+	}
 }
 
 func TestNewVerifier(t *testing.T) {
@@ -581,10 +641,10 @@ func signPathAuth(tb testing.TB, key token.SigningKey, pub, sub string) string {
 	return input + "." + base64.RawURLEncoding.EncodeToString(ed25519.Sign(key.Private, []byte(input)))
 }
 
-// sign mints a 10-minute token granting g.
-func sign(tb testing.TB, key token.SigningKey, g token.Grant) string {
+// sign mints a 10-minute token granting g, with the optional claims opts set.
+func sign(tb testing.TB, key token.SigningKey, g token.Grant, opts ...token.Option) string {
 	tb.Helper()
-	tok, err := token.Sign(key, g, 10*time.Minute)
+	tok, err := token.Sign(key, g, 10*time.Minute, opts...)
 	require.NoError(tb, err)
 	return tok
 }

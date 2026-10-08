@@ -102,8 +102,7 @@ func publishGrant(path string) token.Grant {
 }
 
 // run keeps a session to the relay open until ctx ends, dialing again after
-// each one ends: the relay ends a session when its credential expires, and a
-// signed credential is fresh on every dial.
+// each one ends, with a signed credential fresh on every dial.
 func (u *upstream) run(ctx context.Context, mux *moqt.TrackMux) {
 	for {
 		sess, err := u.dial(ctx, mux)

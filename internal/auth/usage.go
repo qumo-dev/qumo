@@ -59,8 +59,10 @@ type usageRecord struct {
 
 // usageSession is what the reporter remembers of a verified session.
 type usageSession struct {
-	kid     string
-	role    string
+	kid  string
+	role string
+	// expires is when the session must end, its grant's; zero for one
+	// whose credential doesn't bound it, which only its end forgets.
 	expires time.Time
 	// counted is how much of a subscribe-only session's bytes its key's
 	// viewer total already holds.

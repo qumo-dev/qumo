@@ -167,6 +167,7 @@ func runToken(args []string, out, info io.Writer) error {
 		})
 	subject := fs.String("sub", "", "who the bearer is (the sub claim)")
 	ttl := fs.Duration("ttl", time.Hour, "how long the token is valid (at most 1h)")
+	reval := fs.Duration("reval", 0, "revalidate a session the token admits this often, ending it at the token's expiry (30s to 1h; unset: the session outlives the token)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -181,7 +182,11 @@ func runToken(args []string, out, info io.Writer) error {
 		scopes = append(scopes, token.Scope{Actions: []token.Action{token.ActionSubscribe, token.ActionFetch}, Broadcast: *subscribe, Prefix: true})
 	}
 	grant := token.Grant{Scopes: scopes, Subject: *subject}
-	tok, err := token.Sign(key, grant, *ttl)
+	var opts []token.Option
+	if *reval != 0 {
+		opts = append(opts, token.WithReval(*reval))
+	}
+	tok, err := token.Sign(key, grant, *ttl, opts...)
 	if err != nil {
 		return err
 	}
@@ -200,10 +205,20 @@ func runToken(args []string, out, info io.Writer) error {
 	}
 	fmt.Fprintf(&b, "  %-11s %s\n", "Subject:", cmp.Or(c.Subject, "-"))
 	fmt.Fprintf(&b, "  %-11s %s (in %s)\n", "Expires:", c.ExpiresAt.Format(time.DateTime), time.Until(c.ExpiresAt).Round(time.Second))
+	fmt.Fprintf(&b, "  %-11s %s\n", "Sessions:", sessionLabel(c.Reval))
 	fmt.Fprintf(&b, "  %-11s %s\n", "Key:", key.ID)
 	fmt.Fprintf(&b, "  %-11s https://<relay>/?jwt=<token>\n", "Connect:")
 	_, err = io.WriteString(info, b.String())
 	return err
+}
+
+// sessionLabel describes for the terminal how long a session the token admits
+// may live.
+func sessionLabel(reval time.Duration) string {
+	if reval == 0 {
+		return "outlive the token's expiry"
+	}
+	return fmt.Sprintf("end at its expiry (revalidated every %s)", reval)
 }
 
 // parseScope reads a -scope value, ACTIONS:BROADCAST[:TRACK]. A broadcast

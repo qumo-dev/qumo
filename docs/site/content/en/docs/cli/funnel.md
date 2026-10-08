@@ -123,9 +123,9 @@ do. The session needs a credential that may publish there. The funnel either
 uses the `?jwt=` in `RELAY_URL`, or, with `RELAY_SIGNING_KEY` and
 `RELAY_PUBLISH`, signs a fresh one for every session, granting `publish` on
 `RELAY_PUBLISH` and every path beneath it, from a key the relay's key
-set trusts (`qumo auth keygen`, ideally confined with `-prefix`). Credentials
-last at most an hour and the relay ends a session when its credential
-expires, so a long-running funnel signs its own.
+set trusts (`qumo auth keygen`, ideally confined with `-prefix`). A credential
+lasts at most an hour, so one in `RELAY_URL` admits sessions only until then;
+a long-running funnel signs its own.
 
 When a session ends, the funnel dials again after two seconds and announces
 its broadcasts anew.
