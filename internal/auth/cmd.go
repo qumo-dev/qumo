@@ -167,7 +167,7 @@ func runToken(args []string, out, info io.Writer) error {
 		})
 	subject := fs.String("sub", "", "who the bearer is (the sub claim)")
 	ttl := fs.Duration("ttl", time.Hour, "how long the token is valid (at most 1h)")
-	reval := fs.Duration("reval", 0, "revalidate a session the token admits this often, ending it at the token's expiry (30s to 1h; unset: the session outlives the token)")
+	reval := fs.Bool("reval", false, "end a session the token admits at the token's expiry (unset: the session outlives the token)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -182,11 +182,7 @@ func runToken(args []string, out, info io.Writer) error {
 		scopes = append(scopes, token.Scope{Actions: []token.Action{token.ActionSubscribe, token.ActionFetch}, Broadcast: *subscribe, Prefix: true})
 	}
 	grant := token.Grant{Scopes: scopes, Subject: *subject}
-	var opts []token.Option
-	if *reval != 0 {
-		opts = append(opts, token.WithReval(*reval))
-	}
-	tok, err := token.Sign(key, grant, *ttl, opts...)
+	tok, err := token.Sign(key, grant, token.Options{TTL: *ttl, Reval: *reval})
 	if err != nil {
 		return err
 	}
@@ -214,11 +210,11 @@ func runToken(args []string, out, info io.Writer) error {
 
 // sessionLabel describes for the terminal how long a session the token admits
 // may live.
-func sessionLabel(reval time.Duration) string {
-	if reval == 0 {
-		return "outlive the token's expiry"
+func sessionLabel(reval bool) string {
+	if reval {
+		return "end at the token's expiry (reval)"
 	}
-	return fmt.Sprintf("end at its expiry (revalidated every %s)", reval)
+	return "outlive the token's expiry"
 }
 
 // parseScope reads a -scope value, ACTIONS:BROADCAST[:TRACK]. A broadcast

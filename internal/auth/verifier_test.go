@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -133,30 +134,44 @@ func TestVerifier_GrantWithReval(t *testing.T) {
 	k := genKey(t, "acme/app")
 	v := verifierWith(t, keySetJSON(t, []token.SigningKey{k}), time.Now())
 
-	g, err := v.Authorize(context.Background(), sessionReq(EventConnect, sign(t, k, pathGrant("", "acme/app"), token.WithReval(time.Minute))))
+	g, err := v.Authorize(context.Background(), sessionReq(EventConnect, signReval(t, k, pathGrant("", "acme/app"))))
 	require.NoError(t, err)
 	assert.Equal(t, revalidateEvery, g.Revalidate())
 	assert.WithinDuration(t, time.Now().Add(10*time.Minute+token.Leeway), g.Expires(), 5*time.Second,
 		"the session ends at the credential's exp plus the leeway")
 }
 
+// The reval interval a signed credential carries is one the relay honors: it
+// revalidates live sessions at least that often.
+func TestVerifier_HonorsSignedReval(t *testing.T) {
+	jwt := signReval(t, genKey(t, "acme/app"), pathGrant("", "acme/app"))
+	body, err := base64.RawURLEncoding.DecodeString(strings.Split(jwt, ".")[1])
+	require.NoError(t, err)
+	var claims struct {
+		Reval float64 `json:"reval"`
+	}
+	require.NoError(t, json.Unmarshal(body, &claims))
+
+	assert.LessOrEqual(t, revalidateEvery.Seconds(), claims.Reval)
+}
+
 // TestVerifier_Expiry checks a credential after its expiry: at connect it is
 // refused; for a live session it is refused only when it carries reval.
 func TestVerifier_Expiry(t *testing.T) {
 	tests := map[string]struct {
-		opts           []token.Option
+		reval          bool
 		wantConnect    int
 		wantRevalidate int
 	}{
 		"without reval": {wantConnect: http.StatusUnauthorized, wantRevalidate: http.StatusOK},
-		"with reval":    {opts: []token.Option{token.WithReval(time.Minute)}, wantConnect: http.StatusUnauthorized, wantRevalidate: http.StatusUnauthorized},
+		"with reval":    {reval: true, wantConnect: http.StatusUnauthorized, wantRevalidate: http.StatusUnauthorized},
 	}
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
 				k := genKey(t, "acme/app")
 				v := verifierWith(t, keySetJSON(t, []token.SigningKey{k}), time.Now())
-				jwt := sign(t, k, pathGrant("", "acme/app"), tt.opts...)
+				jwt := signWith(t, k, pathGrant("", "acme/app"), tt.reval)
 				_, err := v.Authorize(context.Background(), sessionReq(EventConnect, jwt))
 				require.NoError(t, err)
 
@@ -222,18 +237,18 @@ func TestVerifier_FailStatic(t *testing.T) {
 // their expiry.
 func TestVerifier_WithdrawnKeyEndsSessions(t *testing.T) {
 	tests := map[string]struct {
-		opts    []token.Option
+		reval   bool
 		elapsed time.Duration
 	}{
 		"without reval":                {},
 		"without reval, after its exp": {elapsed: 10*time.Minute + token.Leeway},
-		"with reval":                   {opts: []token.Option{token.WithReval(time.Minute)}},
+		"with reval":                   {reval: true},
 	}
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
 				k := genKey(t, "acme/app")
-				jwt := sign(t, k, pathGrant("", "acme/app"), tt.opts...)
+				jwt := signWith(t, k, pathGrant("", "acme/app"), tt.reval)
 				v := verifierWith(t, keySetJSON(t, []token.SigningKey{k}), time.Now())
 				_, err := v.Authorize(context.Background(), sessionReq(EventConnect, jwt))
 				require.NoError(t, err)
@@ -657,10 +672,23 @@ func signPathAuth(tb testing.TB, key token.SigningKey, pub, sub string) string {
 	return input + "." + base64.RawURLEncoding.EncodeToString(ed25519.Sign(key.Private, []byte(input)))
 }
 
-// sign mints a 10-minute token granting g, with the optional claims opts set.
-func sign(tb testing.TB, key token.SigningKey, g token.Grant, opts ...token.Option) string {
+// sign mints a 10-minute token granting g.
+func sign(tb testing.TB, key token.SigningKey, g token.Grant) string {
 	tb.Helper()
-	tok, err := token.Sign(key, g, 10*time.Minute, opts...)
+	return signWith(tb, key, g, false)
+}
+
+// signReval mints a 10-minute token granting g that carries reval.
+func signReval(tb testing.TB, key token.SigningKey, g token.Grant) string {
+	tb.Helper()
+	return signWith(tb, key, g, true)
+}
+
+// signWith mints a 10-minute token granting g, carrying reval when reval is
+// set.
+func signWith(tb testing.TB, key token.SigningKey, g token.Grant, reval bool) string {
+	tb.Helper()
+	tok, err := token.Sign(key, g, token.Options{TTL: 10 * time.Minute, Reval: reval})
 	require.NoError(tb, err)
 	return tok
 }

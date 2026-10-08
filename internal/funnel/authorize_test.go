@@ -36,7 +36,7 @@ func newVerifier(tb testing.TB) (*auth.Verifier, token.SigningKey) {
 
 func sign(tb testing.TB, key token.SigningKey, g token.Grant) string {
 	tb.Helper()
-	credential, err := token.Sign(key, g, time.Minute)
+	credential, err := token.Sign(key, g, token.Options{TTL: time.Minute})
 	require.NoError(tb, err)
 	return credential
 }

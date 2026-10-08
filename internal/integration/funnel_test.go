@@ -330,7 +330,7 @@ func TestFunnel_ScopedCredentialsNameTracksAndSenders(t *testing.T) {
 	credential := func(subject string, actions []token.Action, broadcast, track string) string {
 		c, err := token.Sign(key, token.Grant{Subject: subject, Scopes: []token.Scope{
 			{Actions: actions, Broadcast: broadcast, Track: track},
-		}}, time.Minute)
+		}}, token.Options{TTL: time.Minute})
 		require.NoError(t, err)
 		return c
 	}
@@ -397,7 +397,7 @@ func TestFunnel_PublishesThroughTheRelay(t *testing.T) {
 
 	viewer, err := token.Sign(key, token.Grant{Scopes: []token.Scope{
 		{Actions: []token.Action{token.ActionSubscribe}, Broadcast: "room/123", Prefix: true},
-	}}, time.Minute)
+	}}, token.Options{TTL: time.Minute})
 	require.NoError(t, err)
 	tr := subscribeChat(t, nativeURL(relayAddr)+"?jwt="+viewer)
 

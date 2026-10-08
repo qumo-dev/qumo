@@ -32,11 +32,11 @@ func writeKeyFile(t *testing.T, path string, keys ...token.Key) {
 	require.NoError(t, os.Chtimes(path, now, now))
 }
 
-// verifiedSession admits a session with a credential signed by key with opts,
-// through v as the relay does, and starts its lease.
-func verifiedSession(t *testing.T, v *auth.Verifier, key token.SigningKey, opts ...token.Option) (*fakeLeasedSession, *lease) {
+// verifiedSession admits a session with a credential signed by key, carrying
+// reval when reval is set, through v as the relay does, and starts its lease.
+func verifiedSession(t *testing.T, v *auth.Verifier, key token.SigningKey, reval bool) (*fakeLeasedSession, *lease) {
 	t.Helper()
-	jwt, err := token.Sign(key, token.Grant{Scopes: []token.Scope{{Actions: []token.Action{token.ActionSubscribe, token.ActionFetch}, Broadcast: "acme/app", Prefix: true}}}, credentialTTL, opts...)
+	jwt, err := token.Sign(key, token.Grant{Scopes: []token.Scope{{Actions: []token.Action{token.ActionSubscribe, token.ActionFetch}, Broadcast: "acme/app", Prefix: true}}}, token.Options{TTL: credentialTTL, Reval: reval})
 	require.NoError(t, err)
 	req := auth.Request{ID: "00ff", Event: auth.EventConnect, Path: "/", Query: url.Values{"jwt": {jwt}}.Encode()}
 	g, err := v.Authorize(t.Context(), req)
@@ -53,7 +53,7 @@ func verifiedSession(t *testing.T, v *auth.Verifier, key token.SigningKey, opts 
 func TestLease_VerifiedCredential(t *testing.T) {
 	end := credentialTTL + token.Leeway
 	tests := map[string]struct {
-		opts []token.Option
+		reval bool
 		// withdraw removes the key from the set once the credential has
 		// expired.
 		withdraw     bool
@@ -62,7 +62,7 @@ func TestLease_VerifiedCredential(t *testing.T) {
 	}{
 		"without reval, the session outlives the credential": {},
 		"with reval, the session ends at its expiry": {
-			opts:         []token.Option{token.WithReval(time.Minute)},
+			reval:        true,
 			wantAtExpiry: []sessionClose{{code: moqt.UnauthorizedSessionErrorCode, msg: endExpired}},
 			wantClosed:   []sessionClose{{code: moqt.UnauthorizedSessionErrorCode, msg: endExpired}},
 		},
@@ -86,7 +86,7 @@ func TestLease_VerifiedCredential(t *testing.T) {
 				defer wg.Wait()
 				defer cancel()
 
-				sess, l := verifiedSession(t, v, key, tt.opts...)
+				sess, l := verifiedSession(t, v, key, tt.reval)
 				defer l.stop()
 
 				time.Sleep(end - time.Nanosecond)

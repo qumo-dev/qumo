@@ -13,9 +13,9 @@ import (
 )
 
 // revalidateEvery is how often the relay re-checks a live session against
-// the current key set: how soon a withdrawn key ends its sessions. It is the
-// shortest reval a credential may ask for, so every reval is honored.
-const revalidateEvery = token.MinReval
+// the current key set: how soon a withdrawn key ends its sessions, and how
+// often a credential carrying reval is revalidated.
+const revalidateEvery = 30 * time.Second
 
 // VerifierConfig configures a relay that verifies credentials itself.
 type VerifierConfig struct {
@@ -178,7 +178,7 @@ func (v *Verifier) decide(req Request) (*Grant, usageSession, error) {
 	// Only a credential with reval bounds its session; without it, the
 	// expiry decided the admission alone.
 	var expires time.Time
-	if c.Reval > 0 {
+	if c.Reval {
 		expires = c.ExpiresAt.Add(token.Leeway)
 	}
 	g := &Grant{scopes: c.Scopes, subject: c.Subject, expires: expires, revalidate: revalidateEvery}

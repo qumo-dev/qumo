@@ -54,9 +54,11 @@ func TestRunToken_Reval(t *testing.T) {
 		wantInfo    string
 		wantErrText string
 	}{
-		"unset":           {wantInfo: "outlive the token's expiry"},
-		"a minute":        {args: []string{"-reval", "1m"}, wantExpires: true, wantInfo: "revalidated every 1m0s"},
-		"below the floor": {args: []string{"-reval", "10s"}, wantErrText: "reval"},
+		"unset":       {wantInfo: "outlive the token's expiry"},
+		"set":         {args: []string{"-reval"}, wantExpires: true, wantInfo: "end at the token's expiry"},
+		"set to true": {args: []string{"-reval=true"}, wantExpires: true, wantInfo: "end at the token's expiry"},
+		"off":         {args: []string{"-reval=false"}, wantInfo: "outlive the token's expiry"},
+		"a duration":  {args: []string{"-reval=1m"}, wantErrText: "reval"},
 	}
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {

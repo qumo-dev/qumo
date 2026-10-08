@@ -1,33 +1,12 @@
 package token
 
-import (
-	"fmt"
-	"time"
-)
+import "time"
 
-// MinReval is the shortest reval a token may carry: a relay re-checks its
-// live sessions every 30 s, so it can honor no shorter interval. A token
-// asking for one is refused rather than revalidated less often than it asks.
-const MinReval = 30 * time.Second
-
-// An Option sets an optional claim of a token Sign makes.
-type Option func(*claims) error
-
-// WithReval makes the token one a relay revalidates for as long as the
-// session it admitted lives, at least every interval, in whole seconds,
-// at least MinReval and at most MaxLifetime. The session ends when the token
-// no longer verifies, at the latest at its expiry. Without it, the token's
-// expiry decides only whether a session may start.
-func WithReval(interval time.Duration) Option {
-	return func(c *claims) error {
-		if interval < MinReval || interval > MaxLifetime {
-			return fmt.Errorf("token: reval %s must be at least %s and at most %s", interval, MinReval, MaxLifetime)
-		}
-		secs := float64(interval / time.Second)
-		c.Reval = &secs
-		return nil
-	}
-}
+// revalInterval is how often a qumo relay re-checks a live session, and so the
+// interval Sign writes as reval: the relay revalidates every session at least
+// that often. A reval asking for a shorter interval is one the relay can't
+// honor, and Verify refuses it.
+const revalInterval = 30 * time.Second
 
 // VerifyLive checks token as the credential of a live session it admitted,
 // at now: as Verify does, except that a token without reval is not refused
@@ -38,18 +17,14 @@ func VerifyLive(token string, keys map[string]Key, now time.Time) (Claims, error
 	return verify(token, keys, now, true)
 }
 
-// revalOf returns the reval claim as an interval, zero when the token carries
-// none. A value the verifier can't honor (below MinReval) or that is never
-// due within a token's lifetime (above MaxLifetime) makes the token invalid.
-func (c claims) revalOf() (time.Duration, error) {
-	if c.Reval == nil {
-		return 0, nil
+// checkReval refuses a reval interval shorter than a relay re-checks at, which
+// it could not honor. A longer one is honored by re-checking more often than
+// asked, so there is no upper bound.
+func (c claims) checkReval() error {
+	if c.Reval != nil && *c.Reval < revalInterval.Seconds() {
+		return invalid("reval %v s is shorter than the %v s a relay revalidates at", *c.Reval, revalInterval.Seconds())
 	}
-	secs := *c.Reval
-	if secs < MinReval.Seconds() || secs > MaxLifetime.Seconds() {
-		return 0, invalid("reval %v s must be at least %v s and at most %v s", secs, MinReval.Seconds(), MaxLifetime.Seconds())
-	}
-	return time.Duration(secs * float64(time.Second)), nil
+	return nil
 }
 
 // judgesExpiry reports whether a check of c refuses it once expired: always

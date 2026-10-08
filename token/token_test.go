@@ -246,7 +246,7 @@ func TestSign_RoundTrip(t *testing.T) {
 	require.NoError(t, err)
 	now := time.Unix(1_800_000_000, 0)
 
-	tok, err := signAt(key, Grant{Scopes: []Scope{pubScope("/acme/app/rooms/42/alice/"), subScope("acme/app/rooms/42")}}, 30*time.Minute, now)
+	tok, err := signAt(key, Grant{Scopes: []Scope{pubScope("/acme/app/rooms/42/alice/"), subScope("acme/app/rooms/42")}}, Options{TTL: 30 * time.Minute}, now)
 	require.NoError(t, err)
 	c, err := Verify(tok, map[string]Key{key.ID: key.Public()}, now)
 
@@ -254,31 +254,60 @@ func TestSign_RoundTrip(t *testing.T) {
 	assert.Equal(t, Grant{Scopes: []Scope{pubScope("acme/app/rooms/42/alice"), subScope("acme/app/rooms/42")}}, c.Grant)
 	assert.Equal(t, now.Add(30*time.Minute), c.ExpiresAt)
 	assert.Len(t, c.ID, 26, "a random jti (rand.Text)")
+	assert.False(t, c.Reval, "no reval unless asked for")
+}
+
+func TestSign_TTL(t *testing.T) {
+	now := time.Unix(1_800_000_000, 0)
+	tests := map[string]struct {
+		ttl         time.Duration
+		wantErrText string
+	}{
+		"a second":         {ttl: time.Second},
+		"the lifetime cap": {ttl: MaxLifetime},
+		"zero":             {ttl: 0, wantErrText: "ttl"},
+		"negative":         {ttl: -time.Minute, wantErrText: "ttl"},
+		"over the cap":     {ttl: MaxLifetime + time.Second, wantErrText: "ttl"},
+	}
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			key, err := GenerateKey("acme/app")
+			require.NoError(t, err)
+
+			tok, err := signAt(key, pubGrant("acme/app/a"), Options{TTL: tt.ttl}, now)
+
+			if tt.wantErrText != "" {
+				assert.ErrorContains(t, err, tt.wantErrText)
+				return
+			}
+			require.NoError(t, err)
+			c, err := Verify(tok, map[string]Key{key.ID: key.Public()}, now)
+			require.NoError(t, err)
+			assert.Equal(t, now.Add(tt.ttl), c.ExpiresAt)
+		})
+	}
 }
 
 func TestSign_Refusals(t *testing.T) {
 	tests := map[string]struct {
 		prefix      string
 		grant       Grant
-		ttl         time.Duration
 		wantErrText string
 	}{
-		"zero ttl":        {grant: pubGrant("a"), ttl: 0, wantErrText: "ttl"},
-		"ttl over 1 h":    {grant: pubGrant("a"), ttl: 61 * time.Minute, wantErrText: "ttl"},
-		"grants nothing":  {grant: Grant{}, ttl: time.Minute, wantErrText: "no scope"},
-		"dot-dot path":    {grant: pubGrant("a/../b"), ttl: time.Minute, wantErrText: "segments"},
-		"wildcard path":   {grant: Grant{Scopes: []Scope{subScope("a/*")}}, ttl: time.Minute, wantErrText: "segments"},
-		"path of slashes": {grant: pubGrant("//"), ttl: time.Minute, wantErrText: "segments"},
+		"grants nothing":  {grant: Grant{}, wantErrText: "no scope"},
+		"dot-dot path":    {grant: pubGrant("a/../b"), wantErrText: "segments"},
+		"wildcard path":   {grant: Grant{Scopes: []Scope{subScope("a/*")}}, wantErrText: "segments"},
+		"path of slashes": {grant: pubGrant("//"), wantErrText: "segments"},
 		// A verifier would refuse it, so it is never signed.
-		"publish outside the key's prefix":   {prefix: "acme/app", grant: pubGrant("other/app"), ttl: time.Minute, wantErrText: "outside"},
-		"subscribe outside the key's prefix": {prefix: "acme/app", grant: Grant{Scopes: []Scope{subScope("acme/application")}}, ttl: time.Minute, wantErrText: "outside"},
+		"publish outside the key's prefix":   {prefix: "acme/app", grant: pubGrant("other/app"), wantErrText: "outside"},
+		"subscribe outside the key's prefix": {prefix: "acme/app", grant: Grant{Scopes: []Scope{subScope("acme/application")}}, wantErrText: "outside"},
 	}
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
 			key, err := GenerateKey(tt.prefix)
 			require.NoError(t, err)
 
-			_, err = Sign(key, tt.grant, tt.ttl)
+			_, err = Sign(key, tt.grant, Options{TTL: time.Minute})
 
 			assert.ErrorContains(t, err, tt.wantErrText)
 		})
