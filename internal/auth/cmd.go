@@ -207,13 +207,17 @@ func runToken(args []string, out, info io.Writer) error {
 
 // parseScope reads a -scope value, ACTIONS:BROADCAST[:TRACK]. A broadcast
 // ending in "/**" matches it and every path beneath it; the track is the rest
-// of the value, so it may hold a ":". token.Sign checks the rest.
+// of the value, so it may hold a ":". A ":" names a track, so an empty one is
+// refused rather than read as every track. token.Sign checks the rest.
 func parseScope(v string) (token.Scope, error) {
 	actions, rest, ok := strings.Cut(v, ":")
 	if !ok || actions == "" || rest == "" {
 		return token.Scope{}, fmt.Errorf("scope %q: want ACTIONS:BROADCAST[:TRACK]", v)
 	}
-	broadcast, track, _ := strings.Cut(rest, ":")
+	broadcast, track, hasTrack := strings.Cut(rest, ":")
+	if hasTrack && track == "" {
+		return token.Scope{}, fmt.Errorf("scope %q: an empty track; omit \":TRACK\" for every track", v)
+	}
 	s := token.Scope{Track: track}
 	s.Broadcast, s.Prefix = strings.CutSuffix(broadcast, "/**")
 	for a := range strings.SplitSeq(actions, ",") {

@@ -116,9 +116,10 @@ func TestParseScope(t *testing.T) {
 			value: "fetch:room/1:a:b",
 			want:  token.Scope{Actions: []token.Action{"fetch"}, Broadcast: "room/1", Track: "a:b"},
 		},
-		"no broadcast":  {value: "publish", wantErr: true},
-		"no actions":    {value: ":room/1", wantErr: true},
-		"nothing given": {value: "", wantErr: true},
+		"no broadcast":   {value: "publish", wantErr: true},
+		"no actions":     {value: ":room/1", wantErr: true},
+		"nothing given":  {value: "", wantErr: true},
+		"an empty track": {value: "publish:room/1:", wantErr: true},
 	}
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
