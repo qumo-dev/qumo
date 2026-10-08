@@ -55,12 +55,6 @@ func (s Scope) Allows(action Action, broadcast, track string) bool {
 	if s.Track != "" && s.Track != track {
 		return false
 	}
-	return s.Reaches(action, broadcast)
-}
-
-// Reaches reports whether the scope permits action on some track of the
-// broadcast at broadcast, whatever its Track.
-func (s Scope) Reaches(action Action, broadcast string) bool {
 	if !slices.Contains(s.Actions, action) {
 		return false
 	}

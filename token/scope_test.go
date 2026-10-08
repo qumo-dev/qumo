@@ -321,24 +321,3 @@ func TestScope_Allows(t *testing.T) {
 		})
 	}
 }
-
-func TestScope_Reaches(t *testing.T) {
-	chat := Scope{Actions: []Action{ActionPublish}, Broadcast: "room/123/comments", Track: "chat"}
-	tests := map[string]struct {
-		scope     Scope
-		action    Action
-		broadcast string
-		want      bool
-	}{
-		"a track scope's broadcast":   {scope: chat, action: ActionPublish, broadcast: "/room/123/comments", want: true},
-		"an action not listed":        {scope: chat, action: ActionSubscribe, broadcast: "/room/123/comments"},
-		"another broadcast":           {scope: chat, action: ActionPublish, broadcast: "/room/123"},
-		"another spelling":            {scope: chat, action: ActionPublish, broadcast: "/room/123/comments/"},
-		"an exact scope with no path": {scope: Scope{Actions: []Action{ActionPublish}}, action: ActionPublish, broadcast: "/"},
-	}
-	for name, tt := range tests {
-		t.Run(name, func(t *testing.T) {
-			assert.Equal(t, tt.want, tt.scope.Reaches(tt.action, tt.broadcast))
-		})
-	}
-}

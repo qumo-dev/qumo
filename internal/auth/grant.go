@@ -78,9 +78,11 @@ func (g *Grant) Allows(action token.Action, path moqt.BroadcastPath, track moqt.
 
 // Announces reports whether the session may announce the broadcast at path:
 // whether a scope permits publishing on it, whatever track that scope names.
+// Each scope is asked about its own track, so a scope that names one track
+// still lets its holder announce the broadcast carrying it.
 func (g *Grant) Announces(path moqt.BroadcastPath) bool {
 	for _, s := range g.scopes {
-		if s.Reaches(token.ActionPublish, path.String()) {
+		if s.Allows(token.ActionPublish, path.String(), s.Track) {
 			return true
 		}
 	}
