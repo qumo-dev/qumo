@@ -70,7 +70,7 @@ Whatever no scope grants is denied, and a scope member the verifier doesn't know
  "iat": 1791370000, "nbf": 1791370000, "exp": 1791370600, "jti": "…"}
 ```
 
-The relay admits a session with a `scopes` credential, but does not yet enforce scopes: on the relay such a session may publish and subscribe nothing. Use `path_auth` for relay sessions, and `scopes` for a [funnel](../funnel/#credentials).
+**On the relay**, a session with `scopes` may announce a broadcast an `announce` scope matches; the relay takes a track of it from the publisher only when a `publish` scope matches the broadcast and the track, and answers a subscriber asking for any other track as if it did not exist; and it may subscribe to a track a `subscribe` scope matches. A publisher therefore needs both: `announce` for the broadcast, and `publish` for its tracks. The relay ignores `fetch`, so a credential granting only `fetch` (a funnel reader's) may do nothing there.
 
 ## Signing in your app (Go)
 

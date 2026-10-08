@@ -16,7 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **`qumo funnel`.** With a scoped credential, recording into a track needs a `publish` scope matching its broadcast and name, and records as the credential's `sub` (no sender without one); reading history needs a `fetch` scope matching them. So a sender's credential reaches only the tracks it names, and the sender is not inferred from path depth. `path_auth` credentials work as before.
   - **Key sets.** A key marked `"publish": false` also starts no session whose scopes permit `publish` or `announce`.
   - **`qumo auth token`** signs scoped tokens with `-scope ACTIONS:BROADCAST[:TRACK]` (repeatable; `a/b/**` for a prefix) and `-sub`.
-  - **Not yet on the relay.** The relay admits a session with a scoped credential but enforces only `path_auth`, so such a session may publish and subscribe nothing there.
+  - **The relay** enforces scopes where it checks grants: a session may announce a broadcast an `announce` scope matches; the relay subscribes upstream to, and describes, only the tracks a `publish` scope of the announcing session matches, answering a request for another as not found; and a session may subscribe to a track a `subscribe` scope matches, by broadcast and track name. It ignores `fetch`, so a funnel reader's credential does nothing on the relay. `path_auth` sessions are checked as before.
 
 ## [v0.12.261008] - 2026-10-08
 
