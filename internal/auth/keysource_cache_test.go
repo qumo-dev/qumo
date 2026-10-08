@@ -120,6 +120,15 @@ func TestVerifier_PublishLimit(t *testing.T) {
 		"limited key, both":      {key: limited, grant: token.Grant{Publish: "acme/app/live", Subscribe: "acme/app"}, wantConnect: 403, wantRevalidate: 200},
 		"limited key, viewer":    {key: limited, grant: token.Grant{Subscribe: "acme/app"}, wantConnect: 200, wantRevalidate: 200},
 		"another key, publisher": {key: free, grant: token.Grant{Publish: "acme/app/live"}, wantConnect: 200, wantRevalidate: 200},
+		"limited key, publish scope": {
+			key: limited, grant: scoped(token.ActionPublish), wantConnect: 403, wantRevalidate: 200,
+		},
+		"limited key, announce scope": {
+			key: limited, grant: scoped(token.ActionAnnounce), wantConnect: 403, wantRevalidate: 200,
+		},
+		"limited key, subscribe and fetch scopes": {
+			key: limited, grant: scoped(token.ActionSubscribe, token.ActionFetch), wantConnect: 200, wantRevalidate: 200,
+		},
 	}
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
@@ -130,6 +139,11 @@ func TestVerifier_PublishLimit(t *testing.T) {
 			assert.Equal(t, tt.wantRevalidate, statusOf(err), "a live session continues: %v", err)
 		})
 	}
+}
+
+// scoped is a grant of actions on every track beneath acme/app/live.
+func scoped(actions ...token.Action) token.Grant {
+	return token.Grant{Scopes: []token.Scope{{Actions: actions, Broadcast: "acme/app/live", Prefix: true}}}
 }
 
 // keyEntry is k's public JWK with the given members added.

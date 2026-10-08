@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"cmp"
 	"errors"
 	"flag"
 	"fmt"
@@ -151,6 +152,20 @@ func runToken(args []string, out, info io.Writer) error {
 	keyPath := fs.String("key", "signing-key.jwk", "the private signing key (qumo auth keygen)")
 	publish := fs.String("publish", "", "the path the bearer may publish at or beneath")
 	subscribe := fs.String("subscribe", "", "the path the bearer may subscribe at or beneath")
+	var scopes []token.Scope
+	fs.Func("scope", "a scope, `ACTIONS:BROADCAST[:TRACK]`, instead of -publish and -subscribe (repeatable):\n"+
+		"ACTIONS is a comma-separated list of publish, subscribe, fetch and announce;\n"+
+		"BROADCAST is a path, or a/b/** for it and every path beneath it;\n"+
+		"TRACK is one track name, or omitted for every track",
+		func(v string) error {
+			s, err := parseScope(v)
+			if err != nil {
+				return err
+			}
+			scopes = append(scopes, s)
+			return nil
+		})
+	subject := fs.String("sub", "", "who the bearer is (the sub claim), with -scope")
 	ttl := fs.Duration("ttl", time.Hour, "how long the token is valid (at most 1h)")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -159,7 +174,8 @@ func runToken(args []string, out, info io.Writer) error {
 	if err != nil {
 		return err
 	}
-	tok, err := token.Sign(key, token.Grant{Publish: *publish, Subscribe: *subscribe}, *ttl)
+	grant := token.Grant{Publish: *publish, Subscribe: *subscribe, Scopes: scopes, Subject: *subject}
+	tok, err := token.Sign(key, grant, *ttl)
 	if err != nil {
 		return err
 	}
@@ -172,13 +188,51 @@ func runToken(args []string, out, info io.Writer) error {
 		return fmt.Errorf("verify the signed token: %w", err)
 	}
 	var b strings.Builder
-	fmt.Fprintf(&b, "\n  %-11s %s\n", "Publish:", grantLabel(c.Publish))
-	fmt.Fprintf(&b, "  %-11s %s\n", "Subscribe:", grantLabel(c.Subscribe))
+	b.WriteString("\n")
+	if c.Scoped() {
+		for _, s := range c.Scopes {
+			fmt.Fprintf(&b, "  %-11s %s\n", "Scope:", scopeLabel(s))
+		}
+		fmt.Fprintf(&b, "  %-11s %s\n", "Subject:", cmp.Or(c.Subject, "-"))
+	} else {
+		fmt.Fprintf(&b, "  %-11s %s\n", "Publish:", grantLabel(c.Publish))
+		fmt.Fprintf(&b, "  %-11s %s\n", "Subscribe:", grantLabel(c.Subscribe))
+	}
 	fmt.Fprintf(&b, "  %-11s %s (in %s)\n", "Expires:", c.ExpiresAt.Format(time.DateTime), time.Until(c.ExpiresAt).Round(time.Second))
 	fmt.Fprintf(&b, "  %-11s %s\n", "Key:", key.ID)
 	fmt.Fprintf(&b, "  %-11s https://<relay>/?jwt=<token>\n", "Connect:")
 	_, err = io.WriteString(info, b.String())
 	return err
+}
+
+// parseScope reads a -scope value, ACTIONS:BROADCAST[:TRACK]. A broadcast
+// ending in "/**" matches it and every path beneath it; the track is the rest
+// of the value, so it may hold a ":". token.Sign checks the rest.
+func parseScope(v string) (token.Scope, error) {
+	actions, rest, ok := strings.Cut(v, ":")
+	if !ok || actions == "" || rest == "" {
+		return token.Scope{}, fmt.Errorf("scope %q: want ACTIONS:BROADCAST[:TRACK]", v)
+	}
+	broadcast, track, _ := strings.Cut(rest, ":")
+	s := token.Scope{Track: track}
+	s.Broadcast, s.Prefix = strings.CutSuffix(broadcast, "/**")
+	for a := range strings.SplitSeq(actions, ",") {
+		s.Actions = append(s.Actions, token.Action(a))
+	}
+	return s, nil
+}
+
+// scopeLabel describes a scope for the terminal, as -scope spells it.
+func scopeLabel(s token.Scope) string {
+	actions := make([]string, len(s.Actions))
+	for i, a := range s.Actions {
+		actions[i] = string(a)
+	}
+	broadcast := s.Broadcast
+	if s.Prefix {
+		broadcast += "/**"
+	}
+	return strings.Join(actions, ",") + " " + broadcast + " track " + cmp.Or(s.Track, "*")
 }
 
 // grantLabel describes one role of a grant for the terminal.

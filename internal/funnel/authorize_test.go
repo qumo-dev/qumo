@@ -93,6 +93,110 @@ func TestAuthorizer(t *testing.T) {
 	}
 }
 
+func TestAuthorizer_Scopes(t *testing.T) {
+	v, key := newVerifier(t)
+	chat := ingest.Track{BroadcastPath: "/room/123/comments", TrackName: "chat"}
+	scope := func(broadcast string, prefix bool, track string, actions ...token.Action) token.Scope {
+		return token.Scope{Actions: actions, Broadcast: broadcast, Prefix: prefix, Track: track}
+	}
+	bearerOf := func(subject string, scopes ...token.Scope) string {
+		return "Bearer " + sign(t, key, token.Grant{Subject: subject, Scopes: scopes})
+	}
+
+	tests := map[string]struct {
+		header     string
+		access     ingest.Access
+		wantSender string
+		wantErr    bool
+	}{
+		"publishing the exact track as a subject": {
+			header:     bearerOf("42", scope("room/123/comments", false, "chat", token.ActionPublish)),
+			wantSender: "42",
+		},
+		"publishing with no subject": {
+			header: bearerOf("", scope("room/123/comments", false, "chat", token.ActionPublish)),
+		},
+		"publishing any track of the broadcast": {
+			header:     bearerOf("42", scope("room/123/comments", false, "", token.ActionPublish)),
+			wantSender: "42",
+		},
+		"publishing under a prefix": {
+			header:     bearerOf("42", scope("room/123", true, "chat", token.ActionPublish)),
+			wantSender: "42",
+		},
+		"publishing another track": {
+			header:  bearerOf("42", scope("room/123/comments", false, "other", token.ActionPublish)),
+			wantErr: true,
+		},
+		"publishing beneath the broadcast": {
+			header:  bearerOf("42", scope("room/123/comments/user-42", false, "chat", token.ActionPublish)),
+			wantErr: true,
+		},
+		"publishing under a sibling prefix": {
+			header:  bearerOf("42", scope("room/12", true, "chat", token.ActionPublish)),
+			wantErr: true,
+		},
+		"publishing with fetch only": {
+			header:  bearerOf("42", scope("room/123/comments", false, "chat", token.ActionFetch)),
+			wantErr: true,
+		},
+		"publishing with announce only": {
+			header:  bearerOf("42", scope("room/123/comments", false, "", token.ActionAnnounce)),
+			wantErr: true,
+		},
+		"publishing with subscribe only": {
+			header:  bearerOf("42", scope("room/123/comments", false, "chat", token.ActionSubscribe)),
+			wantErr: true,
+		},
+		"reading with fetch": {
+			header: bearerOf("42", scope("room/123/comments", false, "chat", token.ActionFetch)),
+			access: ingest.Read,
+		},
+		"reading under a fetch prefix": {
+			header: bearerOf("", scope("room", true, "", token.ActionFetch)),
+			access: ingest.Read,
+		},
+		"reading with subscribe only": {
+			header:  bearerOf("42", scope("room/123/comments", false, "chat", token.ActionSubscribe)),
+			access:  ingest.Read,
+			wantErr: true,
+		},
+		"reading with publish only": {
+			header:  bearerOf("42", scope("room/123/comments", false, "chat", token.ActionPublish)),
+			access:  ingest.Read,
+			wantErr: true,
+		},
+		"reading another track": {
+			header:  bearerOf("42", scope("room/123/comments", false, "other", token.ActionFetch)),
+			access:  ingest.Read,
+			wantErr: true,
+		},
+		"the second of two scopes": {
+			header: bearerOf("42",
+				scope("room/9", true, "", token.ActionPublish),
+				scope("room/123/comments", false, "chat", token.ActionPublish)),
+			wantSender: "42",
+		},
+	}
+	authorize := authorizer(v)
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			r := httptest.NewRequest(http.MethodPost, "/tracks/room/123/comments/chat", nil)
+			r.Header.Set("Authorization", tt.header)
+
+			sender, err := authorize(r, chat, tt.access)
+
+			if tt.wantErr {
+				require.Error(t, err)
+				assert.False(t, errors.Is(err, ingest.ErrUnauthenticated), "a valid credential that doesn't reach the track is forbidden")
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.wantSender, sender)
+		})
+	}
+}
+
 func TestSenderOf(t *testing.T) {
 	tests := map[string]struct {
 		bases      []string

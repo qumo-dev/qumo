@@ -1,6 +1,13 @@
 // Package token signs and verifies qumo capability tokens: EdDSA JWTs an app
-// signs with its own Ed25519 key to say what a client may publish and
-// subscribe to on a qumo relay.
+// signs with its own Ed25519 key to say what a client may do on a qumo relay
+// or funnel.
+//
+// A token grants in one of two forms. path_auth is the coarse one: a path the
+// bearer may publish at or beneath, and one it may subscribe at or beneath.
+// scopes is the fine one, after CAT-4-MOQT's moqt claim: each scope permits
+// actions (publish, subscribe, fetch, announce) on an exact broadcast path or
+// a prefix of them, and on one track or every track. A token carries one
+// form, never both. A token with scopes may name its bearer in sub.
 //
 // An app's backend signs one per client with Sign and hands it to the client,
 // which connects with it in the relay URL (?jwt=…). The relay checks it
@@ -43,14 +50,32 @@ var (
 // allowedClaims is the whole claim set. Any other claim refuses the token: an
 // unknown claim might be meant to narrow the grant, and a misspelled
 // path_auth member must not widen it.
-var allowedClaims = map[string]bool{"path_auth": true, "iat": true, "nbf": true, "exp": true, "jti": true}
+var allowedClaims = map[string]bool{
+	"path_auth": true, "scopes": true, "sub": true,
+	"iat": true, "nbf": true, "exp": true, "jti": true,
+}
 
-// Grant is what a token allows its bearer: the path it may publish at or
-// beneath, and the path it may subscribe at or beneath. An empty one grants
-// nothing for that role. A token must grant at least one.
+// Grant is what a token allows its bearer, in one of two forms.
+//
+// The path_auth form is Publish, the path the bearer may publish at or
+// beneath, and Subscribe, the path it may subscribe at or beneath. An empty
+// one grants nothing for that role.
+//
+// The scopes form is Scopes, each permitting actions on the broadcasts and
+// tracks it matches, and Subject, the bearer (the sub claim), which may be
+// empty.
+//
+// A grant uses one form, not both, and must grant something.
 type Grant struct {
 	Publish   string
 	Subscribe string
+	Scopes    []Scope
+	Subject   string
+}
+
+// Scoped reports whether g is in the scopes form.
+func (g Grant) Scoped() bool {
+	return len(g.Scopes) > 0
 }
 
 // Claims are a verified token's: its grant, normalized and confined to its
@@ -71,18 +96,21 @@ type pathAuth struct {
 }
 
 // claims is a token's claim set as encoded. Numeric dates are float64 on
-// decode because JSON numbers may carry a fraction.
+// decode because JSON numbers may carry a fraction. Scopes is kept as JSON
+// text and decoded by scopesOf, which refuses members it doesn't know.
 type claims struct {
-	PathAuth  *pathAuth `json:"path_auth"`
-	IssuedAt  *float64  `json:"iat"`
-	NotBefore *float64  `json:"nbf"`
-	ExpiresAt *float64  `json:"exp"`
-	ID        string    `json:"jti,omitempty"`
+	PathAuth  *pathAuth      `json:"path_auth,omitzero"`
+	Scopes    jsontext.Value `json:"scopes,omitzero"`
+	Subject   string         `json:"sub,omitzero"`
+	IssuedAt  *float64       `json:"iat"`
+	NotBefore *float64       `json:"nbf"`
+	ExpiresAt *float64       `json:"exp"`
+	ID        string         `json:"jti,omitempty"`
 }
 
 // Sign returns a token signed by key that grants g for ttl from now, at most
-// MaxLifetime. It carries a random jti. A grant outside key's prefix is
-// refused here, since a verifier would refuse the token.
+// MaxLifetime. It carries a random jti. A grant outside key's prefix, or one
+// using both forms, is refused here, since a verifier would refuse the token.
 func Sign(key SigningKey, g Grant, ttl time.Duration) (string, error) {
 	return signAt(key, g, ttl, time.Now())
 }
@@ -91,29 +119,30 @@ func signAt(key SigningKey, g Grant, ttl time.Duration, now time.Time) (string, 
 	if ttl <= 0 || ttl > MaxLifetime {
 		return "", fmt.Errorf("token: ttl %s must be positive and at most %s", ttl, MaxLifetime)
 	}
-	if g.Publish == "" && g.Subscribe == "" {
-		return "", errors.New("token: the grant names neither a publish nor a subscribe path")
-	}
-	pa := &pathAuth{}
-	for _, role := range []struct {
-		path string
-		into **string
-	}{{g.Publish, &pa.Pub}, {g.Subscribe, &pa.Sub}} {
-		if role.path == "" {
-			continue
+	c := claims{ID: rand.Text()}
+	switch paths := g.Publish != "" || g.Subscribe != ""; {
+	case paths && g.Scoped():
+		return "", errors.New("token: the grant names both paths and scopes; a token carries one form")
+	case g.Scoped():
+		raw, err := encodeScopes(g.Scopes, key.Prefix)
+		if err != nil {
+			return "", err
 		}
-		norm, err := normalizePath(role.path)
-		if err != nil || norm == "" {
-			return "", fmt.Errorf("token: grant path %q: want a path with no \".\", \"..\" or \"*\" segments", role.path)
+		c.Scopes, c.Subject = raw, g.Subject
+	case !paths:
+		return "", errors.New("token: the grant names neither a path nor a scope")
+	case g.Subject != "":
+		return "", errors.New("token: a subject goes with scopes, not with publish and subscribe paths")
+	default:
+		pa, err := pathAuthOf(g, key.Prefix)
+		if err != nil {
+			return "", err
 		}
-		if !within(norm, key.Prefix) {
-			return "", fmt.Errorf("token: grant path %q lies outside the signing key's prefix %q", norm, key.Prefix)
-		}
-		*role.into = &norm
+		c.PathAuth = pa
 	}
 	iat := float64(now.Unix())
 	exp := float64(now.Add(ttl).Unix())
-	c := claims{PathAuth: pa, IssuedAt: &iat, NotBefore: &iat, ExpiresAt: &exp, ID: rand.Text()}
+	c.IssuedAt, c.NotBefore, c.ExpiresAt = &iat, &iat, &exp
 
 	header, err := json.Marshal(map[string]string{"alg": "EdDSA", "kid": key.ID, "typ": "JWT"})
 	if err != nil {
@@ -127,13 +156,37 @@ func signAt(key SigningKey, g Grant, ttl time.Duration, now time.Time) (string, 
 	return input + "." + base64.RawURLEncoding.EncodeToString(ed25519.Sign(key.Private, []byte(input))), nil
 }
 
+// pathAuthOf encodes g's paths as path_auth, each normalized and within
+// prefix.
+func pathAuthOf(g Grant, prefix string) (*pathAuth, error) {
+	pa := &pathAuth{}
+	for _, role := range []struct {
+		path string
+		into **string
+	}{{g.Publish, &pa.Pub}, {g.Subscribe, &pa.Sub}} {
+		if role.path == "" {
+			continue
+		}
+		norm, err := normalizePath(role.path)
+		if err != nil || norm == "" {
+			return nil, fmt.Errorf("token: grant path %q: want a path with no \".\", \"..\" or \"*\" segments", role.path)
+		}
+		if !within(norm, prefix) {
+			return nil, fmt.Errorf("token: grant path %q lies outside the signing key's prefix %q", norm, prefix)
+		}
+		*role.into = &norm
+	}
+	return pa, nil
+}
+
 // Verify checks token against the trusted keys at now, in order: the header
 // carries no crit, the alg is EdDSA and the kid is trusted; the signature
 // verifies; the claims are
-// exactly the allowed set (path_auth, iat, nbf, exp, and an optional jti)
-// with no duplicate members; exp, nbf and iat hold within Leeway and the
-// lifetime is at most MaxLifetime; and every path the token grants lies
-// within its key's prefix. An error wraps ErrInvalid or ErrForbidden.
+// within the allowed set (one of path_auth and scopes, iat, nbf, exp, an
+// optional jti, and an optional sub with scopes) with no duplicate members;
+// exp, nbf and iat hold within Leeway and the lifetime is at most
+// MaxLifetime; and every path the token grants lies within its key's prefix.
+// An error wraps ErrInvalid or ErrForbidden.
 func Verify(token string, keys map[string]Key, now time.Time) (Claims, error) {
 	parts := strings.Split(token, ".")
 	if len(parts) != 3 {
@@ -182,12 +235,28 @@ func Verify(token string, keys map[string]Key, now time.Time) (Claims, error) {
 	if err != nil {
 		return Claims{}, err
 	}
-	if c.PathAuth == nil {
-		return Claims{}, invalid("path_auth is required")
-	}
-	g, err := grantOf(*c.PathAuth, key.Prefix)
-	if err != nil {
-		return Claims{}, err
+	_, hasPathAuth := members["path_auth"]
+	_, hasScopes := members["scopes"]
+	_, hasSubject := members["sub"]
+	var g Grant
+	switch {
+	case hasPathAuth && hasScopes:
+		return Claims{}, invalid("a token carries path_auth or scopes, not both")
+	case hasScopes:
+		scopes, err := scopesOf(c.Scopes, key.Prefix)
+		if err != nil {
+			return Claims{}, err
+		}
+		g = Grant{Scopes: scopes, Subject: c.Subject}
+	case c.PathAuth == nil:
+		return Claims{}, invalid("path_auth or scopes is required")
+	case hasSubject:
+		return Claims{}, invalid("sub goes with scopes, not with path_auth")
+	default:
+		g, err = grantOf(*c.PathAuth, key.Prefix)
+		if err != nil {
+			return Claims{}, err
+		}
 	}
 	return Claims{Grant: g, ExpiresAt: exp, ID: c.ID, Key: key}, nil
 }

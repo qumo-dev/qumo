@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Credentials can grant actions on exact tracks, and name their bearer (`token`, `internal/auth`, `internal/funnel`).**
+  - **`scopes`.** A token may carry a `scopes` claim in place of `path_auth`, the JSON counterpart of CAT-4-MOQT's `moqt` claim: each scope lists `actions` (`publish`, `subscribe`, `fetch`, `announce`), a `broadcast` match (`{"exact": "room/123"}`, or `{"prefix": "room/123"}` for it and every path beneath it on `/` boundaries, within the key's prefix) and an optional `track` match (`{"exact": "chat"}`; omitted, every track). Whatever no scope grants is denied. An unknown action or scope member, an empty scope list, or a token carrying both `path_auth` and `scopes` is refused.
+  - **`sub`.** A token with `scopes` may name its bearer in `sub`; with `path_auth` it is still refused.
+  - **Go.** `token.Grant` gains `Scopes` and `Subject`, which `Sign` and `Verify` carry; `token.Scope.Allows` and `auth.Grant.Allows` answer whether an action reaches a broadcast and track, and `auth.Grant.Subject` returns the bearer.
+  - **`qumo funnel`.** With a scoped credential, recording into a track needs a `publish` scope matching its broadcast and name, and records as the credential's `sub` (no sender without one); reading history needs a `fetch` scope matching them. So a sender's credential reaches only the tracks it names, and the sender is not inferred from path depth. `path_auth` credentials work as before.
+  - **Key sets.** A key marked `"publish": false` also starts no session whose scopes permit `publish` or `announce`.
+  - **`qumo auth token`** signs scoped tokens with `-scope ACTIONS:BROADCAST[:TRACK]` (repeatable; `a/b/**` for a prefix) and `-sub`.
+  - **Not yet on the relay.** The relay admits a session with a scoped credential but enforces only `path_auth`, so such a session may publish and subscribe nothing there.
+
 ## [v0.12.261008] - 2026-10-08
 
 > **Breaking for operators.** Relay peers authenticate with mutual TLS under a relay CA: a relay no longer presents `CERT_FILE` to the relays it dials, and `PEERS` needs `PEER_CERT_FILE`, `PEER_KEY_FILE` and `CA_FILE`. To move over, issue a peer certificate per relay from your CA and set the two new variables. See **Changed** below.

@@ -6,14 +6,24 @@ import (
 	"time"
 
 	"github.com/qumo-dev/gomoqt/moqt"
+
+	"github.com/qumo-dev/qumo/token"
 )
 
-// Grant is what a session may do.
+// Grant is what a session may do: where it may publish and subscribe, from
+// a path_auth credential or an Authorize of its own, or the actions its
+// scopes permit, from a scoped credential, with the subject that names it.
 type Grant struct {
 	// Publish is where the session may announce broadcasts.
 	Publish Patterns
 	// Subscribe is where the session may subscribe.
 	Subscribe Patterns
+	// scopes are a scoped credential's; such a grant has no Publish or
+	// Subscribe patterns.
+	scopes []token.Scope
+	// subject is a scoped credential's sub: who the bearer is. Empty names
+	// no one.
+	subject string
 	// expires is when the session must end; zero means never.
 	expires time.Time
 	// revalidate is how often to check again; zero means never.
@@ -40,6 +50,32 @@ func NewGrant(publish, subscribe []string, expires time.Time, revalidate time.Du
 // zero Time means the grant does not expire.
 func (g *Grant) Expires() time.Time {
 	return g.expires
+}
+
+// Subject returns who the credential says the bearer is (its sub), or ""
+// when it names no one.
+func (g *Grant) Subject() string {
+	return g.subject
+}
+
+// Allows reports whether the grant permits action on the track named track
+// of the broadcast at path. An empty track is an action on the broadcast as
+// a whole. A scoped grant answers by its scopes. Otherwise publishing and
+// announcing need Publish to contain path, and subscribing and fetching need
+// Subscribe to.
+func (g *Grant) Allows(action token.Action, path moqt.BroadcastPath, track moqt.TrackName) bool {
+	for _, s := range g.scopes {
+		if s.Allows(action, path.String(), string(track)) {
+			return true
+		}
+	}
+	switch action {
+	case token.ActionPublish, token.ActionAnnounce:
+		return g.Publish.Contains(path)
+	case token.ActionSubscribe, token.ActionFetch:
+		return g.Subscribe.Contains(path)
+	}
+	return false
 }
 
 // Revalidate returns how often the relay checks a live session again. Zero

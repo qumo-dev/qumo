@@ -11,16 +11,27 @@ import (
 	"github.com/qumo-dev/gomoqt/moqt"
 
 	"github.com/qumo-dev/qumo/internal/auth"
+	"github.com/qumo-dev/qumo/token"
 )
 
 // authorizer returns the check a request passes: the bearer credential must be
-// one the relay would admit. A read needs it to grant subscribing at the
-// track's broadcast path. A write needs it to grant publishing either at the
-// broadcast path, which records with no sender, or at one segment beneath it,
-// which names the sender: a credential for /room/123/comments/user-42 records
-// into the broadcast /room/123/comments as "user-42". The credential is checked
-// on every request, so one that expires or whose key leaves the set is refused
-// at once. A nil verifier checks nothing and names no sender.
+// one the relay would admit.
+//
+// A credential with scopes names the exact tracks it reaches. A write needs a
+// publish scope matching the track's broadcast and name, and records as the
+// credential's subject (its sub), or with no sender when it names none. A
+// read needs a fetch scope matching them.
+//
+// A credential with path_auth grants paths. A read needs it to grant
+// subscribing at the track's broadcast path. A write needs it to grant
+// publishing either at the broadcast path, which records with no sender, or
+// at one segment beneath it, which names the sender: a credential for
+// /room/123/comments/user-42 records into the broadcast /room/123/comments as
+// "user-42".
+//
+// The credential is checked on every request, so one that expires or whose
+// key leaves the set is refused at once. A nil verifier checks nothing and
+// names no sender.
 func authorizer(v *auth.Verifier) func(*http.Request, ingest.Track, ingest.Access) (string, error) {
 	if v == nil {
 		return nil
@@ -42,20 +53,22 @@ func authorizer(v *auth.Verifier) func(*http.Request, ingest.Track, ingest.Acces
 			}
 			return "", fmt.Errorf("funnel: %w", err)
 		}
-		broadcast := moqt.BroadcastPath(t.BroadcastPath)
+		broadcast, name := moqt.BroadcastPath(t.BroadcastPath), moqt.TrackName(t.TrackName)
 		if access == ingest.Read {
-			if !grant.Subscribe.Contains(broadcast) {
-				return "", fmt.Errorf("funnel: the credential may not subscribe at %s", broadcast)
+			if !grant.Allows(token.ActionFetch, broadcast, name) {
+				return "", fmt.Errorf("funnel: the credential may not read %s track %q", broadcast, name)
 			}
 			return "", nil
 		}
-		if grant.Publish.Contains(broadcast) {
-			return "", nil
+		if grant.Allows(token.ActionPublish, broadcast, name) {
+			return grant.Subject(), nil
 		}
+		// A scoped grant has no publish paths, so a sender is never inferred
+		// from one.
 		if sender, ok := senderOf(grant.Publish.Bases(), t.BroadcastPath); ok {
 			return sender, nil
 		}
-		return "", fmt.Errorf("funnel: the credential may not publish at %s", broadcast)
+		return "", fmt.Errorf("funnel: the credential may not record into %s track %q", broadcast, name)
 	}
 }
 

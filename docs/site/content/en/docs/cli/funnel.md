@@ -84,7 +84,29 @@ sender and per track; past either, a record is answered `429` with a
 
 With a key set (`QUMO_AUTH_KEYS`), every request carries a qumo credential as
 `Authorization: Bearer`, the same kind the relay admits sessions with and
-verified against the same key set:
+verified against the same key set. What it needs depends on the form the
+credential grants in ([auth](../auth/#what-a-token-grants)).
+
+A credential with **`scopes`** names the exact tracks it reaches:
+
+- **Recording** (`POST`, `PUT`) needs a `publish` scope matching the broadcast
+  path and the track name. The record's sender is the credential's `sub`,
+  whatever the payload claims; a credential without `sub` records with no
+  sender.
+- **Reading** history (`GET`) needs a `fetch` scope matching the broadcast path
+  and the track name.
+
+```json
+{"sub": "alice",
+ "scopes": [{"actions": ["publish"], "broadcast": {"exact": "room/123"}, "track": {"exact": "chat"}},
+            {"actions": ["fetch"], "broadcast": {"prefix": "room/123"}}],
+ "iat": 1791370000, "nbf": 1791370000, "exp": 1791370600}
+```
+
+records into `chat` of `/room/123` as `alice`, and reads any track of
+`/room/123` and the broadcasts beneath it. It records into no other track.
+
+A credential with **`path_auth`** grants paths:
 
 - **Reading** history needs a grant to subscribe at the broadcast path, as a
   viewer subscribing through the relay has.
@@ -92,11 +114,13 @@ verified against the same key set:
   one segment beneath it, which names the sender. A credential publishing at
   `/room/123/alice` records into `/room/123` as `alice`, whatever the payload
   claims; one publishing at `/room/123`, or `/room`, records with no sender,
-  for a party trusted with the whole broadcast.
+  for a party trusted with the whole broadcast. It may record into any track
+  of the broadcast.
 
 The credential is checked on every request: once it expires or its key leaves
 the key set, it is refused. A missing or invalid credential answers `401` with
-`WWW-Authenticate: Bearer`, and one that does not cover the broadcast `403`.
+`WWW-Authenticate: Bearer`, and one that does not cover the broadcast or the
+track `403`.
 
 ## Publishing through a relay
 

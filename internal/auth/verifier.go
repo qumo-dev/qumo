@@ -41,8 +41,9 @@ type VerifierConfig struct {
 // signed by a key in the set and grant only paths within the key's prefix
 // (token.Verify). A live session is re-checked every 30 s: a key that has left
 // the set ends its sessions. A key marked "publish": false starts no new
-// sessions that may publish. The key set is kept when a refresh fails (fail-static);
-// after 6 h without one, new sessions are refused.
+// sessions that may publish: a credential with a publish path, or a scope
+// permitting publish or announce. The key set is kept when a refresh fails
+// (fail-static); after 6 h without one, new sessions are refused.
 type Verifier struct {
 	source keySource
 	store  keyStore
@@ -156,26 +157,48 @@ func (v *Verifier) decide(req Request) (*Grant, usageSession, error) {
 		}
 		return nil, usageSession{}, refuse(status, "%v", err)
 	}
-	if connect && c.Publish != "" && set.noPublish[c.Key.ID] {
+	publishes, subscribes := rolesOf(c.Grant)
+	if connect && publishes && set.noPublish[c.Key.ID] {
 		return nil, usageSession{}, refuse(http.StatusForbidden,
 			"signing key %s starts no new publishing sessions", c.Key.ID)
 	}
 
 	expires := c.ExpiresAt.Add(token.Leeway)
-	g := &Grant{expires: expires, revalidate: revalidateEvery}
-	s := usageSession{kid: c.Key.ID, expires: expires}
+	g := &Grant{scopes: c.Scopes, subject: c.Subject, expires: expires, revalidate: revalidateEvery}
 	if c.Publish != "" {
 		g.Publish = Patterns{{base: c.Publish}}
-		s.role = rolePublish
 	}
 	if c.Subscribe != "" {
 		g.Subscribe = Patterns{{base: c.Subscribe}}
+	}
+	s := usageSession{kid: c.Key.ID, expires: expires}
+	switch {
+	case publishes && subscribes:
+		s.role = roleBoth
+	case publishes:
+		s.role = rolePublish
+	case subscribes:
 		s.role = roleSubscribe
 	}
-	if c.Publish != "" && c.Subscribe != "" {
-		s.role = roleBoth
-	}
 	return g, s, nil
+}
+
+// rolesOf reports whether g lets its bearer publish (a publish path, or a
+// scope permitting publish or announce) and subscribe (a subscribe path, or
+// a scope permitting subscribe or fetch).
+func rolesOf(g token.Grant) (publishes, subscribes bool) {
+	publishes, subscribes = g.Publish != "", g.Subscribe != ""
+	for _, s := range g.Scopes {
+		for _, a := range s.Actions {
+			switch a {
+			case token.ActionPublish, token.ActionAnnounce:
+				publishes = true
+			case token.ActionSubscribe, token.ActionFetch:
+				subscribes = true
+			}
+		}
+	}
+	return publishes, subscribes
 }
 
 // End reports a session's end with its final byte totals.

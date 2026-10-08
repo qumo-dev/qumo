@@ -552,3 +552,47 @@ func sign(tb testing.TB, key token.SigningKey, g token.Grant) string {
 	require.NoError(tb, err)
 	return tok
 }
+
+func TestVerifier_ScopedGrant(t *testing.T) {
+	k := genKey(t, "acme/app")
+	v := verifierWith(t, keySetJSON(t, []token.SigningKey{k}), time.Now())
+	jwt := sign(t, k, token.Grant{Subject: "42", Scopes: []token.Scope{
+		{Actions: []token.Action{token.ActionPublish}, Broadcast: "acme/app/room/123/comments", Track: "chat"},
+		{Actions: []token.Action{token.ActionFetch}, Broadcast: "acme/app/room/123", Prefix: true},
+	}})
+
+	g, err := v.Authorize(context.Background(), sessionReq(EventConnect, jwt))
+
+	require.NoError(t, err)
+	assert.Equal(t, "42", g.Subject())
+	assert.Empty(t, g.Publish, "a scoped grant has no publish patterns")
+	assert.Empty(t, g.Subscribe, "a scoped grant has no subscribe patterns")
+	assert.True(t, g.Allows(token.ActionPublish, "/acme/app/room/123/comments", "chat"))
+	assert.False(t, g.Allows(token.ActionPublish, "/acme/app/room/123/comments", "other"))
+	assert.True(t, g.Allows(token.ActionFetch, "/acme/app/room/123/comments", "any"))
+	assert.False(t, g.Allows(token.ActionSubscribe, "/acme/app/room/123/comments", "chat"))
+}
+
+func TestVerifier_ScopedUsageRole(t *testing.T) {
+	tests := map[string]struct {
+		grant token.Grant
+		want  string
+	}{
+		"publish":            {grant: scoped(token.ActionPublish), want: rolePublish},
+		"announce":           {grant: scoped(token.ActionAnnounce), want: rolePublish},
+		"subscribe":          {grant: scoped(token.ActionSubscribe), want: roleSubscribe},
+		"fetch":              {grant: scoped(token.ActionFetch), want: roleSubscribe},
+		"publish and fetch":  {grant: scoped(token.ActionPublish, token.ActionFetch), want: roleBoth},
+		"a path_auth viewer": {grant: token.Grant{Subscribe: "acme/app"}, want: roleSubscribe},
+	}
+	k := genKey(t, "acme/app")
+	v := verifierWith(t, keySetJSON(t, []token.SigningKey{k}), time.Now())
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			_, s, err := v.decide(sessionReq(EventConnect, sign(t, k, tt.grant)))
+
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, s.role)
+		})
+	}
+}
