@@ -320,15 +320,16 @@ func (h *relayHandler) RouteStats() RouteStats {
 	return rs
 }
 
-// TrackInfo implements moqt.TrackInfoProvider by querying the upstream session
-// for the track's immutable publisher properties (TRACK_INFO), caching the result
-// and deduplicating concurrent upstream queries with singleflight.
 // publishes reports whether the announcing session may publish the track
 // named name of its broadcast.
 func (h *relayHandler) publishes(name moqt.TrackName) bool {
 	return h.grant == nil || h.grant.Allows(token.ActionPublish, h.announcement.BroadcastPath(), name)
 }
 
+// TrackInfo implements moqt.TrackInfoProvider by querying the upstream session
+// for the track's immutable publisher properties (TRACK_INFO), caching the result
+// and deduplicating concurrent upstream queries with singleflight. A track the
+// publisher's grant doesn't cover is unknown.
 func (h *relayHandler) TrackInfo(name moqt.TrackName) (pubInfo moqt.PublishInfo, ok bool) {
 	if h.announcement == nil || !h.publishes(name) {
 		return moqt.PublishInfo{}, false

@@ -10,6 +10,7 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/qumo-dev/gomoqt/moqt"
+	"github.com/qumo-dev/qumo/internal/auth"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -882,4 +883,41 @@ func BenchmarkEgressHistogramObserve(b *testing.B) {
 			observer.Observe(time.Since(start).Seconds())
 		}
 	})
+}
+
+func TestRelayHandler_Publishes(t *testing.T) {
+	covering, err := auth.NewGrant([]string{"test/**"}, nil, time.Time{}, 0)
+	require.NoError(t, err)
+	elsewhere, err := auth.NewGrant([]string{"other/**"}, nil, time.Time{}, 0)
+	require.NoError(t, err)
+	tests := map[string]struct {
+		grant *auth.Grant
+		want  bool
+	}{
+		"a relay peer, unchecked":    {want: true},
+		"a grant covering the track": {grant: covering, want: true},
+		"a grant covering elsewhere": {grant: elsewhere},
+	}
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			h := newTestRelayHandler(t.Context())
+			h.grant = tt.grant
+
+			assert.Equal(t, tt.want, h.publishes("video"))
+		})
+	}
+}
+
+// A track the publisher may not publish is neither described nor subscribed
+// to upstream.
+func TestRelayHandler_RefusesAnUncoveredTrack(t *testing.T) {
+	elsewhere, err := auth.NewGrant([]string{"other/**"}, nil, time.Time{}, 0)
+	require.NoError(t, err)
+	h := newTestRelayHandler(t.Context())
+	h.grant = elsewhere
+
+	_, ok := h.TrackInfo("video")
+
+	assert.False(t, ok)
+	assert.Nil(t, h.subscribe("video"))
 }
