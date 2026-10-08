@@ -2,6 +2,8 @@ package auth
 
 import (
 	"context"
+	"crypto/ed25519"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -116,12 +118,12 @@ func TestVerifier_Grant(t *testing.T) {
 	k := genKey(t, "acme/app")
 	v := verifierWith(t, keySetJSON(t, []token.SigningKey{k}), time.Now())
 
-	g, err := v.Authorize(context.Background(), sessionReq(EventConnect, sign(t, k, token.Grant{Publish: "acme/app/live", Subscribe: "acme/app"})))
+	g, err := v.Authorize(context.Background(), sessionReq(EventConnect, sign(t, k, pathGrant("acme/app/live", "acme/app"))))
 	require.NoError(t, err)
-	assert.True(t, g.Publish.Contains(moqt.BroadcastPath("/acme/app/live/room1")))
-	assert.False(t, g.Publish.Contains(moqt.BroadcastPath("/acme/app/other")))
-	assert.True(t, g.Subscribe.Contains(moqt.BroadcastPath("/acme/app/other")))
-	assert.False(t, g.Subscribe.Contains(moqt.BroadcastPath("/globex/app")))
+	assert.True(t, g.Allows(token.ActionPublish, moqt.BroadcastPath("/acme/app/live/room1"), "video"))
+	assert.False(t, g.Allows(token.ActionPublish, moqt.BroadcastPath("/acme/app/other"), "video"))
+	assert.True(t, g.Allows(token.ActionSubscribe, moqt.BroadcastPath("/acme/app/other"), "video"))
+	assert.False(t, g.Allows(token.ActionSubscribe, moqt.BroadcastPath("/globex/app"), "video"))
 	assert.Equal(t, revalidateEvery, g.Revalidate())
 	assert.WithinDuration(t, time.Now().Add(10*time.Minute+token.Leeway), g.Expires(), 5*time.Second,
 		"the session ends at the credential's exp plus the leeway")
@@ -138,10 +140,10 @@ func TestVerifier_Decisions(t *testing.T) {
 		wantConnect    int
 		wantRevalidate int
 	}{
-		"active key":              {jwt: sign(t, active, token.Grant{Subscribe: "acme/app"}), wantConnect: 200, wantRevalidate: 200},
-		"key not in the set":      {jwt: sign(t, other, token.Grant{Subscribe: "acme/app"}), wantConnect: 401, wantRevalidate: 401},
-		"path outside the prefix": {jwt: sign(t, unconfined, token.Grant{Publish: "globex/app"}), wantConnect: 403, wantRevalidate: 403},
-		"prefix's sibling":        {jwt: sign(t, unconfined, token.Grant{Publish: "acme/application"}), wantConnect: 403, wantRevalidate: 403},
+		"active key":              {jwt: sign(t, active, pathGrant("", "acme/app")), wantConnect: 200, wantRevalidate: 200},
+		"key not in the set":      {jwt: sign(t, other, pathGrant("", "acme/app")), wantConnect: 401, wantRevalidate: 401},
+		"path outside the prefix": {jwt: sign(t, unconfined, pathGrant("globex/app", "")), wantConnect: 403, wantRevalidate: 403},
+		"prefix's sibling":        {jwt: sign(t, unconfined, pathGrant("acme/application", "")), wantConnect: 403, wantRevalidate: 403},
 		"no credential":           {jwt: "", wantConnect: 401, wantRevalidate: 401},
 		"not a credential":        {jwt: "not.a.jwt", wantConnect: 401, wantRevalidate: 401},
 	}
@@ -157,7 +159,7 @@ func TestVerifier_Decisions(t *testing.T) {
 
 func TestVerifier_FailStatic(t *testing.T) {
 	k := genKey(t, "acme/app")
-	jwt := sign(t, k, token.Grant{Subscribe: "acme/app"})
+	jwt := sign(t, k, pathGrant("", "acme/app"))
 
 	empty := &Verifier{now: time.Now}
 	_, err := empty.Authorize(context.Background(), sessionReq(EventConnect, jwt))
@@ -175,7 +177,7 @@ func TestVerifier_FailStatic(t *testing.T) {
 
 func TestVerifier_WithdrawnKeyEndsSessions(t *testing.T) {
 	k := genKey(t, "acme/app")
-	jwt := sign(t, k, token.Grant{Subscribe: "acme/app"})
+	jwt := sign(t, k, pathGrant("", "acme/app"))
 	v := verifierWith(t, keySetJSON(t, []token.SigningKey{k}), time.Now())
 	_, err := v.Authorize(context.Background(), sessionReq(EventConnect, jwt))
 	require.NoError(t, err)
@@ -303,7 +305,7 @@ func TestVerifier_ReportsUsage(t *testing.T) {
 	defer srv.Close()
 	v, err := NewVerifier(VerifierConfig{Keys: writeKeySet(t, k), UsageURL: srv.URL, Token: "t"})
 	require.NoError(t, err)
-	jwt := sign(t, k, token.Grant{Publish: "acme/app/live", Subscribe: "acme/app"})
+	jwt := sign(t, k, pathGrant("acme/app/live", "acme/app"))
 
 	_, err = v.Authorize(context.Background(), sessionReq(EventConnect, jwt))
 	require.NoError(t, err)
@@ -516,7 +518,7 @@ func TestVerifier_RevalidateAfterEnd(t *testing.T) {
 	defer srv.Close()
 	v, err := NewVerifier(VerifierConfig{Keys: writeKeySet(t, k), UsageURL: srv.URL})
 	require.NoError(t, err)
-	jwt := sign(t, k, token.Grant{Publish: "acme/app/live"})
+	jwt := sign(t, k, pathGrant("acme/app/live", ""))
 
 	_, err = v.Authorize(context.Background(), sessionReq(EventConnect, jwt))
 	require.NoError(t, err)
@@ -545,12 +547,66 @@ func writeKeySet(t *testing.T, keys ...token.SigningKey) string {
 	return path
 }
 
+// pathGrant grants what a path_auth credential of pub and sub would: each
+// non-empty path as a prefix scope, publish for pub, and subscribe and fetch
+// for sub.
+func pathGrant(pub, sub string) token.Grant {
+	var g token.Grant
+	if pub != "" {
+		g.Scopes = append(g.Scopes, token.Scope{Actions: []token.Action{token.ActionPublish}, Broadcast: pub, Prefix: true})
+	}
+	if sub != "" {
+		g.Scopes = append(g.Scopes, token.Scope{Actions: []token.Action{token.ActionSubscribe, token.ActionFetch}, Broadcast: sub, Prefix: true})
+	}
+	return g
+}
+
+// signPathAuth mints a 10-minute token with a path_auth claim of pub and sub
+// (each left out when empty), as other MoQ implementations sign one.
+func signPathAuth(tb testing.TB, key token.SigningKey, pub, sub string) string {
+	tb.Helper()
+	pathAuth := map[string]string{"root": ""}
+	if pub != "" {
+		pathAuth["pub"] = pub
+	}
+	if sub != "" {
+		pathAuth["sub"] = sub
+	}
+	now := time.Now().Unix()
+	header, err := json.Marshal(map[string]string{"alg": "EdDSA", "kid": key.ID, "typ": "JWT"})
+	require.NoError(tb, err)
+	claims, err := json.Marshal(map[string]any{"path_auth": pathAuth, "iat": now, "nbf": now, "exp": now + 600})
+	require.NoError(tb, err)
+	input := base64.RawURLEncoding.EncodeToString(header) + "." + base64.RawURLEncoding.EncodeToString(claims)
+	return input + "." + base64.RawURLEncoding.EncodeToString(ed25519.Sign(key.Private, []byte(input)))
+}
+
 // sign mints a 10-minute token granting g.
 func sign(tb testing.TB, key token.SigningKey, g token.Grant) string {
 	tb.Helper()
 	tok, err := token.Sign(key, g, 10*time.Minute)
 	require.NoError(tb, err)
 	return tok
+}
+
+// A path_auth credential, as other MoQ implementations sign it, is admitted
+// with the scopes it amounts to: pub publishes, and sub subscribes and
+// fetches, on every track at or beneath each path. It names no subject.
+func TestVerifier_PathAuthGrant(t *testing.T) {
+	k := genKey(t, "acme/app")
+	v := verifierWith(t, keySetJSON(t, []token.SigningKey{k}), time.Now())
+
+	g, err := v.Authorize(context.Background(), sessionReq(EventConnect, signPathAuth(t, k, "acme/app/live", "acme/app/room")))
+
+	require.NoError(t, err)
+	assert.Empty(t, g.Subject())
+	assert.True(t, g.Announces("/acme/app/live/cam"))
+	assert.True(t, g.Allows(token.ActionPublish, "/acme/app/live/cam", "video"))
+	assert.False(t, g.Allows(token.ActionPublish, "/acme/app/room", "video"))
+	assert.True(t, g.Allows(token.ActionSubscribe, "/acme/app/room/1", "video"))
+	assert.True(t, g.Allows(token.ActionFetch, "/acme/app/room/1", "chat"))
+	assert.False(t, g.Allows(token.ActionSubscribe, "/acme/app/live", "video"))
+	assert.False(t, g.Announces("/acme/app/room"))
 }
 
 func TestVerifier_ScopedGrant(t *testing.T) {
@@ -565,31 +621,30 @@ func TestVerifier_ScopedGrant(t *testing.T) {
 
 	require.NoError(t, err)
 	assert.Equal(t, "42", g.Subject())
-	assert.Empty(t, g.Publish, "a scoped grant has no publish patterns")
-	assert.Empty(t, g.Subscribe, "a scoped grant has no subscribe patterns")
 	assert.True(t, g.Allows(token.ActionPublish, "/acme/app/room/123/comments", "chat"))
 	assert.False(t, g.Allows(token.ActionPublish, "/acme/app/room/123/comments", "other"))
 	assert.True(t, g.Allows(token.ActionFetch, "/acme/app/room/123/comments", "any"))
 	assert.False(t, g.Allows(token.ActionSubscribe, "/acme/app/room/123/comments", "chat"))
 }
 
-func TestVerifier_ScopedUsageRole(t *testing.T) {
-	tests := map[string]struct {
-		grant token.Grant
-		want  string
-	}{
-		"publish":            {grant: scoped(token.ActionPublish), want: rolePublish},
-		"announce":           {grant: scoped(token.ActionAnnounce), want: rolePublish},
-		"subscribe":          {grant: scoped(token.ActionSubscribe), want: roleSubscribe},
-		"fetch":              {grant: scoped(token.ActionFetch), want: roleSubscribe},
-		"publish and fetch":  {grant: scoped(token.ActionPublish, token.ActionFetch), want: roleBoth},
-		"a path_auth viewer": {grant: token.Grant{Subscribe: "acme/app"}, want: roleSubscribe},
-	}
+func TestVerifier_UsageRole(t *testing.T) {
 	k := genKey(t, "acme/app")
 	v := verifierWith(t, keySetJSON(t, []token.SigningKey{k}), time.Now())
+	tests := map[string]struct {
+		jwt  string
+		want string
+	}{
+		"publish":               {jwt: sign(t, k, scoped(token.ActionPublish)), want: rolePublish},
+		"subscribe":             {jwt: sign(t, k, scoped(token.ActionSubscribe)), want: roleSubscribe},
+		"fetch":                 {jwt: sign(t, k, scoped(token.ActionFetch)), want: roleSubscribe},
+		"publish and fetch":     {jwt: sign(t, k, scoped(token.ActionPublish, token.ActionFetch)), want: roleBoth},
+		"a path_auth viewer":    {jwt: signPathAuth(t, k, "", "acme/app"), want: roleSubscribe},
+		"a path_auth publisher": {jwt: signPathAuth(t, k, "acme/app/live", ""), want: rolePublish},
+		"a path_auth of both":   {jwt: signPathAuth(t, k, "acme/app/live", "acme/app"), want: roleBoth},
+	}
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
-			_, s, err := v.decide(sessionReq(EventConnect, sign(t, k, tt.grant)))
+			_, s, err := v.decide(sessionReq(EventConnect, tt.jwt))
 
 			require.NoError(t, err)
 			assert.Equal(t, tt.want, s.role)

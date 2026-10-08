@@ -14,7 +14,6 @@ import (
 	"github.com/qumo-dev/gomoqt/moqt"
 	"github.com/qumo-dev/qumo/internal/auth"
 	"github.com/qumo-dev/qumo/internal/cors"
-	"github.com/qumo-dev/qumo/token"
 )
 
 type Server struct {
@@ -705,7 +704,7 @@ func (s *Server) serveSession(sess *moqt.Session) {
 			"remote", sess.RemoteAddr(),
 		)
 
-		if g != nil && !g.Allows(token.ActionAnnounce, ann.BroadcastPath(), "") {
+		if g != nil && !g.Announces(ann.BroadcastPath()) {
 			// MoQ has no per-announcement error response, so the publisher
 			// receives no explicit rejection: the ANNOUNCE is simply not
 			// mirrored into the TrackMux, and the session's other broadcasts

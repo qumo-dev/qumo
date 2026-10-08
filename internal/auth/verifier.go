@@ -41,8 +41,8 @@ type VerifierConfig struct {
 // signed by a key in the set and grant only paths within the key's prefix
 // (token.Verify). A live session is re-checked every 30 s: a key that has left
 // the set ends its sessions. A key marked "publish": false starts no new
-// sessions that may publish: a credential with a publish path, or a scope
-// permitting publish or announce. The key set is kept when a refresh fails
+// sessions that may publish: a credential with a scope permitting publish.
+// The key set is kept when a refresh fails
 // (fail-static); after 6 h without one, new sessions are refused.
 type Verifier struct {
 	source keySource
@@ -165,12 +165,6 @@ func (v *Verifier) decide(req Request) (*Grant, usageSession, error) {
 
 	expires := c.ExpiresAt.Add(token.Leeway)
 	g := &Grant{scopes: c.Scopes, subject: c.Subject, expires: expires, revalidate: revalidateEvery}
-	if c.Publish != "" {
-		g.Publish = Patterns{{base: c.Publish}}
-	}
-	if c.Subscribe != "" {
-		g.Subscribe = Patterns{{base: c.Subscribe}}
-	}
 	s := usageSession{kid: c.Key.ID, expires: expires}
 	switch {
 	case publishes && subscribes:
@@ -183,15 +177,13 @@ func (v *Verifier) decide(req Request) (*Grant, usageSession, error) {
 	return g, s, nil
 }
 
-// rolesOf reports whether g lets its bearer publish (a publish path, or a
-// scope permitting publish or announce) and subscribe (a subscribe path, or
-// a scope permitting subscribe or fetch).
+// rolesOf reports whether g lets its bearer publish (a scope permitting
+// publish) and subscribe (a scope permitting subscribe or fetch).
 func rolesOf(g token.Grant) (publishes, subscribes bool) {
-	publishes, subscribes = g.Publish != "", g.Subscribe != ""
 	for _, s := range g.Scopes {
 		for _, a := range s.Actions {
 			switch a {
-			case token.ActionPublish, token.ActionAnnounce:
+			case token.ActionPublish:
 				publishes = true
 			case token.ActionSubscribe, token.ActionFetch:
 				subscribes = true

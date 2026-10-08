@@ -35,9 +35,10 @@ func TestRunKeygen_TokenAndVerifierAgree(t *testing.T) {
 	g, err := v.Authorize(t.Context(), Request{ID: "s1", Event: EventConnect, Query: "jwt=" + tok})
 
 	require.NoError(t, err)
-	assert.True(t, g.Publish.Contains(moqt.BroadcastPath("/acme/app/alice/cam")))
-	assert.False(t, g.Publish.Contains(moqt.BroadcastPath("/acme/app/bob")))
-	assert.True(t, g.Subscribe.Contains(moqt.BroadcastPath("/acme/app/bob")))
+	assert.True(t, g.Allows(token.ActionPublish, moqt.BroadcastPath("/acme/app/alice/cam"), "video"))
+	assert.False(t, g.Allows(token.ActionPublish, moqt.BroadcastPath("/acme/app/bob"), "video"))
+	assert.True(t, g.Allows(token.ActionSubscribe, moqt.BroadcastPath("/acme/app/bob"), "video"))
+	assert.True(t, g.Allows(token.ActionFetch, moqt.BroadcastPath("/acme/app/bob"), "video"))
 }
 
 func TestRun_NoCommand(t *testing.T) {
@@ -135,12 +136,18 @@ func TestParseScope(t *testing.T) {
 	}
 }
 
-func TestRunToken_RefusesScopesWithPaths(t *testing.T) {
+// -publish and -subscribe are short for prefix scopes, and add to -scope.
+func TestRunToken_PathFlagsAreScopes(t *testing.T) {
 	dir := t.TempDir()
 	priv := filepath.Join(dir, "signing-key.jwk")
 	require.NoError(t, runKeygen([]string{"-out", priv, "-keys", filepath.Join(dir, "keys.json")}, &bytes.Buffer{}))
+	var out, info bytes.Buffer
 
-	err := runToken([]string{"-key", priv, "-publish", "a", "-scope", "fetch:a"}, &bytes.Buffer{}, &bytes.Buffer{})
+	require.NoError(t, runToken([]string{"-key", priv, "-sub", "42",
+		"-publish", "room/1/alice", "-subscribe", "room/1", "-scope", "fetch:room/9:chat"}, &out, &info))
 
-	assert.ErrorContains(t, err, "both")
+	assert.Contains(t, info.String(), "fetch room/9 track chat")
+	assert.Contains(t, info.String(), "publish room/1/alice/** track *")
+	assert.Contains(t, info.String(), "subscribe,fetch room/1/** track *")
+	assert.Contains(t, info.String(), "42")
 }

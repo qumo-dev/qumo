@@ -84,10 +84,8 @@ sender and per track; past either, a record is answered `429` with a
 
 With a key set (`QUMO_AUTH_KEYS`), every request carries a qumo credential as
 `Authorization: Bearer`, the same kind the relay admits sessions with and
-verified against the same key set. What it needs depends on the form the
-credential grants in ([auth](../auth/#what-a-token-grants)).
-
-A credential with **`scopes`** names the exact tracks it reaches:
+verified against the same key set. Its scopes
+([auth](../auth/#what-a-token-grants)) name the tracks it reaches:
 
 - **Recording** (`POST`, `PUT`) needs a `publish` scope matching the broadcast
   path and the track name. The record's sender is the credential's `sub`,
@@ -106,16 +104,11 @@ A credential with **`scopes`** names the exact tracks it reaches:
 records into `chat` of `/room/123` as `alice`, and reads any track of
 `/room/123` and the broadcasts beneath it. It records into no other track.
 
-A credential with **`path_auth`** grants paths:
-
-- **Reading** history needs a grant to subscribe at the broadcast path, as a
-  viewer subscribing through the relay has.
-- **Recording** needs a grant to publish either at the broadcast path, or at
-  one segment beneath it, which names the sender. A credential publishing at
-  `/room/123/alice` records into `/room/123` as `alice`, whatever the payload
-  claims; one publishing at `/room/123`, or `/room`, records with no sender,
-  for a party trusted with the whole broadcast. It may record into any track
-  of the broadcast.
+A `path_auth` credential is read as the scopes it amounts to: its `pub`
+records into any track at or beneath its path, and its `sub` reads any track
+there. It records with no sender, since a token carrying `path_auth` has no
+`sub` claim, and a path never names one: a credential publishing at
+`/room/123/alice` reaches `/room/123/alice` and beneath it, not `/room/123`.
 
 The credential is checked on every request: once it expires or its key leaves
 the key set, it is refused. A missing or invalid credential answers `401` with
@@ -128,7 +121,8 @@ With `RELAY_URL`, the funnel dials the relay as a client and announces its
 broadcasts on that session; the relay subscribes to them when its subscribers
 do. The session needs a credential that may publish there. The funnel either
 uses the `?jwt=` in `RELAY_URL`, or, with `RELAY_SIGNING_KEY` and
-`RELAY_PUBLISH`, signs a fresh one for every session from a key the relay's key
+`RELAY_PUBLISH`, signs a fresh one for every session, granting `publish` on
+`RELAY_PUBLISH` and every path beneath it, from a key the relay's key
 set trusts (`qumo auth keygen`, ideally confined with `-prefix`). Credentials
 last at most an hour and the relay ends a session when its credential
 expires, so a long-running funnel signs its own.

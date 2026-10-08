@@ -21,13 +21,11 @@ const (
 	ActionSubscribe Action = "subscribe"
 	// ActionFetch is reading a track's history, such as a funnel's GET.
 	ActionFetch Action = "fetch"
-	// ActionAnnounce is announcing a broadcast.
-	ActionAnnounce Action = "announce"
 )
 
 func (a Action) known() bool {
 	switch a {
-	case ActionPublish, ActionSubscribe, ActionFetch, ActionAnnounce:
+	case ActionPublish, ActionSubscribe, ActionFetch:
 		return true
 	}
 	return false
@@ -39,24 +37,31 @@ type Scope struct {
 	// Actions are what the scope permits. At least one is required.
 	Actions []Action
 	// Broadcast is the broadcast path the scope reaches: that path alone,
-	// or, with Prefix, it and every path beneath it on "/" boundaries. It
-	// must lie within the signing key's prefix.
+	// or, with Prefix, it and every path beneath it on "/" boundaries. In a
+	// token it names a path within the signing key's prefix. An empty
+	// Broadcast with Prefix reaches every broadcast; Sign and Verify refuse
+	// it, so only a grant made by the verifier itself holds one. An empty
+	// Broadcast without Prefix reaches none.
 	Broadcast string
 	Prefix    bool
 	// Track is the one track name the scope reaches; empty reaches every
-	// track. An action that names no track, such as announcing a broadcast,
-	// is matched only by a scope with no Track.
+	// track.
 	Track string
 }
 
 // Allows reports whether the scope permits action on the track named track
-// of the broadcast at broadcast. An empty track is an action on the
-// broadcast as a whole.
+// of the broadcast at broadcast.
 func (s Scope) Allows(action Action, broadcast, track string) bool {
-	if s.Broadcast == "" || !slices.Contains(s.Actions, action) {
+	if s.Track != "" && s.Track != track {
 		return false
 	}
-	if s.Track != "" && s.Track != track {
+	return s.Reaches(action, broadcast)
+}
+
+// Reaches reports whether the scope permits action on some track of the
+// broadcast at broadcast, whatever its Track.
+func (s Scope) Reaches(action Action, broadcast string) bool {
+	if !slices.Contains(s.Actions, action) {
 		return false
 	}
 	// MoQ compares broadcast paths as written, so a path is matched only in
@@ -70,7 +75,7 @@ func (s Scope) Allows(action Action, broadcast, track string) bool {
 	if s.Prefix {
 		return within(path, s.Broadcast)
 	}
-	return path == s.Broadcast
+	return s.Broadcast != "" && path == s.Broadcast
 }
 
 // scopeJSON is a scope as encoded, the JSON counterpart of a CAT-4-MOQT

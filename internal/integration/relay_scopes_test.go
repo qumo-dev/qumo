@@ -1,8 +1,9 @@
 //go:build integration
 
 // Black-box tests of the relay enforcing a scoped credential, verified by a
-// real auth.Verifier: announce gates a broadcast, publish the tracks the
-// relay takes from it, and subscribe the tracks a viewer receives.
+// real auth.Verifier: a publish scope lets a session announce the broadcasts
+// it matches and gates the tracks the relay takes from them, and a subscribe
+// scope the tracks a viewer receives.
 package integration
 
 import (
@@ -46,12 +47,9 @@ func TestRelay_ScopedCredentials(t *testing.T) {
 	scope := func(broadcast string, prefix bool, track string, actions ...token.Action) token.Scope {
 		return token.Scope{Actions: actions, Broadcast: broadcast, Prefix: prefix, Track: track}
 	}
-	// The publisher may announce anything under acme, and publish only the
-	// video track of acme/live.
-	publishOver(t, srv, url(
-		scope("acme", true, "", token.ActionAnnounce),
-		scope("acme/live", false, "video", token.ActionPublish),
-	), "/acme/live")
+	// The publisher may publish only the video track of acme/live, which lets
+	// it announce acme/live.
+	publishOver(t, srv, url(scope("acme/live", false, "video", token.ActionPublish)), "/acme/live")
 	viewer := url(scope("acme", true, "", token.ActionSubscribe))
 
 	t.Run("a track the publisher may publish", func(t *testing.T) {
@@ -80,15 +78,31 @@ func TestRelay_ScopedCredentials(t *testing.T) {
 
 		assert.Error(t, err)
 	})
-	t.Run("publish without announce announces nothing", func(t *testing.T) {
-		const path = moqt.BroadcastPath("/acme/quiet")
-		ctx, cancel := context.WithCancel(context.Background())
-		t.Cleanup(cancel)
-		mux := moqt.NewTrackMux(0)
-		mux.PublishFunc(ctx, path, func(tw *moqt.TrackWriter) { <-tw.Context().Done() })
+	t.Run("no publish scope on the broadcast announces nothing", func(t *testing.T) {
+		tests := map[string]struct {
+			path   moqt.BroadcastPath
+			scopes []token.Scope
+		}{
+			"subscribe and fetch only": {
+				path:   "/acme/quiet",
+				scopes: []token.Scope{scope("acme/quiet", false, "", token.ActionSubscribe, token.ActionFetch)},
+			},
+			"publish on another broadcast": {
+				path:   "/acme/elsewhere",
+				scopes: []token.Scope{scope("acme/other", true, "", token.ActionPublish)},
+			},
+		}
+		for name, tt := range tests {
+			t.Run(name, func(t *testing.T) {
+				ctx, cancel := context.WithCancel(context.Background())
+				t.Cleanup(cancel)
+				mux := moqt.NewTrackMux(0)
+				mux.PublishFunc(ctx, tt.path, func(tw *moqt.TrackWriter) { <-tw.Context().Done() })
 
-		dialOver(t, url(scope("acme/quiet", false, "", token.ActionPublish)), nil, mux)
+				dialOver(t, url(tt.scopes...), nil, mux)
 
-		assert.Never(t, routed(srv, path), time.Second, 50*time.Millisecond)
+				assert.Never(t, routed(srv, tt.path), time.Second, 50*time.Millisecond)
+			})
+		}
 	})
 }

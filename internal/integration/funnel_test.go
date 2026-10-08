@@ -7,6 +7,9 @@ package integration
 
 import (
 	"context"
+	"crypto/ed25519"
+	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -252,34 +255,49 @@ func TestFunnel_RestartServesRecordedTracks(t *testing.T) {
 	assert.Equal(t, `{"payload":"after"}`, got)
 }
 
-// TestFunnel_CredentialsNameSendersAndReaders verifies requests against a key
-// set as the relay does: a credential publishing one segment beneath the
-// broadcast records as that sender, one for the broadcast records with none,
-// and one subscribing at the broadcast reads its history.
-func TestFunnel_CredentialsNameSendersAndReaders(t *testing.T) {
+// signPathAuth mints a one-minute credential with a path_auth claim of pub
+// and sub (each left out when empty), as other MoQ implementations sign one.
+func signPathAuth(t *testing.T, key token.SigningKey, pub, sub string) string {
+	t.Helper()
+	pathAuth := map[string]string{"root": ""}
+	if pub != "" {
+		pathAuth["pub"] = pub
+	}
+	if sub != "" {
+		pathAuth["sub"] = sub
+	}
+	now := time.Now().Unix()
+	header, err := json.Marshal(map[string]string{"alg": "EdDSA", "kid": key.ID, "typ": "JWT"})
+	require.NoError(t, err)
+	claims, err := json.Marshal(map[string]any{"path_auth": pathAuth, "iat": now, "nbf": now, "exp": now + 60})
+	require.NoError(t, err)
+	input := base64.RawURLEncoding.EncodeToString(header) + "." + base64.RawURLEncoding.EncodeToString(claims)
+	return input + "." + base64.RawURLEncoding.EncodeToString(ed25519.Sign(key.Private, []byte(input)))
+}
+
+// TestFunnel_PathAuthCredentials verifies path_auth credentials, as other MoQ
+// implementations sign them, against a key set as the relay does: pub at or
+// above the broadcast records with no sender, pub one segment beneath it
+// records nothing (a path names no sender), and sub reads its history.
+func TestFunnel_PathAuthCredentials(t *testing.T) {
 	key, _, keysFile := writeKeys(t)
 	verifier, err := auth.NewVerifier(auth.VerifierConfig{Keys: keysFile})
 	require.NoError(t, err)
 	ingestURL, serveURL := startFunnel(t, mem.New(), verifier)
-	credential := func(g token.Grant) string {
-		c, err := token.Sign(key, g, time.Minute)
-		require.NoError(t, err)
-		return c
-	}
-	alice := credential(token.Grant{Publish: "/room/123/alice"})
-	system := credential(token.Grant{Publish: "/room/123"})
-	viewer := credential(token.Grant{Subscribe: "/room/123"})
+	alice := signPathAuth(t, key, "room/123/alice", "")
+	system := signPathAuth(t, key, "room/123", "")
+	viewer := signPathAuth(t, key, "", "room/123")
 
 	assert.Equal(t, http.StatusUnauthorized, createChat(t, ingestURL, ""), "no credential")
-	assert.Equal(t, http.StatusForbidden, createChat(t, ingestURL, credential(token.Grant{Publish: "/room/9"})), "another room")
+	assert.Equal(t, http.StatusForbidden, createChat(t, ingestURL, signPathAuth(t, key, "room/9", "")), "another room")
 	assert.Equal(t, http.StatusUnauthorized, record(t, ingestURL, "", `"unsigned"`))
 	assert.Equal(t, http.StatusForbidden, record(t, ingestURL, viewer, `"a viewer"`), "subscribing does not grant recording")
-	require.Equal(t, http.StatusCreated, record(t, ingestURL, alice, `{"name":"bob","text":"hi"}`))
+	assert.Equal(t, http.StatusForbidden, record(t, ingestURL, alice, `"beneath"`), "a path beneath the broadcast grants nothing above it")
 	require.Equal(t, http.StatusCreated, record(t, ingestURL, system, `{"type":"delete"}`))
 
 	tr := subscribeChat(t, serveURL)
 	seq, got := nextRecord(t, tr)
-	assert.Equal(t, moqt.GroupSequence(2), seq, "only the signed records were committed")
+	assert.Equal(t, moqt.GroupSequence(1), seq, "only the granted record was committed")
 	assert.Equal(t, `{"payload":{"type":"delete"}}`, got)
 
 	history := func(credential string) (int, string) {
@@ -295,10 +313,9 @@ func TestFunnel_CredentialsNameSendersAndReaders(t *testing.T) {
 	}
 	status, body := history(viewer)
 	require.Equal(t, http.StatusOK, status)
-	assert.Contains(t, body, `"sender":"alice","payload":{"name":"bob","text":"hi"}`,
-		"the sender is the credential's, whatever the payload says")
-	assert.Contains(t, body, `"payload":{"type":"delete"}`)
-	status, _ = history(alice)
+	assert.Regexp(t, `"wallclock":\d+,"payload":\{"type":"delete"\}`, body, "a path_auth credential records with no sender")
+	assert.NotContains(t, body, `"sender"`)
+	status, _ = history(system)
 	assert.Equal(t, http.StatusForbidden, status, "publishing does not grant reading")
 }
 
@@ -378,7 +395,9 @@ func TestFunnel_PublishesThroughTheRelay(t *testing.T) {
 	require.Eventually(t, routed(relaySrv, "/room/123"), 5*time.Second, 25*time.Millisecond,
 		"the relay routes the broadcast to the funnel")
 
-	viewer, err := token.Sign(key, token.Grant{Subscribe: "room/123"}, time.Minute)
+	viewer, err := token.Sign(key, token.Grant{Scopes: []token.Scope{
+		{Actions: []token.Action{token.ActionSubscribe}, Broadcast: "room/123", Prefix: true},
+	}}, time.Minute)
 	require.NoError(t, err)
 	tr := subscribeChat(t, nativeURL(relayAddr)+"?jwt="+viewer)
 

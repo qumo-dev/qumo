@@ -49,6 +49,13 @@ func TestNewHandler_PublishesCommittedRecords(t *testing.T) {
 	assert.Equal(t, `{"payload":"again"}`, string(chat.latest.payload), "the record is sent as it was stored")
 }
 
+// publishAs grants subject publishing every track of the broadcast at path.
+func publishAs(subject, path string) token.Grant {
+	return token.Grant{Subject: subject, Scopes: []token.Scope{
+		{Actions: []token.Action{token.ActionPublish}, Broadcast: path},
+	}}
+}
+
 func TestNewHandler_SenderComesFromTheCredential(t *testing.T) {
 	v, key := newVerifier(t)
 	mux := moqt.NewTrackMux(0)
@@ -56,7 +63,7 @@ func TestNewHandler_SenderComesFromTheCredential(t *testing.T) {
 	require.NoError(t, err)
 
 	rr := serve(h, http.MethodPost, chatURL, `{"user":"mallory","text":"hi"}`,
-		sign(t, key, token.Grant{Publish: "/room/123/user-42"}))
+		sign(t, key, publishAs("user-42", "room/123")))
 
 	require.Equal(t, http.StatusCreated, rr.Code, rr.Body.String())
 	_, handler := mux.TrackHandler("/room/123")
@@ -102,10 +109,12 @@ func TestNewHandler_HistoryNeedsASubscriber(t *testing.T) {
 	h, err := NewHandler(t.Context(), mem.New(), moqt.NewTrackMux(0), HandlerOptions{Verifier: v})
 	require.NoError(t, err)
 	require.Equal(t, http.StatusCreated,
-		serve(h, http.MethodPost, chatURL, `"hello"`, sign(t, key, token.Grant{Publish: "/room/123/user-42"})).Code)
+		serve(h, http.MethodPost, chatURL, `"hello"`, sign(t, key, publishAs("user-42", "room/123"))).Code)
 
-	viewer := serve(h, http.MethodGet, chatURL, "", sign(t, key, token.Grant{Subscribe: "/room/123"}))
-	sender := serve(h, http.MethodGet, chatURL, "", sign(t, key, token.Grant{Publish: "/room/123/user-42"}))
+	viewer := serve(h, http.MethodGet, chatURL, "", sign(t, key, token.Grant{Scopes: []token.Scope{
+		{Actions: []token.Action{token.ActionFetch}, Broadcast: "room/123", Prefix: true},
+	}}))
+	sender := serve(h, http.MethodGet, chatURL, "", sign(t, key, publishAs("user-42", "room/123")))
 
 	require.Equal(t, http.StatusOK, viewer.Code)
 	assert.Contains(t, viewer.Body.String(), `"sender":"user-42","payload":"hello"`)
