@@ -41,45 +41,6 @@ func TestRunKeygen_TokenAndVerifierAgree(t *testing.T) {
 	assert.True(t, g.Allows(token.ActionFetch, moqt.BroadcastPath("/acme/app/bob"), "video"))
 }
 
-func TestRunToken_Reval(t *testing.T) {
-	dir := t.TempDir()
-	priv, pub := filepath.Join(dir, "signing-key.jwk"), filepath.Join(dir, "keys.json")
-	require.NoError(t, runKeygen([]string{"-out", priv, "-keys", pub}, &bytes.Buffer{}))
-	v, err := NewVerifier(VerifierConfig{Keys: pub})
-	require.NoError(t, err)
-
-	tests := map[string]struct {
-		args        []string
-		wantExpires bool
-		wantInfo    string
-		wantErrText string
-	}{
-		"unset":       {wantInfo: "outlive the token's expiry"},
-		"set":         {args: []string{"-reval"}, wantExpires: true, wantInfo: "end at the token's expiry"},
-		"set to true": {args: []string{"-reval=true"}, wantExpires: true, wantInfo: "end at the token's expiry"},
-		"off":         {args: []string{"-reval=false"}, wantInfo: "outlive the token's expiry"},
-		"a duration":  {args: []string{"-reval=1m"}, wantErrText: "reval"},
-	}
-	for name, tt := range tests {
-		t.Run(name, func(t *testing.T) {
-			var out, info bytes.Buffer
-			args := append([]string{"-key", priv, "-subscribe", "app", "-ttl", "5m"}, tt.args...)
-
-			err := runToken(args, &out, &info)
-
-			if tt.wantErrText != "" {
-				assert.ErrorContains(t, err, tt.wantErrText)
-				return
-			}
-			require.NoError(t, err)
-			assert.Contains(t, info.String(), tt.wantInfo)
-			g, err := v.Authorize(t.Context(), Request{ID: "s1", Event: EventConnect, Query: "jwt=" + strings.TrimSpace(out.String())})
-			require.NoError(t, err)
-			assert.Equal(t, tt.wantExpires, !g.Expires().IsZero(), "only a token with reval bounds its session")
-		})
-	}
-}
-
 func TestRun_NoCommand(t *testing.T) {
 	err := Run(nil)
 

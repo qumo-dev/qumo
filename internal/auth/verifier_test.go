@@ -12,7 +12,6 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -127,63 +126,26 @@ func TestVerifier_Grant(t *testing.T) {
 	assert.True(t, g.Allows(token.ActionSubscribe, moqt.BroadcastPath("/acme/app/other"), "video"))
 	assert.False(t, g.Allows(token.ActionSubscribe, moqt.BroadcastPath("/globex/app"), "video"))
 	assert.Equal(t, revalidateEvery, g.Revalidate(), "every session is re-checked against the key set")
-	assert.True(t, g.Expires().IsZero(), "without reval, the credential's expiry doesn't end the session")
+	assert.True(t, g.Expires().IsZero(), "the credential's expiry doesn't end the session")
 }
 
-func TestVerifier_GrantWithReval(t *testing.T) {
-	k := genKey(t, "acme/app")
-	v := verifierWith(t, keySetJSON(t, []token.SigningKey{k}), time.Now())
-
-	g, err := v.Authorize(context.Background(), sessionReq(EventConnect, signReval(t, k, pathGrant("", "acme/app"))))
-	require.NoError(t, err)
-	assert.Equal(t, revalidateEvery, g.Revalidate())
-	assert.WithinDuration(t, time.Now().Add(10*time.Minute+token.Leeway), g.Expires(), 5*time.Second,
-		"the session ends at the credential's exp plus the leeway")
-}
-
-// The reval interval a signed credential carries is one the relay honors: it
-// revalidates live sessions at least that often.
-func TestVerifier_HonorsSignedReval(t *testing.T) {
-	jwt := signReval(t, genKey(t, "acme/app"), pathGrant("", "acme/app"))
-	body, err := base64.RawURLEncoding.DecodeString(strings.Split(jwt, ".")[1])
-	require.NoError(t, err)
-	var claims struct {
-		Reval float64 `json:"reval"`
-	}
-	require.NoError(t, json.Unmarshal(body, &claims))
-
-	assert.LessOrEqual(t, revalidateEvery.Seconds(), claims.Reval)
-}
-
-// TestVerifier_Expiry checks a credential after its expiry: at connect it is
-// refused; for a live session it is refused only when it carries reval.
+// TestVerifier_Expiry checks a credential after its expiry: refused at
+// connect, while the live session it admitted continues.
 func TestVerifier_Expiry(t *testing.T) {
-	tests := map[string]struct {
-		reval          bool
-		wantConnect    int
-		wantRevalidate int
-	}{
-		"without reval": {wantConnect: http.StatusUnauthorized, wantRevalidate: http.StatusOK},
-		"with reval":    {reval: true, wantConnect: http.StatusUnauthorized, wantRevalidate: http.StatusUnauthorized},
-	}
-	for name, tt := range tests {
-		t.Run(name, func(t *testing.T) {
-			synctest.Test(t, func(t *testing.T) {
-				k := genKey(t, "acme/app")
-				v := verifierWith(t, keySetJSON(t, []token.SigningKey{k}), time.Now())
-				jwt := signWith(t, k, pathGrant("", "acme/app"), tt.reval)
-				_, err := v.Authorize(context.Background(), sessionReq(EventConnect, jwt))
-				require.NoError(t, err)
+	synctest.Test(t, func(t *testing.T) {
+		k := genKey(t, "acme/app")
+		v := verifierWith(t, keySetJSON(t, []token.SigningKey{k}), time.Now())
+		jwt := sign(t, k, pathGrant("", "acme/app"))
+		_, err := v.Authorize(context.Background(), sessionReq(EventConnect, jwt))
+		require.NoError(t, err)
 
-				time.Sleep(10*time.Minute + token.Leeway)
+		time.Sleep(10*time.Minute + token.Leeway)
 
-				_, err = v.Authorize(context.Background(), sessionReq(EventConnect, jwt))
-				assert.Equal(t, tt.wantConnect, statusOf(err), "connect: %v", err)
-				_, err = v.Authorize(context.Background(), sessionReq(EventRevalidate, jwt))
-				assert.Equal(t, tt.wantRevalidate, statusOf(err), "revalidate: %v", err)
-			})
-		})
-	}
+		_, err = v.Authorize(context.Background(), sessionReq(EventConnect, jwt))
+		assert.Equal(t, http.StatusUnauthorized, statusOf(err), "connect: %v", err)
+		_, err = v.Authorize(context.Background(), sessionReq(EventRevalidate, jwt))
+		assert.NoError(t, err, "revalidate")
+	})
 }
 
 func TestVerifier_Decisions(t *testing.T) {
@@ -233,22 +195,19 @@ func TestVerifier_FailStatic(t *testing.T) {
 }
 
 // TestVerifier_WithdrawnKeyEndsSessions checks that a key leaving the set
-// ends its live sessions whatever their credentials carry, before or after
-// their expiry.
+// ends its live sessions, before or after their credentials' expiry.
 func TestVerifier_WithdrawnKeyEndsSessions(t *testing.T) {
 	tests := map[string]struct {
-		reval   bool
 		elapsed time.Duration
 	}{
-		"without reval":                {},
-		"without reval, after its exp": {elapsed: 10*time.Minute + token.Leeway},
-		"with reval":                   {reval: true},
+		"before its exp": {},
+		"after its exp":  {elapsed: 10*time.Minute + token.Leeway},
 	}
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
 				k := genKey(t, "acme/app")
-				jwt := signWith(t, k, pathGrant("", "acme/app"), tt.reval)
+				jwt := sign(t, k, pathGrant("", "acme/app"))
 				v := verifierWith(t, keySetJSON(t, []token.SigningKey{k}), time.Now())
 				_, err := v.Authorize(context.Background(), sessionReq(EventConnect, jwt))
 				require.NoError(t, err)
@@ -416,15 +375,15 @@ func newTestUsage(t *testing.T, sink *fakeUsageSink) *usageReporter {
 	return r
 }
 
-var testUsageSession = usageSession{kid: "k1", role: rolePublish, expires: time.Now().Add(time.Hour)}
+var testUsageSession = usageSession{kid: "k1", role: rolePublish}
 
 func TestUsageReporter(t *testing.T) {
 	t.Run("usage is coalesced to the latest report", func(t *testing.T) {
 		sink := &fakeUsageSink{}
 		r := newTestUsage(t, sink)
 		r.open("s1", testUsageSession)
-		r.reportUsage("s1", Bytes{Sent: 1, Received: 10})
-		r.reportUsage("s1", Bytes{Sent: 2, Received: 20})
+		r.revalidated("s1", Bytes{Sent: 1, Received: 10})
+		r.revalidated("s1", Bytes{Sent: 2, Received: 20})
 		require.NoError(t, r.flush(context.Background()))
 		batches := sink.received()
 		require.Len(t, batches, 1)
@@ -437,9 +396,9 @@ func TestUsageReporter(t *testing.T) {
 		sink := &fakeUsageSink{statuses: []int{http.StatusBadGateway, http.StatusOK}}
 		r := newTestUsage(t, sink)
 		r.open("s1", testUsageSession)
-		r.reportUsage("s1", Bytes{Received: 10})
+		r.revalidated("s1", Bytes{Received: 10})
 		assert.Error(t, r.flush(context.Background()))
-		r.reportUsage("s1", Bytes{Received: 20})
+		r.revalidated("s1", Bytes{Received: 20})
 		require.NoError(t, r.flush(context.Background()))
 		retry := sink.received()[1]
 		require.Len(t, retry, 2)
@@ -507,31 +466,21 @@ func TestUsageReporter(t *testing.T) {
 		sink := &fakeUsageSink{}
 		r := newTestUsage(t, sink)
 		assert.False(t, r.close("nope", Bytes{Sent: 1}, ""))
-		r.reportUsage("nope", Bytes{Sent: 1})
+		r.revalidated("nope", Bytes{Sent: 1})
 		require.NoError(t, r.flush(context.Background()))
 		assert.Empty(t, sink.received(), "nothing pending, nothing sent")
 	})
 
-	t.Run("sessions whose end never came are forgotten after their expiry", func(t *testing.T) {
-		r := newTestUsage(t, &fakeUsageSink{})
-		r.open("old", usageSession{kid: "k1", role: rolePublish, expires: time.Now().Add(-sessionGrace - time.Second)})
-		r.open("live", testUsageSession)
-		r.forgetExpired()
-		assert.False(t, r.close("old", Bytes{}, ""))
-		assert.True(t, r.close("live", Bytes{}, ""))
-	})
-
-	t.Run("an unbounded session whose end never came is forgotten once no longer revalidated", func(t *testing.T) {
+	t.Run("a session whose end never came is forgotten once no longer revalidated", func(t *testing.T) {
 		now := time.Now()
 		r := newTestUsage(t, &fakeUsageSink{})
 		r.now = func() time.Time { return now }
-		unbounded := usageSession{kid: "k1", role: rolePublish}
-		r.open("gone", unbounded)
-		r.open("live", unbounded)
+		r.open("gone", testUsageSession)
+		r.open("live", testUsageSession)
 
 		now = now.Add(sessionGrace + time.Second)
-		r.touch("live")
-		r.forgetExpired()
+		r.revalidated("live", Bytes{})
+		r.forgetStale()
 
 		assert.False(t, r.close("gone", Bytes{}, ""), "not revalidated within the grace")
 		assert.True(t, r.close("live", Bytes{}, ""), "revalidated: still remembered")
@@ -675,20 +624,7 @@ func signPathAuth(tb testing.TB, key token.SigningKey, pub, sub string) string {
 // sign mints a 10-minute token granting g.
 func sign(tb testing.TB, key token.SigningKey, g token.Grant) string {
 	tb.Helper()
-	return signWith(tb, key, g, false)
-}
-
-// signReval mints a 10-minute token granting g that carries reval.
-func signReval(tb testing.TB, key token.SigningKey, g token.Grant) string {
-	tb.Helper()
-	return signWith(tb, key, g, true)
-}
-
-// signWith mints a 10-minute token granting g, carrying reval when reval is
-// set.
-func signWith(tb testing.TB, key token.SigningKey, g token.Grant, reval bool) string {
-	tb.Helper()
-	tok, err := token.Sign(key, g, token.Options{TTL: 10 * time.Minute, Reval: reval})
+	tok, err := token.Sign(key, g, 10*time.Minute)
 	require.NoError(tb, err)
 	return tok
 }

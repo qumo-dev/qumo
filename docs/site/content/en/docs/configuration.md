@@ -134,7 +134,7 @@ Without a key set, auth is off: the relay admits every session unchecked and log
 **Relay peers are never checked:** sessions whose client certificate `CA_FILE` verifies and that carries the peering name, and peers this relay dials (`PEERS`). A session whose certificate `CA_FILE` verifies without the name is an **internal client**: it needs no credential either, and may subscribe to anything and announce nothing ([Peer trust](#peer-trust-optional)).
 
 ### Verifying against a key set
-A credential is a token your app signs with its own key, using the Go package [`github.com/qumo-dev/qumo/token`](../cli/auth/) (or `qumo auth token` while testing). The relay admits a session when, in order: the token's header carries no `crit`, its `alg` is EdDSA and its `kid` is in the key set; the signature verifies; its claims are one of `scopes` and `path_auth` (never both), `iat`, `nbf`, `exp`, an optional `jti` and `reval`, and, with `scopes`, an optional `sub`; the times hold, with 60 s leeway and a lifetime of at most an hour; `reval`, if present, is a number of seconds no shorter than 30; and **every path it grants lies within its key's `prefix`**. A `path_auth` claim, as other MoQ implementations sign it, is read as the scopes it amounts to ([what a token grants](../cli/auth/#what-a-token-grants)). The session may then announce a broadcast a `publish` scope matches, have the relay take from it only the tracks such a scope matches, and subscribe to a track a `subscribe` scope matches, for as long as [below](#credential-expiry-and-live-sessions) describes.
+A credential is a token your app signs with its own key, using the Go package [`github.com/qumo-dev/qumo/token`](../cli/auth/) (or `qumo auth token` while testing). The relay admits a session when, in order: the token's header carries no `crit`, its `alg` is EdDSA and its `kid` is in the key set; the signature verifies; its claims are one of `scopes` and `path_auth` (never both), `iat`, `nbf`, `exp`, an optional `jti`, and, with `scopes`, an optional `sub`; the times hold, with 60 s leeway and a lifetime of at most an hour; and **every path it grants lies within its key's `prefix`**. A `path_auth` claim, as other MoQ implementations sign it, is read as the scopes it amounts to ([what a token grants](../cli/auth/#what-a-token-grants)). The session may then announce a broadcast a `publish` scope matches, have the relay take from it only the tracks such a scope matches, and subscribe to a track a `subscribe` scope matches, for as long as [below](#credential-expiry-and-live-sessions) describes.
 
 Each key in the set may carry two members besides the standard JWK ones:
 
@@ -150,14 +150,10 @@ Each key in the set may carry two members besides the standard JWK ones:
 ### Credential expiry and live sessions
 A token's `exp`, `nbf` and `iat` are checked **when a session starts**: they decide whether it may start, not how long it may live. Your app can issue short-lived tokens, so a leaked one is soon useless, without its clients having to reconnect, and drop audio, every time one expires.
 
-| Who decides | What | What the relay does |
-|---|---|---|
-| Your app, per token | the grant and the lifetime | Checks the times at connect. The session outlives the token's expiry, **unless the token carries `reval`**. |
-| Your app, opting in | `reval` (the semantics of CAT's `moqt-reval`) | Revalidates the session's token, just as at connect, every 30 s, and ends the session when it fails: at the token's expiry (its `exp` plus the leeway) at the latest, or when its key leaves the set. |
-| The operator, per key | the key set | Unchanged by `reval`: a key that leaves the set ends every session it admitted at the next re-check, and `"publish": false` refuses new sessions that may publish. |
-
-- **What matters is that `reval` is there.** Its value is an interval in seconds, and the relay revalidates every 30 s whatever it says, so it honors any interval from 30 s up, however long; a token asking for less is refused at connect rather than revalidated less often than it asks. `token.Sign` with `Options{Reval: true}` and `qumo auth token -reval` write `"reval": 30`.
-- **A wider grant needs a new session.** A live session can't take a new token: a client whose grant changes, say a listener promoted to speaker, connects with the new token and closes the old session once the new one is up.
+- **Your app ends access** by withholding the next token: a client whose session ends can't start another. What a live session may do is your app's to decide on top, for example which publishers its clients play.
+- **The key set ends sessions.** A key that leaves the set ends every session it admitted at the next re-check, about 30 s on average.
+- **A token can't be replaced in a live session.** A session keeps the grant it started with, so give a client the widest grant it may need for the session's life.
+- **`reval` is refused.** CAT's `moqt-reval` asks for a live session to be revalidated against its token's expiry, which this relay never does, so a token carrying it is refused like any claim the relay doesn't know.
 
 ### Usage reports
 With `QUMO_USAGE_URL` set, the relay POSTs a JSON array of records to it every 10 s:
@@ -182,8 +178,8 @@ Records go out in batches of at most 500. A failed send, a 401, 403, 408, 413 or
 - **Refusal:** a WebTransport client gets the HTTP status before the upgrade: 401 for a credential that can't be accepted, 403 for a valid one that may not do what it asks, or 503 while the relay has no usable key set. A native-QUIC session is closed with `0x2` (Unauthorized).
 - **Announcements** are routed only if the token's publish path covers their path.
 - **Subscriptions** are served only if the token's subscribe path covers their path. A refused subscription gets the same answer as a path that doesn't exist (`NotFound`).
-- **Expiry:** a session whose token carries `reval` ends when the token expires (its `exp` plus the leeway), closed with `0x2` (Unauthorized) and reason `expired`. This covers publishers and subscribers. The client reconnects with a fresh credential, ideally shortly before the credential's `exp`. The deadline is taken on the relay's monotonic clock when the session is admitted, so a wall-clock jump doesn't move it. A session whose token carries no `reval` is not ended by its expiry.
-- **Why a session ended** is the `reason` of its usage record: `expired`, `refused` (its key left the set), `closed` (the client or relay closed it normally), `dropped` (the connection was lost) or `upgrade_failed` (a WebTransport session that was admitted, whose upgrade then failed, so it never started).
+- **Expiry** decides only whether a session may start ([above](#credential-expiry-and-live-sessions)): a live session, publisher or subscriber, is not ended by its token's expiry.
+- **Why a session ended** is the `reason` of its usage record: `refused` (its key left the set), `closed` (the client or relay closed it normally), `dropped` (the connection was lost) or `upgrade_failed` (a WebTransport session that was admitted, whose upgrade then failed, so it never started).
 - **Relay peers**, peers this relay dials, and internal clients carry no credential, so nothing above applies to them.
 - **Not yet enforced:** which paths a session can discover (qumo-dev/qumo#450). Announce interest lists every path under the requested prefix, and a TRACK request returns a track's publisher properties (TRACK_INFO) for any path. Both reveal path names and metadata, never media.
 

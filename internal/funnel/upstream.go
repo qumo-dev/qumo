@@ -87,7 +87,7 @@ func newUpstream(cfg RelayConfig) (*upstream, error) {
 		}
 		// Signing one now refuses a grant outside the key's prefix at startup
 		// rather than at the first dial.
-		if _, err := token.Sign(key, publishGrant(cfg.Publish), token.Options{TTL: token.MaxLifetime}); err != nil {
+		if _, err := token.Sign(key, publishGrant(cfg.Publish), token.MaxLifetime); err != nil {
 			return nil, fmt.Errorf("RELAY_PUBLISH: %w", err)
 		}
 		u.key, u.publish = &key, cfg.Publish
@@ -147,7 +147,7 @@ func (u *upstream) target() (string, error) {
 	if u.key == nil {
 		return u.url, nil
 	}
-	credential, err := token.Sign(*u.key, publishGrant(u.publish), token.Options{TTL: token.MaxLifetime})
+	credential, err := token.Sign(*u.key, publishGrant(u.publish), token.MaxLifetime)
 	if err != nil {
 		return "", fmt.Errorf("sign relay credential: %w", err)
 	}

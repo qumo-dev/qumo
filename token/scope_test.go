@@ -215,7 +215,7 @@ func TestSign_ScopesRoundTrip(t *testing.T) {
 		{Actions: []Action{ActionSubscribe, ActionFetch}, Broadcast: "acme/app/room/123", Prefix: true},
 	}}
 
-	tok, err := signAt(key, g, Options{TTL: 30 * time.Minute}, now)
+	tok, err := signAt(key, g, 30*time.Minute, now)
 	require.NoError(t, err)
 	c, err := Verify(tok, map[string]Key{key.ID: key.Public()}, now)
 
@@ -233,7 +233,7 @@ func TestSign_ScopesClaimShape(t *testing.T) {
 		{Actions: []Action{ActionPublish}, Broadcast: "room/123/comments", Track: "chat"},
 	}}
 
-	tok, err := Sign(key, g, Options{TTL: time.Minute})
+	tok, err := Sign(key, g, time.Minute)
 	require.NoError(t, err)
 	raw, err := base64.RawURLEncoding.DecodeString(strings.Split(tok, ".")[1])
 	require.NoError(t, err)
@@ -272,7 +272,7 @@ func TestSign_ScopeRefusals(t *testing.T) {
 			key, err := GenerateKey("acme/app")
 			require.NoError(t, err)
 
-			_, err = Sign(key, tt.grant, Options{TTL: time.Minute})
+			_, err = Sign(key, tt.grant, time.Minute)
 
 			assert.ErrorContains(t, err, tt.wantErrText)
 		})

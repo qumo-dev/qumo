@@ -32,11 +32,11 @@ func writeKeyFile(t *testing.T, path string, keys ...token.Key) {
 	require.NoError(t, os.Chtimes(path, now, now))
 }
 
-// verifiedSession admits a session with a credential signed by key, carrying
-// reval when reval is set, through v as the relay does, and starts its lease.
-func verifiedSession(t *testing.T, v *auth.Verifier, key token.SigningKey, reval bool) (*fakeLeasedSession, *lease) {
+// verifiedSession admits a session with a credential signed by key through v
+// as the relay does, and starts its lease.
+func verifiedSession(t *testing.T, v *auth.Verifier, key token.SigningKey) (*fakeLeasedSession, *lease) {
 	t.Helper()
-	jwt, err := token.Sign(key, token.Grant{Scopes: []token.Scope{{Actions: []token.Action{token.ActionSubscribe, token.ActionFetch}, Broadcast: "acme/app", Prefix: true}}}, token.Options{TTL: credentialTTL, Reval: reval})
+	jwt, err := token.Sign(key, token.Grant{Scopes: []token.Scope{{Actions: []token.Action{token.ActionSubscribe, token.ActionFetch}, Broadcast: "acme/app", Prefix: true}}}, credentialTTL)
 	require.NoError(t, err)
 	req := auth.Request{ID: "00ff", Event: auth.EventConnect, Path: "/", Query: url.Values{"jwt": {jwt}}.Encode()}
 	g, err := v.Authorize(t.Context(), req)
@@ -48,25 +48,16 @@ func verifiedSession(t *testing.T, v *auth.Verifier, key token.SigningKey, reval
 }
 
 // TestLease_VerifiedCredential drives a lease with the relay's Verifier: a
-// credential's expiry ends its session only when the credential carries
-// reval, and a withdrawn key ends every session.
+// session outlives its credential's expiry, and a withdrawn key ends it.
 func TestLease_VerifiedCredential(t *testing.T) {
-	end := credentialTTL + token.Leeway
 	tests := map[string]struct {
-		reval bool
 		// withdraw removes the key from the set once the credential has
 		// expired.
-		withdraw     bool
-		wantAtExpiry []sessionClose
-		wantClosed   []sessionClose
+		withdraw   bool
+		wantClosed []sessionClose
 	}{
-		"without reval, the session outlives the credential": {},
-		"with reval, the session ends at its expiry": {
-			reval:        true,
-			wantAtExpiry: []sessionClose{{code: moqt.UnauthorizedSessionErrorCode, msg: endExpired}},
-			wantClosed:   []sessionClose{{code: moqt.UnauthorizedSessionErrorCode, msg: endExpired}},
-		},
-		"without reval, a withdrawn key ends the session": {
+		"the session outlives the credential": {},
+		"a withdrawn key ends the session": {
 			withdraw:   true,
 			wantClosed: []sessionClose{{code: moqt.UnauthorizedSessionErrorCode, msg: endRefused}},
 		},
@@ -86,15 +77,12 @@ func TestLease_VerifiedCredential(t *testing.T) {
 				defer wg.Wait()
 				defer cancel()
 
-				sess, l := verifiedSession(t, v, key, tt.reval)
+				sess, l := verifiedSession(t, v, key)
 				defer l.stop()
 
-				time.Sleep(end - time.Nanosecond)
+				time.Sleep(credentialTTL + token.Leeway)
 				synctest.Wait()
-				require.Empty(t, sess.closed(), "ended before the credential's expiry")
-				time.Sleep(time.Nanosecond)
-				synctest.Wait()
-				assert.Equal(t, tt.wantAtExpiry, sess.closed())
+				require.Empty(t, sess.closed(), "ended at the credential's expiry")
 
 				if tt.withdraw {
 					writeKeyFile(t, keys)

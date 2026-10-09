@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 > **Breaking for Go callers and funnel senders.** `token.Grant` is `{Scopes, Subject}`: its `Publish` and `Subscribe` fields are gone, and `token.Sign` writes a `scopes` claim, never `path_auth`. A funnel no longer infers a sender from a credential publishing one segment beneath the broadcast: such a credential no longer records into it, and the sender is the credential's `sub`. See **Changed** below.
 
-> **Behavior change for apps.** A session no longer ends when its credential expires, unless the credential carries `reval`. An app that relies on expiry to cut sessions signs its credentials with `token.Options{Reval: true}` (or `qumo auth token -reval`). `token.Sign` now takes a `token.Options` in place of its `ttl` argument. See **Changed** below.
+> **Behavior change for apps.** A session no longer ends when its credential expires. An app ends a session by withholding its next credential and, at once, by removing the key from the set. See **Changed** below.
 
 ### Added
 
@@ -28,13 +28,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **The relay** lets a session announce a broadcast a `publish` scope matches, whatever track that scope names, and subscribe to a track a `subscribe` scope matches, by broadcast and track name. There is no separate announce action. It subscribes upstream to, and describes, only the tracks of an announced broadcast that a `publish` scope of the announcing session matches, answering a request for another as not found, exactly like a missing track. It ignores `fetch`. An internal client's grant is in the same model: a `subscribe` and `fetch` scope prefixing no path, which reaches every broadcast.
   - **`qumo funnel`.** Recording into a track needs a `publish` scope matching its broadcast and name, and records as the credential's `sub`, or with no sender without one; reading history needs a `fetch` scope matching them. A path never names a sender. With `RELAY_SIGNING_KEY`, the funnel signs its relay credential as a `publish` scope on `RELAY_PUBLISH` and beneath it.
   - **Key sets.** A key marked `"publish": false` starts no session with a scope permitting `publish`.
-- **Behavior change: a credential's expiry decides whether a session may start; ending a live session at it is opt-in with `reval` (`token`, `internal/auth`).**
+- **Behavior change: a credential's expiry decides whether a session may start, not how long it lives (`token`, `internal/auth`).**
   - **At connect, nothing changes:** `exp`, `nbf` and `iat` are checked with the 60 s leeway, and an expired credential is refused.
-  - **A live session outlives its credential's expiry,** so an app can issue short-lived credentials without its clients reconnecting, and dropping audio, every time one expires.
-  - **`reval` opts back in.** A credential carrying `reval` (CAT's `moqt-reval`) has its session revalidated as if new, every 30 s, and ended when the revalidation fails: at its `exp` plus the leeway, as every session was before, or when its key leaves the set. Only its presence matters: its value, an interval in seconds, must be a number of at least 30, since the relay re-checks every 30 s and can honor no shorter interval, so a credential asking for one is refused. There is no upper bound.
-  - **Signing it.** `token.Sign(key, grant, token.Options{TTL: ttl, Reval: true})` writes `"reval": 30`, and `qumo auth token -reval` does the same; its summary on stderr says whether sessions end at the token's expiry. `token.Claims.Reval` reports whether a verified token carries it, and the new `token.VerifyLive` checks a live session's credential as the relay does.
-  - **The key set still governs live sessions.** A key that leaves the set ends every session it admitted at the next 30 s re-check, with or without `reval`; `"publish": false` still refuses new sessions that may publish and lets live ones continue.
-  - **Usage reports:** a session whose credential carries no `reval` is forgotten only when its end is recorded, no longer five minutes after its credential's expiry.
+  - **A live session outlives its credential's expiry,** so an app can issue short-lived credentials without its clients reconnecting, and dropping audio, every time one expires. The relay no longer ends a verified session with reason `expired`.
+  - **The key set still governs live sessions.** A key that leaves the set ends every session it admitted at the next 30 s re-check; `"publish": false` still refuses new sessions that may publish and lets live ones continue.
+  - **`reval` is refused,** as any claim the relay doesn't know: CAT's `moqt-reval` asks for a live session to be revalidated against its token's expiry, which never happens here.
+  - **Go.** The new `token.VerifyLive` checks a live session's credential as the relay does: as `token.Verify`, without refusing it for its expiry.
+  - **Usage reports:** a session whose end never comes is forgotten five minutes after it was last re-checked, no longer five minutes after its credential's expiry.
 
 ## [v0.12.261008] - 2026-10-08
 

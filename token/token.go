@@ -18,10 +18,9 @@
 // key's prefix.
 //
 // A token's expiry decides whether a session may start, not how long it
-// lives. A token signed with Options.Reval carries the reval claim, after
-// CAT-4-MOQT's moqt-reval: a relay then revalidates the session as long as it
-// lives (VerifyLive) and ends it when the token no longer verifies, at its
-// expiry at the latest.
+// lives: a relay checks a live session's token with VerifyLive, which ignores
+// the expiry, so the session ends only when the key that signed it is no
+// longer trusted.
 package token
 
 import (
@@ -61,7 +60,7 @@ var (
 // path_auth member must not widen it.
 var allowedClaims = map[string]bool{
 	"path_auth": true, "scopes": true, "sub": true,
-	"iat": true, "nbf": true, "exp": true, "jti": true, "reval": true,
+	"iat": true, "nbf": true, "exp": true, "jti": true,
 }
 
 // Grant is what a token allows its bearer: Scopes, each permitting actions on
@@ -73,14 +72,12 @@ type Grant struct {
 }
 
 // Claims are a verified token's: its grant, normalized and confined to its
-// key's prefix, when it expires, its jti if any, the key that signed it, and
-// whether it carries reval (see Options.Reval).
+// key's prefix, when it expires, its jti if any, and the key that signed it.
 type Claims struct {
 	Grant
 	ExpiresAt time.Time
 	ID        string
 	Key       Key
-	Reval     bool
 }
 
 // pathAuth is the capability claim of other MoQ implementations, per the
@@ -103,32 +100,19 @@ type claims struct {
 	NotBefore *float64       `json:"nbf"`
 	ExpiresAt *float64       `json:"exp"`
 	ID        string         `json:"jti,omitempty"`
-	Reval     *float64       `json:"reval,omitempty"`
 }
 
-// Options are how Sign makes a token, beyond what it grants.
-type Options struct {
-	// TTL is how long the token is valid from now: positive and at most
-	// MaxLifetime. Its expiry decides whether a session may start.
-	TTL time.Duration
-	// Reval makes the token carry reval: a relay revalidates a session it
-	// admits as long as the session lives, and ends the session when the
-	// token no longer verifies, at its expiry at the latest. Without it, the
-	// session outlives the token.
-	Reval bool
+// Sign returns a token signed by key that grants g for ttl from now, at most
+// MaxLifetime, as a scopes claim with sub when g names a subject. It carries a
+// random jti. A grant outside key's prefix, or one granting nothing, is
+// refused here, since a verifier would refuse the token.
+func Sign(key SigningKey, g Grant, ttl time.Duration) (string, error) {
+	return signAt(key, g, ttl, time.Now())
 }
 
-// Sign returns a token signed by key that grants g, made as o says, as a
-// scopes claim with sub when g names a subject. It carries a random jti. A
-// grant outside key's prefix, or one granting nothing, is refused here, since
-// a verifier would refuse the token.
-func Sign(key SigningKey, g Grant, o Options) (string, error) {
-	return signAt(key, g, o, time.Now())
-}
-
-func signAt(key SigningKey, g Grant, o Options, now time.Time) (string, error) {
-	if o.TTL <= 0 || o.TTL > MaxLifetime {
-		return "", fmt.Errorf("token: ttl %s must be positive and at most %s", o.TTL, MaxLifetime)
+func signAt(key SigningKey, g Grant, ttl time.Duration, now time.Time) (string, error) {
+	if ttl <= 0 || ttl > MaxLifetime {
+		return "", fmt.Errorf("token: ttl %s must be positive and at most %s", ttl, MaxLifetime)
 	}
 	if len(g.Scopes) == 0 {
 		return "", errors.New("token: the grant names no scope")
@@ -139,12 +123,8 @@ func signAt(key SigningKey, g Grant, o Options, now time.Time) (string, error) {
 	}
 	c := claims{Scopes: raw, Subject: g.Subject, ID: rand.Text()}
 	iat := float64(now.Unix())
-	exp := float64(now.Add(o.TTL).Unix())
+	exp := float64(now.Add(ttl).Unix())
 	c.IssuedAt, c.NotBefore, c.ExpiresAt = &iat, &iat, &exp
-	if o.Reval {
-		reval := revalInterval.Seconds()
-		c.Reval = &reval
-	}
 
 	header, err := json.Marshal(map[string]string{"alg": "EdDSA", "kid": key.ID, "typ": "JWT"})
 	if err != nil {
@@ -162,19 +142,25 @@ func signAt(key SigningKey, g Grant, o Options, now time.Time) (string, error) {
 // carries no crit, the alg is EdDSA and the kid is trusted; the signature
 // verifies; the claims are
 // within the allowed set (one of path_auth and scopes, iat, nbf, exp, an
-// optional jti and reval, and an optional sub with scopes) with no duplicate
-// members; exp, nbf and iat hold within Leeway and the lifetime is at most
-// MaxLifetime; reval, if any, is a number of seconds no shorter than a relay
-// revalidates at (30); and
-// every path the token grants lies within its key's prefix. A path_auth claim
-// is returned as the scopes it amounts to (see grantOf). An error wraps
-// ErrInvalid or ErrForbidden.
+// optional jti, and an optional sub with scopes) with no duplicate members;
+// exp, nbf and iat hold within Leeway and the lifetime is at most
+// MaxLifetime; and every path the token grants lies within its key's prefix.
+// A path_auth claim is returned as the scopes it amounts to (see grantOf).
+// An error wraps ErrInvalid or ErrForbidden.
 func Verify(token string, keys map[string]Key, now time.Time) (Claims, error) {
+	return verify(token, keys, now, true)
+}
+
+// VerifyLive checks token as the credential of a live session, at now: as
+// Verify does, except that a token past its expiry is not refused for it. Its
+// expiry decided whether the session could start; the key that signed it must
+// still be trusted, and its grant still within the key's prefix.
+func VerifyLive(token string, keys map[string]Key, now time.Time) (Claims, error) {
 	return verify(token, keys, now, false)
 }
 
-// verify is Verify, or VerifyLive when live is set.
-func verify(token string, keys map[string]Key, now time.Time, live bool) (Claims, error) {
+// verify is Verify, refusing a token past its expiry only when expiry is set.
+func verify(token string, keys map[string]Key, now time.Time, expiry bool) (Claims, error) {
 	parts := strings.Split(token, ".")
 	if len(parts) != 3 {
 		return Claims{}, invalid("not a JWS compact serialization")
@@ -218,14 +204,8 @@ func verify(token string, keys map[string]Key, now time.Time, live bool) (Claims
 	if err := decodeSegment(parts[1], &c); err != nil {
 		return Claims{}, invalid("claims: %v", err)
 	}
-	exp, err := c.checkTime(now, c.judgesExpiry(live))
+	exp, err := c.checkTime(now, expiry)
 	if err != nil {
-		return Claims{}, err
-	}
-	if _, ok := members["reval"]; ok && c.Reval == nil {
-		return Claims{}, invalid("reval is not a number")
-	}
-	if err := c.checkReval(); err != nil {
 		return Claims{}, err
 	}
 	_, hasPathAuth := members["path_auth"]
@@ -251,7 +231,7 @@ func verify(token string, keys map[string]Key, now time.Time, live bool) (Claims
 			return Claims{}, err
 		}
 	}
-	return Claims{Grant: g, ExpiresAt: exp, ID: c.ID, Key: key, Reval: c.Reval != nil}, nil
+	return Claims{Grant: g, ExpiresAt: exp, ID: c.ID, Key: key}, nil
 }
 
 // grantOf reads path_auth as scopes: pub as publish, and sub as subscribe
@@ -286,7 +266,7 @@ func grantOf(pa pathAuth, prefix string) (Grant, error) {
 	return g, nil
 }
 
-// checkTime enforces exp (unless expiry is false), nbf and iat (all required)
+// checkTime enforces exp (when expiry is set), nbf and iat, all required,
 // with Leeway, and the lifetime cap, and returns exp.
 func (c claims) checkTime(now time.Time, expiry bool) (time.Time, error) {
 	if c.ExpiresAt == nil || c.NotBefore == nil || c.IssuedAt == nil {
@@ -296,7 +276,7 @@ func (c claims) checkTime(now time.Time, expiry bool) (time.Time, error) {
 	if lifetime := exp.Sub(iat); lifetime <= 0 || lifetime > MaxLifetime {
 		return time.Time{}, invalid("lifetime (exp - iat) must be positive and at most %s", MaxLifetime)
 	}
-	// Judged on whole seconds, the precision of the expiry a relay enforces.
+	// Judged on whole seconds, the precision of exp as Sign writes it.
 	switch {
 	case expiry && !now.Before(time.Unix(exp.Add(Leeway).Unix(), 0)):
 		return time.Time{}, invalid("expired")

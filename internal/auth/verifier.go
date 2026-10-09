@@ -13,8 +13,7 @@ import (
 )
 
 // revalidateEvery is how often the relay re-checks a live session against
-// the current key set: how soon a withdrawn key ends its sessions, and how
-// often a credential carrying reval is revalidated.
+// the current key set: how soon a withdrawn key ends its sessions.
 const revalidateEvery = 30 * time.Second
 
 // VerifierConfig configures a relay that verifies credentials itself.
@@ -42,13 +41,12 @@ type VerifierConfig struct {
 // signed by a key in the set, grant only paths within the key's prefix, and be
 // within its validity (token.Verify). A live session is re-checked every 30 s
 // (token.VerifyLive): a key that has left the set ends its sessions. The
-// credential's expiry decides only whether the session may start, unless the
-// credential carries reval: then the session also ends at the credential's
-// expiry. A key marked "publish": false starts no new sessions that may
-// publish (a credential with a scope permitting publish); it never ends a
-// live one, with or without reval, since it pauses what is new rather than
-// what is on air. The key set is kept when a refresh fails
-// (fail-static); after 6 h without one, new sessions are refused.
+// credential's expiry decides only whether the session may start. A key
+// marked "publish": false starts no new sessions that may publish (a
+// credential with a scope permitting publish); it never ends a live one,
+// since it pauses what is new rather than what is on air. The key set is kept
+// when a refresh fails (fail-static): after 6 h without one, new sessions are
+// refused, while live ones continue on the last set.
 type Verifier struct {
 	source keySource
 	store  keyStore
@@ -128,10 +126,7 @@ func (v *Verifier) Authorize(_ context.Context, req Request) (*Grant, error) {
 			v.usage.open(req.ID, s)
 		}
 		if req.Event == EventRevalidate {
-			v.usage.touch(req.ID)
-			if req.Bytes.Sent > 0 || req.Bytes.Received > 0 {
-				v.usage.reportUsage(req.ID, req.Bytes)
-			}
+			v.usage.revalidated(req.ID, req.Bytes)
 		}
 	}
 	return g, err
@@ -175,14 +170,8 @@ func (v *Verifier) decide(req Request) (*Grant, usageSession, error) {
 			"signing key %s starts no new publishing sessions", c.Key.ID)
 	}
 
-	// Only a credential with reval bounds its session; without it, the
-	// expiry decided the admission alone.
-	var expires time.Time
-	if c.Reval {
-		expires = c.ExpiresAt.Add(token.Leeway)
-	}
-	g := &Grant{scopes: c.Scopes, subject: c.Subject, expires: expires, revalidate: revalidateEvery}
-	s := usageSession{kid: c.Key.ID, expires: expires}
+	g := &Grant{scopes: c.Scopes, subject: c.Subject, revalidate: revalidateEvery}
+	s := usageSession{kid: c.Key.ID}
 	switch {
 	case publishes && subscribes:
 		s.role = roleBoth

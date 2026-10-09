@@ -27,8 +27,8 @@ const (
 	// receiver can't be reached; the oldest are dropped past it. Usage needs
 	// no cap: it is one cumulative record per live session.
 	maxPendingEvents = 50_000
-	// sessionGrace is how long a session is remembered past its expiry, for
-	// an end that arrives late.
+	// sessionGrace is how long a session is remembered after it was last
+	// heard of, at connect or a revalidate, for an end that arrives late.
 	sessionGrace = 5 * time.Minute
 )
 
@@ -61,12 +61,9 @@ type usageRecord struct {
 type usageSession struct {
 	kid  string
 	role string
-	// expires is when the session must end, its grant's; zero for one
-	// whose credential doesn't bound it.
-	expires time.Time
 	// seen is when the session was last heard of, at connect or a
-	// revalidate: an unbounded session whose end never came is forgotten
-	// once it stops being revalidated.
+	// revalidate: one whose end never came is forgotten once it stops being
+	// revalidated.
 	seen time.Time
 	// counted is how much of a subscribe-only session's bytes its key's
 	// viewer total already holds.
@@ -141,31 +138,25 @@ func (r *usageReporter) open(id string, s usageSession) {
 	}
 }
 
-// touch records that a session it knows is still live.
-func (r *usageReporter) touch(id string) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if s, ok := r.sessions[id]; ok {
-		s.seen = r.now()
-		r.sessions[id] = s
-	}
-}
-
-// reportUsage records a session's cumulative bytes, if it knows the session.
-func (r *usageReporter) reportUsage(id string, b Bytes) {
+// revalidated records that a session it knows is still live, with its
+// cumulative bytes. A session it doesn't know is left unknown.
+func (r *usageReporter) revalidated(id string, b Bytes) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	s, ok := r.sessions[id]
 	if !ok {
 		return
 	}
-	if s.role == roleSubscribe {
-		r.sessions[id] = r.countViewer(s, b)
-		return
+	s.seen = r.now()
+	switch {
+	case s.role == roleSubscribe:
+		s = r.countViewer(s, b)
+	case b.Sent > 0 || b.Received > 0:
+		rec := r.record(recordUsage, id, s)
+		rec.Metrics = usageMetrics(b)
+		r.usage[id] = rec
 	}
-	rec := r.record(recordUsage, id, s)
-	rec.Metrics = usageMetrics(b)
-	r.usage[id] = rec
+	r.sessions[id] = s
 }
 
 // close records a session's end with its final totals and forgets it. It
@@ -255,7 +246,7 @@ func (r *usageReporter) run(ctx context.Context) {
 			}
 			return
 		case <-ticker.C:
-			r.forgetExpired()
+			r.forgetStale()
 			r.logOutcome(ctx, r.flush(ctx))
 		}
 	}
@@ -280,18 +271,14 @@ func (r *usageReporter) logOutcome(ctx context.Context, err error) {
 	}
 }
 
-// forgetExpired drops sessions whose end never came: one well past its
-// expiry, or, with none, one not revalidated for as long.
-func (r *usageReporter) forgetExpired() {
+// forgetStale drops sessions whose end never came: those not heard of for
+// sessionGrace.
+func (r *usageReporter) forgetStale() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	cutoff := r.now().Add(-sessionGrace)
 	for id, s := range r.sessions {
-		last := s.expires
-		if last.IsZero() {
-			last = s.seen
-		}
-		if last.Before(cutoff) {
+		if s.seen.Before(cutoff) {
 			delete(r.sessions, id)
 		}
 	}

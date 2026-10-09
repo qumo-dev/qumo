@@ -10,7 +10,7 @@ weight: 2
 1. **Once:** generate a signing key pair (`qumo auth keygen`). The private key stays on your app's server; the relay gets the public one, in a key set.
 2. **Per client:** your server signs a token naming what that client may do on which broadcasts and tracks ([below](#what-a-token-grants)). Use the Go package `github.com/qumo-dev/qumo/token`, or `qumo auth token` while testing.
 3. **The client** connects with the token in the relay URL: `https://relay:4433/?jwt=<token>` (WebTransport), or `moqt://relay:4433/?jwt=<token>` (native QUIC).
-4. **The relay** verifies the token itself against the key set (`QUMO_AUTH_KEYS=keys.json qumo relay`) and enforces what it grants. The token's expiry decides whether a session may start; the session then lives on, unless the token carries `reval`, in which case it ends when the token expires and the client reconnects with a fresh one ([configuration](../../configuration/#credential-expiry-and-live-sessions)).
+4. **The relay** verifies the token itself against the key set (`QUMO_AUTH_KEYS=keys.json qumo relay`) and enforces what it grants. The token's expiry decides whether a session may start; the session then lives on until it closes or its key leaves the set ([configuration](../../configuration/#credential-expiry-and-live-sessions)).
 
 ## Usage
 
@@ -40,10 +40,10 @@ It prints the key's `kid` (its RFC 7638 thumbprint), the paths it may grant, and
 ### token
 
 ```
-qumo auth token [-key signing-key.jwk] [-scope ACTIONS:BROADCAST[:TRACK] ...] [-publish PATH] [-subscribe PATH] [-sub SUBJECT] [-ttl 1h] [-reval]
+qumo auth token [-key signing-key.jwk] [-scope ACTIONS:BROADCAST[:TRACK] ...] [-publish PATH] [-subscribe PATH] [-sub SUBJECT] [-ttl 1h]
 ```
 
-Signs a token granting the scopes `-scope` names, valid for `-ttl`, at most one hour. `-scope` may be repeated: `ACTIONS` is a comma-separated list of `publish`, `subscribe` and `fetch`; `BROADCAST` is a path, or `a/b/**` for it and every path beneath it; `TRACK` is one track name, or omitted for every track. `-publish PATH` is short for `-scope publish:PATH/**`, and `-subscribe PATH` for `-scope subscribe,fetch:PATH/**`; they add to any `-scope`. At least one scope is needed. `-sub` names the bearer. With `-reval`, the token carries `reval` and a session it admits ends when the token expires; without it, the session outlives the token. The stderr summary says which. For example, `qumo auth token -sub alice -scope publish:room/123:chat -scope fetch:room/123/**`. The token alone goes to stdout, so `T=$(qumo auth token …)` captures it; what it grants and when it expires go to stderr. A path outside the key's prefix is refused here, as the relay would refuse the token; `token.Sign` does the same.
+Signs a token granting the scopes `-scope` names, valid for `-ttl`, at most one hour. `-scope` may be repeated: `ACTIONS` is a comma-separated list of `publish`, `subscribe` and `fetch`; `BROADCAST` is a path, or `a/b/**` for it and every path beneath it; `TRACK` is one track name, or omitted for every track. `-publish PATH` is short for `-scope publish:PATH/**`, and `-subscribe PATH` for `-scope subscribe,fetch:PATH/**`; they add to any `-scope`. At least one scope is needed. `-sub` names the bearer. For example, `qumo auth token -sub alice -scope publish:room/123:chat -scope fetch:room/123/**`. The token alone goes to stdout, so `T=$(qumo auth token …)` captures it; what it grants and when it expires go to stderr. A path outside the key's prefix is refused here, as the relay would refuse the token; `token.Sign` does the same.
 
 ## What a token grants
 
@@ -86,10 +86,5 @@ tok, err := token.Sign(key, token.Grant{
 		// record into its chat track at a funnel, as alice
 		{Actions: []token.Action{token.ActionPublish}, Broadcast: "acme/app/rooms/42", Track: "chat"},
 	},
-}, token.Options{TTL: time.Hour})
-
-// or, for a session that must end when the token expires:
-tok, err = token.Sign(key, token.Grant{Scopes: []token.Scope{
-	{Actions: []token.Action{token.ActionSubscribe}, Broadcast: "acme/app/rooms/42", Prefix: true},
-}}, token.Options{TTL: 5 * time.Minute, Reval: true})
+}, time.Hour)
 ```

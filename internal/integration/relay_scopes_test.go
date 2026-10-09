@@ -40,7 +40,7 @@ func TestRelay_ScopedCredentials(t *testing.T) {
 	require.NoError(t, err)
 	addr, srv := startAuthRelay(t, verifier.Authorize, nil)
 	url := func(scopes ...token.Scope) string {
-		c, err := token.Sign(key, token.Grant{Scopes: scopes}, token.Options{TTL: time.Minute})
+		c, err := token.Sign(key, token.Grant{Scopes: scopes}, time.Minute)
 		require.NoError(t, err)
 		return "https://" + addr + "/?jwt=" + c
 	}
