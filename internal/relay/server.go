@@ -66,8 +66,11 @@ type Server struct {
 	framePool *FramePool
 
 	webtransportHandler *moqt.WebTransportHandler
-	statusHandler       *statusHandler
-	initOnce            sync.Once
+	// websocketHandler serves MoQ over QMux on WebSocket. It is nil unless
+	// Config.WebSocket is set.
+	websocketHandler *moqt.WebSocketHandler
+	statusHandler    *statusHandler
+	initOnce         sync.Once
 
 	// sampler is the single server-wide stats sampler. It replaces the former
 	// per-connection, per-session, and per-track poller goroutines with one
@@ -124,10 +127,24 @@ func (s *Server) ServeStatus(w http.ResponseWriter, r *http.Request) {
 // the request context. Only an upgrade (an extended CONNECT) is checked;
 // any other request falls through to the
 // WebTransport handler, which answers it without a session.
+//
+// With Config.WebSocket set it takes WebSocket upgrades too, on the same
+// paths and through the same admission: the transport is the only
+// difference between the two kinds of session.
 func (s *Server) HandleWebTransport(w http.ResponseWriter, r *http.Request) {
 	s.init()
 	if s.webtransportHandler == nil {
 		w.WriteHeader(http.StatusServiceUnavailable)
+		return
+	}
+	if s.websocketHandler != nil && isWebSocketUpgrade(r) {
+		// A request gomoqt won't upgrade goes straight to it, unasked: an
+		// Origin it refuses, or no subprotocol it speaks.
+		if !s.websocketHandler.CheckOrigin(r) || !offersSubprotocol(r, moqt.NextProtoQMux) {
+			s.websocketHandler.ServeHTTP(w, r)
+			return
+		}
+		s.serveAdmitted(w, r, s.websocketHandler, s.upgradeRequest(r, auth.TransportWebSocket))
 		return
 	}
 	// A request gomoqt won't upgrade goes straight to it, unasked: not an
@@ -137,14 +154,19 @@ func (s *Server) HandleWebTransport(w http.ResponseWriter, r *http.Request) {
 		s.webtransportHandler.ServeHTTP(w, r)
 		return
 	}
-	req := s.webTransportRequest(r)
+	s.serveAdmitted(w, r, s.webtransportHandler, s.upgradeRequest(r, auth.TransportWebTransport))
+}
+
+// serveAdmitted runs the connect check for an upgrade described by req, and
+// hands an admitted request to upgrader with its admission.
+func (s *Server) serveAdmitted(w http.ResponseWriter, r *http.Request, upgrader http.Handler, req auth.Request) {
 	g, err := s.admit(r.Context(), req)
 	if err != nil {
 		w.WriteHeader(auth.RefusalStatus(err))
 		return
 	}
 	a := decidedAdmission(g, req)
-	s.webtransportHandler.ServeHTTP(w, r.WithContext(withAdmission(r.Context(), a)))
+	upgrader.ServeHTTP(w, r.WithContext(withAdmission(r.Context(), a)))
 	// gomoqt serves the session within ServeHTTP. If the upgrade failed
 	// anyway, no session ran and none will report its end: report it here,
 	// so the session counted at connect is closed.
@@ -196,6 +218,18 @@ func (s *Server) init() {
 			Handler:     moqt.HandleFunc(s.Relay),
 			Logger:      s.MOQServer.Logger,
 			CheckOrigin: cors.NewChecker(s.AllowedOrigins),
+		}
+
+		if s.Config != nil && s.Config.WebSocket {
+			// Server ties the sessions to MOQServer's Shutdown and Close,
+			// so they get the GOAWAY a WebTransport session gets.
+			s.websocketHandler = &moqt.WebSocketHandler{
+				TrackMux:    s.TrackMux,
+				Handler:     moqt.HandleFunc(s.Relay),
+				Logger:      s.MOQServer.Logger,
+				CheckOrigin: cors.NewChecker(s.AllowedOrigins),
+				Server:      s.MOQServer,
+			}
 		}
 
 		// ConnContext intercepts each accepted QUIC connection before the MOQ
@@ -582,8 +616,9 @@ func (s *Server) maintainPeer(ctx context.Context, peer Peer) {
 	}
 }
 
-// Relay handles inbound WebTransport sessions (publishers and browser
-// clients), already admitted at the upgrade (HandleWebTransport).
+// Relay handles inbound WebTransport and WebSocket sessions (publishers
+// and browser clients), already admitted at the upgrade
+// (HandleWebTransport).
 func (s *Server) Relay(sess *moqt.Session) {
 	if admissionFrom(sess.Context()) == nil {
 		// Unreachable through HandleWebTransport; refuse rather than run open.
@@ -663,6 +698,16 @@ func (s *Server) serveSession(sess *moqt.Session) {
 			s.reportEnd(sess.Context(), a.req, sess.Stats(), endReason(l, context.Cause(sess.Context())))
 		}()
 	}
+	// Registered before the close below, so that it runs after it, with the
+	// session's final byte totals and close cause.
+	transport := sessionTransport(a)
+	metricSessionsTotal.WithLabelValues(transport).Inc()
+	defer func() {
+		stats := sess.Stats()
+		metricSessionBytes.WithLabelValues(transport, "sent").Add(float64(stats.BytesSent))
+		metricSessionBytes.WithLabelValues(transport, "received").Add(float64(stats.BytesReceived))
+		metricSessionsClosed.WithLabelValues(transport, endReason(l, context.Cause(sess.Context()))).Inc()
+	}()
 	defer sess.CloseWithError(moqt.NoError, moqt.NoError.String())
 	if checked {
 		if l = startLease(sess.Context(), sess, s.Authorize, a.req, a.grant.Revalidate()); l != nil {

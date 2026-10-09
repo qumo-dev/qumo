@@ -36,6 +36,9 @@ const (
 const (
 	TransportWebTransport = "webtransport"
 	TransportQUIC         = "quic"
+	// TransportWebSocket is QMux over WebSocket, the path of clients
+	// without a working WebTransport.
+	TransportWebSocket = "websocket"
 )
 
 // RefusedError is an explicit refusal of a session, with the HTTP status a

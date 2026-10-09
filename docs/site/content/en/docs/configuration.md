@@ -118,6 +118,21 @@ relay's HTTP port.
 |---|---|---|
 | `CORS_ALLOWED_ORIGINS` | (unset) | Origins permitted to open WebTransport sessions to `qumo relay`, `qumo rtmp`, and `qumo rtsp`/`rtsp-push`. Comma-separated. `*` allows any origin; `same-host` allows any port on the request's own host. If unset, only same-origin and headerless (non-browser) clients are accepted. |
 
+## WebSocket fallback (optional)
+
+WebTransport does not work on WebKit: a session stalls after about 7,600 streams or 16 MB ([WebKit bug 319818](https://bugs.webkit.org/show_bug.cgi?id=319818)), and every browser on iOS is WebKit. With the fallback on, the relay also takes WebSocket upgrades on its client endpoint (`/`) and serves them as MoQ sessions over [QMux](https://www.ietf.org/archive/id/draft-ietf-quic-qmux-02.html). `@qumo/moq` picks WebSocket by itself on WebKit.
+
+| Variable | Default | Description |
+|---|---|---|
+| `WS_ENABLE` | (unset) | `1` takes WebSocket upgrades on `RELAY_ADDR`'s TCP port. That port is plain HTTP and browsers need `wss://`, so put TLS in front of it (a proxy or a load balancer), or set `WS_TLS_ADDR`. |
+| `WS_TLS_ADDR` | (unset) | A TCP address, such as `:443`, to take WebSocket upgrades on with TLS, using `CERT_FILE` and `KEY_FILE`. Implies `WS_ENABLE`. Only the client endpoint is served there; health, status and metrics stay on `RELAY_ADDR`. |
+
+A WebSocket session is admitted exactly as a WebTransport one: the same paths, the same credential in the URL (`wss://relay.example.com/…?jwt=…`), the same grant and the same revalidation. Sessions on every transport share tracks, so a publisher on one reaches subscribers on the others.
+
+`CORS_ALLOWED_ORIGINS` applies to WebSocket upgrades too, and there it is the only origin check: browsers do not apply CORS to WebSocket.
+
+Over WebSocket everything shares one TCP connection. A lost segment delays every stream behind it, and there are no datagrams. A publisher that sends one group per audio frame still works, but groups that carry several frames cost less.
+
 ## Session auth (optional)
 
 A client puts its credential in the connect URL: `https://relay.example.com/…?jwt=…` over WebTransport, or `moqt://relay.example.com/…?jwt=…` over native QUIC. **The relay verifies the credential itself, against a key set** (`QUMO_AUTH_KEYS`); no other process is involved.

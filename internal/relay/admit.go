@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"strings"
 	"sync/atomic"
 
 	"github.com/qumo-dev/gomoqt/moqt"
@@ -134,12 +135,14 @@ func newSessionID() string {
 	return hex.EncodeToString(b[:])
 }
 
-// webTransportRequest describes a WebTransport upgrade for Authorize.
-func (s *Server) webTransportRequest(r *http.Request) auth.Request {
+// upgradeRequest describes an HTTP upgrade, to WebTransport or to
+// WebSocket, for Authorize. Both carry the path and the credential in the
+// request URI, so a session is described the same on either.
+func (s *Server) upgradeRequest(r *http.Request, transport string) auth.Request {
 	return auth.Request{
 		ID:        newSessionID(),
 		Event:     auth.EventConnect,
-		Transport: auth.TransportWebTransport,
+		Transport: transport,
 		Remote:    r.RemoteAddr,
 		Path:      r.URL.Path,
 		Query:     r.URL.RawQuery,
@@ -239,4 +242,59 @@ func (s *Server) reportEnd(ctx context.Context, req auth.Request, stats moqt.Ses
 		return
 	}
 	metricAuthRequests.WithLabelValues(auth.EventEnd, authOK).Inc()
+}
+
+// Transports of the sessions that have no connect request to name one.
+const (
+	transportPeer     = "peer"
+	transportInternal = "internal"
+)
+
+// sessionTransport names the transport of a session for the per-transport
+// metrics: what its connect request said, or peer or internal for a session
+// admitted without one.
+func sessionTransport(a *admission) string {
+	switch {
+	case a == nil:
+		// A session this relay dialed: a relay peer.
+		return transportPeer
+	case a.internal:
+		return transportInternal
+	case a.req.Transport != "":
+		return a.req.Transport
+	}
+	return transportPeer
+}
+
+// isWebSocketUpgrade reports whether r asks to upgrade to WebSocket.
+func isWebSocketUpgrade(r *http.Request) bool {
+	return r.Method == http.MethodGet &&
+		headerHasToken(r.Header, "Connection", "upgrade") &&
+		headerHasToken(r.Header, "Upgrade", "websocket")
+}
+
+// offersSubprotocol reports whether a WebSocket upgrade offers protocol.
+// Subprotocols are compared exactly: they are case-sensitive.
+func offersSubprotocol(r *http.Request, protocol string) bool {
+	for _, value := range r.Header.Values("Sec-WebSocket-Protocol") {
+		for part := range strings.SplitSeq(value, ",") {
+			if strings.TrimSpace(part) == protocol {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// headerHasToken reports whether a comma-separated header carries token,
+// in any case.
+func headerHasToken(h http.Header, name, token string) bool {
+	for _, value := range h.Values(name) {
+		for part := range strings.SplitSeq(value, ",") {
+			if strings.EqualFold(strings.TrimSpace(part), token) {
+				return true
+			}
+		}
+	}
+	return false
 }

@@ -11,6 +11,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **A WebSocket fallback for clients whose WebTransport does not work (`qumo relay`, #59).** WebKit's WebTransport stalls after about 7,600 streams or 16 MB ([WebKit bug 319818](https://bugs.webkit.org/show_bug.cgi?id=319818)), and every browser on iOS is WebKit. With `WS_ENABLE=1` the relay also takes WebSocket upgrades on its client endpoint and serves them as MoQ sessions over QMux; `WS_TLS_ADDR` takes them on a TCP port of its own with TLS, using `CERT_FILE` and `KEY_FILE`. Off by default.
+  - **A WebSocket session is admitted exactly as a WebTransport one:** the same paths, the same credential in the URL, the same grant, lease and end report. Its `transport` in a connect request is `websocket`.
+  - **`CORS_ALLOWED_ORIGINS` is the only origin check for WebSocket,** since browsers do not apply CORS to it.
+  - **The subprotocol is the version negotiation:** `qmux-02.moq-lite-05`. An upgrade that offers none the relay speaks is refused with `400`, before the session is checked.
+  - Sessions on every transport share tracks: a publisher on one reaches subscribers on the others.
+  - There is no `WS_PATH`: a session's path is part of what it is admitted for, so WebSocket is taken on the same paths as WebTransport.
+- **Per-transport session metrics (`qumo relay`).** `qumo_relay_sessions_total{transport}`, `qumo_relay_sessions_closed_total{transport,reason}` and `qumo_relay_session_bytes_total{transport,direction}`.
 - **A `post` action (`token`, `qumo auth token -scope`).** `post` grants sending messages into a track a funnel gathers many senders into: `{"actions": ["post"], "broadcast": {"exact": "room/123"}, "track": {"exact": "chat"}}`. A relay never reads it as publishing. In Go it is `token.ActionPost`.
 
 ### Changed

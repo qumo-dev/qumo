@@ -65,6 +65,18 @@ func sanitizeLog(s string) string {
 //	                           "same-host" allows any port on the request's host).
 //	                           Set this when serving the UI from a different
 //	                           origin than the relay (e.g. a Vite dev server).
+//	                           It applies to WebSocket upgrades too, where it is
+//	                           the only check: browsers do not apply CORS to
+//	                           WebSocket.
+//	WS_ENABLE                - "1" to also take WebSocket upgrades on the
+//	                           client endpoint and serve them as MoQ sessions
+//	                           over QMux, for clients whose WebTransport does not
+//	                           work (every browser on WebKit). They arrive on
+//	                           RELAY_ADDR's TCP port, which is plain HTTP: put
+//	                           TLS in front of it, or set WS_TLS_ADDR.
+//	WS_TLS_ADDR              - TCP address (e.g. ":443") to take WebSocket
+//	                           upgrades on with TLS, using CERT_FILE and
+//	                           KEY_FILE. Implies WS_ENABLE.
 func Run(args []string) error {
 	// Execution modes are flags (discoverable, self-documenting); secrets and
 	// deployment configuration stay env vars (see relay-config.example.env).
@@ -158,7 +170,9 @@ func Run(args []string) error {
 		return errors.New("QUMO_USAGE_URL needs QUMO_AUTH_KEYS: usage is reported for the sessions the relay verifies")
 	}
 
+	wsTLSAddr := os.Getenv("WS_TLS_ADDR")
 	relayCfg := Config{
+		WebSocket:      wsTLSAddr != "" || envBool("WS_ENABLE"),
 		NodeID:         nodeID,
 		Role:           flags.Role,
 		GroupCacheSize: groupCacheSize,
@@ -267,6 +281,12 @@ func Run(args []string) error {
 		log.Printf("\t%-8s: %s\n", "Role", sanitizeLog(relayCfg.Role))
 	}
 	log.Printf("\t%-8s: WebTransport endpoint\n", "/")
+	switch {
+	case wsTLSAddr != "":
+		log.Printf("\t%-8s: WebSocket (QMux) endpoint, also with TLS on %s\n", "/", sanitizeLog(wsTLSAddr))
+	case relayCfg.WebSocket:
+		log.Printf("\t%-8s: WebSocket (QMux) endpoint, plain HTTP: needs TLS in front\n", "/")
+	}
 	log.Printf("\t%-8s: health probe\n", "/health")
 	log.Printf("\t%-8s: Prometheus metrics\n", "/metrics")
 	for _, p := range relayCfg.Peers {
@@ -310,8 +330,24 @@ func Run(args []string) error {
 	// Start peer connections in background
 	go relayServer.ConnectPeers(ctx)
 
+	// WebSocket with TLS: the client endpoint alone, on its own TCP port.
+	// The health, status and metrics routes stay on the plain HTTP server.
+	httpServers := servers{httpServer}
+	if wsTLSAddr != "" {
+		cert, err := tls.LoadX509KeyPair(certFile, keyFile)
+		if err != nil {
+			return fmt.Errorf("failed to load TLS certificates for WS_TLS_ADDR: %w", err)
+		}
+		httpServers = append(httpServers, tlsServer{&http.Server{
+			Addr:              wsTLSAddr,
+			Handler:           http.HandlerFunc(relayServer.HandleWebTransport),
+			TLSConfig:         &tls.Config{MinVersion: tls.VersionTLS12, Certificates: []tls.Certificate{cert}},
+			ReadHeaderTimeout: 5 * time.Second,
+		}})
+	}
+
 	// Delegate to testable helper that runs servers until ctx is cancelled
-	if err := serveComponents(ctx, relayServer, httpServer, 10*time.Second); err != nil {
+	if err := serveComponents(ctx, relayServer, httpServers, 10*time.Second); err != nil {
 		slog.Error("serveComponents failed", "err", err)
 		cancel()
 		return err
@@ -329,6 +365,47 @@ const endReportGrace = 5 * time.Second
 type server interface {
 	ListenAndServe() error
 	Shutdown(ctx context.Context) error
+}
+
+// envBool reports whether the environment variable key is set to a true
+// value: "1", "true", "yes" or "on", in any case.
+func envBool(key string) bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv(key))) {
+	case "1", "true", "yes", "on":
+		return true
+	}
+	return false
+}
+
+// tlsServer is an HTTP server that serves TLS with the certificates of its
+// TLSConfig.
+type tlsServer struct {
+	*http.Server
+}
+
+func (s tlsServer) ListenAndServe() error {
+	return s.ListenAndServeTLS("", "")
+}
+
+// servers runs several servers as one: ListenAndServe returns when the
+// first of them does, and Shutdown shuts them all down.
+type servers []server
+
+func (ss servers) ListenAndServe() error {
+	errs := make(chan error, len(ss))
+	for _, s := range ss {
+		go func() { errs <- s.ListenAndServe() }()
+	}
+	// The others end at Shutdown, which the caller runs once this returns.
+	return <-errs
+}
+
+func (ss servers) Shutdown(ctx context.Context) error {
+	var errs []error
+	for _, s := range ss {
+		errs = append(errs, s.Shutdown(ctx))
+	}
+	return errors.Join(errs...)
 }
 
 // serveComponents starts the provided servers and blocks until ctx is cancelled.
