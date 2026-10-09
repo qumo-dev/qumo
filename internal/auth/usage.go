@@ -138,16 +138,19 @@ func (r *usageReporter) open(id string, s usageSession) {
 	}
 }
 
-// revalidated records that a session it knows is still live, with its
-// cumulative bytes. A session it doesn't know is left unknown.
-func (r *usageReporter) revalidated(id string, b Bytes) {
+// revalidated records a session's cumulative bytes at a revalidate and, when
+// live is set, that the session is still live. A session it doesn't know is
+// left unknown.
+func (r *usageReporter) revalidated(id string, b Bytes, live bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	s, ok := r.sessions[id]
 	if !ok {
 		return
 	}
-	s.seen = r.now()
+	if live {
+		s.seen = r.now()
+	}
 	switch {
 	case s.role == roleSubscribe:
 		s = r.countViewer(s, b)

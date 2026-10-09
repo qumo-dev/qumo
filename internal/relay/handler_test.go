@@ -903,7 +903,7 @@ func TestRelayHandler_Publishes(t *testing.T) {
 			h := newTestRelayHandler(t.Context())
 			h.grant = tt.grant
 
-			assert.Equal(t, tt.want, h.publishes("video"))
+			assert.Equal(t, tt.want, h.publishes(h.announcement.BroadcastPath(), "video"))
 		})
 	}
 }

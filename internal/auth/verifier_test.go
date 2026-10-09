@@ -382,8 +382,8 @@ func TestUsageReporter(t *testing.T) {
 		sink := &fakeUsageSink{}
 		r := newTestUsage(t, sink)
 		r.open("s1", testUsageSession)
-		r.revalidated("s1", Bytes{Sent: 1, Received: 10})
-		r.revalidated("s1", Bytes{Sent: 2, Received: 20})
+		r.revalidated("s1", Bytes{Sent: 1, Received: 10}, true)
+		r.revalidated("s1", Bytes{Sent: 2, Received: 20}, true)
 		require.NoError(t, r.flush(context.Background()))
 		batches := sink.received()
 		require.Len(t, batches, 1)
@@ -396,9 +396,9 @@ func TestUsageReporter(t *testing.T) {
 		sink := &fakeUsageSink{statuses: []int{http.StatusBadGateway, http.StatusOK}}
 		r := newTestUsage(t, sink)
 		r.open("s1", testUsageSession)
-		r.revalidated("s1", Bytes{Received: 10})
+		r.revalidated("s1", Bytes{Received: 10}, true)
 		assert.Error(t, r.flush(context.Background()))
-		r.revalidated("s1", Bytes{Received: 20})
+		r.revalidated("s1", Bytes{Received: 20}, true)
 		require.NoError(t, r.flush(context.Background()))
 		retry := sink.received()[1]
 		require.Len(t, retry, 2)
@@ -466,7 +466,7 @@ func TestUsageReporter(t *testing.T) {
 		sink := &fakeUsageSink{}
 		r := newTestUsage(t, sink)
 		assert.False(t, r.close("nope", Bytes{Sent: 1}, ""))
-		r.revalidated("nope", Bytes{Sent: 1})
+		r.revalidated("nope", Bytes{Sent: 1}, true)
 		require.NoError(t, r.flush(context.Background()))
 		assert.Empty(t, sink.received(), "nothing pending, nothing sent")
 	})
@@ -476,13 +476,16 @@ func TestUsageReporter(t *testing.T) {
 		r := newTestUsage(t, &fakeUsageSink{})
 		r.now = func() time.Time { return now }
 		r.open("gone", testUsageSession)
+		r.open("refused", testUsageSession)
 		r.open("live", testUsageSession)
 
 		now = now.Add(sessionGrace + time.Second)
-		r.revalidated("live", Bytes{})
+		r.revalidated("refused", Bytes{Sent: 1}, false)
+		r.revalidated("live", Bytes{}, true)
 		r.forgetStale()
 
 		assert.False(t, r.close("gone", Bytes{}, ""), "not revalidated within the grace")
+		assert.False(t, r.close("refused", Bytes{}, ""), "a refused revalidate doesn't keep it")
 		assert.True(t, r.close("live", Bytes{}, ""), "revalidated: still remembered")
 	})
 }

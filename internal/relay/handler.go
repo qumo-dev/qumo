@@ -321,9 +321,9 @@ func (h *relayHandler) RouteStats() RouteStats {
 }
 
 // publishes reports whether the announcing session may publish the track
-// named name of its broadcast.
-func (h *relayHandler) publishes(name moqt.TrackName) bool {
-	return h.grant == nil || h.grant.Allows(token.ActionPublish, h.announcement.BroadcastPath(), name)
+// named name of its broadcast, at path.
+func (h *relayHandler) publishes(path moqt.BroadcastPath, name moqt.TrackName) bool {
+	return h.grant == nil || h.grant.Allows(token.ActionPublish, path, name)
 }
 
 // TrackInfo implements moqt.TrackInfoProvider by querying the upstream session
@@ -331,7 +331,9 @@ func (h *relayHandler) publishes(name moqt.TrackName) bool {
 // and deduplicating concurrent upstream queries with singleflight. A track the
 // publisher's grant doesn't cover is unknown.
 func (h *relayHandler) TrackInfo(name moqt.TrackName) (pubInfo moqt.PublishInfo, ok bool) {
-	if h.announcement == nil || !h.publishes(name) {
+	// Capture local snapshots for thread-safety and stable references
+	announcement := h.announcement
+	if announcement == nil || !h.publishes(announcement.BroadcastPath(), name) {
 		return moqt.PublishInfo{}, false
 	}
 	// Fast path: cache hit
@@ -339,12 +341,10 @@ func (h *relayHandler) TrackInfo(name moqt.TrackName) (pubInfo moqt.PublishInfo,
 		return val.(moqt.PublishInfo), true
 	}
 
-	// Capture local snapshots for thread-safety and stable references
 	session := h.session
-	announcement := h.announcement
 	ctx := h.ctx
 
-	if session == nil || announcement == nil || !announcement.IsActive() || ctx.Err() != nil {
+	if session == nil || !announcement.IsActive() || ctx.Err() != nil {
 		return moqt.PublishInfo{}, false
 	}
 
@@ -427,7 +427,7 @@ func (h *relayHandler) subscribe(name moqt.TrackName) *trackDistributor {
 		return nil
 	}
 
-	if !h.publishes(name) {
+	if !h.publishes(announcement.BroadcastPath(), name) {
 		slog.Info("relay: subscription refused: the publisher's grant does not cover the track",
 			"broadcast_path", announcement.BroadcastPath(), "track_name", name)
 		return nil

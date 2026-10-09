@@ -114,8 +114,8 @@ func refuse(status int, format string, args ...any) error {
 
 // Authorize verifies a connect or revalidate. A new session needs a key set
 // no older than the fail-static limit; a live one keeps going on a stale
-// set, and ends when its key has left the set. The bytes of a revalidate are reported whatever it
-// decides, since they were sent.
+// set, and ends when its key has left the set. The bytes of a revalidate are
+// reported whatever it decides, since they were sent.
 func (v *Verifier) Authorize(_ context.Context, req Request) (*Grant, error) {
 	g, s, err := v.decide(req)
 	if v.usage != nil {
@@ -126,7 +126,10 @@ func (v *Verifier) Authorize(_ context.Context, req Request) (*Grant, error) {
 			v.usage.open(req.ID, s)
 		}
 		if req.Event == EventRevalidate {
-			v.usage.revalidated(req.ID, req.Bytes)
+			// A refused session is ending; one that couldn't be checked
+			// lives on, and the relay asks again.
+			_, refused := errors.AsType[RefusedError](err)
+			v.usage.revalidated(req.ID, req.Bytes, !refused)
 		}
 	}
 	return g, err
