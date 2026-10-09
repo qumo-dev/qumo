@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"encoding/json/jsontext"
 	"encoding/json/v2"
+	"errors"
 	"fmt"
 	"slices"
 
@@ -67,17 +68,22 @@ func (m keyMembers) pausesPublish() (bool, error) {
 // the set token.ParseKeySet takes (each key with its prefix), where a key may
 // also carry "pause": ["publish"]. Member names are case-sensitive and an
 // object naming a member twice is refused, as in token.ParseKeySet. An empty
-// set is valid and admits nothing, so a key-set server with no keys yet is
-// not mistaken for a failing one.
+// "keys" list is valid and admits nothing, so a key-set server with no keys
+// yet is not mistaken for a failing one; a set without a "keys" list is
+// refused, so the relay keeps its last good set rather than dropping every
+// key.
 func parseKeySet(raw []byte) (*keySet, error) {
 	var set struct {
-		Keys []jsontext.Value `json:"keys"`
+		Keys *[]jsontext.Value `json:"keys"`
 	}
 	if err := json.Unmarshal(raw, &set); err != nil {
 		return nil, fmt.Errorf("decode key set: %w", err)
 	}
+	if set.Keys == nil {
+		return nil, errors.New(`decode key set: no "keys" list`)
+	}
 	ks := &keySet{keys: map[string]token.Key{}, pausedPublish: map[string]bool{}}
-	if len(set.Keys) == 0 {
+	if len(*set.Keys) == 0 {
 		return ks, nil
 	}
 	// token.ParseKeySet validates every key and refuses one listed twice.
@@ -92,7 +98,7 @@ func parseKeySet(raw []byte) (*keySet, error) {
 	for kid, k := range keys {
 		kids[string(k.Public)] = kid
 	}
-	for i, entry := range set.Keys {
+	for i, entry := range *set.Keys {
 		var members keyMembers
 		if err := json.Unmarshal(entry, &members); err != nil {
 			return nil, fmt.Errorf("key %d: %w", i, err)

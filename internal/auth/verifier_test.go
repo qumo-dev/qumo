@@ -86,7 +86,11 @@ func TestParseKeySet(t *testing.T) {
 			keyEntry(t, active, map[string]any{"publish": true, "pause": []string{"publish"}}) + `]}`,
 		"pause named twice": `{"keys":[{"pause":["publish"],"pause":[],` +
 			strings.TrimPrefix(keyEntry(t, active, nil), "{") + `]}`,
-		"keys named twice": `{"keys":[],"keys":[` + keyEntry(t, active, nil) + `]}`,
+		"keys named twice":           `{"keys":[],"keys":[` + keyEntry(t, active, nil) + `]}`,
+		"no keys member":             `{}`,
+		"keys null":                  `{"keys":null}`,
+		"keys in another case":       `{"Keys":[` + keyEntry(t, active, nil) + `]}`,
+		"empty keys in another case": `{"Keys":[]}`,
 	} {
 		_, err := parseKeySet([]byte(raw))
 		assert.Error(t, err, name)
