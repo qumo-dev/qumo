@@ -120,10 +120,13 @@ func TestVerify_Invalid(t *testing.T) {
 		"unknown claim":      {token: func() string { return signer.sign(t, with(func(c map[string]any) { c["role"] = "admin" })) }, wantReason: `"role"`},
 		"sub with path_auth": {token: func() string { return signer.sign(t, with(func(c map[string]any) { c["sub"] = "user-1" })) }, wantReason: "sub goes with scopes"},
 		"aud is refused":     {token: func() string { return signer.sign(t, with(func(c map[string]any) { c["aud"] = "qumo-relay" })) }, wantReason: `"aud"`},
-		"no exp":             {token: func() string { return signer.sign(t, with(func(c map[string]any) { delete(c, "exp") })) }, wantReason: "required"},
-		"no iat":             {token: func() string { return signer.sign(t, with(func(c map[string]any) { delete(c, "iat") })) }, wantReason: "required"},
-		"no nbf":             {token: func() string { return signer.sign(t, with(func(c map[string]any) { delete(c, "nbf") })) }, wantReason: "required"},
-		"no path_auth":       {token: func() string { return signer.sign(t, with(func(c map[string]any) { delete(c, "path_auth") })) }, wantReason: "path_auth"},
+		// CAT's reval asks for a live session to end as its token expires,
+		// which never happens here.
+		"reval is refused": {token: func() string { return signer.sign(t, with(func(c map[string]any) { c["reval"] = 30 })) }, wantReason: `"reval"`},
+		"no exp":           {token: func() string { return signer.sign(t, with(func(c map[string]any) { delete(c, "exp") })) }, wantReason: "required"},
+		"no iat":           {token: func() string { return signer.sign(t, with(func(c map[string]any) { delete(c, "iat") })) }, wantReason: "required"},
+		"no nbf":           {token: func() string { return signer.sign(t, with(func(c map[string]any) { delete(c, "nbf") })) }, wantReason: "required"},
+		"no path_auth":     {token: func() string { return signer.sign(t, with(func(c map[string]any) { delete(c, "path_auth") })) }, wantReason: "path_auth"},
 		"lifetime over 1 h": {token: func() string {
 			return signer.sign(t, with(func(c map[string]any) { c["exp"] = now.Add(61 * time.Minute).Unix() }))
 		}, wantReason: "lifetime"},
@@ -237,6 +240,41 @@ func TestVerify_PathConfinement(t *testing.T) {
 			}
 			require.NoError(t, err)
 			assert.Equal(t, tt.want, got.Grant)
+		})
+	}
+}
+
+func TestVerifyLive(t *testing.T) {
+	issued := time.Unix(1_800_000_000, 0)
+	expired := issued.Add(10*time.Minute + Leeway)
+	signer := &rawSigner{}
+	tok := signer.sign(t, validClaims(issued))
+	trusted := signer.keys(t)
+	withdrawn := (&rawSigner{}).keys(t)
+	confined := (&rawSigner{prefix: "other", private: signer.private}).keys(t)
+
+	tests := map[string]struct {
+		keys    map[string]Key
+		at      time.Time
+		wantErr error
+	}{
+		"valid":               {keys: trusted, at: issued},
+		"past its exp":        {keys: trusted, at: expired},
+		"its key withdrawn":   {keys: withdrawn, at: expired, wantErr: ErrInvalid},
+		"outside the prefix":  {keys: confined, at: expired, wantErr: ErrForbidden},
+		"before its validity": {keys: trusted, at: issued.Add(-Leeway - time.Second), wantErr: ErrInvalid},
+	}
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			got, err := VerifyLive(tok, tt.keys, tt.at)
+
+			if tt.wantErr != nil {
+				assert.ErrorIs(t, err, tt.wantErr)
+				assert.Equal(t, Claims{}, got)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, Grant{Scopes: []Scope{pubScope("acme/app/alice"), subScope("acme/app")}}, got.Grant)
 		})
 	}
 }
