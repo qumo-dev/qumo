@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- **qumo builds with Go 1.27.2 and `golang.org/x/net` v0.60.0, which fix GO-2026-6603 to GO-2026-6617** (`net/http`, its internal HTTP/2, `crypto/tls`, `net/textproto`, `os`). The relay's WebTransport and HTTP paths call the affected code. `go.mod`'s `go` directive is `1.27.2`; `x/crypto`, `x/sys` and `x/text` moved with `x/net`.
+
 ## [v0.12.261008] - 2026-10-08
 
 > **Breaking for operators.** Relay peers authenticate with mutual TLS under a relay CA: a relay no longer presents `CERT_FILE` to the relays it dials, and `PEERS` needs `PEER_CERT_FILE`, `PEER_KEY_FILE` and `CA_FILE`. To move over, issue a peer certificate per relay from your CA and set the two new variables. See **Changed** below.
