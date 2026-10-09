@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+> **Breaking for funnel senders.** A funnel records only with a `record` scope; a `publish` scope, including a `path_auth` token's `pub`, no longer records. See **Changed** below.
+
+### Added
+
+- **A `record` action (`token`, `qumo auth token -scope`).** `record` grants recording into a track at a funnel: `{"actions": ["record"], "broadcast": {"exact": "room/123"}, "track": {"exact": "chat"}}`. A relay never reads it as publishing. In Go it is `token.ActionRecord`.
+
+### Changed
+
+- **A funnel records with `record`, not `publish` (`internal/funnel`).** `POST` and `PUT` on a track need a `record` scope matching it. `publish` now only sends through a relay. When one key is trusted by both a relay and a funnel, a credential meant for recording therefore can't publish into the relay directly, skipping the ledger and choosing its own sender, and a publisher's credential can't record. A `path_auth` token's `pub` is read as `publish`, so it no longer records; its `sub` still reads history. Apps sign their senders' credentials with `record` instead of `publish`.
+
 ## [v0.13.261009] - 2026-10-09
 
 > **Breaking for Go callers and funnel senders.** `token.Grant` is `{Scopes, Subject}`: its `Publish` and `Subscribe` fields are gone, and `token.Sign` writes a `scopes` claim, never `path_auth`. A funnel no longer infers a sender from a credential publishing one segment beneath the broadcast: such a credential no longer records into it, and the sender is the credential's `sub`. See **Changed** below.
