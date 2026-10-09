@@ -88,9 +88,9 @@ func TestAuthorizer_PathAuth(t *testing.T) {
 		"not a credential at all":           {header: "Bearer hello", wantErr: true, wantUnauthn: true},
 		"lower-case scheme":                 {header: "bearer " + signPathAuth(t, key, "", "room/123"), access: ingest.Read},
 		"reading with a subscriber's":       {header: sub("room/123"), access: ingest.Read},
-		"reading with a publisher's":      {header: pub("room/123"), access: ingest.Read, wantErr: true},
-		"reading another room":            {header: sub("room/9"), access: ingest.Read, wantErr: true},
-		"reading one segment beneath pub": {header: pub("room/123/comments/user-42"), access: ingest.Read, wantErr: true},
+		"reading with a publisher's":        {header: pub("room/123"), access: ingest.Read, wantErr: true},
+		"reading another room":              {header: sub("room/9"), access: ingest.Read, wantErr: true},
+		"reading one segment beneath pub":   {header: pub("room/123/comments/user-42"), access: ingest.Read, wantErr: true},
 	}
 	authorize := authorizer(v)
 	for name, tt := range tests {

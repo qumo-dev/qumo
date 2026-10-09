@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - **A funnel takes posts with `post`, not `publish` (`internal/funnel`).** `POST` and `PUT` on a track need a `post` scope matching it. `publish` now only sends through a relay. When one key is trusted by both a relay and a funnel, a credential meant for posting therefore can't publish into the relay directly, skipping the funnel and choosing its own sender, and a publisher's credential can't post. A `path_auth` token's `pub` is read as `publish`, so it no longer posts; its `sub` still reads history. Apps sign their senders' credentials with `post` instead of `publish`.
+- **`"pause": ["publish"]` covers `post` on every track (`internal/auth`).** A credential that may post into every track of a broadcast may create any track of it at a funnel, which the funnel publishes. So a paused key starts no new such sessions, as it does for an every-track `publish`, and the usage role is `publish`. A `post` scope naming one track, a chat sender's, is a viewer's: it is not paused.
 - **The funnel docs lead with what it does:** gathering many senders' messages into one track. The ledger it commits each record to is in memory by default and durable with `LEDGER_URI`.
 
 ## [v0.13.261009] - 2026-10-09

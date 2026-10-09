@@ -78,19 +78,23 @@ func TestGrant_Announces(t *testing.T) {
 	comments := &Grant{scopes: []token.Scope{
 		{Actions: []token.Action{token.ActionPublish}, Broadcast: "room/123/comments"},
 	}}
+	posting := &Grant{scopes: []token.Scope{
+		{Actions: []token.Action{token.ActionPost}, Broadcast: "room", Prefix: true},
+	}}
 	tests := map[string]struct {
 		grant *Grant
 		path  moqt.BroadcastPath
 		want  bool
 	}{
-		"a publish prefix":                  {grant: paths, path: "/room/123/live", want: true},
-		"outside the publish prefix":        {grant: paths, path: "/room/9", want: false},
-		"a publish scope naming one track":  {grant: chat, path: "/room/123/comments", want: false},
-		"an exact publish scope":            {grant: comments, path: "/room/123/comments", want: true},
-		"beneath an exact publish scope":    {grant: chat, path: "/room/123/comments/x", want: false},
-		"a subscribe and fetch scope only":  {grant: chat, path: "/room/9", want: false},
-		"another spelling of the broadcast": {grant: chat, path: "/room/123/comments/", want: false},
-		"nothing granted":                   {grant: &Grant{}, path: "/room", want: false},
+		"a publish prefix":                   {grant: paths, path: "/room/123/live", want: true},
+		"outside the publish prefix":         {grant: paths, path: "/room/9", want: false},
+		"a publish scope naming one track":   {grant: chat, path: "/room/123/comments", want: false},
+		"an exact publish scope":             {grant: comments, path: "/room/123/comments", want: true},
+		"beneath an exact publish scope":     {grant: chat, path: "/room/123/comments/x", want: false},
+		"a subscribe and fetch scope only":   {grant: chat, path: "/room/9", want: false},
+		"another spelling of the broadcast":  {grant: chat, path: "/room/123/comments/", want: false},
+		"nothing granted":                    {grant: &Grant{}, path: "/room", want: false},
+		"post on every track, never relayed": {grant: posting, path: "/room/123/comments", want: false},
 	}
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
