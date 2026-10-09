@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [v0.13.261009] - 2026-10-09
+
 > **Breaking for Go callers and funnel senders.** `token.Grant` is `{Scopes, Subject}`: its `Publish` and `Subscribe` fields are gone, and `token.Sign` writes a `scopes` claim, never `path_auth`. A funnel no longer infers a sender from a credential publishing one segment beneath the broadcast: such a credential no longer records into it, and the sender is the credential's `sub`. See **Changed** below.
 
 > **Behavior change for apps.** A session no longer ends when its credential expires. An app ends a session by withholding its next credential and, at once, by removing the key from the set. See **Changed** below.
