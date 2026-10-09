@@ -42,6 +42,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **`"publish": false` on a key** still pauses its publishing, but reads as if the key could never publish. Write `"pause": ["publish"]`; the old member will be removed in a later release. The relay logs a warning naming the keys that use it when it loads such a set, once per change rather than on every refresh.
 
+### Fixed
+
+- **qumo-ledger moves to v0.2.2 (`qumo funnel`, `qumo hls`).** Seeking a track by media time or wall-clock time now reports a store that can't be read as an error, not as a missing group; a group ID no longer loses the bits of an epoch or sequence too wide for it; and a fragment whose `trun` is shorter than its flags declare is refused rather than given any duration.
+
 ### Security
 
 - **qumo builds with Go 1.27.2 and `golang.org/x/net` v0.60.0, which fix GO-2026-6603 to GO-2026-6617** (`net/http`, its internal HTTP/2, `crypto/tls`, `net/textproto`, `os`). The relay's WebTransport and HTTP paths call the affected code. `go.mod`'s `go` directive is `1.27.2`; `x/crypto`, `x/sys` and `x/text` moved with `x/net`. CI lints with golangci-lint v2.14.0, built with that toolchain (`install-mode: goinstall`): v2.13 can't read Go 1.27.2's export data.
