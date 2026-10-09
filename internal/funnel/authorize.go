@@ -49,16 +49,22 @@ func authorizer(v *auth.Verifier) func(*http.Request, ingest.Track, ingest.Acces
 			return "", fmt.Errorf("funnel: %w", err)
 		}
 		broadcast, name := moqt.BroadcastPath(t.BroadcastPath), moqt.TrackName(t.TrackName)
-		if access == ingest.Read {
+		switch access {
+		case ingest.Read:
 			if !grant.Allows(token.ActionFetch, broadcast, name) {
 				return "", fmt.Errorf("funnel: the credential may not read %s track %q", broadcast, name)
 			}
 			return "", nil
+		case ingest.Write:
+			if !grant.Allows(token.ActionPost, broadcast, name) {
+				return "", fmt.Errorf("funnel: the credential may not post into %s track %q", broadcast, name)
+			}
+			return grant.Subject(), nil
+		default:
+			// Redacting, and any access added later, is refused until a scope
+			// grants it, so no credential gains it by default.
+			return "", fmt.Errorf("funnel: no credential grants access %d to %s track %q", access, broadcast, name)
 		}
-		if !grant.Allows(token.ActionPost, broadcast, name) {
-			return "", fmt.Errorf("funnel: the credential may not post into %s track %q", broadcast, name)
-		}
-		return grant.Subject(), nil
 	}
 }
 

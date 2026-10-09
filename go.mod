@@ -4,7 +4,7 @@ go 1.27.2
 
 require (
 	github.com/Eyevinn/mp4ff v0.57.0
-	github.com/okdaichi/qumo-ledger v0.2.2
+	github.com/okdaichi/qumo-ledger v0.3.0
 	github.com/prometheus/client_golang v1.24.1
 	github.com/prometheus/client_model v0.6.3
 	github.com/quic-go/quic-go v0.63.0
