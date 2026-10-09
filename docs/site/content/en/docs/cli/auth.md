@@ -49,7 +49,7 @@ Signs a token granting the scopes `-scope` names, valid for `-ttl`, at most one 
 
 A token grants **`scopes`**: actions on broadcasts and tracks, the JSON counterpart of the `moqt` claim of CAT-4-MOQT ([draft-ietf-moq-c4m](https://datatracker.ietf.org/doc/draft-ietf-moq-c4m/)). Each scope lists:
 
-- **`actions`**: `publish` (sending a track's groups through a relay), `subscribe` (live), `fetch` (history: a funnel's `GET`) and `post` (sending one message into a track a [funnel](../funnel/#credentials) gathers many senders into and publishes; a relay never reads it as publishing) and `redact` (taking a record out of a funnel's track; for credentials the app keeps to itself). Any other action refuses the token.
+- **`actions`**: `publish` (sending a track's groups through a relay), `subscribe` (live), `fetch` (history: a funnel's `GET`), `post` (sending one message into a track a [funnel](../funnel/#credentials) gathers many senders into and publishes; a relay never reads it as publishing) and `redact` (taking a record out of a funnel's track; for credentials the app keeps to itself). Any other action refuses the token.
 - **`broadcast`**: `{"exact": "a/b"}` for that path alone, or `{"prefix": "a/b"}` for it and every path beneath it on `/` boundaries (not `a/bc`). Either must lie within the key's prefix.
 - **`track`** (optional): `{"exact": "chat"}` for that track alone; omitted, every track.
 

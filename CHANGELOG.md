@@ -12,7 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - **A `post` action (`token`, `qumo auth token -scope`).** `post` grants sending messages into a track a funnel gathers many senders into: `{"actions": ["post"], "broadcast": {"exact": "room/123"}, "track": {"exact": "chat"}}`. A relay never reads it as publishing. In Go it is `token.ActionPost`.
-- **A `redact` action (`token`, `qumo auth token -scope`, `internal/funnel`).** `redact` grants taking a record out of a funnel's track (`DELETE ?group=`), and the redaction carries the credential's `sub` as its sender. No other action redacts. It belongs in credentials an app keeps to itself: who may redact which record is the app's decision. In Go it is `token.ActionRedact`.
+- **A `redact` action (`token`, `qumo auth token -scope`, `internal/funnel`).** `redact` grants taking a record out of a funnel's track (`DELETE ?group=`), and the redaction carries the credential's `sub` as its sender. No other action redacts. It belongs in credentials an app keeps to itself: who may redact which record is the app's decision. In Go it is `token.ActionRedact`. A verifier from an earlier release refuses a whole token that lists `redact`, as it does any action it doesn't know, so keep redact credentials apart from others until every relay and funnel runs this release. A key paused with `"pause": ["publish"]` can still redact: a pause stops new broadcasts, not takedowns. A browser may send the `DELETE`: the funnel's CORS answer allows it.
 
 ### Changed
 
