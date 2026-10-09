@@ -129,42 +129,42 @@ func TestAuthorizer_Scopes(t *testing.T) {
 		wantSender string
 		wantErr    bool
 	}{
-		"recording the exact track as a subject": {
-			header:     bearerOf("42", scope("room/123/comments", false, "chat", token.ActionRecord)),
+		"posting the exact track as a subject": {
+			header:     bearerOf("42", scope("room/123/comments", false, "chat", token.ActionPost)),
 			wantSender: "42",
 		},
-		"recording with no subject": {
-			header: bearerOf("", scope("room/123/comments", false, "chat", token.ActionRecord)),
+		"posting with no subject": {
+			header: bearerOf("", scope("room/123/comments", false, "chat", token.ActionPost)),
 		},
-		"recording any track of the broadcast": {
-			header:     bearerOf("42", scope("room/123/comments", false, "", token.ActionRecord)),
+		"posting any track of the broadcast": {
+			header:     bearerOf("42", scope("room/123/comments", false, "", token.ActionPost)),
 			wantSender: "42",
 		},
-		"recording under a prefix": {
-			header:     bearerOf("42", scope("room/123", true, "chat", token.ActionRecord)),
+		"posting under a prefix": {
+			header:     bearerOf("42", scope("room/123", true, "chat", token.ActionPost)),
 			wantSender: "42",
 		},
-		"recording another track": {
-			header:  bearerOf("42", scope("room/123/comments", false, "other", token.ActionRecord)),
+		"posting another track": {
+			header:  bearerOf("42", scope("room/123/comments", false, "other", token.ActionPost)),
 			wantErr: true,
 		},
-		"recording beneath the broadcast": {
-			header:  bearerOf("42", scope("room/123/comments/user-42", false, "chat", token.ActionRecord)),
+		"posting beneath the broadcast": {
+			header:  bearerOf("42", scope("room/123/comments/user-42", false, "chat", token.ActionPost)),
 			wantErr: true,
 		},
-		"recording under a sibling prefix": {
-			header:  bearerOf("42", scope("room/12", true, "chat", token.ActionRecord)),
+		"posting under a sibling prefix": {
+			header:  bearerOf("42", scope("room/12", true, "chat", token.ActionPost)),
 			wantErr: true,
 		},
-		"recording with publish, which only sends through the relay": {
+		"posting with publish, which only sends through the relay": {
 			header:  bearerOf("42", scope("room/123/comments", false, "chat", token.ActionPublish)),
 			wantErr: true,
 		},
-		"recording with fetch only": {
+		"posting with fetch only": {
 			header:  bearerOf("42", scope("room/123/comments", false, "chat", token.ActionFetch)),
 			wantErr: true,
 		},
-		"recording with subscribe only": {
+		"posting with subscribe only": {
 			header:  bearerOf("42", scope("room/123/comments", false, "chat", token.ActionSubscribe)),
 			wantErr: true,
 		},
@@ -181,8 +181,8 @@ func TestAuthorizer_Scopes(t *testing.T) {
 			access:  ingest.Read,
 			wantErr: true,
 		},
-		"reading with record only": {
-			header:  bearerOf("42", scope("room/123/comments", false, "chat", token.ActionRecord)),
+		"reading with post only": {
+			header:  bearerOf("42", scope("room/123/comments", false, "chat", token.ActionPost)),
 			access:  ingest.Read,
 			wantErr: true,
 		},
@@ -193,8 +193,8 @@ func TestAuthorizer_Scopes(t *testing.T) {
 		},
 		"the second of two scopes": {
 			header: bearerOf("42",
-				scope("room/9", true, "", token.ActionRecord),
-				scope("room/123/comments", false, "chat", token.ActionRecord)),
+				scope("room/9", true, "", token.ActionPost),
+				scope("room/123/comments", false, "chat", token.ActionPost)),
 			wantSender: "42",
 		},
 	}

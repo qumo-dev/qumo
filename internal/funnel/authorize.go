@@ -17,7 +17,7 @@ import (
 // authorizer returns the check a request passes: the bearer credential must be
 // one the relay would admit.
 //
-// A write needs a record scope matching the track's broadcast and name, and
+// A write needs a post scope matching the track's broadcast and name, and
 // records as the credential's subject (its sub), or with no sender when it
 // names none; a publish scope, which sends through the relay, does not write.
 // A read needs a fetch scope matching them. A path_auth credential is read as
@@ -55,8 +55,8 @@ func authorizer(v *auth.Verifier) func(*http.Request, ingest.Track, ingest.Acces
 			}
 			return "", nil
 		}
-		if !grant.Allows(token.ActionRecord, broadcast, name) {
-			return "", fmt.Errorf("funnel: the credential may not record into %s track %q", broadcast, name)
+		if !grant.Allows(token.ActionPost, broadcast, name) {
+			return "", fmt.Errorf("funnel: the credential may not post into %s track %q", broadcast, name)
 		}
 		return grant.Subject(), nil
 	}

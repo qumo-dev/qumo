@@ -3,7 +3,7 @@
 // or funnel.
 //
 // A token grants scopes, after CAT-4-MOQT's moqt claim: each scope permits
-// actions (publish, subscribe and fetch at a relay; record and fetch at a
+// actions (publish, subscribe and fetch at a relay; post and fetch at a
 // funnel) on an exact broadcast path or a prefix of them, and on one track or
 // every track. It may name its bearer in sub.
 //

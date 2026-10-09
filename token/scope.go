@@ -20,15 +20,16 @@ const (
 	ActionSubscribe Action = "subscribe"
 	// ActionFetch is reading a track's history, such as a funnel's GET.
 	ActionFetch Action = "fetch"
-	// ActionRecord is recording into a track at a funnel, which commits each
-	// record and then publishes it. A relay never reads it as publishing, so
-	// a credential that records can't send into the relay directly.
-	ActionRecord Action = "record"
+	// ActionPost is sending one message into a track at a funnel, which
+	// gathers many senders' messages into that one track and publishes it. A
+	// relay never reads it as publishing, so a credential that posts can't
+	// send into the relay directly.
+	ActionPost Action = "post"
 )
 
 func (a Action) known() bool {
 	switch a {
-	case ActionPublish, ActionSubscribe, ActionFetch, ActionRecord:
+	case ActionPublish, ActionSubscribe, ActionFetch, ActionPost:
 		return true
 	}
 	return false

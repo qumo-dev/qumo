@@ -1,15 +1,18 @@
 ---
 title: funnel
-description: Funnel many HTTP senders into one MoQT track, recording each record before it is sent.
+description: Gather many HTTP senders' messages into one MoQT track.
 weight: 5
 ---
 
-Funnels many HTTP senders into one MoQT track. Senders POST records to a
-track's URL; each record is committed to a [qumo-ledger](https://github.com/okdaichi/qumo-ledger)
-track and then published as MoQT. The funnel publishes through a relay it
-dials as a client, so subscribers reach its tracks on the relay they already
-use; it can also serve them on a listener of its own. It does not join the
-relay mesh as a peer.
+Gathers many HTTP senders into one MoQT track. Senders POST messages to a
+track's URL; the funnel orders them into the track, one group each, names
+each one's sender from its credential, and publishes the track as MoQT. Each
+record is committed to a [qumo-ledger](https://github.com/okdaichi/qumo-ledger)
+track before it is published. That ledger is in memory by default, or durable
+with `LEDGER_URI`, and it also serves the track's history. The funnel
+publishes through a relay it dials as a client, so subscribers reach its
+tracks on the relay they already use; it can also serve them on a listener of
+its own. It does not join the relay mesh as a peer.
 
 It suits small, frequent messages from many senders that subscribers want as
 one stream, such as chat, reactions or presence.
@@ -39,7 +42,7 @@ Without `LEDGER_URI`, records are kept in memory and are lost when the
 process exits. Without `QUMO_AUTH_KEYS`, every sender is accepted.
 Without `RELAY_URL`, the funnel serves subscribers itself on `:4433`.
 
-A sender records by POSTing to the track's URL, `/tracks/` followed by the
+A sender posts to the track's URL, `/tracks/` followed by the
 broadcast path and the track name:
 
 ```console
@@ -54,7 +57,7 @@ $ curl localhost:8090/tracks/room/123/chat?limit=50 -H "Authorization: Bearer $V
 ```
 
 Subscribers consume the track `chat` of the broadcast `/room/123`. Any number
-of senders record into the same track, and a subscriber receives all of them
+of senders post into the same track, and a subscriber receives all of them
 on one subscription.
 
 ## Requests
@@ -87,27 +90,27 @@ With a key set (`QUMO_AUTH_KEYS`), every request carries a qumo credential as
 verified against the same key set. Its scopes
 ([auth](../auth/#what-a-token-grants)) name the tracks it reaches:
 
-- **Recording** (`POST`, `PUT`) needs a `record` scope matching the broadcast
+- **Posting** (`POST`, `PUT`) needs a `post` scope matching the broadcast
   path and the track name. The record's sender is the credential's `sub`,
-  whatever the payload claims; a credential without `sub` records with no
-  sender. A `publish` scope does not record: it sends through a relay, so a
-  credential meant for recording can't publish into the relay directly, and
-  a publisher's can't record.
+  whatever the payload claims; a credential without `sub` posts with no
+  sender. A `publish` scope does not post: it sends through a relay, so a
+  credential meant for posting can't publish into the relay directly, and a
+  publisher's can't post.
 - **Reading** history (`GET`) needs a `fetch` scope matching the broadcast path
   and the track name.
 
 ```json
 {"sub": "alice",
- "scopes": [{"actions": ["record"], "broadcast": {"exact": "room/123"}, "track": {"exact": "chat"}},
+ "scopes": [{"actions": ["post"], "broadcast": {"exact": "room/123"}, "track": {"exact": "chat"}},
             {"actions": ["fetch"], "broadcast": {"prefix": "room/123"}}],
  "iat": 1791370000, "nbf": 1791370000, "exp": 1791370600}
 ```
 
-records into `chat` of `/room/123` as `alice`, and reads any track of
-`/room/123` and the broadcasts beneath it. It records into no other track.
+posts into `chat` of `/room/123` as `alice`, and reads any track of
+`/room/123` and the broadcasts beneath it. It posts into no other track.
 
 A `path_auth` credential is read as the scopes it amounts to: its `sub` reads
-any track at or beneath its path. Its `pub` is publishing, so it records
+any track at or beneath its path. Its `pub` is publishing, so it posts
 nothing.
 
 The credential is checked on every request: once it expires or its key leaves
