@@ -34,7 +34,10 @@ jobs:
       - name: Run golangci-lint
         uses: golangci/golangci-lint-action@v9
         with:
-          version: v2.13.2
+          version: v2.14.0
+          # Built by the Go set up above. v2.14.0 is the first line that reads
+          # Go 1.27.2's export data (v2.13 fails at typecheck).
+          install-mode: goinstall
           args: --timeout=5m
 
   test:
@@ -179,7 +182,8 @@ jobs:
       - name: Run security scan (golangci-lint)
         uses: golangci/golangci-lint-action@v9
         with:
-          version: v2.13.2
+          version: v2.14.0
+          install-mode: goinstall
           args: --timeout=5m --out-format=sarif:results.sarif
         continue-on-error: true
 
