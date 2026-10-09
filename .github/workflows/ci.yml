@@ -35,6 +35,9 @@ jobs:
         uses: golangci/golangci-lint-action@v9
         with:
           version: v2.13.2
+          # Built by the Go set up above, so the linter reads the standard
+          # library of the go.mod toolchain; a prebuilt binary lags behind it.
+          install-mode: goinstall
           args: --timeout=5m
 
   test:
@@ -180,6 +183,7 @@ jobs:
         uses: golangci/golangci-lint-action@v9
         with:
           version: v2.13.2
+          install-mode: goinstall
           args: --timeout=5m --out-format=sarif:results.sarif
         continue-on-error: true
 

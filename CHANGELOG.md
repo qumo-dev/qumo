@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
-- **qumo builds with Go 1.27.2 and `golang.org/x/net` v0.60.0, which fix GO-2026-6603 to GO-2026-6617** (`net/http`, its internal HTTP/2, `crypto/tls`, `net/textproto`, `os`). The relay's WebTransport and HTTP paths call the affected code. `go.mod`'s `go` directive is `1.27.2`; `x/crypto`, `x/sys` and `x/text` moved with `x/net`.
+- **qumo builds with Go 1.27.2 and `golang.org/x/net` v0.60.0, which fix GO-2026-6603 to GO-2026-6617** (`net/http`, its internal HTTP/2, `crypto/tls`, `net/textproto`, `os`). The relay's WebTransport and HTTP paths call the affected code. `go.mod`'s `go` directive is `1.27.2`; `x/crypto`, `x/sys` and `x/text` moved with `x/net`. CI builds golangci-lint with that toolchain (`install-mode: goinstall`), since the prebuilt v2.13.2 can't read Go 1.27.2's standard library.
 
 ## [v0.12.261008] - 2026-10-08
 
