@@ -143,7 +143,7 @@ Each key in the set may carry two members besides the standard JWK ones:
 ```
 
 - **`prefix`** confines the key: a token signed with it may grant only paths at or beneath it.
-- **`"publish": false`** starts no new sessions that may publish (a credential with a scope permitting `publish`, which a `path_auth` `pub` amounts to), for example while the key's owner is at a limit on broadcasts. Sessions that only subscribe still start, and live sessions continue.
+- **`"publish": false`** starts no new sessions that may publish a broadcast (a credential with a `publish` scope on every track of a broadcast, which a `path_auth` `pub` amounts to), for example while the key's owner is at a limit on broadcasts. Sessions that only subscribe still start, including a viewer whose `publish` scope names one track (it writes into a broadcast at a funnel, publishing none), and live sessions continue.
 
 **Live sessions are re-checked every 30 s** against the current set: a session whose key has left the set ends, with MoQ `0x2` (Unauthorized), so removing a key cuts its sessions off within about a minute at worst (one refresh plus one re-check), about 30 s on average. If the set can't be refreshed, the relay keeps the last one and logs an error; after 6 hours without a refresh it admits no new sessions, while live ones continue. Before the first successful load it admits nothing. With `QUMO_AUTH_KEYS_CACHE` set, the last downloaded set is loaded at startup, and its age counts toward the 6 hours, so a restart doesn't extend how long an old set is trusted. A key set *file* that can't be read stops the relay at startup, rather than leaving it running and refusing everyone.
 
@@ -176,8 +176,8 @@ Records go out in batches of at most 500. A failed send, a 401, 403, 408, 413 or
 
 ### What a session may do
 - **Refusal:** a WebTransport client gets the HTTP status before the upgrade: 401 for a credential that can't be accepted, 403 for a valid one that may not do what it asks, or 503 while the relay has no usable key set. A native-QUIC session is closed with `0x2` (Unauthorized).
-- **Announcements** are routed only if the token's publish path covers their path.
-- **Subscriptions** are served only if the token's subscribe path covers their path. A refused subscription gets the same answer as a path that doesn't exist (`NotFound`).
+- **Announcements** are routed only if a `publish` scope of the token matches their broadcast on every track.
+- **Subscriptions** are served only if a `subscribe` scope of the token matches their broadcast and track. A refused subscription gets the same answer as a path that doesn't exist (`NotFound`).
 - **Expiry** decides only whether a session may start ([above](#credential-expiry-and-live-sessions)): a live session, publisher or subscriber, is not ended by its token's expiry.
 - **Why a session ended** is the `reason` of its usage record: `refused` (its key left the set), `closed` (the client or relay closed it normally), `dropped` (the connection was lost) or `upgrade_failed` (a WebTransport session that was admitted, whose upgrade then failed, so it never started).
 - **Relay peers**, peers this relay dials, and internal clients carry no credential, so nothing above applies to them.

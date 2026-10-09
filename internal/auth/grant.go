@@ -53,8 +53,8 @@ func NewGrant(publish, subscribe []string, expires time.Time, revalidate time.Du
 	return g, nil
 }
 
-// Expires returns when the session must end: the credential's expiry. The
-// zero Time means the grant does not expire.
+// Expires returns when the session must end. The zero Time means the grant
+// does not expire, as a verified credential's never does.
 func (g *Grant) Expires() time.Time {
 	return g.expires
 }

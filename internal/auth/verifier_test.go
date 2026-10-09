@@ -684,6 +684,13 @@ func TestVerifier_UsageRole(t *testing.T) {
 		"a path_auth viewer":    {jwt: signPathAuth(t, k, "", "acme/app"), want: roleSubscribe},
 		"a path_auth publisher": {jwt: signPathAuth(t, k, "acme/app/live", ""), want: rolePublish},
 		"a path_auth of both":   {jwt: signPathAuth(t, k, "acme/app/live", "acme/app"), want: roleBoth},
+		"a viewer who may write one track": {
+			jwt: sign(t, k, token.Grant{Scopes: []token.Scope{
+				{Actions: []token.Action{token.ActionPublish}, Broadcast: "acme/app/live", Track: "chat"},
+				{Actions: []token.Action{token.ActionSubscribe}, Broadcast: "acme/app/live"},
+			}}),
+			want: roleSubscribe,
+		},
 	}
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {

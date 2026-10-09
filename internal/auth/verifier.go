@@ -42,8 +42,9 @@ type VerifierConfig struct {
 // within its validity (token.Verify). A live session is re-checked every 30 s
 // (token.VerifyLive): a key that has left the set ends its sessions. The
 // credential's expiry decides only whether the session may start. A key
-// marked "publish": false starts no new sessions that may publish (a
-// credential with a scope permitting publish); it never ends a live one,
+// marked "publish": false starts no new sessions that may publish a
+// broadcast (a credential with a publish scope on every track of one); it
+// never ends a live one,
 // since it pauses what is new rather than what is on air. The key set is kept
 // when a refresh fails (fail-static): after 6 h without one, new sessions are
 // refused, while live ones continue on the last set.
@@ -186,14 +187,16 @@ func (v *Verifier) decide(req Request) (*Grant, usageSession, error) {
 	return g, s, nil
 }
 
-// rolesOf reports whether g lets its bearer publish (a scope permitting
-// publish) and subscribe (a scope permitting subscribe or fetch).
+// rolesOf reports whether g lets its bearer publish a broadcast (a scope
+// permitting publish on every track, which announces it) and subscribe (a
+// scope permitting subscribe or fetch). A publish scope naming one track only
+// writes into a broadcast someone else publishes, so its bearer is a viewer.
 func rolesOf(g token.Grant) (publishes, subscribes bool) {
 	for _, s := range g.Scopes {
 		for _, a := range s.Actions {
 			switch a {
 			case token.ActionPublish:
-				publishes = true
+				publishes = publishes || s.Track == ""
 			case token.ActionSubscribe, token.ActionFetch:
 				subscribes = true
 			}

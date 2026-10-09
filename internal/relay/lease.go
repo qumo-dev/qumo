@@ -174,7 +174,7 @@ func (l *lease) check() string {
 		return endRefused
 	case authError:
 		l.failures++
-		slog.Warn("relay: revalidate failed; the session lives until its expires",
+		slog.Warn("relay: revalidate failed; the session lives on and is checked again",
 			"id", l.req.ID, "remote", l.req.Remote, "attempt", l.failures, "error", err)
 		l.next = time.Now().Add(retryDelay(l.failures))
 	case authAdmitted:
