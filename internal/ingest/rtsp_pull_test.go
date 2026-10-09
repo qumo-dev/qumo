@@ -476,3 +476,78 @@ func TestStartKeepalive_KeepsTryingAfterAFailure(t *testing.T) {
 		assert.Equal(t, 3, client.keepalives())
 	})
 }
+
+// serveStreamingRTSP answers DESCRIBE/SETUP/PLAY on conn as a server that then
+// streams nothing, and reports the method of every request it reads after
+// PLAY on afterPlay. It returns when conn is closed.
+func serveStreamingRTSP(conn net.Conn, sdpBody string, afterPlay chan<- rtsp.Method) {
+	defer conn.Close()
+	rc := rtsp.NewConn(conn)
+	playing := false
+	for {
+		req, _, err := rc.ReadRequest()
+		if err != nil {
+			return
+		}
+		if playing {
+			afterPlay <- req.Method
+		}
+		resp := rtsp.NewResponse(rtsp.StatusOK, req)
+		resp.Header.Set("CSeq", req.Header.Get("CSeq"))
+		switch req.Method {
+		case rtsp.MethodDescribe:
+			body := []byte(sdpBody)
+			resp.Header.Set("Content-Type", "application/sdp")
+			resp.Header.Set("Content-Length", strconv.Itoa(len(body)))
+			resp.Body = io.NopCloser(bytes.NewReader(body))
+		case rtsp.MethodSetup:
+			resp.Header.Set("Transport", req.Header.Get("Transport"))
+			resp.Header.Set("Session", "fake-session;timeout=20")
+		case rtsp.MethodPlay:
+			playing = true
+		}
+		if err := rc.WriteResponse(resp); err != nil {
+			return
+		}
+	}
+}
+
+// The keepalive loop has tests of its own; this one is that a pull starts it,
+// at the interval the server's timeout calls for, and stops it when it ends.
+func TestPullFrom_KeepsTheSessionAlive(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		const url = "rtsp://camera/test"
+		// low-level utility: net.Pipe is a connection the bubble's clock can
+		// run over, which a TCP socket is not.
+		near, far := net.Pipe()
+		afterPlay := make(chan rtsp.Method, 8)
+		go serveStreamingRTSP(far, buildTestSDP(false), afterPlay)
+		client, err := rtsp.NewClient(near, url)
+		require.NoError(t, err)
+		sess, err := NewSession(moqt.NewTrackMux(0), "/live/camera")
+		require.NoError(t, err)
+		defer sess.Close()
+		done := make(chan error, 1)
+		go func() { done <- pullFrom(t.Context(), client, url, sess) }()
+
+		// A 20 s timeout is kept alive every 10 s.
+		time.Sleep(25 * time.Second)
+		synctest.Wait()
+		sent := len(afterPlay)
+		require.NoError(t, client.Close())
+		require.Error(t, <-done, "the pull ends when its connection does")
+		time.Sleep(time.Minute)
+		synctest.Wait()
+		close(afterPlay)
+		var methods []rtsp.Method
+		for m := range afterPlay {
+			methods = append(methods, m)
+		}
+
+		assert.Equal(t, 2, sent)
+		// Nothing follows the TEARDOWN that closing sends.
+		assert.Equal(t, []rtsp.Method{
+			rtsp.MethodGetParameter, rtsp.MethodGetParameter, rtsp.MethodTeardown,
+		}, methods)
+	})
+}
