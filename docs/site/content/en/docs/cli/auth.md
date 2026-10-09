@@ -10,7 +10,7 @@ weight: 2
 1. **Once:** generate a signing key pair (`qumo auth keygen`). The private key stays on your app's server; the relay gets the public one, in a key set.
 2. **Per client:** your server signs a token naming what that client may do on which broadcasts and tracks ([below](#what-a-token-grants)). Use the Go package `github.com/qumo-dev/qumo/token`, or `qumo auth token` while testing.
 3. **The client** connects with the token in the relay URL: `https://relay:4433/?jwt=<token>` (WebTransport), or `moqt://relay:4433/?jwt=<token>` (native QUIC).
-4. **The relay** verifies the token itself against the key set (`QUMO_AUTH_KEYS=keys.json qumo relay`) and enforces what it grants. A session ends when its token expires; the client reconnects with a fresh one.
+4. **The relay** verifies the token itself against the key set (`QUMO_AUTH_KEYS=keys.json qumo relay`) and enforces what it grants. The token's expiry decides whether a session may start; the session then lives on until it closes or its key leaves the set ([configuration](../../configuration/#credential-expiry-and-live-sessions)).
 
 ## Usage
 
@@ -69,7 +69,7 @@ Whatever no scope grants is denied, and a scope member the verifier doesn't know
 
 grants what `[{"actions": ["publish"], "broadcast": {"prefix": "acme/app/rooms/42/alice"}}, {"actions": ["subscribe", "fetch"], "broadcast": {"prefix": "acme/app/rooms/42"}}]` does. A token carrying both `path_auth` and `scopes` is refused, and so is one carrying `path_auth` and `sub`. `qumo auth token` and `token.Sign` write `scopes` only.
 
-**On the relay**, a session may announce a broadcast a `publish` scope matches, whatever track that scope names, and may subscribe to a track a `subscribe` scope matches, by broadcast and track name. The relay ignores `fetch`, so a credential granting only `fetch` (a funnel reader's) may do nothing there.
+**On the relay**, a session may announce a broadcast a `publish` scope matches on every track, one naming no `track`, and the relay takes its tracks from it. A broadcast has one publisher, so a `publish` scope naming one track announces nothing: it is for writing that track into a broadcast someone else announces, at a [funnel](../funnel/). Give each publisher its own broadcast path. A session may subscribe to a track a `subscribe` scope matches, by broadcast and track name. The relay ignores `fetch`, so a credential granting only `fetch` (a funnel reader's) may do nothing there.
 
 ## Signing in your app (Go)
 

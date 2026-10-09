@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 > **Breaking for Go callers and funnel senders.** `token.Grant` is `{Scopes, Subject}`: its `Publish` and `Subscribe` fields are gone, and `token.Sign` writes a `scopes` claim, never `path_auth`. A funnel no longer infers a sender from a credential publishing one segment beneath the broadcast: such a credential no longer records into it, and the sender is the credential's `sub`. See **Changed** below.
 
+> **Behavior change for apps.** A session no longer ends when its credential expires. An app ends a session by withholding its next credential and, at once, by removing the key from the set. See **Changed** below.
+
 ### Added
 
 - **Credentials grant actions on exact tracks, and name their bearer (`token`, `internal/auth`).**
@@ -23,9 +25,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **`token.Grant`** is `{Scopes []Scope; Subject string}`. `Sign` writes only `scopes` (and `sub` when there is a subject).
   - **`path_auth` is still accepted** from tokens signed elsewhere (the `@moq/token` convention), and read as scopes: `pub` as `publish`, and `sub` as `subscribe` and `fetch`, each on its path and every path beneath it, on every track. `sub` (the claim) with `path_auth` is still refused.
   - **`qumo auth token -publish PATH` / `-subscribe PATH`** stay, as short for `-scope publish:PATH/**` and `-scope subscribe,fetch:PATH/**`.
-  - **The relay** lets a session announce a broadcast a `publish` scope matches, whatever track that scope names, and subscribe to a track a `subscribe` scope matches, by broadcast and track name. There is no separate announce action. It ignores `fetch`. An internal client's grant is in the same model: a `subscribe` and `fetch` scope prefixing no path, which reaches every broadcast.
+  - **The relay** lets a session announce a broadcast a `publish` scope matches on every track (one naming no `track`), and subscribe to a track a `subscribe` scope matches, by broadcast and track name. There is no separate announce action. A broadcast has one publisher: a `publish` scope naming one track doesn't announce, since it writes that track into a broadcast someone else announces, such as a funnel's, and so can't take the broadcast's route from its publisher. It ignores `fetch`. An internal client's grant is in the same model: a `subscribe` and `fetch` scope prefixing no path, which reaches every broadcast.
   - **`qumo funnel`.** Recording into a track needs a `publish` scope matching its broadcast and name, and records as the credential's `sub`, or with no sender without one; reading history needs a `fetch` scope matching them. A path never names a sender. With `RELAY_SIGNING_KEY`, the funnel signs its relay credential as a `publish` scope on `RELAY_PUBLISH` and beneath it.
   - **Key sets.** A key marked `"publish": false` starts no session with a scope permitting `publish`.
+- **Behavior change: a credential's expiry decides whether a session may start, not how long it lives (`token`, `internal/auth`).**
+  - **At connect, nothing changes:** `exp`, `nbf` and `iat` are checked with the 60 s leeway, and an expired credential is refused.
+  - **A live session outlives its credential's expiry,** so an app can issue short-lived credentials without its clients reconnecting, and dropping audio, every time one expires. The relay no longer ends a verified session with reason `expired`.
+  - **The key set still governs live sessions.** A key that leaves the set ends every session it admitted at the next 30 s re-check; `"publish": false` still refuses new sessions that may publish and lets live ones continue.
+  - **`reval` is refused,** as any claim the relay doesn't know: CAT's `moqt-reval` asks for a live session to be revalidated against its token's expiry, which never happens here.
+  - **Go.** The new `token.VerifyLive` checks a live session's credential as the relay does: as `token.Verify`, without refusing it for its expiry.
+  - **Usage reports:** a session whose end never comes is forgotten five minutes after it was last re-checked, no longer five minutes after its credential's expiry.
 
 ## [v0.12.261008] - 2026-10-08
 

@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/qumo-dev/gomoqt/moqt"
@@ -124,9 +125,27 @@ func TestVerifier_Grant(t *testing.T) {
 	assert.False(t, g.Allows(token.ActionPublish, moqt.BroadcastPath("/acme/app/other"), "video"))
 	assert.True(t, g.Allows(token.ActionSubscribe, moqt.BroadcastPath("/acme/app/other"), "video"))
 	assert.False(t, g.Allows(token.ActionSubscribe, moqt.BroadcastPath("/globex/app"), "video"))
-	assert.Equal(t, revalidateEvery, g.Revalidate())
-	assert.WithinDuration(t, time.Now().Add(10*time.Minute+token.Leeway), g.Expires(), 5*time.Second,
-		"the session ends at the credential's exp plus the leeway")
+	assert.Equal(t, revalidateEvery, g.Revalidate(), "every session is re-checked against the key set")
+	assert.True(t, g.Expires().IsZero(), "the credential's expiry doesn't end the session")
+}
+
+// TestVerifier_Expiry checks a credential after its expiry: refused at
+// connect, while the live session it admitted continues.
+func TestVerifier_Expiry(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		k := genKey(t, "acme/app")
+		v := verifierWith(t, keySetJSON(t, []token.SigningKey{k}), time.Now())
+		jwt := sign(t, k, pathGrant("", "acme/app"))
+		_, err := v.Authorize(context.Background(), sessionReq(EventConnect, jwt))
+		require.NoError(t, err)
+
+		time.Sleep(10*time.Minute + token.Leeway)
+
+		_, err = v.Authorize(context.Background(), sessionReq(EventConnect, jwt))
+		assert.Equal(t, http.StatusUnauthorized, statusOf(err), "connect: %v", err)
+		_, err = v.Authorize(context.Background(), sessionReq(EventRevalidate, jwt))
+		assert.NoError(t, err, "revalidate")
+	})
 }
 
 func TestVerifier_Decisions(t *testing.T) {
@@ -175,19 +194,34 @@ func TestVerifier_FailStatic(t *testing.T) {
 	assert.NoError(t, err, "stale: live sessions continue")
 }
 
+// TestVerifier_WithdrawnKeyEndsSessions checks that a key leaving the set
+// ends its live sessions, before or after their credentials' expiry.
 func TestVerifier_WithdrawnKeyEndsSessions(t *testing.T) {
-	k := genKey(t, "acme/app")
-	jwt := sign(t, k, pathGrant("", "acme/app"))
-	v := verifierWith(t, keySetJSON(t, []token.SigningKey{k}), time.Now())
-	_, err := v.Authorize(context.Background(), sessionReq(EventConnect, jwt))
-	require.NoError(t, err)
+	tests := map[string]struct {
+		elapsed time.Duration
+	}{
+		"before its exp": {},
+		"after its exp":  {elapsed: 10*time.Minute + token.Leeway},
+	}
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				k := genKey(t, "acme/app")
+				jwt := sign(t, k, pathGrant("", "acme/app"))
+				v := verifierWith(t, keySetJSON(t, []token.SigningKey{k}), time.Now())
+				_, err := v.Authorize(context.Background(), sessionReq(EventConnect, jwt))
+				require.NoError(t, err)
 
-	set, err := parseKeySet([]byte(`{"keys":[]}`))
-	require.NoError(t, err)
-	v.store.replace(set, time.Now())
+				time.Sleep(tt.elapsed)
+				set, err := parseKeySet([]byte(`{"keys":[]}`))
+				require.NoError(t, err)
+				v.store.replace(set, time.Now())
 
-	_, err = v.Authorize(context.Background(), sessionReq(EventRevalidate, jwt))
-	assert.Equal(t, http.StatusUnauthorized, statusOf(err))
+				_, err = v.Authorize(context.Background(), sessionReq(EventRevalidate, jwt))
+				assert.Equal(t, http.StatusUnauthorized, statusOf(err))
+			})
+		})
+	}
 }
 
 func TestNewVerifier(t *testing.T) {
@@ -341,15 +375,15 @@ func newTestUsage(t *testing.T, sink *fakeUsageSink) *usageReporter {
 	return r
 }
 
-var testUsageSession = usageSession{kid: "k1", role: rolePublish, expires: time.Now().Add(time.Hour)}
+var testUsageSession = usageSession{kid: "k1", role: rolePublish}
 
 func TestUsageReporter(t *testing.T) {
 	t.Run("usage is coalesced to the latest report", func(t *testing.T) {
 		sink := &fakeUsageSink{}
 		r := newTestUsage(t, sink)
 		r.open("s1", testUsageSession)
-		r.reportUsage("s1", Bytes{Sent: 1, Received: 10})
-		r.reportUsage("s1", Bytes{Sent: 2, Received: 20})
+		r.revalidated("s1", Bytes{Sent: 1, Received: 10}, true)
+		r.revalidated("s1", Bytes{Sent: 2, Received: 20}, true)
 		require.NoError(t, r.flush(context.Background()))
 		batches := sink.received()
 		require.Len(t, batches, 1)
@@ -362,9 +396,9 @@ func TestUsageReporter(t *testing.T) {
 		sink := &fakeUsageSink{statuses: []int{http.StatusBadGateway, http.StatusOK}}
 		r := newTestUsage(t, sink)
 		r.open("s1", testUsageSession)
-		r.reportUsage("s1", Bytes{Received: 10})
+		r.revalidated("s1", Bytes{Received: 10}, true)
 		assert.Error(t, r.flush(context.Background()))
-		r.reportUsage("s1", Bytes{Received: 20})
+		r.revalidated("s1", Bytes{Received: 20}, true)
 		require.NoError(t, r.flush(context.Background()))
 		retry := sink.received()[1]
 		require.Len(t, retry, 2)
@@ -432,18 +466,27 @@ func TestUsageReporter(t *testing.T) {
 		sink := &fakeUsageSink{}
 		r := newTestUsage(t, sink)
 		assert.False(t, r.close("nope", Bytes{Sent: 1}, ""))
-		r.reportUsage("nope", Bytes{Sent: 1})
+		r.revalidated("nope", Bytes{Sent: 1}, true)
 		require.NoError(t, r.flush(context.Background()))
 		assert.Empty(t, sink.received(), "nothing pending, nothing sent")
 	})
 
-	t.Run("sessions whose end never came are forgotten after their expiry", func(t *testing.T) {
+	t.Run("a session whose end never came is forgotten once no longer revalidated", func(t *testing.T) {
+		now := time.Now()
 		r := newTestUsage(t, &fakeUsageSink{})
-		r.open("old", usageSession{kid: "k1", role: rolePublish, expires: time.Now().Add(-sessionGrace - time.Second)})
+		r.now = func() time.Time { return now }
+		r.open("gone", testUsageSession)
+		r.open("refused", testUsageSession)
 		r.open("live", testUsageSession)
-		r.forgetExpired()
-		assert.False(t, r.close("old", Bytes{}, ""))
-		assert.True(t, r.close("live", Bytes{}, ""))
+
+		now = now.Add(sessionGrace + time.Second)
+		r.revalidated("refused", Bytes{Sent: 1}, false)
+		r.revalidated("live", Bytes{}, true)
+		r.forgetStale()
+
+		assert.False(t, r.close("gone", Bytes{}, ""), "not revalidated within the grace")
+		assert.False(t, r.close("refused", Bytes{}, ""), "a refused revalidate doesn't keep it")
+		assert.True(t, r.close("live", Bytes{}, ""), "revalidated: still remembered")
 	})
 }
 

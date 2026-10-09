@@ -38,12 +38,15 @@ type VerifierConfig struct {
 // key set. Its Authorize and End are what the relay's Server takes.
 //
 // A session's credential (the jwt query parameter of its connect URL) must be
-// signed by a key in the set and grant only paths within the key's prefix
-// (token.Verify). A live session is re-checked every 30 s: a key that has left
-// the set ends its sessions. A key marked "publish": false starts no new
-// sessions that may publish: a credential with a scope permitting publish.
-// The key set is kept when a refresh fails
-// (fail-static); after 6 h without one, new sessions are refused.
+// signed by a key in the set, grant only paths within the key's prefix, and be
+// within its validity (token.Verify). A live session is re-checked every 30 s
+// (token.VerifyLive): a key that has left the set ends its sessions. The
+// credential's expiry decides only whether the session may start. A key
+// marked "publish": false starts no new sessions that may publish (a
+// credential with a scope permitting publish); it never ends a live one,
+// since it pauses what is new rather than what is on air. The key set is kept
+// when a refresh fails (fail-static): after 6 h without one, new sessions are
+// refused, while live ones continue on the last set.
 type Verifier struct {
 	source keySource
 	store  keyStore
@@ -111,8 +114,8 @@ func refuse(status int, format string, args ...any) error {
 
 // Authorize verifies a connect or revalidate. A new session needs a key set
 // no older than the fail-static limit; a live one keeps going on a stale
-// set, and ends when its key has left the set. The bytes of a revalidate are reported whatever it
-// decides, since they were sent.
+// set, and ends when its key has left the set. The bytes of a revalidate are
+// reported whatever it decides, since they were sent.
 func (v *Verifier) Authorize(_ context.Context, req Request) (*Grant, error) {
 	g, s, err := v.decide(req)
 	if v.usage != nil {
@@ -122,8 +125,11 @@ func (v *Verifier) Authorize(_ context.Context, req Request) (*Grant, error) {
 		if err == nil && req.Event == EventConnect {
 			v.usage.open(req.ID, s)
 		}
-		if req.Event == EventRevalidate && (req.Bytes.Sent > 0 || req.Bytes.Received > 0) {
-			v.usage.reportUsage(req.ID, req.Bytes)
+		if req.Event == EventRevalidate {
+			// A refused session is ending; one that couldn't be checked
+			// lives on, and the relay asks again.
+			_, refused := errors.AsType[RefusedError](err)
+			v.usage.revalidated(req.ID, req.Bytes, !refused)
 		}
 	}
 	return g, err
@@ -149,7 +155,11 @@ func (v *Verifier) decide(req Request) (*Grant, usageSession, error) {
 	if !query.Has("jwt") {
 		return nil, usageSession{}, refuse(http.StatusUnauthorized, "no credential: connect with ?jwt=")
 	}
-	c, err := token.Verify(query.Get("jwt"), set.keys, now)
+	verify := token.VerifyLive
+	if connect {
+		verify = token.Verify
+	}
+	c, err := verify(query.Get("jwt"), set.keys, now)
 	if err != nil {
 		status := http.StatusUnauthorized
 		if errors.Is(err, token.ErrForbidden) {
@@ -163,9 +173,8 @@ func (v *Verifier) decide(req Request) (*Grant, usageSession, error) {
 			"signing key %s starts no new publishing sessions", c.Key.ID)
 	}
 
-	expires := c.ExpiresAt.Add(token.Leeway)
-	g := &Grant{scopes: c.Scopes, subject: c.Subject, expires: expires, revalidate: revalidateEvery}
-	s := usageSession{kid: c.Key.ID, expires: expires}
+	g := &Grant{scopes: c.Scopes, subject: c.Subject, revalidate: revalidateEvery}
+	s := usageSession{kid: c.Key.ID}
 	switch {
 	case publishes && subscribes:
 		s.role = roleBoth

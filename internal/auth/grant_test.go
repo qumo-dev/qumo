@@ -146,6 +146,9 @@ func TestGrant_Announces(t *testing.T) {
 		{Actions: []token.Action{token.ActionPublish}, Broadcast: "room/123/comments", Track: "chat"},
 		{Actions: []token.Action{token.ActionSubscribe, token.ActionFetch}, Broadcast: "room", Prefix: true},
 	}}
+	comments := &Grant{scopes: []token.Scope{
+		{Actions: []token.Action{token.ActionPublish}, Broadcast: "room/123/comments"},
+	}}
 	tests := map[string]struct {
 		grant *Grant
 		path  moqt.BroadcastPath
@@ -153,7 +156,8 @@ func TestGrant_Announces(t *testing.T) {
 	}{
 		"a publish prefix":                  {grant: paths, path: "/room/123/live", want: true},
 		"outside the publish prefix":        {grant: paths, path: "/room/9", want: false},
-		"a publish scope naming one track":  {grant: chat, path: "/room/123/comments", want: true},
+		"a publish scope naming one track":  {grant: chat, path: "/room/123/comments", want: false},
+		"an exact publish scope":            {grant: comments, path: "/room/123/comments", want: true},
 		"beneath an exact publish scope":    {grant: chat, path: "/room/123/comments/x", want: false},
 		"a subscribe and fetch scope only":  {grant: chat, path: "/room/9", want: false},
 		"another spelling of the broadcast": {grant: chat, path: "/room/123/comments/", want: false},

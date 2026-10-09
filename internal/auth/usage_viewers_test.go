@@ -5,14 +5,13 @@ import (
 	"net/http"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
 func viewerSession(kid string) usageSession {
-	return usageSession{kid: kid, role: roleSubscribe, expires: time.Now().Add(time.Hour)}
+	return usageSession{kid: kid, role: roleSubscribe}
 }
 
 // TestUsageReporter_ViewersAreTotalled pins that subscribe-only sessions cost
@@ -26,9 +25,9 @@ func TestUsageReporter_ViewersAreTotalled(t *testing.T) {
 		r.open(id, viewerSession("k1"))
 	}
 	r.open("other", viewerSession("k2"))
-	r.reportUsage("v1", Bytes{Sent: 100, Received: 10})
-	r.reportUsage("v2", Bytes{Sent: 200, Received: 20})
-	r.reportUsage("other", Bytes{Sent: 7})
+	r.revalidated("v1", Bytes{Sent: 100, Received: 10}, true)
+	r.revalidated("v2", Bytes{Sent: 200, Received: 20}, true)
+	r.revalidated("other", Bytes{Sent: 7}, true)
 	require.NoError(t, r.flush(context.Background()))
 
 	first := sink.received()[0]
@@ -49,10 +48,10 @@ func TestUsageReporter_ViewersAreTotalled(t *testing.T) {
 	})
 
 	t.Run("the total grows by what each session moved since it was last counted", func(t *testing.T) {
-		r.reportUsage("v1", Bytes{Sent: 150, Received: 10})                     // +50
-		r.reportUsage("v1", Bytes{Sent: 120, Received: 10})                     // a late, lower report adds nothing
+		r.revalidated("v1", Bytes{Sent: 150, Received: 10}, true)               // +50
+		r.revalidated("v1", Bytes{Sent: 120, Received: 10}, true)               // a late, lower report adds nothing
 		assert.True(t, r.close("v2", Bytes{Sent: 260, Received: 25}, "closed")) // +60, +5
-		r.reportUsage("v2", Bytes{Sent: 999})                                   // after its close: ignored
+		r.revalidated("v2", Bytes{Sent: 999}, true)                             // after its close: ignored
 		assert.True(t, r.close("v3", Bytes{}, "closed"))                        // moved nothing
 		require.NoError(t, r.flush(context.Background()))
 
@@ -67,10 +66,10 @@ func TestUsageReporter_ViewerTotalSurvivesAFailedSend(t *testing.T) {
 	sink := &fakeUsageSink{statuses: []int{http.StatusServiceUnavailable, http.StatusOK}}
 	r := newTestUsage(t, sink)
 	r.open("v1", viewerSession("k1"))
-	r.reportUsage("v1", Bytes{Sent: 100})
+	r.revalidated("v1", Bytes{Sent: 100}, true)
 
 	assert.Error(t, r.flush(context.Background()))
-	r.reportUsage("v1", Bytes{Sent: 160})
+	r.revalidated("v1", Bytes{Sent: 160}, true)
 	require.NoError(t, r.flush(context.Background()))
 
 	batches := sink.received()
@@ -82,9 +81,9 @@ func TestUsageReporter_ViewerTotalSurvivesAFailedSend(t *testing.T) {
 func TestUsageReporter_PublishersStayPerSession(t *testing.T) {
 	sink := &fakeUsageSink{}
 	r := newTestUsage(t, sink)
-	r.open("p1", usageSession{kid: "k1", role: rolePublish, expires: time.Now().Add(time.Hour)})
-	r.open("b1", usageSession{kid: "k1", role: roleBoth, expires: time.Now().Add(time.Hour)})
-	r.reportUsage("p1", Bytes{Received: 50})
+	r.open("p1", usageSession{kid: "k1", role: rolePublish})
+	r.open("b1", usageSession{kid: "k1", role: roleBoth})
+	r.revalidated("p1", Bytes{Received: 50}, true)
 	require.NoError(t, r.flush(context.Background()))
 
 	var got []string

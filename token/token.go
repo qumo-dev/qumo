@@ -16,6 +16,11 @@
 // Verify. The app decides who may do what; this package is the machinery: the
 // key format, the signature, the time claims and confining every path to the
 // key's prefix.
+//
+// A token's expiry decides whether a session may start, not how long it
+// lives: a relay checks a live session's token with VerifyLive, which ignores
+// the expiry, so the session ends only when the key that signed it is no
+// longer trusted.
 package token
 
 import (
@@ -143,6 +148,19 @@ func signAt(key SigningKey, g Grant, ttl time.Duration, now time.Time) (string, 
 // A path_auth claim is returned as the scopes it amounts to (see grantOf).
 // An error wraps ErrInvalid or ErrForbidden.
 func Verify(token string, keys map[string]Key, now time.Time) (Claims, error) {
+	return verify(token, keys, now, true)
+}
+
+// VerifyLive checks token as the credential of a live session, at now: as
+// Verify does, except that a token past its expiry is not refused for it. Its
+// expiry decided whether the session could start; the key that signed it must
+// still be trusted, and its grant still within the key's prefix.
+func VerifyLive(token string, keys map[string]Key, now time.Time) (Claims, error) {
+	return verify(token, keys, now, false)
+}
+
+// verify is Verify, refusing a token past its expiry only when expiry is set.
+func verify(token string, keys map[string]Key, now time.Time, expiry bool) (Claims, error) {
 	parts := strings.Split(token, ".")
 	if len(parts) != 3 {
 		return Claims{}, invalid("not a JWS compact serialization")
@@ -186,7 +204,7 @@ func Verify(token string, keys map[string]Key, now time.Time) (Claims, error) {
 	if err := decodeSegment(parts[1], &c); err != nil {
 		return Claims{}, invalid("claims: %v", err)
 	}
-	exp, err := c.checkTime(now)
+	exp, err := c.checkTime(now, expiry)
 	if err != nil {
 		return Claims{}, err
 	}
@@ -248,9 +266,9 @@ func grantOf(pa pathAuth, prefix string) (Grant, error) {
 	return g, nil
 }
 
-// checkTime enforces exp, nbf and iat (all required) with Leeway, and the
-// lifetime cap, and returns exp.
-func (c claims) checkTime(now time.Time) (time.Time, error) {
+// checkTime enforces exp (when expiry is set), nbf and iat, all required,
+// with Leeway, and the lifetime cap, and returns exp.
+func (c claims) checkTime(now time.Time, expiry bool) (time.Time, error) {
 	if c.ExpiresAt == nil || c.NotBefore == nil || c.IssuedAt == nil {
 		return time.Time{}, invalid("exp, nbf and iat are required")
 	}
@@ -258,9 +276,9 @@ func (c claims) checkTime(now time.Time) (time.Time, error) {
 	if lifetime := exp.Sub(iat); lifetime <= 0 || lifetime > MaxLifetime {
 		return time.Time{}, invalid("lifetime (exp - iat) must be positive and at most %s", MaxLifetime)
 	}
-	// Judged on whole seconds, the precision of the expiry a relay enforces.
+	// Judged on whole seconds, the precision of exp as Sign writes it.
 	switch {
-	case !now.Before(time.Unix(exp.Add(Leeway).Unix(), 0)):
+	case expiry && !now.Before(time.Unix(exp.Add(Leeway).Unix(), 0)):
 		return time.Time{}, invalid("expired")
 	case now.Add(Leeway).Before(nbf), now.Add(Leeway).Before(iat):
 		return time.Time{}, invalid("not valid yet")
