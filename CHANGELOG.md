@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **A key in a key set pauses its new publishing sessions with `"pause": ["publish"]` (`internal/auth/keyset.go`).** The member names what it does: the key starts no new sessions that may publish, while viewers still connect and live sessions continue. `"publish"` is the only entry; any other entry in `pause` makes the set invalid, so a misspelled entry can't leave a key unpaused, and the relay keeps its last good set as with any invalid set. That covers entries only: member names are case-sensitive, and a member the relay doesn't know (`"paused"`, `"Pause"`) is ignored, as JWK prescribes. A key naming a member twice, or carrying `"publish": true` beside `"pause": ["publish"]`, also makes the set invalid; key sets are now decoded with `encoding/json/v2`, as in the `token` package, so the relay and `token.ParseKeySet` read a set the same way. A key set without a `"keys"` list (`{}`, `{"keys": null}`), which was read as an empty set, is now refused, so the relay keeps its last good set instead of dropping every key and ending every live session; `{"keys": []}` is still a valid empty set.
+
+### Deprecated
+
+- **`"publish": false` on a key** still pauses its publishing, but reads as if the key could never publish. Write `"pause": ["publish"]`; the old member will be removed in a later release. The relay logs a warning naming the keys that use it when it loads such a set, once per change rather than on every refresh.
+
 ### Security
 
 - **qumo builds with Go 1.27.2 and `golang.org/x/net` v0.60.0, which fix GO-2026-6603 to GO-2026-6617** (`net/http`, its internal HTTP/2, `crypto/tls`, `net/textproto`, `os`). The relay's WebTransport and HTTP paths call the affected code. `go.mod`'s `go` directive is `1.27.2`; `x/crypto`, `x/sys` and `x/text` moved with `x/net`. CI lints with golangci-lint v2.14.0, built with that toolchain (`install-mode: goinstall`): v2.13 can't read Go 1.27.2's export data.

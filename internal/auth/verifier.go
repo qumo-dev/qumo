@@ -40,7 +40,7 @@ type VerifierConfig struct {
 // A session's credential (the jwt query parameter of its connect URL) must be
 // signed by a key in the set and grant only paths within the key's prefix
 // (token.Verify). A live session is re-checked every 30 s: a key that has left
-// the set ends its sessions. A key marked "publish": false starts no new
+// the set ends its sessions. A key marked "pause": ["publish"] starts no new
 // sessions that may publish. The key set is kept when a refresh fails (fail-static);
 // after 6 h without one, new sessions are refused.
 type Verifier struct {
@@ -156,7 +156,7 @@ func (v *Verifier) decide(req Request) (*Grant, usageSession, error) {
 		}
 		return nil, usageSession{}, refuse(status, "%v", err)
 	}
-	if connect && c.Publish != "" && set.noPublish[c.Key.ID] {
+	if connect && c.Publish != "" && set.pausedPublish[c.Key.ID] {
 		return nil, usageSession{}, refuse(http.StatusForbidden,
 			"signing key %s starts no new publishing sessions", c.Key.ID)
 	}
