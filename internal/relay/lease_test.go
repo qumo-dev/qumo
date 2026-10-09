@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"net"
 	"net/http"
 	"testing"
 	"testing/synctest"
@@ -185,13 +187,24 @@ func TestEndReason(t *testing.T) {
 		cause error
 		want  string
 	}{
-		"the lease ended it":         {lease: refused, cause: &transport.ApplicationError{}, want: endRefused},
-		"closed by an application":   {cause: &transport.ApplicationError{}, want: endClosed},
-		"idle timeout":               {cause: &transport.IdleTimeoutError{}, want: endDropped},
-		"stateless reset":            {cause: &transport.StatelessResetError{}, want: endDropped},
-		"wrapped idle timeout":       {cause: fmt.Errorf("session: %w", &transport.IdleTimeoutError{}), want: endDropped},
-		"canceled":                   {cause: context.Canceled, want: endClosed},
-		"a lease that didn't end it": {lease: &lease{}, cause: &transport.IdleTimeoutError{}, want: endDropped},
+		"the lease ended it":       {lease: refused, cause: &transport.ApplicationError{}, want: endRefused},
+		"closed by an application": {cause: &transport.ApplicationError{}, want: endClosed},
+		"idle timeout":             {cause: &transport.IdleTimeoutError{}, want: endDropped},
+		"stateless reset":          {cause: &transport.StatelessResetError{}, want: endDropped},
+		"wrapped idle timeout":     {cause: fmt.Errorf("session: %w", &transport.IdleTimeoutError{}), want: endDropped},
+		"canceled":                 {cause: context.Canceled, want: endClosed},
+		"the stream ended without a close": {
+			cause: fmt.Errorf("qmux: transport closed: %w", io.EOF), want: endDropped,
+		},
+		"the stream ended inside a record": {
+			cause: fmt.Errorf("qmux: transport closed: %w", io.ErrUnexpectedEOF), want: endDropped,
+		},
+		"the stream's connection was reset": {
+			cause: fmt.Errorf("qmux: transport closed: %w", &net.OpError{Op: "read", Err: errors.New("connection reset by peer")}),
+			want:  endDropped,
+		},
+		"a transport error is a close": {cause: &transport.TransportError{}, want: endClosed},
+		"a lease that didn't end it":   {lease: &lease{}, cause: &transport.IdleTimeoutError{}, want: endDropped},
 	}
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {

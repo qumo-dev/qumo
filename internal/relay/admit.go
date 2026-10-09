@@ -8,7 +8,6 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
-	"strings"
 	"sync/atomic"
 
 	"github.com/qumo-dev/gomoqt/moqt"
@@ -37,6 +36,10 @@ type admission struct {
 	// served is set once serveSession runs the session, which then reports
 	// its end. An admitted upgrade that fails never sets it.
 	served atomic.Bool
+	// refusal is why a session that was refused at connect, and upgraded
+	// all the same, is to be closed: refusalRefused or refusalUnavailable.
+	// Only a WebSocket session has one (handleWebSocket).
+	refusal string
 }
 
 type admissionKey struct{}
@@ -266,35 +269,19 @@ func sessionTransport(a *admission) string {
 	return transportPeer
 }
 
-// isWebSocketUpgrade reports whether r asks to upgrade to WebSocket.
-func isWebSocketUpgrade(r *http.Request) bool {
-	return r.Method == http.MethodGet &&
-		headerHasToken(r.Header, "Connection", "upgrade") &&
-		headerHasToken(r.Header, "Upgrade", "websocket")
-}
+// Reasons a session refused at connect is closed with.
+const (
+	// refusalRefused is a credential that was not accepted: retrying with
+	// it will not help.
+	refusalRefused = "refused"
+	// refusalUnavailable is a session that could not be checked just now.
+	refusalUnavailable = "unavailable"
+)
 
-// offersSubprotocol reports whether a WebSocket upgrade offers protocol.
-// Subprotocols are compared exactly: they are case-sensitive.
-func offersSubprotocol(r *http.Request, protocol string) bool {
-	for _, value := range r.Header.Values("Sec-WebSocket-Protocol") {
-		for part := range strings.SplitSeq(value, ",") {
-			if strings.TrimSpace(part) == protocol {
-				return true
-			}
-		}
+// refusalReason is the close reason for a session refused with err.
+func refusalReason(err error) string {
+	if _, refused := errors.AsType[auth.RefusedError](err); refused {
+		return refusalRefused
 	}
-	return false
-}
-
-// headerHasToken reports whether a comma-separated header carries token,
-// in any case.
-func headerHasToken(h http.Header, name, token string) bool {
-	for _, value := range h.Values(name) {
-		for part := range strings.SplitSeq(value, ",") {
-			if strings.EqualFold(strings.TrimSpace(part), token) {
-				return true
-			}
-		}
-	}
-	return false
+	return refusalUnavailable
 }

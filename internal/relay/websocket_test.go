@@ -3,6 +3,7 @@ package relay
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -40,32 +41,59 @@ func webSocketUpgrade(target string) *http.Request {
 	return req
 }
 
+// dialWebSocket serves srv's client endpoint on a test server and dials it
+// over WebSocket.
+func dialWebSocket(tb testing.TB, srv *Server, pathAndQuery string) (*moqt.Session, error) {
+	tb.Helper()
+	httpSrv := httptest.NewServer(http.HandlerFunc(srv.HandleWebTransport))
+	tb.Cleanup(httpSrv.Close)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	tb.Cleanup(cancel)
+	url := "ws" + strings.TrimPrefix(httpSrv.URL, "http") + pathAndQuery
+	return (&moqt.Dialer{}).Dial(ctx, url, moqt.NewTrackMux(0))
+}
+
+// A browser cannot read the status of a refused WebSocket handshake, so a
+// refused session is upgraded and then closed with the reason.
 func TestServer_HandleWebTransport_WebSocketRefused(t *testing.T) {
 	tests := map[string]struct {
 		err        error
-		wantStatus int
+		wantReason string
 	}{
-		"refused with 401":     {err: auth.RefusedError{Status: http.StatusUnauthorized}, wantStatus: http.StatusUnauthorized},
-		"refused with 403":     {err: auth.RefusedError{Status: http.StatusForbidden}, wantStatus: http.StatusForbidden},
-		"can't be checked now": {err: errors.New("no key set loaded yet"), wantStatus: http.StatusServiceUnavailable},
+		"refused with 401":     {err: auth.RefusedError{Status: http.StatusUnauthorized}, wantReason: refusalRefused},
+		"refused with 403":     {err: auth.RefusedError{Status: http.StatusForbidden}, wantReason: refusalRefused},
+		"can't be checked now": {err: errors.New("no key set loaded yet"), wantReason: refusalUnavailable},
 	}
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
 			fake := &fakeAuth{err: tt.err}
 			srv := newWebSocketTestServer(t, fake)
-			rec := httptest.NewRecorder()
+			served := metricSessionsTotal.WithLabelValues(auth.TransportWebSocket)
+			servedBefore := testutil.ToFloat64(served)
 
-			srv.HandleWebTransport(rec, webSocketUpgrade("https://relay.example/acme/app?jwt=a.b.c"))
+			sess, err := dialWebSocket(t, srv, "/acme/app?jwt=a.b.c")
+			require.NoError(t, err, "the upgrade goes through, so that the client can be told why")
 
-			assert.Equal(t, tt.wantStatus, rec.Code)
+			select {
+			case <-sess.Context().Done():
+			case <-time.After(5 * time.Second):
+				require.FailNow(t, "a refused session stayed open")
+			}
+			var serr *moqt.SessionError
+			require.ErrorAs(t, moqt.Cause(sess.Context()), &serr)
+			assert.True(t, serr.Remote)
+			assert.Equal(t, moqt.UnauthorizedSessionErrorCode, serr.SessionErrorCode())
+			assert.Equal(t, tt.wantReason, serr.ErrorMessage)
+
 			got := fake.received()
 			require.Len(t, got, 1, "an upgrade is checked once")
 			assert.Equal(t, auth.EventConnect, got[0].Event)
 			assert.Equal(t, auth.TransportWebSocket, got[0].Transport)
 			assert.Equal(t, "/acme/app", got[0].Path)
 			assert.Equal(t, "jwt=a.b.c", got[0].Query, "the credential is forwarded unparsed")
-			assert.Equal(t, "192.0.2.1:5000", got[0].Remote)
 			assert.Len(t, got[0].ID, 32)
+			assert.Empty(t, fake.ended(), "a refused session reports no end")
+			assert.Equal(t, servedBefore, testutil.ToFloat64(served), "a refused session is not served")
 		})
 	}
 }
@@ -174,62 +202,106 @@ func TestServer_HandleWebTransport_WebSocketSession(t *testing.T) {
 	assert.Equal(t, closedBefore+1, testutil.ToFloat64(closed))
 }
 
-func TestIsWebSocketUpgrade(t *testing.T) {
+// HandleWebSocket is for a listener that takes WebSocket alone: nothing else
+// gets as far as being checked.
+func TestServer_HandleWebSocket_NotAnUpgrade(t *testing.T) {
 	tests := map[string]struct {
-		method string
-		header http.Header
-		want   bool
+		webSocket bool
+		request   func() *http.Request
 	}{
-		"upgrade": {
-			method: http.MethodGet,
-			header: http.Header{"Connection": {"Upgrade"}, "Upgrade": {"websocket"}},
-			want:   true,
+		"a plain GET": {
+			webSocket: true,
+			request: func() *http.Request {
+				return httptest.NewRequest(http.MethodGet, "https://relay.example/acme?jwt=a.b.c", nil)
+			},
 		},
-		"tokens among others, in any case": {
-			method: http.MethodGet,
-			header: http.Header{"Connection": {"keep-alive, UPGRADE"}, "Upgrade": {"WebSocket"}},
-			want:   true,
+		"a WebTransport CONNECT": {
+			webSocket: true,
+			request: func() *http.Request {
+				r := httptest.NewRequest(http.MethodGet, "https://relay.example/acme?jwt=a.b.c", nil)
+				r.Method = http.MethodConnect
+				return r
+			},
 		},
-		"plain request":                {method: http.MethodGet, header: http.Header{}},
-		"upgrade to something else":    {method: http.MethodGet, header: http.Header{"Connection": {"Upgrade"}, "Upgrade": {"h2c"}}},
-		"without the Connection token": {method: http.MethodGet, header: http.Header{"Upgrade": {"websocket"}}},
-		"a WebTransport CONNECT":       {method: http.MethodConnect, header: http.Header{}},
-		"not a GET": {
-			method: http.MethodPost,
-			header: http.Header{"Connection": {"Upgrade"}, "Upgrade": {"websocket"}},
+		"a WebSocket upgrade with WebSocket off": {
+			webSocket: false,
+			request:   func() *http.Request { return webSocketUpgrade("https://relay.example/acme?jwt=a.b.c") },
 		},
 	}
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
-			got := isWebSocketUpgrade(&http.Request{Method: tt.method, Header: tt.header})
+			fake := &fakeAuth{grant: testGrant(t, "", "**", 0)}
+			srv := newWebSocketTestServer(t, fake)
+			srv.Config.WebSocket = tt.webSocket
+			rec := httptest.NewRecorder()
+
+			srv.HandleWebSocket(rec, tt.request())
+
+			assert.Equal(t, http.StatusUpgradeRequired, rec.Code)
+			assert.Empty(t, fake.received())
+		})
+	}
+}
+
+// HandleWebSocket admits an upgrade as HandleWebTransport does.
+func TestServer_HandleWebSocket_Admits(t *testing.T) {
+	fake := &fakeAuth{grant: testGrant(t, "", "**", 0)}
+	srv := newWebSocketTestServer(t, fake)
+	rec := httptest.NewRecorder()
+
+	// Admitted, then refused by the upgrade: there is no Sec-WebSocket-Key.
+	srv.HandleWebSocket(rec, webSocketUpgrade("https://relay.example/acme?jwt=a.b.c"))
+
+	require.Len(t, fake.received(), 1)
+	assert.Equal(t, auth.TransportWebSocket, fake.received()[0].Transport)
+	assert.Len(t, fake.ended(), 1, "the failed upgrade reports its end")
+}
+
+func TestRefusalReason(t *testing.T) {
+	tests := map[string]struct {
+		err  error
+		want string
+	}{
+		"401":                  {err: auth.RefusedError{Status: http.StatusUnauthorized}, want: refusalRefused},
+		"403":                  {err: auth.RefusedError{Status: http.StatusForbidden}, want: refusalRefused},
+		"a wrapped refusal":    {err: fmt.Errorf("verify: %w", auth.RefusedError{Status: http.StatusUnauthorized}), want: refusalRefused},
+		"could not be checked": {err: errors.New("no key set loaded yet"), want: refusalUnavailable},
+		"no Authorize":         {err: errNoAuthorize, want: refusalUnavailable},
+	}
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			got := refusalReason(tt.err)
 
 			assert.Equal(t, tt.want, got)
 		})
 	}
 }
 
-func TestOffersSubprotocol(t *testing.T) {
+func TestCheckWebSocketAddr(t *testing.T) {
 	tests := map[string]struct {
-		offered []string
-		want    bool
+		relayAddr string
+		wsAddr    string
+		wantErr   string
 	}{
-		"offered":                               {offered: []string{"qmux-02.moq-lite-05"}, want: true},
-		"among others in one value":             {offered: []string{"qmux-01.moq-lite-05, qmux-02.moq-lite-05"}, want: true},
-		"among others in several values":        {offered: []string{"webtransport", "qmux-02.moq-lite-05"}, want: true},
-		"nothing offered":                       {offered: nil},
-		"an empty value":                        {offered: []string{""}},
-		"another draft":                         {offered: []string{"qmux-01.moq-lite-05"}},
-		"the draft alone":                       {offered: []string{"qmux-02"}},
-		"a prefix":                              {offered: []string{"qmux-02.moq-lite"}},
-		"another case: they are case-sensitive": {offered: []string{"QMUX-02.MOQ-LITE-05"}},
+		"no listener":                    {relayAddr: ":4433", wsAddr: ""},
+		"a port of its own":              {relayAddr: ":4433", wsAddr: ":443"},
+		"the same port on another host":  {relayAddr: "127.0.0.1:4433", wsAddr: "192.0.2.1:4433"},
+		"RELAY_ADDR's port":              {relayAddr: ":4433", wsAddr: ":4433", wantErr: "RELAY_ADDR's TCP port"},
+		"RELAY_ADDR's port on one host":  {relayAddr: "127.0.0.1:4433", wsAddr: "127.0.0.1:4433", wantErr: "RELAY_ADDR's TCP port"},
+		"RELAY_ADDR's port on all hosts": {relayAddr: "127.0.0.1:4433", wsAddr: ":4433", wantErr: "RELAY_ADDR's TCP port"},
+		"all hosts under one of them":    {relayAddr: ":4433", wsAddr: "127.0.0.1:4433", wantErr: "RELAY_ADDR's TCP port"},
+		"not an address":                 {relayAddr: ":4433", wsAddr: "443", wantErr: "invalid WS_TLS_ADDR"},
+		"a RELAY_ADDR that is not one":   {relayAddr: "4433", wsAddr: ":443"},
 	}
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
-			r := &http.Request{Header: http.Header{"Sec-Websocket-Protocol": tt.offered}}
+			err := checkWebSocketAddr(tt.relayAddr, tt.wsAddr)
 
-			got := offersSubprotocol(r, "qmux-02.moq-lite-05")
-
-			assert.Equal(t, tt.want, got)
+			if tt.wantErr == "" {
+				assert.NoError(t, err)
+				return
+			}
+			assert.ErrorContains(t, err, tt.wantErr)
 		})
 	}
 }
@@ -308,4 +380,17 @@ func TestServers(t *testing.T) {
 	require.NoError(t, ss.Shutdown(context.Background()))
 	<-running.shutdownCalled
 	<-failing.shutdownCalled
+}
+
+// A panic in one server ends ListenAndServe with an error, so that the
+// caller shuts the others down.
+func TestServers_ListenAndServe_Panic(t *testing.T) {
+	running := newMockServer(nil)
+	ss := servers{running, &panicServer{}}
+
+	err := ss.ListenAndServe()
+
+	assert.ErrorContains(t, err, "panic in ListenAndServe: boom")
+	require.NoError(t, ss.Shutdown(context.Background()))
+	<-running.shutdownCalled
 }

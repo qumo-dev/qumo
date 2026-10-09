@@ -9,6 +9,7 @@ import (
 	"io"
 	"log"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/pprof"
 	"os"
@@ -76,7 +77,8 @@ func sanitizeLog(s string) string {
 //	                           TLS in front of it, or set WS_TLS_ADDR.
 //	WS_TLS_ADDR              - TCP address (e.g. ":443") to take WebSocket
 //	                           upgrades on with TLS, using CERT_FILE and
-//	                           KEY_FILE. Implies WS_ENABLE.
+//	                           KEY_FILE. Implies WS_ENABLE. It must not be
+//	                           RELAY_ADDR's port.
 func Run(args []string) error {
 	// Execution modes are flags (discoverable, self-documenting); secrets and
 	// deployment configuration stay env vars (see relay-config.example.env).
@@ -130,6 +132,14 @@ func Run(args []string) error {
 	if err != nil {
 		return fmt.Errorf("failed to setup TLS: %w", err)
 	}
+	// The relay's certificate, for the WebSocket listener too: tlsConfig
+	// itself goes on to carry the peer trust, which is QUIC's.
+	certificates := tlsConfig.Certificates
+
+	wsTLSAddr := os.Getenv("WS_TLS_ADDR")
+	if err := checkWebSocketAddr(addr, wsTLSAddr); err != nil {
+		return err
+	}
 
 	tlsConfig = trust.ServerTLS(tlsConfig)
 	switch {
@@ -170,7 +180,6 @@ func Run(args []string) error {
 		return errors.New("QUMO_USAGE_URL needs QUMO_AUTH_KEYS: usage is reported for the sessions the relay verifies")
 	}
 
-	wsTLSAddr := os.Getenv("WS_TLS_ADDR")
 	relayCfg := Config{
 		WebSocket:      wsTLSAddr != "" || envBool("WS_ENABLE"),
 		NodeID:         nodeID,
@@ -275,6 +284,19 @@ func Run(args []string) error {
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
+	// WebSocket with TLS: WebSocket upgrades alone, on a TCP port of their
+	// own. The health, status and metrics routes stay on the plain HTTP
+	// server.
+	httpServers := servers{httpServer}
+	if wsTLSAddr != "" {
+		httpServers = append(httpServers, tlsServer{&http.Server{
+			Addr:              wsTLSAddr,
+			Handler:           http.HandlerFunc(relayServer.HandleWebSocket),
+			TLSConfig:         &tls.Config{MinVersion: tls.VersionTLS12, Certificates: certificates},
+			ReadHeaderTimeout: 5 * time.Second,
+		}})
+	}
+
 	log.Printf("\t%-8s: %s\n", "Host", sanitizeLog(addr))
 	log.Printf("\t%-8s: %s\n", "Node ID", sanitizeLog(relayCfg.NodeID))
 	if relayCfg.Role != "" {
@@ -330,22 +352,6 @@ func Run(args []string) error {
 	// Start peer connections in background
 	go relayServer.ConnectPeers(ctx)
 
-	// WebSocket with TLS: the client endpoint alone, on its own TCP port.
-	// The health, status and metrics routes stay on the plain HTTP server.
-	httpServers := servers{httpServer}
-	if wsTLSAddr != "" {
-		cert, err := tls.LoadX509KeyPair(certFile, keyFile)
-		if err != nil {
-			return fmt.Errorf("failed to load TLS certificates for WS_TLS_ADDR: %w", err)
-		}
-		httpServers = append(httpServers, tlsServer{&http.Server{
-			Addr:              wsTLSAddr,
-			Handler:           http.HandlerFunc(relayServer.HandleWebTransport),
-			TLSConfig:         &tls.Config{MinVersion: tls.VersionTLS12, Certificates: []tls.Certificate{cert}},
-			ReadHeaderTimeout: 5 * time.Second,
-		}})
-	}
-
 	// Delegate to testable helper that runs servers until ctx is cancelled
 	if err := serveComponents(ctx, relayServer, httpServers, 10*time.Second); err != nil {
 		slog.Error("serveComponents failed", "err", err)
@@ -377,6 +383,30 @@ func envBool(key string) bool {
 	return false
 }
 
+// checkWebSocketAddr reports a WS_TLS_ADDR the relay could not serve: one
+// that is not an address, or that would bind the TCP port RELAY_ADDR's
+// plain HTTP server already binds. An empty wsAddr is fine: there is no
+// listener.
+func checkWebSocketAddr(relayAddr, wsAddr string) error {
+	if wsAddr == "" {
+		return nil
+	}
+	wsHost, wsPort, err := net.SplitHostPort(wsAddr)
+	if err != nil {
+		return fmt.Errorf("invalid WS_TLS_ADDR %q: %w", wsAddr, err)
+	}
+	relayHost, relayPort, err := net.SplitHostPort(relayAddr)
+	if err != nil {
+		// RELAY_ADDR's own check is the listener's.
+		return nil
+	}
+	// An empty host binds every address, so it collides with any host.
+	if wsPort == relayPort && (wsHost == relayHost || wsHost == "" || relayHost == "") {
+		return fmt.Errorf("WS_TLS_ADDR %q is RELAY_ADDR's TCP port, which serves plain HTTP (health, metrics): give WS_TLS_ADDR a port of its own", wsAddr)
+	}
+	return nil
+}
+
 // tlsServer is an HTTP server that serves TLS with the certificates of its
 // TLSConfig.
 type tlsServer struct {
@@ -394,7 +424,16 @@ type servers []server
 func (ss servers) ListenAndServe() error {
 	errs := make(chan error, len(ss))
 	for _, s := range ss {
-		go func() { errs <- s.ListenAndServe() }()
+		go func() {
+			// A panic ends this server like an error, so that the caller
+			// shuts the others down instead of the process dying.
+			defer func() {
+				if r := recover(); r != nil {
+					errs <- fmt.Errorf("panic in ListenAndServe: %v", r)
+				}
+			}()
+			errs <- s.ListenAndServe()
+		}()
 	}
 	// The others end at Shutdown, which the caller runs once this returns.
 	return <-errs

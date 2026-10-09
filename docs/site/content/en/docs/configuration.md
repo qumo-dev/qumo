@@ -125,9 +125,13 @@ WebTransport does not work on WebKit: a session stalls after about 7,600 streams
 | Variable | Default | Description |
 |---|---|---|
 | `WS_ENABLE` | (unset) | `1` takes WebSocket upgrades on `RELAY_ADDR`'s TCP port. That port is plain HTTP and browsers need `wss://`, so put TLS in front of it (a proxy or a load balancer), or set `WS_TLS_ADDR`. |
-| `WS_TLS_ADDR` | (unset) | A TCP address, such as `:443`, to take WebSocket upgrades on with TLS, using `CERT_FILE` and `KEY_FILE`. Implies `WS_ENABLE`. Only the client endpoint is served there; health, status and metrics stay on `RELAY_ADDR`. |
+| `WS_TLS_ADDR` | (unset) | A TCP address, such as `:443`, to take WebSocket upgrades on with TLS, using `CERT_FILE` and `KEY_FILE`. Implies `WS_ENABLE`. It takes WebSocket upgrades and nothing else (anything else gets `426`); health, status and metrics stay on `RELAY_ADDR`. It must be a port other than `RELAY_ADDR`'s. |
 
 A WebSocket session is admitted exactly as a WebTransport one: the same paths, the same credential in the URL (`wss://relay.example.com/…?jwt=…`), the same grant and the same revalidation. Sessions on every transport share tracks, so a publisher on one reaches subscribers on the others.
+
+**A refused WebSocket client is told so in the session, not in the handshake.** A browser hides the HTTP status of a failed WebSocket handshake from the page, which could then not tell a refusal from a relay it cannot reach. So the relay completes the upgrade and closes the session at once with the MoQ `Unauthorized` code and a reason: `refused` for a credential it does not accept, `unavailable` when it could not check one just now. A WebTransport client still gets `401`, `403` or `503`.
+
+**Behind a proxy, the remote address is the proxy's.** With `WS_ENABLE` and TLS in front, connect and end reports and the relay's logs carry the proxy's address for every WebSocket session: the relay reads no forwarding header. `WS_TLS_ADDR` has the client's own.
 
 `CORS_ALLOWED_ORIGINS` applies to WebSocket upgrades too, and there it is the only origin check: browsers do not apply CORS to WebSocket.
 

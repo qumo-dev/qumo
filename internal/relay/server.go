@@ -137,14 +137,8 @@ func (s *Server) HandleWebTransport(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusServiceUnavailable)
 		return
 	}
-	if s.websocketHandler != nil && isWebSocketUpgrade(r) {
-		// A request gomoqt won't upgrade goes straight to it, unasked: an
-		// Origin it refuses, or no subprotocol it speaks.
-		if !s.websocketHandler.CheckOrigin(r) || !offersSubprotocol(r, moqt.NextProtoQMux) {
-			s.websocketHandler.ServeHTTP(w, r)
-			return
-		}
-		s.serveAdmitted(w, r, s.websocketHandler, s.upgradeRequest(r, auth.TransportWebSocket))
+	if s.websocketHandler != nil && moqt.IsWebSocketUpgrade(r) {
+		s.handleWebSocket(w, r)
 		return
 	}
 	// A request gomoqt won't upgrade goes straight to it, unasked: not an
@@ -154,17 +148,60 @@ func (s *Server) HandleWebTransport(w http.ResponseWriter, r *http.Request) {
 		s.webtransportHandler.ServeHTTP(w, r)
 		return
 	}
-	s.serveAdmitted(w, r, s.webtransportHandler, s.upgradeRequest(r, auth.TransportWebTransport))
-}
-
-// serveAdmitted runs the connect check for an upgrade described by req, and
-// hands an admitted request to upgrader with its admission.
-func (s *Server) serveAdmitted(w http.ResponseWriter, r *http.Request, upgrader http.Handler, req auth.Request) {
+	req := s.upgradeRequest(r, auth.TransportWebTransport)
 	g, err := s.admit(r.Context(), req)
 	if err != nil {
 		w.WriteHeader(auth.RefusalStatus(err))
 		return
 	}
+	s.serveUpgrade(w, r, s.webtransportHandler, g, req)
+}
+
+// HandleWebSocket serves WebSocket upgrades alone, admitted as
+// HandleWebTransport admits them. It is for a listener that is there for
+// them only, where a WebTransport upgrade could never succeed. Anything
+// else gets 426.
+func (s *Server) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
+	s.init()
+	if s.websocketHandler == nil || !moqt.IsWebSocketUpgrade(r) {
+		http.Error(w, "WebSocket upgrade required", http.StatusUpgradeRequired)
+		return
+	}
+	s.handleWebSocket(w, r)
+}
+
+// handleWebSocket admits a WebSocket upgrade and serves its session.
+func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
+	h := s.websocketHandler
+	// An upgrade gomoqt would refuse is answered here, unasked: checking
+	// it first would count a session that never starts.
+	switch {
+	case !h.CheckOrigin(r):
+		http.Error(w, "origin not allowed", http.StatusForbidden)
+		return
+	case !h.Accepts(r):
+		http.Error(w, "no supported subprotocol offered", http.StatusBadRequest)
+		return
+	}
+	req := s.upgradeRequest(r, auth.TransportWebSocket)
+	g, err := s.admit(r.Context(), req)
+	if err != nil {
+		// A browser hides the status of a failed WebSocket handshake from
+		// the page, which could then not tell a refusal from a relay it
+		// cannot reach, and would retry. So the upgrade goes through and
+		// Relay closes the session with the reason, as relayPeer closes a
+		// refused native-QUIC session.
+		a := decidedAdmission(refusedGrant, req)
+		a.refusal = refusalReason(err)
+		h.ServeHTTP(w, r.WithContext(withAdmission(r.Context(), a)))
+		return
+	}
+	s.serveUpgrade(w, r, h, g, req)
+}
+
+// serveUpgrade hands a request admitted with g to upgrader, with its
+// admission.
+func (s *Server) serveUpgrade(w http.ResponseWriter, r *http.Request, upgrader http.Handler, g *auth.Grant, req auth.Request) {
 	a := decidedAdmission(g, req)
 	upgrader.ServeHTTP(w, r.WithContext(withAdmission(r.Context(), a)))
 	// gomoqt serves the session within ServeHTTP. If the upgrade failed
@@ -620,9 +657,15 @@ func (s *Server) maintainPeer(ctx context.Context, peer Peer) {
 // and browser clients), already admitted at the upgrade
 // (HandleWebTransport).
 func (s *Server) Relay(sess *moqt.Session) {
-	if admissionFrom(sess.Context()) == nil {
+	a := admissionFrom(sess.Context())
+	if a == nil {
 		// Unreachable through HandleWebTransport; refuse rather than run open.
 		_ = sess.CloseWithError(moqt.UnauthorizedSessionErrorCode, "not admitted")
+		return
+	}
+	if a.refusal != "" {
+		// A WebSocket session refused at connect: see handleWebSocket.
+		_ = sess.CloseWithError(moqt.UnauthorizedSessionErrorCode, a.refusal)
 		return
 	}
 	s.serveSession(sess)

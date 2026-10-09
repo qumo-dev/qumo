@@ -39,18 +39,18 @@ func TestRelay_SessionAuth_WebSocket(t *testing.T) {
 	const path = moqt.BroadcastPath("/acme/app/live")
 	tests := map[string]struct {
 		server    *fakeAuth
-		wantDial  bool
 		wantRoute bool
 	}{
 		"admitted, path granted": {
 			server:    &fakeAuth{grant: testGrant(t, "acme/app/**", "", 0)},
-			wantDial:  true,
 			wantRoute: true,
 		},
 		"admitted, path not granted": {
-			server:   &fakeAuth{grant: testGrant(t, "acme/other/**", "acme/**", 0)},
-			wantDial: true,
+			server: &fakeAuth{grant: testGrant(t, "acme/other/**", "acme/**", 0)},
 		},
+		// A refused WebSocket client is upgraded and then closed with the
+		// reason, since a browser cannot read a refused handshake's status:
+		// the dial succeeds, and nothing it announces is routed.
 		"401":              {server: &fakeAuth{err: auth.RefusedError{Status: http.StatusUnauthorized}}},
 		"403":              {server: &fakeAuth{err: auth.RefusedError{Status: http.StatusForbidden}}},
 		"can't be checked": {server: &fakeAuth{err: errors.New("no key set loaded yet")}},
@@ -62,16 +62,11 @@ func TestRelay_SessionAuth_WebSocket(t *testing.T) {
 
 			err := announceOver(t, ws+"/acme/app?jwt=header.payload.signature", nil, nil, path)
 
-			if !tt.wantDial {
-				require.Error(t, err, "a refused client must not get a session")
-				assert.Never(t, routed(srv, path), 500*time.Millisecond, 25*time.Millisecond)
+			require.NoError(t, err)
+			if tt.wantRoute {
+				require.Eventually(t, routed(srv, path), 3*time.Second, 25*time.Millisecond)
 			} else {
-				require.NoError(t, err)
-				if tt.wantRoute {
-					require.Eventually(t, routed(srv, path), 3*time.Second, 25*time.Millisecond)
-				} else {
-					assert.Never(t, routed(srv, path), 1500*time.Millisecond, 25*time.Millisecond)
-				}
+				assert.Never(t, routed(srv, path), 1500*time.Millisecond, 25*time.Millisecond)
 			}
 			// startAuthRelay's readiness probes are native-QUIC sessions;
 			// this session is the only WebSocket one.
