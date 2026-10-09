@@ -716,7 +716,7 @@ func (s *Server) serveSession(sess *moqt.Session) {
 			continue
 		}
 
-		handler := newRelayHandler(ann, sess, g, s.Config.NodeID,
+		handler := newRelayHandler(ann, sess, s.Config.NodeID,
 			s.Config.GroupCacheSize, s.framePool, s.sampler)
 
 		slog.Debug("relay: created relayHandler",

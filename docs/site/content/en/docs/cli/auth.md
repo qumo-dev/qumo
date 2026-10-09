@@ -69,7 +69,7 @@ Whatever no scope grants is denied, and a scope member the verifier doesn't know
 
 grants what `[{"actions": ["publish"], "broadcast": {"prefix": "acme/app/rooms/42/alice"}}, {"actions": ["subscribe", "fetch"], "broadcast": {"prefix": "acme/app/rooms/42"}}]` does. A token carrying both `path_auth` and `scopes` is refused, and so is one carrying `path_auth` and `sub`. `qumo auth token` and `token.Sign` write `scopes` only.
 
-**On the relay**, a session may announce a broadcast a `publish` scope matches, whatever track that scope names; the relay takes a track of it from the publisher only when a `publish` scope matches the broadcast and the track, and answers a subscriber asking for any other track as if it did not exist. A session may subscribe to a track a `subscribe` scope matches, by broadcast and track name. The relay ignores `fetch`, so a credential granting only `fetch` (a funnel reader's) may do nothing there.
+**On the relay**, a session may announce a broadcast a `publish` scope matches on every track, one naming no `track`, and the relay takes its tracks from it. A broadcast has one publisher, so a `publish` scope naming one track announces nothing: it is for writing that track into a broadcast someone else announces, at a [funnel](../funnel/). Give each publisher its own broadcast path. A session may subscribe to a track a `subscribe` scope matches, by broadcast and track name. The relay ignores `fetch`, so a credential granting only `fetch` (a funnel reader's) may do nothing there.
 
 ## Signing in your app (Go)
 

@@ -1,9 +1,9 @@
 //go:build integration
 
 // Black-box tests of the relay enforcing a scoped credential, verified by a
-// real auth.Verifier: a publish scope lets a session announce the broadcasts
-// it matches and gates the tracks the relay takes from them, and a subscribe
-// scope the tracks a viewer receives.
+// real auth.Verifier: a publish scope on every track of a broadcast lets a
+// session announce it, and a subscribe scope gates the tracks a viewer
+// receives.
 package integration
 
 import (
@@ -47,21 +47,11 @@ func TestRelay_ScopedCredentials(t *testing.T) {
 	scope := func(broadcast string, prefix bool, track string, actions ...token.Action) token.Scope {
 		return token.Scope{Actions: actions, Broadcast: broadcast, Prefix: prefix, Track: track}
 	}
-	// The publisher may publish only the video track of acme/live, which lets
-	// it announce acme/live.
-	publishOver(t, srv, url(scope("acme/live", false, "video", token.ActionPublish)), "/acme/live")
+	publishOver(t, srv, url(scope("acme/live", false, "", token.ActionPublish)), "/acme/live")
 	viewer := url(scope("acme", true, "", token.ActionSubscribe))
 
-	t.Run("a track the publisher may publish", func(t *testing.T) {
+	t.Run("a viewer of the broadcast", func(t *testing.T) {
 		assert.NoError(t, subscribeTrack(t, viewer, "/acme/live", "video"))
-	})
-	t.Run("a track the publisher may not publish looks like a missing one", func(t *testing.T) {
-		refused := subscribeTrack(t, viewer, "/acme/live", "audio")
-		missing := subscribeTrack(t, viewer, "/acme/none", "video")
-
-		require.Error(t, refused)
-		require.Error(t, missing)
-		assert.Equal(t, missing.Error(), refused.Error())
 	})
 	t.Run("a viewer scoped to another track", func(t *testing.T) {
 		err := subscribeTrack(t, url(scope("acme/live", false, "audio", token.ActionSubscribe)), "/acme/live", "video")
@@ -78,7 +68,7 @@ func TestRelay_ScopedCredentials(t *testing.T) {
 
 		assert.Error(t, err)
 	})
-	t.Run("no publish scope on the broadcast announces nothing", func(t *testing.T) {
+	t.Run("no publish scope on every track of the broadcast announces nothing", func(t *testing.T) {
 		tests := map[string]struct {
 			path   moqt.BroadcastPath
 			scopes []token.Scope
@@ -90,6 +80,12 @@ func TestRelay_ScopedCredentials(t *testing.T) {
 			"publish on another broadcast": {
 				path:   "/acme/elsewhere",
 				scopes: []token.Scope{scope("acme/other", true, "", token.ActionPublish)},
+			},
+			// A scope naming one track writes into a broadcast through a
+			// funnel; the broadcast is someone else's to announce.
+			"publish on one track only": {
+				path:   "/acme/comments",
+				scopes: []token.Scope{scope("acme/comments", false, "chat", token.ActionPublish)},
 			},
 		}
 		for name, tt := range tests {

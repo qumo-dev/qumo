@@ -10,8 +10,6 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/qumo-dev/gomoqt/moqt"
-	"github.com/qumo-dev/qumo/internal/auth"
-	"github.com/qumo-dev/qumo/token"
 	"golang.org/x/sync/singleflight"
 )
 
@@ -103,10 +101,6 @@ type RouteReporter interface {
 type relayHandler struct {
 	announcement *moqt.Announcement
 	session      *moqt.Session
-	// grant is what the announcing session may publish: a track it doesn't
-	// cover is neither subscribed to upstream nor described. nil is
-	// unchecked, as for a relay peer.
-	grant *auth.Grant
 
 	tracks  *trackManager
 	flights singleflight.Group
@@ -264,7 +258,7 @@ func compareRoutes(candidate, current RouteStats) routeDecision {
 	return decisionInferiorRTT
 }
 
-func newRelayHandler(ann *moqt.Announcement, sess *moqt.Session, grant *auth.Grant, nodeID string, cacheSize int, pool *FramePool, sampler *statsSampler) *relayHandler {
+func newRelayHandler(ann *moqt.Announcement, sess *moqt.Session, nodeID string, cacheSize int, pool *FramePool, sampler *statsSampler) *relayHandler {
 	if sess == nil {
 		panic("relay: session must not be nil")
 	}
@@ -276,7 +270,6 @@ func newRelayHandler(ann *moqt.Announcement, sess *moqt.Session, grant *auth.Gra
 	h := &relayHandler{
 		announcement: ann,
 		session:      sess,
-		grant:        grant,
 		tracks:       newTrackManager(cacheSize, pool),
 		nodeID:       nodeID,
 		sampler:      sampler,
@@ -320,31 +313,21 @@ func (h *relayHandler) RouteStats() RouteStats {
 	return rs
 }
 
-// publishes reports whether the announcing session may publish the track
-// named name of its broadcast, at path.
-func (h *relayHandler) publishes(path moqt.BroadcastPath, name moqt.TrackName) bool {
-	return h.grant == nil || h.grant.Allows(token.ActionPublish, path, name)
-}
-
 // TrackInfo implements moqt.TrackInfoProvider by querying the upstream session
 // for the track's immutable publisher properties (TRACK_INFO), caching the result
-// and deduplicating concurrent upstream queries with singleflight. A track the
-// publisher's grant doesn't cover is unknown.
+// and deduplicating concurrent upstream queries with singleflight.
 func (h *relayHandler) TrackInfo(name moqt.TrackName) (pubInfo moqt.PublishInfo, ok bool) {
-	// Capture local snapshots for thread-safety and stable references
-	announcement := h.announcement
-	if announcement == nil || !h.publishes(announcement.BroadcastPath(), name) {
-		return moqt.PublishInfo{}, false
-	}
 	// Fast path: cache hit
 	if val, found := h.trackInfoCache.Load(name); found {
 		return val.(moqt.PublishInfo), true
 	}
 
+	// Capture local snapshots for thread-safety and stable references
 	session := h.session
+	announcement := h.announcement
 	ctx := h.ctx
 
-	if session == nil || !announcement.IsActive() || ctx.Err() != nil {
+	if session == nil || announcement == nil || !announcement.IsActive() || ctx.Err() != nil {
 		return moqt.PublishInfo{}, false
 	}
 
@@ -424,12 +407,6 @@ func (h *relayHandler) subscribe(name moqt.TrackName) *trackDistributor {
 	announcement := h.announcement
 	if announcement == nil {
 		slog.Warn("relay: subscribe failed: announcement is nil", "track", name)
-		return nil
-	}
-
-	if !h.publishes(announcement.BroadcastPath(), name) {
-		slog.Info("relay: subscription refused: the publisher's grant does not cover the track",
-			"broadcast_path", announcement.BroadcastPath(), "track_name", name)
 		return nil
 	}
 
