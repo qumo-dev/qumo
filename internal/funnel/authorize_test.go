@@ -197,6 +197,12 @@ func TestAuthorizer_Scopes(t *testing.T) {
 				scope("room/123/comments", false, "chat", token.ActionPost)),
 			wantSender: "42",
 		},
+		"redacting with every action": {
+			header: bearerOf("", scope("room", true, "",
+				token.ActionPublish, token.ActionSubscribe, token.ActionFetch, token.ActionPost)),
+			access:  ingest.Redact,
+			wantErr: true,
+		},
 	}
 	authorize := authorizer(v)
 	for name, tt := range tests {
