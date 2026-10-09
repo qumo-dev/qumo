@@ -61,8 +61,8 @@ func signPathAuth(tb testing.TB, key token.SigningKey, pub, sub string) string {
 	return input + "." + base64.RawURLEncoding.EncodeToString(ed25519.Sign(key.Private, []byte(input)))
 }
 
-// A path_auth credential is read as scopes: pub writes and sub reads, at its
-// path and beneath it. It names no sender, wherever its path lies.
+// A path_auth credential is read as scopes: sub reads at its path and beneath
+// it, and pub, being publish, never writes.
 func TestAuthorizer_PathAuth(t *testing.T) {
 	v, key := newVerifier(t)
 	other, err := token.GenerateKey("")
@@ -79,24 +79,18 @@ func TestAuthorizer_PathAuth(t *testing.T) {
 		wantErr     bool
 		wantUnauthn bool
 	}{
-		"publishing at the broadcast":     {header: pub("room/123/comments")},
-		"publishing at the room":          {header: pub("room/123")},
-		"publishing at every room":        {header: pub("room")},
-		"lower-case scheme":               {header: "bearer " + signPathAuth(t, key, "room/123", "")},
-		"one segment beneath, no sender":  {header: pub("room/123/comments/user-42"), wantErr: true},
-		"two segments beneath":            {header: pub("room/123/comments/user-42/phone"), wantErr: true},
-		"one segment beneath another":     {header: pub("room/9/comments/user-42"), wantErr: true},
-		"a subscribe-only credential":     {header: sub("room/123"), wantErr: true},
-		"no credential":                   {wantErr: true, wantUnauthn: true},
-		"not a bearer credential":         {header: "Basic YWxpY2U6c2VjcmV0", wantErr: true, wantUnauthn: true},
-		"signed by an unknown key":        {header: "Bearer " + signPathAuth(t, other, "room/123", ""), wantErr: true, wantUnauthn: true},
-		"not a credential at all":         {header: "Bearer hello", wantErr: true, wantUnauthn: true},
-		"publishing at a sibling":         {header: pub("room/1234"), wantErr: true},
-		"publishing at another room":      {header: pub("room/9"), wantErr: true},
-		"reading with a subscriber's":     {header: sub("room/123"), access: ingest.Read},
-		"reading with a publisher's":      {header: pub("room/123"), access: ingest.Read, wantErr: true},
-		"reading another room":            {header: sub("room/9"), access: ingest.Read, wantErr: true},
-		"reading one segment beneath pub": {header: pub("room/123/comments/user-42"), access: ingest.Read, wantErr: true},
+		"writing with pub at the broadcast": {header: pub("room/123/comments"), wantErr: true},
+		"writing with pub at every room":    {header: pub("room"), wantErr: true},
+		"a subscribe-only credential":       {header: sub("room/123"), wantErr: true},
+		"no credential":                     {wantErr: true, wantUnauthn: true},
+		"not a bearer credential":           {header: "Basic YWxpY2U6c2VjcmV0", wantErr: true, wantUnauthn: true},
+		"signed by an unknown key":          {header: "Bearer " + signPathAuth(t, other, "room/123", ""), wantErr: true, wantUnauthn: true},
+		"not a credential at all":           {header: "Bearer hello", wantErr: true, wantUnauthn: true},
+		"lower-case scheme":                 {header: "bearer " + signPathAuth(t, key, "", "room/123"), access: ingest.Read},
+		"reading with a subscriber's":       {header: sub("room/123"), access: ingest.Read},
+		"reading with a publisher's":        {header: pub("room/123"), access: ingest.Read, wantErr: true},
+		"reading another room":              {header: sub("room/9"), access: ingest.Read, wantErr: true},
+		"reading one segment beneath pub":   {header: pub("room/123/comments/user-42"), access: ingest.Read, wantErr: true},
 	}
 	authorize := authorizer(v)
 	for name, tt := range tests {
@@ -135,38 +129,42 @@ func TestAuthorizer_Scopes(t *testing.T) {
 		wantSender string
 		wantErr    bool
 	}{
-		"publishing the exact track as a subject": {
-			header:     bearerOf("42", scope("room/123/comments", false, "chat", token.ActionPublish)),
+		"posting the exact track as a subject": {
+			header:     bearerOf("42", scope("room/123/comments", false, "chat", token.ActionPost)),
 			wantSender: "42",
 		},
-		"publishing with no subject": {
-			header: bearerOf("", scope("room/123/comments", false, "chat", token.ActionPublish)),
+		"posting with no subject": {
+			header: bearerOf("", scope("room/123/comments", false, "chat", token.ActionPost)),
 		},
-		"publishing any track of the broadcast": {
-			header:     bearerOf("42", scope("room/123/comments", false, "", token.ActionPublish)),
+		"posting any track of the broadcast": {
+			header:     bearerOf("42", scope("room/123/comments", false, "", token.ActionPost)),
 			wantSender: "42",
 		},
-		"publishing under a prefix": {
-			header:     bearerOf("42", scope("room/123", true, "chat", token.ActionPublish)),
+		"posting under a prefix": {
+			header:     bearerOf("42", scope("room/123", true, "chat", token.ActionPost)),
 			wantSender: "42",
 		},
-		"publishing another track": {
-			header:  bearerOf("42", scope("room/123/comments", false, "other", token.ActionPublish)),
+		"posting another track": {
+			header:  bearerOf("42", scope("room/123/comments", false, "other", token.ActionPost)),
 			wantErr: true,
 		},
-		"publishing beneath the broadcast": {
-			header:  bearerOf("42", scope("room/123/comments/user-42", false, "chat", token.ActionPublish)),
+		"posting beneath the broadcast": {
+			header:  bearerOf("42", scope("room/123/comments/user-42", false, "chat", token.ActionPost)),
 			wantErr: true,
 		},
-		"publishing under a sibling prefix": {
-			header:  bearerOf("42", scope("room/12", true, "chat", token.ActionPublish)),
+		"posting under a sibling prefix": {
+			header:  bearerOf("42", scope("room/12", true, "chat", token.ActionPost)),
 			wantErr: true,
 		},
-		"publishing with fetch only": {
+		"posting with publish, which only sends through the relay": {
+			header:  bearerOf("42", scope("room/123/comments", false, "chat", token.ActionPublish)),
+			wantErr: true,
+		},
+		"posting with fetch only": {
 			header:  bearerOf("42", scope("room/123/comments", false, "chat", token.ActionFetch)),
 			wantErr: true,
 		},
-		"publishing with subscribe only": {
+		"posting with subscribe only": {
 			header:  bearerOf("42", scope("room/123/comments", false, "chat", token.ActionSubscribe)),
 			wantErr: true,
 		},
@@ -183,8 +181,8 @@ func TestAuthorizer_Scopes(t *testing.T) {
 			access:  ingest.Read,
 			wantErr: true,
 		},
-		"reading with publish only": {
-			header:  bearerOf("42", scope("room/123/comments", false, "chat", token.ActionPublish)),
+		"reading with post only": {
+			header:  bearerOf("42", scope("room/123/comments", false, "chat", token.ActionPost)),
 			access:  ingest.Read,
 			wantErr: true,
 		},
@@ -195,8 +193,8 @@ func TestAuthorizer_Scopes(t *testing.T) {
 		},
 		"the second of two scopes": {
 			header: bearerOf("42",
-				scope("room/9", true, "", token.ActionPublish),
-				scope("room/123/comments", false, "chat", token.ActionPublish)),
+				scope("room/9", true, "", token.ActionPost),
+				scope("room/123/comments", false, "chat", token.ActionPost)),
 			wantSender: "42",
 		},
 	}

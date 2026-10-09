@@ -1,8 +1,8 @@
-// Package funnel records what arrives over HTTP and serves it as MoQ tracks.
+// Package funnel gathers many HTTP senders' messages into one MoQ track.
 //
 // Many senders POST records into one track. Each record is committed to a
-// qumo-ledger track first and then sent to the track's MoQ subscribers, so a
-// subscriber only ever sees a record that is stored.
+// qumo-ledger track (in memory, or durable) first and then sent to the track's
+// MoQ subscribers, so a subscriber only ever sees a record that is stored.
 //
 //	POST /tracks/room/123/chat  the record's payload, one JSON value, into the track
 //	                            "chat" of the broadcast "/room/123"
@@ -11,7 +11,7 @@
 //
 // With a key set, every request carries a qumo credential as a bearer token.
 // Its scopes name exactly what it reaches: a read needs a "fetch" scope, and
-// a write a "publish" scope, on the track's broadcast and track name; the
+// a write a "post" scope, on the track's broadcast and track name; the
 // records carry its "sub" as their sender, or no sender without one.
 //
 // The funnel publishes through a relay it dials as a client, so subscribers

@@ -211,7 +211,8 @@ func TestSign_ScopesRoundTrip(t *testing.T) {
 	require.NoError(t, err)
 	now := time.Unix(1_800_000_000, 0)
 	g := Grant{Subject: "42", Scopes: []Scope{
-		{Actions: []Action{ActionPublish}, Broadcast: "/acme/app/room/123/comments/", Track: "chat"},
+		{Actions: []Action{ActionPost}, Broadcast: "/acme/app/room/123/comments/", Track: "chat"},
+		{Actions: []Action{ActionPublish}, Broadcast: "acme/app/room/123/42"},
 		{Actions: []Action{ActionSubscribe, ActionFetch}, Broadcast: "acme/app/room/123", Prefix: true},
 	}}
 
@@ -221,7 +222,8 @@ func TestSign_ScopesRoundTrip(t *testing.T) {
 
 	require.NoError(t, err)
 	assert.Equal(t, Grant{Subject: "42", Scopes: []Scope{
-		{Actions: []Action{ActionPublish}, Broadcast: "acme/app/room/123/comments", Track: "chat"},
+		{Actions: []Action{ActionPost}, Broadcast: "acme/app/room/123/comments", Track: "chat"},
+		{Actions: []Action{ActionPublish}, Broadcast: "acme/app/room/123/42"},
 		{Actions: []Action{ActionSubscribe, ActionFetch}, Broadcast: "acme/app/room/123", Prefix: true},
 	}}, c.Grant)
 }

@@ -109,6 +109,10 @@ func TestParseScope(t *testing.T) {
 			value: "publish:room/1:chat",
 			want:  token.Scope{Actions: []token.Action{"publish"}, Broadcast: "room/1", Track: "chat"},
 		},
+		"post into one track": {
+			value: "post:room/1:chat",
+			want:  token.Scope{Actions: []token.Action{"post"}, Broadcast: "room/1", Track: "chat"},
+		},
 		"a prefix, every track": {
 			value: "subscribe,fetch:room/**",
 			want:  token.Scope{Actions: []token.Action{"subscribe", "fetch"}, Broadcast: "room", Prefix: true},

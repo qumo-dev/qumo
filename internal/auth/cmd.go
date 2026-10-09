@@ -154,7 +154,7 @@ func runToken(args []string, out, info io.Writer) error {
 	subscribe := fs.String("subscribe", "", "the path the bearer may subscribe at or beneath: short for -scope subscribe,fetch:PATH/**")
 	var scopes []token.Scope
 	fs.Func("scope", "a scope, `ACTIONS:BROADCAST[:TRACK]` (repeatable):\n"+
-		"ACTIONS is a comma-separated list of publish, subscribe and fetch;\n"+
+		"ACTIONS is a comma-separated list of publish, subscribe, fetch and post;\n"+
 		"BROADCAST is a path, or a/b/** for it and every path beneath it;\n"+
 		"TRACK is one track name, or omitted for every track",
 		func(v string) error {

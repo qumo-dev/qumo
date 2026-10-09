@@ -45,8 +45,8 @@ func (g *Grant) Allows(action token.Action, path moqt.BroadcastPath, track moqt.
 
 // Announces reports whether the session may announce the broadcast at path:
 // whether a scope permits publishing every track of it. A broadcast has one
-// publisher, so a scope naming one track doesn't announce: it writes that
-// track into a broadcast someone else announces, such as a funnel's.
+// publisher, so a scope naming one track doesn't announce, and neither does
+// post, which writes into a funnel's track, never through the relay.
 func (g *Grant) Announces(path moqt.BroadcastPath) bool {
 	for _, s := range g.scopes {
 		if s.Track == "" && s.Allows(token.ActionPublish, path.String(), "") {
