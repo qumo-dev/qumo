@@ -42,12 +42,12 @@ type VerifierConfig struct {
 // within its validity (token.Verify). A live session is re-checked every 30 s
 // (token.VerifyLive): a key that has left the set ends its sessions. The
 // credential's expiry decides only whether the session may start. A key
-// marked "publish": false starts no new sessions that may publish a
+// marked "pause": ["publish"] starts no new sessions that may publish a
 // broadcast (a credential with a publish scope on every track of one); it
-// never ends a live one,
-// since it pauses what is new rather than what is on air. The key set is kept
-// when a refresh fails (fail-static): after 6 h without one, new sessions are
-// refused, while live ones continue on the last set.
+// never ends a live one, since it pauses what is new rather than what is on
+// air. The key set is kept when a refresh fails (fail-static): after 6 h
+// without one, new sessions are refused, while live ones continue on the
+// last set.
 type Verifier struct {
 	source keySource
 	store  keyStore
@@ -169,7 +169,7 @@ func (v *Verifier) decide(req Request) (*Grant, usageSession, error) {
 		return nil, usageSession{}, refuse(status, "%v", err)
 	}
 	publishes, subscribes := rolesOf(c.Grant)
-	if connect && publishes && set.noPublish[c.Key.ID] {
+	if connect && publishes && set.pausedPublish[c.Key.ID] {
 		return nil, usageSession{}, refuse(http.StatusForbidden,
 			"signing key %s starts no new publishing sessions", c.Key.ID)
 	}
