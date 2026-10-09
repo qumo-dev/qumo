@@ -30,8 +30,7 @@ var (
 	)
 
 	// metricSessionsEnded counts checked sessions the relay ended because of
-	// their grant, by reason: expired (the grant's expires passed) or
-	// refused (a revalidate was refused).
+	// their grant, by reason: refused (a revalidate was refused).
 	metricSessionsEnded = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "qumo",
 		Subsystem: "relay",

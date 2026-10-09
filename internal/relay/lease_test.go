@@ -20,24 +20,7 @@ import (
 var leaseRequest = auth.Request{ID: "00ff", Event: auth.EventConnect, Path: "/acme", Query: "jwt=h.p.s"}
 
 func TestStartLease_NothingToDo(t *testing.T) {
-	assert.Nil(t, startLease(context.Background(), &fakeLeasedSession{}, (&fakeAuth{}).authorize, leaseRequest, time.Time{}, 0))
-}
-
-// TestLease_Expires verifies a session ends at its deadline and not before.
-func TestLease_Expires(t *testing.T) {
-	synctest.Test(t, func(t *testing.T) {
-		sess := &fakeLeasedSession{}
-		l := startLease(t.Context(), sess, (&fakeAuth{}).authorize, leaseRequest, time.Now().Add(time.Minute), 0)
-		defer l.stop()
-
-		time.Sleep(time.Minute - time.Nanosecond)
-		synctest.Wait()
-		assert.Empty(t, sess.closed(), "closed before the deadline")
-
-		time.Sleep(time.Nanosecond)
-		synctest.Wait()
-		assert.Equal(t, []sessionClose{{code: moqt.UnauthorizedSessionErrorCode, msg: endExpired}}, sess.closed())
-	})
+	assert.Nil(t, startLease(context.Background(), &fakeLeasedSession{}, (&fakeAuth{}).authorize, leaseRequest, 0))
 }
 
 // TestLease_RevalidateEnds verifies a refused revalidate ends
@@ -56,7 +39,7 @@ func TestLease_RevalidateEnds(t *testing.T) {
 				server := &fakeAuth{err: tt.err}
 				sess := &fakeLeasedSession{}
 				sess.setStats(1500, 300)
-				l := startLease(t.Context(), sess, server.authorize, leaseRequest, time.Now().Add(time.Hour), 30*time.Second)
+				l := startLease(t.Context(), sess, server.authorize, leaseRequest, 30*time.Second)
 				defer l.stop()
 
 				time.Sleep(30*time.Second - time.Nanosecond)
@@ -75,29 +58,26 @@ func TestLease_RevalidateEnds(t *testing.T) {
 	}
 }
 
-// TestLease_RevalidateMovesExpires verifies an admitted revalidate keeps the
-// session and takes the new expires and cadence; its patterns aren't checked.
-func TestLease_RevalidateMovesExpires(t *testing.T) {
+// TestLease_RevalidateTakesCadence verifies an admitted revalidate keeps the
+// session and takes the reply's cadence; its scopes aren't checked.
+func TestLease_RevalidateTakesCadence(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		// The reply's patterns differ from connect's; only expires matters.
-		server := &fakeAuth{grant: testGrant(t, "other/**", "", time.Now().Add(2*time.Minute), 30*time.Second)}
+		// The reply's scopes differ from connect's; only the cadence matters.
+		server := &fakeAuth{grant: testGrant(t, "other/**", "", time.Minute)}
 		sess := &fakeLeasedSession{}
-		l := startLease(t.Context(), sess, server.authorize, leaseRequest, time.Now().Add(time.Minute), 30*time.Second)
+		l := startLease(t.Context(), sess, server.authorize, leaseRequest, 30*time.Second)
 		defer l.stop()
 
-		time.Sleep(2*time.Minute - time.Nanosecond)
+		time.Sleep(150 * time.Second)
 		synctest.Wait()
-		assert.Empty(t, sess.closed(), "ended at the old expires")
-		assert.Len(t, server.received(), 3, "revalidates at 30 s, 60 s and 90 s")
 
-		time.Sleep(time.Nanosecond)
-		synctest.Wait()
-		assert.Equal(t, []sessionClose{{code: moqt.UnauthorizedSessionErrorCode, msg: endExpired}}, sess.closed())
+		assert.Len(t, server.received(), 3, "revalidates at 30 s, 90 s and 150 s")
+		assert.Empty(t, sess.closed())
 	})
 }
 
 // TestLease_RevalidateUnavailable verifies a revalidate that can't be
-// answered is retried with backoff, and the session lives until its expires.
+// answered leaves the session live, and is retried with backoff.
 func TestLease_RevalidateUnavailable(t *testing.T) {
 	tests := map[string]*fakeAuth{
 		"server errors": {err: errors.New("503")},
@@ -107,23 +87,21 @@ func TestLease_RevalidateUnavailable(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
 				sess := &fakeLeasedSession{}
-				l := startLease(t.Context(), sess, server.authorize, leaseRequest, time.Now().Add(time.Minute), 30*time.Second)
+				l := startLease(t.Context(), sess, server.authorize, leaseRequest, 30*time.Second)
 				defer l.stop()
 
-				time.Sleep(time.Minute - time.Nanosecond)
+				time.Sleep(time.Hour)
 				synctest.Wait()
-				assert.Empty(t, sess.closed(), "ended before its expires")
 
-				time.Sleep(time.Nanosecond)
-				synctest.Wait()
-				assert.Equal(t, []sessionClose{{code: moqt.UnauthorizedSessionErrorCode, msg: endExpired}}, sess.closed())
+				assert.NotEmpty(t, server.received())
+				assert.Empty(t, sess.closed(), "a session that couldn't be checked lives on")
 			})
 		})
 	}
 	t.Run("retries back off", func(t *testing.T) {
 		synctest.Test(t, func(t *testing.T) {
 			server := &fakeAuth{err: errors.New("503")}
-			l := startLease(t.Context(), &fakeLeasedSession{}, server.authorize, leaseRequest, time.Now().Add(time.Hour), 30*time.Second)
+			l := startLease(t.Context(), &fakeLeasedSession{}, server.authorize, leaseRequest, 30*time.Second)
 			defer l.stop()
 
 			// Retries follow the first attempt at 30 s with jittered delays of
@@ -143,7 +121,7 @@ func TestLease_Stop(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		server := &fakeAuth{}
 		sess := &fakeLeasedSession{}
-		l := startLease(t.Context(), sess, server.authorize, leaseRequest, time.Now().Add(time.Minute), 30*time.Second)
+		l := startLease(t.Context(), sess, server.authorize, leaseRequest, 30*time.Second)
 
 		time.Sleep(10 * time.Second)
 		l.stop()
@@ -180,9 +158,9 @@ func TestRetryDelay(t *testing.T) {
 // session's cumulative byte totals at that moment.
 func TestLease_RevalidateReportsBytes(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		server := &fakeAuth{grant: testGrant(t, "", "**", time.Now().Add(time.Hour), 30*time.Second)}
+		server := &fakeAuth{grant: testGrant(t, "", "**", 30*time.Second)}
 		sess := &fakeLeasedSession{}
-		l := startLease(t.Context(), sess, server.authorize, leaseRequest, time.Now().Add(time.Hour), 30*time.Second)
+		l := startLease(t.Context(), sess, server.authorize, leaseRequest, 30*time.Second)
 		defer l.stop()
 
 		sess.setStats(100, 10)
@@ -201,13 +179,13 @@ func TestLease_RevalidateReportsBytes(t *testing.T) {
 }
 
 func TestEndReason(t *testing.T) {
-	expired := &lease{ended: endExpired}
+	refused := &lease{ended: endRefused}
 	tests := map[string]struct {
 		lease *lease
 		cause error
 		want  string
 	}{
-		"the lease ended it":         {lease: expired, cause: &transport.ApplicationError{}, want: endExpired},
+		"the lease ended it":         {lease: refused, cause: &transport.ApplicationError{}, want: endRefused},
 		"closed by an application":   {cause: &transport.ApplicationError{}, want: endClosed},
 		"idle timeout":               {cause: &transport.IdleTimeoutError{}, want: endDropped},
 		"stateless reset":            {cause: &transport.StatelessResetError{}, want: endDropped},
@@ -222,20 +200,19 @@ func TestEndReason(t *testing.T) {
 	}
 }
 
-// TestLease_RevalidateWithoutExpiresKeepsDeadline verifies an admitted
-// revalidate whose grant has no expires keeps the session's deadline rather
-// than lifting it.
-func TestLease_RevalidateWithoutExpiresKeepsDeadline(t *testing.T) {
+// TestLease_RevalidateWithoutCadenceStops verifies an admitted revalidate
+// whose grant has no cadence stops revalidating and keeps the session.
+func TestLease_RevalidateWithoutCadenceStops(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		server := &fakeAuth{grant: testGrant(t, "", "**", time.Time{}, 0)}
+		server := &fakeAuth{grant: testGrant(t, "", "**", 0)}
 		sess := &fakeLeasedSession{}
-		l := startLease(t.Context(), sess, server.authorize, leaseRequest, time.Now().Add(time.Minute), 30*time.Second)
+		l := startLease(t.Context(), sess, server.authorize, leaseRequest, 30*time.Second)
 		defer l.stop()
 
-		time.Sleep(time.Minute)
+		time.Sleep(time.Hour)
 		synctest.Wait()
 
 		assert.Len(t, server.received(), 1, "the reply has no revalidate, so no more are sent")
-		assert.Equal(t, []sessionClose{{code: moqt.UnauthorizedSessionErrorCode, msg: endExpired}}, sess.closed())
+		assert.Empty(t, sess.closed())
 	})
 }

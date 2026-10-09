@@ -15,19 +15,17 @@ import (
 
 // Backoff for a revalidate that could not be answered: the first retry
 // waits about revalidateRetryBase, each later one twice as long, never more
-// than revalidateRetryMax. The session lives until its current deadline
-// meanwhile, so an outage is bounded by what was last granted.
+// than revalidateRetryMax. The session lives on meanwhile.
 const (
 	revalidateRetryBase = time.Second
 	revalidateRetryMax  = 30 * time.Second
 )
 
 // Reasons a session ends, the reason of its end report. A lease ends a
-// session for the first two, which are also the reason label of
+// session for the first, which is also the reason label of
 // metricSessionsEnded and the close message the client sees with
 // Unauthorized.
 const (
-	endExpired = "expired"
 	endRefused = "refused"
 	// endClosed is a session the client or the relay closed normally.
 	endClosed = "closed"
@@ -49,14 +47,13 @@ type leasedSession interface {
 // authorizeFunc checks a session: Server.Authorize.
 type authorizeFunc func(ctx context.Context, req auth.Request) (*auth.Grant, error)
 
-// lease keeps a checked session within its grant (ADR 0035, #419, #423): it
-// ends the session at the grant's expires, and checks it again at the
-// grant's revalidate cadence. One timer per session drives both.
+// lease checks a checked session again at its grant's revalidate cadence,
+// on one timer per session.
 //
 // A revalidate re-sends the connect request. Its reply decides only whether
-// the session continues: a refusal ends it, and an admitted grant moves
-// expires and the cadence. The patterns were fixed at
-// connect, since the credential is the same, so they are not compared.
+// the session continues: a refusal ends it, and an admitted grant sets the
+// cadence. The scopes were fixed at connect, since the credential is the
+// same, so they are not compared.
 type lease struct {
 	// ctx is the session's. It ends a revalidate in flight when the session
 	// closes.
@@ -67,12 +64,8 @@ type lease struct {
 
 	mu    sync.Mutex
 	timer *time.Timer
-	// deadline is when the session ends; zero means never.
-	deadline time.Time
-	// cadence is how often to revalidate; zero means never.
+	// cadence is how often to revalidate.
 	cadence time.Duration
-	// next is when the next revalidate is due, if cadence is set.
-	next time.Time
 	// failures counts revalidates in a row that could not be answered.
 	failures int
 	stopped  bool
@@ -80,12 +73,11 @@ type lease struct {
 	ended string
 }
 
-// startLease starts the lease of a session admitted by req, which must end at
-// deadline (zero: never) and be revalidated every cadence (zero: never). It
-// returns nil when there is nothing to do; otherwise the caller stops it when
-// the session ends first.
-func startLease(ctx context.Context, sess leasedSession, authorize authorizeFunc, req auth.Request, deadline time.Time, cadence time.Duration) *lease {
-	if deadline.IsZero() && cadence <= 0 {
+// startLease starts the lease of a session admitted by req, to be revalidated
+// every cadence. It returns nil for a zero cadence, which never revalidates;
+// otherwise the caller stops it when the session ends first.
+func startLease(ctx context.Context, sess leasedSession, authorize authorizeFunc, req auth.Request, cadence time.Duration) *lease {
+	if cadence <= 0 {
 		return nil
 	}
 	l := &lease{
@@ -93,15 +85,11 @@ func startLease(ctx context.Context, sess leasedSession, authorize authorizeFunc
 		sess:      sess,
 		authorize: authorize,
 		req:       req,
-		deadline:  deadline,
 		cadence:   cadence,
-	}
-	if cadence > 0 {
-		l.next = time.Now().Add(cadence)
 	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	l.timer = time.AfterFunc(l.untilDueLocked(), l.fire)
+	l.timer = time.AfterFunc(cadence, l.fire)
 	return l
 }
 
@@ -111,16 +99,6 @@ func (l *lease) stop() {
 	defer l.mu.Unlock()
 	l.stopped = true
 	l.timer.Stop()
-}
-
-// untilDueLocked returns how long until the next event: the deadline or the
-// next revalidate, whichever is first.
-func (l *lease) untilDueLocked() time.Duration {
-	due := l.deadline
-	if l.cadence > 0 && (due.IsZero() || l.next.Before(due)) {
-		due = l.next
-	}
-	return max(time.Until(due), 0)
 }
 
 // endedBy returns why the lease ended its session, or "" if it didn't. It is
@@ -134,8 +112,8 @@ func (l *lease) endedBy() string {
 	return l.ended
 }
 
-// fire runs on the timer's goroutine: it ends the session at its deadline,
-// or revalidates. It decides under the lock and closes the session after
+// fire runs on the timer's goroutine: it revalidates, and ends the session if
+// that is refused. It decides under the lock and closes the session after
 // releasing it, since a close waits for the session's handlers.
 func (l *lease) fire() {
 	if reason := l.check(); reason != "" {
@@ -145,29 +123,24 @@ func (l *lease) fire() {
 	}
 }
 
-// check runs one due event and returns the reason to end the session, or ""
-// to keep it (and rearms the timer when there is more to do).
+// check revalidates once and returns the reason to end the session, or "" to
+// keep it (and rearms the timer while there is a cadence).
 func (l *lease) check() string {
 	l.mu.Lock()
-	if l.stopped {
-		l.mu.Unlock()
+	stopped := l.stopped
+	l.mu.Unlock()
+	if stopped {
 		return ""
 	}
-	if !l.deadline.IsZero() && !time.Now().Before(l.deadline) {
-		l.stopped, l.ended = true, endExpired
-		l.mu.Unlock()
-		return endExpired
-	}
-	deadline := l.deadline
-	l.mu.Unlock()
 
-	g, err := l.revalidate(deadline)
+	g, err := l.revalidate()
 
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if l.stopped {
 		return ""
 	}
+	next := l.cadence
 	switch authOutcome(g, err) {
 	case authRefused:
 		l.stopped, l.ended = true, endRefused
@@ -176,40 +149,27 @@ func (l *lease) check() string {
 		l.failures++
 		slog.Warn("relay: revalidate failed; the session lives on and is checked again",
 			"id", l.req.ID, "remote", l.req.Remote, "attempt", l.failures, "error", err)
-		l.next = time.Now().Add(retryDelay(l.failures))
+		next = retryDelay(l.failures)
 	case authAdmitted:
 		l.failures = 0
-		// A reply without expires keeps the deadline the session has: a
-		// revalidate may move the deadline, never lift it.
-		if d := deadlineOf(g); !d.IsZero() {
-			l.deadline = d
-		}
 		l.cadence = g.Revalidate()
-		l.next = time.Now().Add(l.cadence)
+		next = l.cadence
 	case authUnchecked:
 		// Authorize stopped checking the session: keep what it has.
 		l.failures = 0
-		l.next = time.Now().Add(l.cadence)
 	}
-	if !l.deadline.IsZero() || l.cadence > 0 {
-		l.timer.Reset(l.untilDueLocked())
+	if next > 0 {
+		l.timer.Reset(next)
 	}
 	return ""
 }
 
-// revalidate checks the session again. The request ends with the session
-// or at its deadline, so a stalled check can't keep it past expires.
-func (l *lease) revalidate(deadline time.Time) (*auth.Grant, error) {
-	ctx := l.ctx
-	if !deadline.IsZero() {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithDeadline(ctx, deadline)
-		defer cancel()
-	}
+// revalidate checks the session again. The request ends with the session.
+func (l *lease) revalidate() (*auth.Grant, error) {
 	req := l.req
 	req.Event = auth.EventRevalidate
 	req.Bytes = sessionBytes(l.sess.Stats())
-	g, err := l.authorize(ctx, req)
+	g, err := l.authorize(l.ctx, req)
 	metricAuthRequests.WithLabelValues(auth.EventRevalidate, authOutcome(g, err)).Inc()
 	return g, err
 }
