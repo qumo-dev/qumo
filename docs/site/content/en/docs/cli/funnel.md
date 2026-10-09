@@ -67,7 +67,7 @@ on one subscription.
 | `POST /tracks/{broadcast path}/{track name}` | The record's payload, one JSON value in UTF-8 | `201` once the record is committed. Creates the track when it does not exist. |
 | `PUT /tracks/{broadcast path}/{track name}` | — | Creates the track ahead of its first record, so subscribers can wait on it: `201`, or `204` when it exists. |
 | `GET /tracks/{broadcast path}/{track name}` | — | A page of records, oldest first: the newest, or those before `?before=<group>`, at most `?limit=` (default 50, at most 200). `before` in the answer is the cursor for the next older page. A redacted record keeps its `group` and `wallclock` with `"redacted": true`, and has no sender or payload. |
-| `DELETE /tracks/{broadcast path}/{track name}?group=<group>` | — | Redacts that record ([qumo-ledger](https://github.com/okdaichi/qumo-ledger) `ingest`): commits and publishes a redaction, `{"redacts": "<group>"}`, then deletes the record's payload. With a key set, no credential grants it yet, so it is refused (`403`). Without one it is open, like every other request. |
+| `DELETE /tracks/{broadcast path}/{track name}?group=<group>` | — | Redacts that record ([qumo-ledger](https://github.com/okdaichi/qumo-ledger) `ingest`): commits and publishes a redaction, `{"redacts": "<group>"}`, then deletes the record's payload. `201` with the redaction's group, or `204` when the record was redacted already; `400` for a missing or malformed `group` or a redaction itself, `404` for no such track or group. Without `QUMO_AUTH_KEYS` it is open to anyone, like every other request. |
 
 The last segment of the URL is the track name; the segments before it are the
 broadcast path.
@@ -99,6 +99,14 @@ verified against the same key set. Its scopes
   publisher's can't post.
 - **Reading** history (`GET`) needs a `fetch` scope matching the broadcast path
   and the track name.
+- **Redacting** (`DELETE`) needs a `redact` scope matching the broadcast path
+  and the track name. The redaction carries the credential's `sub` as its
+  sender. No other scope redacts, so a sender's `post` credential can't take
+  anyone's record out; an app that lets senders redact their own records
+  checks the record and redacts with a credential it keeps to itself.
+  Redactions are published live and kept in history, so a `sub` there is
+  visible to every subscriber; sign redact credentials without `sub` to keep
+  moderators anonymous.
 
 ```json
 {"sub": "alice",

@@ -197,10 +197,33 @@ func TestAuthorizer_Scopes(t *testing.T) {
 				scope("room/123/comments", false, "chat", token.ActionPost)),
 			wantSender: "42",
 		},
-		"redacting with every action": {
+		"redacting the exact track": {
+			header:     bearerOf("moderator", scope("room/123/comments", false, "chat", token.ActionRedact)),
+			access:     ingest.Redact,
+			wantSender: "moderator",
+		},
+		"redacting under a prefix, with no subject": {
+			header: bearerOf("", scope("room", true, "", token.ActionRedact)),
+			access: ingest.Redact,
+		},
+		"redacting another track": {
+			header:  bearerOf("", scope("room/123/comments", false, "other", token.ActionRedact)),
+			access:  ingest.Redact,
+			wantErr: true,
+		},
+		"redacting with every other action": {
 			header: bearerOf("", scope("room", true, "",
 				token.ActionPublish, token.ActionSubscribe, token.ActionFetch, token.ActionPost)),
 			access:  ingest.Redact,
+			wantErr: true,
+		},
+		"posting with redact only": {
+			header:  bearerOf("", scope("room", true, "", token.ActionRedact)),
+			wantErr: true,
+		},
+		"reading with redact only": {
+			header:  bearerOf("", scope("room", true, "", token.ActionRedact)),
+			access:  ingest.Read,
 			wantErr: true,
 		},
 	}

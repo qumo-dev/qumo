@@ -8,11 +8,13 @@
 //	                            "chat" of the broadcast "/room/123"
 //	PUT  /tracks/room/123/chat  create the track before its first record
 //	GET  /tracks/room/123/chat  a page of its records, newest or ?before= a group
+//	DELETE /tracks/room/123/chat?group=…  redact that record
 //
 // With a key set, every request carries a qumo credential as a bearer token.
-// Its scopes name exactly what it reaches: a read needs a "fetch" scope, and
-// a write a "post" scope, on the track's broadcast and track name; the
-// records carry its "sub" as their sender, or no sender without one.
+// Its scopes name exactly what it reaches: a read needs a "fetch" scope, a
+// write a "post" scope and a redaction a "redact" scope, on the track's
+// broadcast and track name; the records carry its "sub" as their sender, or
+// no sender without one.
 //
 // The funnel publishes through a relay it dials as a client, so subscribers
 // reach its tracks on the relay, and it can also serve them itself. A
@@ -303,7 +305,7 @@ func withCORS(h http.Handler, allowed []string) http.Handler {
 		w.Header().Add("Vary", "Origin")
 		if origin := r.Header.Get("Origin"); origin != "" && allow(r) {
 			w.Header().Set("Access-Control-Allow-Origin", origin)
-			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, OPTIONS")
+			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
 			w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, Idempotency-Key")
 		}
 		if r.Method == http.MethodOptions {

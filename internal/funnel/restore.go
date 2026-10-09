@@ -96,6 +96,12 @@ func latestRecord(ctx context.Context, t *ledger.Track) (ledger.GroupInfo, []byt
 		return ledger.GroupInfo{}, nil, nil
 	}
 	data, err := reader.ReadGroup(ctx, last.ObjectKey)
+	// A redacted record has nothing to replay. A redaction through the funnel
+	// commits a later record, so only a track redacted around the funnel ends
+	// on one.
+	if errors.Is(err, ledger.ErrGroupRedacted) {
+		return last, nil, nil
+	}
 	if err != nil {
 		return ledger.GroupInfo{}, nil, err
 	}
