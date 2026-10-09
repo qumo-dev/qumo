@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 )
 
 // The relay command's peer trust settings: CA_FILE, PEER_CERT_FILE and
@@ -62,7 +61,8 @@ func loadPeerTrust(caFile, certFile, keyFile string, hasPeers bool) (*PeerTrust,
 
 // readCAFile reads a PEM-encoded CA certificate file and checks it holds at
 // least one certificate. Returns (nil, nil) when caFile is empty.
-// CA_FILE must be a relative path with no path traversal components.
+// CA_FILE must be a relative path that stays within the working directory,
+// symlinks included.
 func readCAFile(caFile string) ([]byte, error) {
 	if caFile == "" {
 		return nil, nil
@@ -70,11 +70,15 @@ func readCAFile(caFile string) ([]byte, error) {
 	if filepath.IsAbs(caFile) {
 		return nil, fmt.Errorf("CA_FILE must be a relative path")
 	}
-	caFile = filepath.Clean(caFile)
-	if caFile == ".." || strings.HasPrefix(caFile, ".."+string(filepath.Separator)) || strings.Contains(caFile, string(filepath.Separator)+".."+string(filepath.Separator)) {
+	if !filepath.IsLocal(caFile) {
 		return nil, fmt.Errorf("CA_FILE must not contain path traversal")
 	}
-	pemData, err := os.ReadFile(caFile)
+	root, err := os.OpenRoot(".")
+	if err != nil {
+		return nil, fmt.Errorf("open the working directory for CA_FILE: %w", err)
+	}
+	defer root.Close()
+	pemData, err := root.ReadFile(caFile)
 	if err != nil {
 		return nil, fmt.Errorf("read CA file %q: %w", caFile, err)
 	}
