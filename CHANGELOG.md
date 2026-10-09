@@ -9,11 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- **A key in a key set pauses its new publishing sessions with `"pause": ["publish"]` (`internal/auth/keyset.go`).** The member names what it does: the key starts no new sessions that may publish, while viewers still connect and live sessions continue. `"publish"` is the only entry; any other makes the set invalid, so a misspelling can't leave a key unpaused, and the relay keeps its last good set as with any invalid set.
+- **A key in a key set pauses its new publishing sessions with `"pause": ["publish"]` (`internal/auth/keyset.go`).** The member names what it does: the key starts no new sessions that may publish, while viewers still connect and live sessions continue. `"publish"` is the only entry; any other entry in `pause` makes the set invalid, so a misspelled entry can't leave a key unpaused, and the relay keeps its last good set as with any invalid set. That covers entries only: member names are case-sensitive, and a member the relay doesn't know (`"paused"`, `"Pause"`) is ignored, as JWK prescribes. A key naming a member twice, or carrying `"publish": true` beside `"pause": ["publish"]`, also makes the set invalid; key sets are now decoded with `encoding/json/v2`, as in the `token` package, so the relay and `token.ParseKeySet` read a set the same way.
 
 ### Deprecated
 
-- **`"publish": false` on a key** still pauses its publishing, but reads as if the key could never publish. Write `"pause": ["publish"]`; the old member will be removed in a later release.
+- **`"publish": false` on a key** still pauses its publishing, but reads as if the key could never publish. Write `"pause": ["publish"]`; the old member will be removed in a later release. The relay logs a warning naming the keys that use it when it loads such a set, once per change rather than on every refresh.
 
 ## [v0.12.261008] - 2026-10-08
 

@@ -156,7 +156,7 @@ func (v *Verifier) decide(req Request) (*Grant, usageSession, error) {
 		}
 		return nil, usageSession{}, refuse(status, "%v", err)
 	}
-	if connect && c.Publish != "" && set.noPublish[c.Key.ID] {
+	if connect && c.Publish != "" && set.pausedPublish[c.Key.ID] {
 		return nil, usageSession{}, refuse(http.StatusForbidden,
 			"signing key %s starts no new publishing sessions", c.Key.ID)
 	}
