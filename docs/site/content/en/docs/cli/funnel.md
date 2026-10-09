@@ -87,16 +87,18 @@ With a key set (`QUMO_AUTH_KEYS`), every request carries a qumo credential as
 verified against the same key set. Its scopes
 ([auth](../auth/#what-a-token-grants)) name the tracks it reaches:
 
-- **Recording** (`POST`, `PUT`) needs a `publish` scope matching the broadcast
+- **Recording** (`POST`, `PUT`) needs a `record` scope matching the broadcast
   path and the track name. The record's sender is the credential's `sub`,
   whatever the payload claims; a credential without `sub` records with no
-  sender.
+  sender. A `publish` scope does not record: it sends through a relay, so a
+  credential meant for recording can't publish into the relay directly, and
+  a publisher's can't record.
 - **Reading** history (`GET`) needs a `fetch` scope matching the broadcast path
   and the track name.
 
 ```json
 {"sub": "alice",
- "scopes": [{"actions": ["publish"], "broadcast": {"exact": "room/123"}, "track": {"exact": "chat"}},
+ "scopes": [{"actions": ["record"], "broadcast": {"exact": "room/123"}, "track": {"exact": "chat"}},
             {"actions": ["fetch"], "broadcast": {"prefix": "room/123"}}],
  "iat": 1791370000, "nbf": 1791370000, "exp": 1791370600}
 ```
@@ -104,11 +106,9 @@ verified against the same key set. Its scopes
 records into `chat` of `/room/123` as `alice`, and reads any track of
 `/room/123` and the broadcasts beneath it. It records into no other track.
 
-A `path_auth` credential is read as the scopes it amounts to: its `pub`
-records into any track at or beneath its path, and its `sub` reads any track
-there. It records with no sender, since a token carrying `path_auth` has no
-`sub` claim, and a path never names one: a credential publishing at
-`/room/123/alice` reaches `/room/123/alice` and beneath it, not `/room/123`.
+A `path_auth` credential is read as the scopes it amounts to: its `sub` reads
+any track at or beneath its path. Its `pub` is publishing, so it records
+nothing.
 
 The credential is checked on every request: once it expires or its key leaves
 the key set, it is refused. A missing or invalid credential answers `401` with

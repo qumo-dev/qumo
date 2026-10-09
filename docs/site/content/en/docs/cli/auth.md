@@ -43,13 +43,13 @@ It prints the key's `kid` (its RFC 7638 thumbprint), the paths it may grant, and
 qumo auth token [-key signing-key.jwk] [-scope ACTIONS:BROADCAST[:TRACK] ...] [-publish PATH] [-subscribe PATH] [-sub SUBJECT] [-ttl 1h]
 ```
 
-Signs a token granting the scopes `-scope` names, valid for `-ttl`, at most one hour. `-scope` may be repeated: `ACTIONS` is a comma-separated list of `publish`, `subscribe` and `fetch`; `BROADCAST` is a path, or `a/b/**` for it and every path beneath it; `TRACK` is one track name, or omitted for every track. `-publish PATH` is short for `-scope publish:PATH/**`, and `-subscribe PATH` for `-scope subscribe,fetch:PATH/**`; they add to any `-scope`. At least one scope is needed. `-sub` names the bearer. For example, `qumo auth token -sub alice -scope publish:room/123:chat -scope fetch:room/123/**`. The token alone goes to stdout, so `T=$(qumo auth token …)` captures it; what it grants and when it expires go to stderr. A path outside the key's prefix is refused here, as the relay would refuse the token; `token.Sign` does the same.
+Signs a token granting the scopes `-scope` names, valid for `-ttl`, at most one hour. `-scope` may be repeated: `ACTIONS` is a comma-separated list of `publish`, `subscribe`, `fetch` and `record`; `BROADCAST` is a path, or `a/b/**` for it and every path beneath it; `TRACK` is one track name, or omitted for every track. `-publish PATH` is short for `-scope publish:PATH/**`, and `-subscribe PATH` for `-scope subscribe,fetch:PATH/**`; they add to any `-scope`. At least one scope is needed. `-sub` names the bearer. For example, `qumo auth token -sub alice -scope record:room/123:chat -scope fetch:room/123/**`. The token alone goes to stdout, so `T=$(qumo auth token …)` captures it; what it grants and when it expires go to stderr. A path outside the key's prefix is refused here, as the relay would refuse the token; `token.Sign` does the same.
 
 ## What a token grants
 
 A token grants **`scopes`**: actions on broadcasts and tracks, the JSON counterpart of the `moqt` claim of CAT-4-MOQT ([draft-ietf-moq-c4m](https://datatracker.ietf.org/doc/draft-ietf-moq-c4m/)). Each scope lists:
 
-- **`actions`**: `publish` (a track's groups: publishing through a relay, recording at a [funnel](../funnel/#credentials)), `subscribe` (live) and `fetch` (history: a funnel's `GET`). Any other action refuses the token.
+- **`actions`**: `publish` (sending a track's groups through a relay), `subscribe` (live), `fetch` (history: a funnel's `GET`) and `record` (recording into a track at a [funnel](../funnel/#credentials), which publishes it; a relay never reads it as publishing). Any other action refuses the token.
 - **`broadcast`**: `{"exact": "a/b"}` for that path alone, or `{"prefix": "a/b"}` for it and every path beneath it on `/` boundaries (not `a/bc`). Either must lie within the key's prefix.
 - **`track`** (optional): `{"exact": "chat"}` for that track alone; omitted, every track.
 
@@ -57,7 +57,7 @@ Whatever no scope grants is denied, and a scope member the verifier doesn't know
 
 ```json
 {"sub": "alice",
- "scopes": [{"actions": ["publish"], "broadcast": {"exact": "acme/app/rooms/42"}, "track": {"exact": "chat"}}],
+ "scopes": [{"actions": ["record"], "broadcast": {"exact": "acme/app/rooms/42"}, "track": {"exact": "chat"}}],
  "iat": 1791370000, "nbf": 1791370000, "exp": 1791370600, "jti": "…"}
 ```
 
@@ -69,7 +69,7 @@ Whatever no scope grants is denied, and a scope member the verifier doesn't know
 
 grants what `[{"actions": ["publish"], "broadcast": {"prefix": "acme/app/rooms/42/alice"}}, {"actions": ["subscribe", "fetch"], "broadcast": {"prefix": "acme/app/rooms/42"}}]` does. A token carrying both `path_auth` and `scopes` is refused, and so is one carrying `path_auth` and `sub`. `qumo auth token` and `token.Sign` write `scopes` only.
 
-**On the relay**, a session may announce a broadcast a `publish` scope matches on every track, one naming no `track`, and the relay takes its tracks from it. A broadcast has one publisher, so a `publish` scope naming one track announces nothing: it is for writing that track into a broadcast someone else announces, at a [funnel](../funnel/). Give each publisher its own broadcast path. A session may subscribe to a track a `subscribe` scope matches, by broadcast and track name. The relay ignores `fetch`, so a credential granting only `fetch` (a funnel reader's) may do nothing there.
+**On the relay**, a session may announce a broadcast a `publish` scope matches on every track, one naming no `track`, and the relay takes its tracks from it. A broadcast has one publisher, so a `publish` scope naming one track announces nothing. Give each publisher its own broadcast path; to write one track into a broadcast a [funnel](../funnel/) publishes, grant `record` there instead. The relay ignores `record`. A session may subscribe to a track a `subscribe` scope matches, by broadcast and track name. The relay ignores `fetch`, so a credential granting only `fetch` (a funnel reader's) may do nothing there.
 
 ## Signing in your app (Go)
 
@@ -84,7 +84,7 @@ tok, err := token.Sign(key, token.Grant{
 		// watch and read the history of the whole room
 		{Actions: []token.Action{token.ActionSubscribe, token.ActionFetch}, Broadcast: "acme/app/rooms/42", Prefix: true},
 		// record into its chat track at a funnel, as alice
-		{Actions: []token.Action{token.ActionPublish}, Broadcast: "acme/app/rooms/42", Track: "chat"},
+		{Actions: []token.Action{token.ActionRecord}, Broadcast: "acme/app/rooms/42", Track: "chat"},
 	},
 }, time.Hour)
 ```

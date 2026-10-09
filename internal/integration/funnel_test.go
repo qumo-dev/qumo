@@ -276,24 +276,26 @@ func signPathAuth(t *testing.T, key token.SigningKey, pub, sub string) string {
 }
 
 // TestFunnel_PathAuthCredentials verifies path_auth credentials, as other MoQ
-// implementations sign them, against a key set as the relay does: pub at or
-// above the broadcast records with no sender, pub one segment beneath it
-// records nothing (a path names no sender), and sub reads its history.
+// implementations sign them, against a key set as the relay does: pub, being
+// publish, records nothing, and sub reads history.
 func TestFunnel_PathAuthCredentials(t *testing.T) {
 	key, _, keysFile := writeKeys(t)
 	verifier, err := auth.NewVerifier(auth.VerifierConfig{Keys: keysFile})
 	require.NoError(t, err)
 	ingestURL, serveURL := startFunnel(t, mem.New(), verifier)
-	alice := signPathAuth(t, key, "room/123/alice", "")
-	system := signPathAuth(t, key, "room/123", "")
+	publisher := signPathAuth(t, key, "room/123", "")
 	viewer := signPathAuth(t, key, "", "room/123")
+	recorder, err := token.Sign(key, token.Grant{Scopes: []token.Scope{
+		{Actions: []token.Action{token.ActionRecord}, Broadcast: "room/123", Track: "chat"},
+	}}, time.Minute)
+	require.NoError(t, err)
 
 	assert.Equal(t, http.StatusUnauthorized, createChat(t, ingestURL, ""), "no credential")
-	assert.Equal(t, http.StatusForbidden, createChat(t, ingestURL, signPathAuth(t, key, "room/9", "")), "another room")
+	assert.Equal(t, http.StatusForbidden, createChat(t, ingestURL, publisher), "pub does not grant creating")
 	assert.Equal(t, http.StatusUnauthorized, record(t, ingestURL, "", `"unsigned"`))
 	assert.Equal(t, http.StatusForbidden, record(t, ingestURL, viewer, `"a viewer"`), "subscribing does not grant recording")
-	assert.Equal(t, http.StatusForbidden, record(t, ingestURL, alice, `"beneath"`), "a path beneath the broadcast grants nothing above it")
-	require.Equal(t, http.StatusCreated, record(t, ingestURL, system, `{"type":"delete"}`))
+	assert.Equal(t, http.StatusForbidden, record(t, ingestURL, publisher, `"a publisher"`), "pub does not grant recording")
+	require.Equal(t, http.StatusCreated, record(t, ingestURL, recorder, `{"type":"delete"}`))
 
 	tr := subscribeChat(t, serveURL)
 	seq, got := nextRecord(t, tr)
@@ -313,10 +315,10 @@ func TestFunnel_PathAuthCredentials(t *testing.T) {
 	}
 	status, body := history(viewer)
 	require.Equal(t, http.StatusOK, status)
-	assert.Regexp(t, `"wallclock":\d+,"payload":\{"type":"delete"\}`, body, "a path_auth credential records with no sender")
+	assert.Regexp(t, `"wallclock":\d+,"payload":\{"type":"delete"\}`, body, "a credential without sub records with no sender")
 	assert.NotContains(t, body, `"sender"`)
-	status, _ = history(system)
-	assert.Equal(t, http.StatusForbidden, status, "publishing does not grant reading")
+	status, _ = history(publisher)
+	assert.Equal(t, http.StatusForbidden, status, "pub does not grant reading")
 }
 
 // TestFunnel_ScopedCredentialsNameTracksAndSenders records and reads with
@@ -334,15 +336,17 @@ func TestFunnel_ScopedCredentialsNameTracksAndSenders(t *testing.T) {
 		require.NoError(t, err)
 		return c
 	}
-	publish, fetch := []token.Action{token.ActionPublish}, []token.Action{token.ActionFetch}
-	alice := credential("alice", publish, "room/123", "chat")
-	system := credential("", publish, "room/123", "")
+	rec, fetch := []token.Action{token.ActionRecord}, []token.Action{token.ActionFetch}
+	alice := credential("alice", rec, "room/123", "chat")
+	system := credential("", rec, "room/123", "")
 	reader := credential("", fetch, "room/123", "chat")
 
-	assert.Equal(t, http.StatusForbidden, record(t, ingestURL, credential("alice", publish, "room/123", "other"), `"x"`), "another track")
-	assert.Equal(t, http.StatusForbidden, record(t, ingestURL, credential("alice", publish, "room/123/alice", "chat"), `"x"`),
+	assert.Equal(t, http.StatusForbidden, record(t, ingestURL, credential("alice", rec, "room/123", "other"), `"x"`), "another track")
+	assert.Equal(t, http.StatusForbidden, record(t, ingestURL, credential("alice", rec, "room/123/alice", "chat"), `"x"`),
 		"a broadcast beneath grants nothing above it")
 	assert.Equal(t, http.StatusForbidden, record(t, ingestURL, reader, `"x"`), "fetching does not grant recording")
+	assert.Equal(t, http.StatusForbidden, record(t, ingestURL, credential("alice", []token.Action{token.ActionPublish}, "room/123", "chat"), `"x"`),
+		"publishing, which sends through the relay, does not grant recording")
 	require.Equal(t, http.StatusCreated, record(t, ingestURL, alice, `{"name":"bob","text":"hi"}`))
 	require.Equal(t, http.StatusCreated, record(t, ingestURL, system, `{"type":"delete"}`))
 
@@ -362,7 +366,7 @@ func TestFunnel_ScopedCredentialsNameTracksAndSenders(t *testing.T) {
 	assert.Contains(t, body, `"sender":"alice","payload":{"name":"bob","text":"hi"}`, "the sender is the credential's sub")
 	assert.Regexp(t, `"wallclock":\d+,"payload":\{"type":"delete"\}`, body, "a credential without sub records with no sender")
 	status, _ = history(alice)
-	assert.Equal(t, http.StatusForbidden, status, "publishing does not grant fetching")
+	assert.Equal(t, http.StatusForbidden, status, "recording does not grant fetching")
 }
 
 // TestFunnel_PublishesThroughTheRelay runs the funnel with no listener of its

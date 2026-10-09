@@ -14,18 +14,21 @@ type Action string
 
 // The actions a scope may list. Any other is refused.
 const (
-	// ActionPublish is sending a track's groups: publishing it through a
-	// relay, or recording into it at a funnel.
+	// ActionPublish is sending a track's groups through a relay.
 	ActionPublish Action = "publish"
 	// ActionSubscribe is receiving a track live.
 	ActionSubscribe Action = "subscribe"
 	// ActionFetch is reading a track's history, such as a funnel's GET.
 	ActionFetch Action = "fetch"
+	// ActionRecord is recording into a track at a funnel, which commits each
+	// record and then publishes it. A relay never reads it as publishing, so
+	// a credential that records can't send into the relay directly.
+	ActionRecord Action = "record"
 )
 
 func (a Action) known() bool {
 	switch a {
-	case ActionPublish, ActionSubscribe, ActionFetch:
+	case ActionPublish, ActionSubscribe, ActionFetch, ActionRecord:
 		return true
 	}
 	return false
