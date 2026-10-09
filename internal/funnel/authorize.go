@@ -11,16 +11,21 @@ import (
 	"github.com/qumo-dev/gomoqt/moqt"
 
 	"github.com/qumo-dev/qumo/internal/auth"
+	"github.com/qumo-dev/qumo/token"
 )
 
 // authorizer returns the check a request passes: the bearer credential must be
-// one the relay would admit. A read needs it to grant subscribing at the
-// track's broadcast path. A write needs it to grant publishing either at the
-// broadcast path, which records with no sender, or at one segment beneath it,
-// which names the sender: a credential for /room/123/comments/user-42 records
-// into the broadcast /room/123/comments as "user-42". The credential is checked
-// on every request, so one that expires or whose key leaves the set is refused
-// at once. A nil verifier checks nothing and names no sender.
+// one the relay would admit.
+//
+// A write needs a publish scope matching the track's broadcast and name, and
+// records as the credential's subject (its sub), or with no sender when it
+// names none. A read needs a fetch scope matching them. A path_auth
+// credential is read as scopes (token.Verify): its pub permits writing, and
+// its sub reading, at its path and beneath it.
+//
+// The credential is checked on every request, so one that expires or whose
+// key leaves the set is refused at once. A nil verifier checks nothing and
+// names no sender.
 func authorizer(v *auth.Verifier) func(*http.Request, ingest.Track, ingest.Access) (string, error) {
 	if v == nil {
 		return nil
@@ -42,34 +47,18 @@ func authorizer(v *auth.Verifier) func(*http.Request, ingest.Track, ingest.Acces
 			}
 			return "", fmt.Errorf("funnel: %w", err)
 		}
-		broadcast := moqt.BroadcastPath(t.BroadcastPath)
+		broadcast, name := moqt.BroadcastPath(t.BroadcastPath), moqt.TrackName(t.TrackName)
 		if access == ingest.Read {
-			if !grant.Subscribe.Contains(broadcast) {
-				return "", fmt.Errorf("funnel: the credential may not subscribe at %s", broadcast)
+			if !grant.Allows(token.ActionFetch, broadcast, name) {
+				return "", fmt.Errorf("funnel: the credential may not read %s track %q", broadcast, name)
 			}
 			return "", nil
 		}
-		if grant.Publish.Contains(broadcast) {
-			return "", nil
+		if !grant.Allows(token.ActionPublish, broadcast, name) {
+			return "", fmt.Errorf("funnel: the credential may not record into %s track %q", broadcast, name)
 		}
-		if sender, ok := senderOf(grant.Publish.Bases(), t.BroadcastPath); ok {
-			return sender, nil
-		}
-		return "", fmt.Errorf("funnel: the credential may not publish at %s", broadcast)
+		return grant.Subject(), nil
 	}
-}
-
-// senderOf returns the sender a publish grant names for a broadcast: the one
-// segment a granted path adds beneath it.
-func senderOf(bases []string, broadcastPath string) (string, bool) {
-	broadcast := strings.Trim(broadcastPath, "/")
-	for _, base := range bases {
-		i := strings.LastIndexByte(base, '/')
-		if i > 0 && base[:i] == broadcast && base[i+1:] != "" {
-			return base[i+1:], true
-		}
-	}
-	return "", false
 }
 
 // bearer returns the credential of an "Authorization: Bearer" header.

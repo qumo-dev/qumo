@@ -1,11 +1,26 @@
 // Package token signs and verifies qumo capability tokens: EdDSA JWTs an app
-// signs with its own Ed25519 key to say what a client may publish and
-// subscribe to on a qumo relay.
+// signs with its own Ed25519 key to say what a client may do on a qumo relay
+// or funnel.
+//
+// A token grants scopes, after CAT-4-MOQT's moqt claim: each scope permits
+// actions (publish, subscribe, fetch) on an exact broadcast path or a prefix
+// of them, and on one track or every track. It may name its bearer in sub.
+//
+// Sign writes the scopes claim. Verify also accepts the path_auth claim of
+// other MoQ implementations (the @moq/token convention) and reads it as
+// scopes: pub as publish, and sub as subscribe and fetch, each on its path and
+// every path beneath it. A token carries one of the two claims, never both.
 //
 // An app's backend signs one per client with Sign and hands it to the client,
-// which connects with it in the relay URL (?jwt=…). The relay checks it
-// with Verify. The app decides who may do what; this package is the machinery: the key format, the signature, the
-// time claims and confining every path to the key's prefix.
+// which connects with it in the relay URL (?jwt=…). The relay checks it with
+// Verify. The app decides who may do what; this package is the machinery: the
+// key format, the signature, the time claims and confining every path to the
+// key's prefix.
+//
+// A token's expiry decides whether a session may start, not how long it
+// lives: a relay checks a live session's token with VerifyLive, which ignores
+// the expiry, so the session ends only when the key that signed it is no
+// longer trusted.
 package token
 
 import (
@@ -43,14 +58,17 @@ var (
 // allowedClaims is the whole claim set. Any other claim refuses the token: an
 // unknown claim might be meant to narrow the grant, and a misspelled
 // path_auth member must not widen it.
-var allowedClaims = map[string]bool{"path_auth": true, "iat": true, "nbf": true, "exp": true, "jti": true}
+var allowedClaims = map[string]bool{
+	"path_auth": true, "scopes": true, "sub": true,
+	"iat": true, "nbf": true, "exp": true, "jti": true,
+}
 
-// Grant is what a token allows its bearer: the path it may publish at or
-// beneath, and the path it may subscribe at or beneath. An empty one grants
-// nothing for that role. A token must grant at least one.
+// Grant is what a token allows its bearer: Scopes, each permitting actions on
+// the broadcasts and tracks it matches, of which there must be at least one,
+// and Subject, the bearer (the sub claim), which may be empty.
 type Grant struct {
-	Publish   string
-	Subscribe string
+	Scopes  []Scope
+	Subject string
 }
 
 // Claims are a verified token's: its grant, normalized and confined to its
@@ -62,8 +80,9 @@ type Claims struct {
 	Key       Key
 }
 
-// pathAuth is the capability claim, per the @moq/token convention: root plus
-// pub or sub. A nil Pub or Sub grants nothing for that role.
+// pathAuth is the capability claim of other MoQ implementations, per the
+// @moq/token convention: root plus pub or sub. A nil Pub or Sub grants
+// nothing for that role. Verify reads it; Sign never writes it.
 type pathAuth struct {
 	Root string  `json:"root"`
 	Pub  *string `json:"pub,omitempty"`
@@ -71,17 +90,21 @@ type pathAuth struct {
 }
 
 // claims is a token's claim set as encoded. Numeric dates are float64 on
-// decode because JSON numbers may carry a fraction.
+// decode because JSON numbers may carry a fraction. Scopes is kept as JSON
+// text and decoded by scopesOf, which refuses members it doesn't know.
 type claims struct {
-	PathAuth  *pathAuth `json:"path_auth"`
-	IssuedAt  *float64  `json:"iat"`
-	NotBefore *float64  `json:"nbf"`
-	ExpiresAt *float64  `json:"exp"`
-	ID        string    `json:"jti,omitempty"`
+	PathAuth  *pathAuth      `json:"path_auth,omitzero"`
+	Scopes    jsontext.Value `json:"scopes,omitzero"`
+	Subject   string         `json:"sub,omitzero"`
+	IssuedAt  *float64       `json:"iat"`
+	NotBefore *float64       `json:"nbf"`
+	ExpiresAt *float64       `json:"exp"`
+	ID        string         `json:"jti,omitempty"`
 }
 
 // Sign returns a token signed by key that grants g for ttl from now, at most
-// MaxLifetime. It carries a random jti. A grant outside key's prefix is
+// MaxLifetime, as a scopes claim with sub when g names a subject. It carries a
+// random jti. A grant outside key's prefix, or one granting nothing, is
 // refused here, since a verifier would refuse the token.
 func Sign(key SigningKey, g Grant, ttl time.Duration) (string, error) {
 	return signAt(key, g, ttl, time.Now())
@@ -91,29 +114,17 @@ func signAt(key SigningKey, g Grant, ttl time.Duration, now time.Time) (string, 
 	if ttl <= 0 || ttl > MaxLifetime {
 		return "", fmt.Errorf("token: ttl %s must be positive and at most %s", ttl, MaxLifetime)
 	}
-	if g.Publish == "" && g.Subscribe == "" {
-		return "", errors.New("token: the grant names neither a publish nor a subscribe path")
+	if len(g.Scopes) == 0 {
+		return "", errors.New("token: the grant names no scope")
 	}
-	pa := &pathAuth{}
-	for _, role := range []struct {
-		path string
-		into **string
-	}{{g.Publish, &pa.Pub}, {g.Subscribe, &pa.Sub}} {
-		if role.path == "" {
-			continue
-		}
-		norm, err := normalizePath(role.path)
-		if err != nil || norm == "" {
-			return "", fmt.Errorf("token: grant path %q: want a path with no \".\", \"..\" or \"*\" segments", role.path)
-		}
-		if !within(norm, key.Prefix) {
-			return "", fmt.Errorf("token: grant path %q lies outside the signing key's prefix %q", norm, key.Prefix)
-		}
-		*role.into = &norm
+	raw, err := encodeScopes(g.Scopes, key.Prefix)
+	if err != nil {
+		return "", err
 	}
+	c := claims{Scopes: raw, Subject: g.Subject, ID: rand.Text()}
 	iat := float64(now.Unix())
 	exp := float64(now.Add(ttl).Unix())
-	c := claims{PathAuth: pa, IssuedAt: &iat, NotBefore: &iat, ExpiresAt: &exp, ID: rand.Text()}
+	c.IssuedAt, c.NotBefore, c.ExpiresAt = &iat, &iat, &exp
 
 	header, err := json.Marshal(map[string]string{"alg": "EdDSA", "kid": key.ID, "typ": "JWT"})
 	if err != nil {
@@ -130,11 +141,26 @@ func signAt(key SigningKey, g Grant, ttl time.Duration, now time.Time) (string, 
 // Verify checks token against the trusted keys at now, in order: the header
 // carries no crit, the alg is EdDSA and the kid is trusted; the signature
 // verifies; the claims are
-// exactly the allowed set (path_auth, iat, nbf, exp, and an optional jti)
-// with no duplicate members; exp, nbf and iat hold within Leeway and the
-// lifetime is at most MaxLifetime; and every path the token grants lies
-// within its key's prefix. An error wraps ErrInvalid or ErrForbidden.
+// within the allowed set (one of path_auth and scopes, iat, nbf, exp, an
+// optional jti, and an optional sub with scopes) with no duplicate members;
+// exp, nbf and iat hold within Leeway and the lifetime is at most
+// MaxLifetime; and every path the token grants lies within its key's prefix.
+// A path_auth claim is returned as the scopes it amounts to (see grantOf).
+// An error wraps ErrInvalid or ErrForbidden.
 func Verify(token string, keys map[string]Key, now time.Time) (Claims, error) {
+	return verify(token, keys, now, true)
+}
+
+// VerifyLive checks token as the credential of a live session, at now: as
+// Verify does, except that a token past its expiry is not refused for it. Its
+// expiry decided whether the session could start; the key that signed it must
+// still be trusted, and its grant still within the key's prefix.
+func VerifyLive(token string, keys map[string]Key, now time.Time) (Claims, error) {
+	return verify(token, keys, now, false)
+}
+
+// verify is Verify, refusing a token past its expiry only when expiry is set.
+func verify(token string, keys map[string]Key, now time.Time, expiry bool) (Claims, error) {
 	parts := strings.Split(token, ".")
 	if len(parts) != 3 {
 		return Claims{}, invalid("not a JWS compact serialization")
@@ -178,51 +204,71 @@ func Verify(token string, keys map[string]Key, now time.Time) (Claims, error) {
 	if err := decodeSegment(parts[1], &c); err != nil {
 		return Claims{}, invalid("claims: %v", err)
 	}
-	exp, err := c.checkTime(now)
+	exp, err := c.checkTime(now, expiry)
 	if err != nil {
 		return Claims{}, err
 	}
-	if c.PathAuth == nil {
-		return Claims{}, invalid("path_auth is required")
-	}
-	g, err := grantOf(*c.PathAuth, key.Prefix)
-	if err != nil {
-		return Claims{}, err
+	_, hasPathAuth := members["path_auth"]
+	_, hasScopes := members["scopes"]
+	_, hasSubject := members["sub"]
+	var g Grant
+	switch {
+	case hasPathAuth && hasScopes:
+		return Claims{}, invalid("a token carries path_auth or scopes, not both")
+	case hasScopes:
+		scopes, err := scopesOf(c.Scopes, key.Prefix)
+		if err != nil {
+			return Claims{}, err
+		}
+		g = Grant{Scopes: scopes, Subject: c.Subject}
+	case c.PathAuth == nil:
+		return Claims{}, invalid("path_auth or scopes is required")
+	case hasSubject:
+		return Claims{}, invalid("sub goes with scopes, not with path_auth")
+	default:
+		g, err = grantOf(*c.PathAuth, key.Prefix)
+		if err != nil {
+			return Claims{}, err
+		}
 	}
 	return Claims{Grant: g, ExpiresAt: exp, ID: c.ID, Key: key}, nil
 }
 
-// grantOf resolves path_auth into the paths it grants, each of which must lie
+// grantOf reads path_auth as scopes: pub as publish, and sub as subscribe
+// and fetch, each on its path and every path beneath it. Each path must lie
 // within prefix at a "/" boundary: the rule that stops a key from signing for
 // another tenant's paths.
 func grantOf(pa pathAuth, prefix string) (Grant, error) {
 	var g Grant
 	for _, role := range []struct {
-		name   string
-		suffix *string
-		into   *string
-	}{{"pub", pa.Pub, &g.Publish}, {"sub", pa.Sub, &g.Subscribe}} {
+		name    string
+		suffix  *string
+		actions []Action
+	}{
+		{"pub", pa.Pub, []Action{ActionPublish}},
+		{"sub", pa.Sub, []Action{ActionSubscribe, ActionFetch}},
+	} {
 		if role.suffix == nil {
 			continue
 		}
-		scope, err := scopeOf(pa.Root, *role.suffix)
+		path, err := scopeOf(pa.Root, *role.suffix)
 		if err != nil {
 			return Grant{}, invalid("path_auth %s: %v", role.name, err)
 		}
-		if !within(scope, prefix) {
-			return Grant{}, forbidden("path_auth %s %q lies outside the signing key's prefix %q", role.name, scope, prefix)
+		if !within(path, prefix) {
+			return Grant{}, forbidden("path_auth %s %q lies outside the signing key's prefix %q", role.name, path, prefix)
 		}
-		*role.into = scope
+		g.Scopes = append(g.Scopes, Scope{Actions: role.actions, Broadcast: path, Prefix: true})
 	}
-	if g.Publish == "" && g.Subscribe == "" {
+	if len(g.Scopes) == 0 {
 		return Grant{}, forbidden("path_auth grants neither pub nor sub")
 	}
 	return g, nil
 }
 
-// checkTime enforces exp, nbf and iat (all required) with Leeway, and the
-// lifetime cap, and returns exp.
-func (c claims) checkTime(now time.Time) (time.Time, error) {
+// checkTime enforces exp (when expiry is set), nbf and iat, all required,
+// with Leeway, and the lifetime cap, and returns exp.
+func (c claims) checkTime(now time.Time, expiry bool) (time.Time, error) {
 	if c.ExpiresAt == nil || c.NotBefore == nil || c.IssuedAt == nil {
 		return time.Time{}, invalid("exp, nbf and iat are required")
 	}
@@ -230,9 +276,9 @@ func (c claims) checkTime(now time.Time) (time.Time, error) {
 	if lifetime := exp.Sub(iat); lifetime <= 0 || lifetime > MaxLifetime {
 		return time.Time{}, invalid("lifetime (exp - iat) must be positive and at most %s", MaxLifetime)
 	}
-	// Judged on whole seconds, the precision of the expiry a relay enforces.
+	// Judged on whole seconds, the precision of exp as Sign writes it.
 	switch {
-	case !now.Before(time.Unix(exp.Add(Leeway).Unix(), 0)):
+	case expiry && !now.Before(time.Unix(exp.Add(Leeway).Unix(), 0)):
 		return time.Time{}, invalid("expired")
 	case now.Add(Leeway).Before(nbf), now.Add(Leeway).Before(iat):
 		return time.Time{}, invalid("not valid yet")

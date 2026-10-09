@@ -14,6 +14,7 @@ import (
 
 	"github.com/qumo-dev/gomoqt/moqt"
 	"github.com/qumo-dev/qumo/internal/auth"
+	"github.com/qumo-dev/qumo/token"
 )
 
 // admission is a session's grant, carried in the session's context so that
@@ -120,7 +121,7 @@ func sessionGrant(ctx context.Context) (*auth.Grant, error) {
 	}
 }
 
-// authorizeSubscribe reports whether tw's session may subscribe to its path.
+// authorizeSubscribe reports whether tw's session may subscribe to its track.
 // A refusal closes tw with NotFound, the mux's answer for a path that doesn't
 // exist, so a SUBSCRIBE alone doesn't tell a client which paths exist. Path
 // names still reach it through announce interest and TRACK_INFO, which gomoqt
@@ -137,7 +138,7 @@ func authorizeSubscribe(tw *moqt.TrackWriter) bool {
 		// An internal client's grant covers every path and came from no
 		// credential: there is nothing to count as an authorization.
 		return true
-	case g.Subscribe.Contains(tw.BroadcastPath):
+	case g.Allows(token.ActionSubscribe, tw.BroadcastPath, tw.TrackName):
 		metricSubscribeAuthorizations.WithLabelValues("admitted").Inc()
 		return true
 	}

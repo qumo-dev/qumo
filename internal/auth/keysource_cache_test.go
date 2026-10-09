@@ -114,25 +114,43 @@ func TestVerifier_PublishLimit(t *testing.T) {
 	v := verifierWith(t, raw, time.Now())
 
 	tests := map[string]struct {
-		key            token.SigningKey
-		grant          token.Grant
+		jwt            string
 		wantConnect    int
 		wantRevalidate int
 	}{
-		"limited key, publisher": {key: limited, grant: token.Grant{Publish: "acme/app/live"}, wantConnect: 403, wantRevalidate: 200},
-		"limited key, both":      {key: limited, grant: token.Grant{Publish: "acme/app/live", Subscribe: "acme/app"}, wantConnect: 403, wantRevalidate: 200},
-		"limited key, viewer":    {key: limited, grant: token.Grant{Subscribe: "acme/app"}, wantConnect: 200, wantRevalidate: 200},
-		"another key, publisher": {key: free, grant: token.Grant{Publish: "acme/app/live"}, wantConnect: 200, wantRevalidate: 200},
+		"limited key, path_auth publisher": {jwt: signPathAuth(t, limited, "acme/app/live", ""), wantConnect: 403, wantRevalidate: 200},
+		"limited key, path_auth both":      {jwt: signPathAuth(t, limited, "acme/app/live", "acme/app"), wantConnect: 403, wantRevalidate: 200},
+		"limited key, path_auth viewer":    {jwt: signPathAuth(t, limited, "", "acme/app"), wantConnect: 200, wantRevalidate: 200},
+		"another key, path_auth publisher": {jwt: signPathAuth(t, free, "acme/app/live", ""), wantConnect: 200, wantRevalidate: 200},
+		"limited key, publish scope":       {jwt: sign(t, limited, scoped(token.ActionPublish)), wantConnect: 403, wantRevalidate: 200},
+		// Writing one track into a broadcast someone else publishes, as a
+		// viewer who may chat does, publishes no broadcast.
+		"limited key, publish one track and subscribe": {
+			jwt: sign(t, limited, token.Grant{Scopes: []token.Scope{
+				{Actions: []token.Action{token.ActionPublish}, Broadcast: "acme/app/live", Track: "chat"},
+				{Actions: []token.Action{token.ActionSubscribe}, Broadcast: "acme/app/live"},
+			}}),
+			wantConnect: 200, wantRevalidate: 200,
+		},
+		"limited key, subscribe and fetch scopes": {
+			jwt: sign(t, limited, scoped(token.ActionSubscribe, token.ActionFetch)), wantConnect: 200, wantRevalidate: 200,
+		},
+		"another key, publish scope": {jwt: sign(t, free, scoped(token.ActionPublish)), wantConnect: 200, wantRevalidate: 200},
 	}
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
-			jwt := sign(t, tt.key, tt.grant)
+			jwt := tt.jwt
 			_, err := v.Authorize(context.Background(), sessionReq(EventConnect, jwt))
 			assert.Equal(t, tt.wantConnect, statusOf(err), "connect: %v", err)
 			_, err = v.Authorize(context.Background(), sessionReq(EventRevalidate, jwt))
 			assert.Equal(t, tt.wantRevalidate, statusOf(err), "a live session continues: %v", err)
 		})
 	}
+}
+
+// scoped is a grant of actions on every track beneath acme/app/live.
+func scoped(actions ...token.Action) token.Grant {
+	return token.Grant{Scopes: []token.Scope{{Actions: actions, Broadcast: "acme/app/live", Prefix: true}}}
 }
 
 // TestKeyStore_DeprecatedPublishWarning pins that a set pausing keys with the

@@ -1,6 +1,9 @@
 package funnel
 
 import (
+	"crypto/ed25519"
+	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -38,13 +41,36 @@ func sign(tb testing.TB, key token.SigningKey, g token.Grant) string {
 	return credential
 }
 
-func TestAuthorizer(t *testing.T) {
+// signPathAuth mints a one-minute credential with a path_auth claim of pub
+// and sub (each left out when empty), as other MoQ implementations sign one.
+func signPathAuth(tb testing.TB, key token.SigningKey, pub, sub string) string {
+	tb.Helper()
+	pathAuth := map[string]string{"root": ""}
+	if pub != "" {
+		pathAuth["pub"] = pub
+	}
+	if sub != "" {
+		pathAuth["sub"] = sub
+	}
+	now := time.Now().Unix()
+	header, err := json.Marshal(map[string]string{"alg": "EdDSA", "kid": key.ID, "typ": "JWT"})
+	require.NoError(tb, err)
+	claims, err := json.Marshal(map[string]any{"path_auth": pathAuth, "iat": now, "nbf": now, "exp": now + 60})
+	require.NoError(tb, err)
+	input := base64.RawURLEncoding.EncodeToString(header) + "." + base64.RawURLEncoding.EncodeToString(claims)
+	return input + "." + base64.RawURLEncoding.EncodeToString(ed25519.Sign(key.Private, []byte(input)))
+}
+
+// A path_auth credential is read as scopes: pub writes and sub reads, at its
+// path and beneath it. It names no sender, wherever its path lies.
+func TestAuthorizer_PathAuth(t *testing.T) {
 	v, key := newVerifier(t)
 	other, err := token.GenerateKey("")
 	require.NoError(t, err)
 	chat := ingest.Track{BroadcastPath: "/room/123/comments", TrackName: "comments"}
 
-	bearerOf := func(g token.Grant) string { return "Bearer " + sign(t, key, g) }
+	pub := func(path string) string { return "Bearer " + signPathAuth(t, key, path, "") }
+	sub := func(path string) string { return "Bearer " + signPathAuth(t, key, "", path) }
 
 	tests := map[string]struct {
 		header      string
@@ -53,24 +79,24 @@ func TestAuthorizer(t *testing.T) {
 		wantErr     bool
 		wantUnauthn bool
 	}{
-		"publishing at the broadcast":        {header: bearerOf(token.Grant{Publish: "/room/123/comments"})},
-		"publishing at the room":             {header: bearerOf(token.Grant{Publish: "/room/123"})},
-		"publishing at every room":           {header: bearerOf(token.Grant{Publish: "/room"})},
-		"publishing as a sender":             {header: bearerOf(token.Grant{Publish: "/room/123/comments/user-42"}), wantSender: "user-42"},
-		"lower-case scheme":                  {header: "bearer " + sign(t, key, token.Grant{Publish: "/room/123"})},
-		"publishing two segments beneath":    {header: bearerOf(token.Grant{Publish: "/room/123/comments/user-42/phone"}), wantErr: true},
-		"publishing as a sender elsewhere":   {header: bearerOf(token.Grant{Publish: "/room/9/comments/user-42"}), wantErr: true},
-		"a subscribe-only credential":        {header: bearerOf(token.Grant{Subscribe: "/room/123"}), wantErr: true},
-		"no credential":                      {wantErr: true, wantUnauthn: true},
-		"not a bearer credential":            {header: "Basic YWxpY2U6c2VjcmV0", wantErr: true, wantUnauthn: true},
-		"signed by an unknown key":           {header: "Bearer " + sign(t, other, token.Grant{Publish: "/room/123"}), wantErr: true, wantUnauthn: true},
-		"not a credential at all":            {header: "Bearer hello", wantErr: true, wantUnauthn: true},
-		"publishing at a sibling":            {header: bearerOf(token.Grant{Publish: "/room/1234"}), wantErr: true},
-		"publishing at another room":         {header: bearerOf(token.Grant{Publish: "/room/9"}), wantErr: true},
-		"reading with a subscriber's":        {header: bearerOf(token.Grant{Subscribe: "/room/123"}), access: ingest.Read},
-		"reading with a publisher's":         {header: bearerOf(token.Grant{Publish: "/room/123"}), access: ingest.Read, wantErr: true},
-		"reading another room":               {header: bearerOf(token.Grant{Subscribe: "/room/9"}), access: ingest.Read, wantErr: true},
-		"reading with a sender's credential": {header: bearerOf(token.Grant{Publish: "/room/123/comments/user-42"}), access: ingest.Read, wantErr: true},
+		"publishing at the broadcast":     {header: pub("room/123/comments")},
+		"publishing at the room":          {header: pub("room/123")},
+		"publishing at every room":        {header: pub("room")},
+		"lower-case scheme":               {header: "bearer " + signPathAuth(t, key, "room/123", "")},
+		"one segment beneath, no sender":  {header: pub("room/123/comments/user-42"), wantErr: true},
+		"two segments beneath":            {header: pub("room/123/comments/user-42/phone"), wantErr: true},
+		"one segment beneath another":     {header: pub("room/9/comments/user-42"), wantErr: true},
+		"a subscribe-only credential":     {header: sub("room/123"), wantErr: true},
+		"no credential":                   {wantErr: true, wantUnauthn: true},
+		"not a bearer credential":         {header: "Basic YWxpY2U6c2VjcmV0", wantErr: true, wantUnauthn: true},
+		"signed by an unknown key":        {header: "Bearer " + signPathAuth(t, other, "room/123", ""), wantErr: true, wantUnauthn: true},
+		"not a credential at all":         {header: "Bearer hello", wantErr: true, wantUnauthn: true},
+		"publishing at a sibling":         {header: pub("room/1234"), wantErr: true},
+		"publishing at another room":      {header: pub("room/9"), wantErr: true},
+		"reading with a subscriber's":     {header: sub("room/123"), access: ingest.Read},
+		"reading with a publisher's":      {header: pub("room/123"), access: ingest.Read, wantErr: true},
+		"reading another room":            {header: sub("room/9"), access: ingest.Read, wantErr: true},
+		"reading one segment beneath pub": {header: pub("room/123/comments/user-42"), access: ingest.Read, wantErr: true},
 	}
 	authorize := authorizer(v)
 	for name, tt := range tests {
@@ -93,25 +119,101 @@ func TestAuthorizer(t *testing.T) {
 	}
 }
 
-func TestSenderOf(t *testing.T) {
-	tests := map[string]struct {
-		bases      []string
-		wantSender string
-		wantOK     bool
-	}{
-		"one segment beneath":  {bases: []string{"room/123/comments/user-42"}, wantSender: "user-42", wantOK: true},
-		"the first that names": {bases: []string{"room/9", "room/123/comments/user-7"}, wantSender: "user-7", wantOK: true},
-		"the broadcast itself": {bases: []string{"room/123/comments"}},
-		"two segments beneath": {bases: []string{"room/123/comments/a/b"}},
-		"beneath another":      {bases: []string{"room/123/other/user-42"}},
-		"everything":           {bases: []string{""}},
-		"no grant":             {},
+func TestAuthorizer_Scopes(t *testing.T) {
+	v, key := newVerifier(t)
+	chat := ingest.Track{BroadcastPath: "/room/123/comments", TrackName: "chat"}
+	scope := func(broadcast string, prefix bool, track string, actions ...token.Action) token.Scope {
+		return token.Scope{Actions: actions, Broadcast: broadcast, Prefix: prefix, Track: track}
 	}
+	bearerOf := func(subject string, scopes ...token.Scope) string {
+		return "Bearer " + sign(t, key, token.Grant{Subject: subject, Scopes: scopes})
+	}
+
+	tests := map[string]struct {
+		header     string
+		access     ingest.Access
+		wantSender string
+		wantErr    bool
+	}{
+		"publishing the exact track as a subject": {
+			header:     bearerOf("42", scope("room/123/comments", false, "chat", token.ActionPublish)),
+			wantSender: "42",
+		},
+		"publishing with no subject": {
+			header: bearerOf("", scope("room/123/comments", false, "chat", token.ActionPublish)),
+		},
+		"publishing any track of the broadcast": {
+			header:     bearerOf("42", scope("room/123/comments", false, "", token.ActionPublish)),
+			wantSender: "42",
+		},
+		"publishing under a prefix": {
+			header:     bearerOf("42", scope("room/123", true, "chat", token.ActionPublish)),
+			wantSender: "42",
+		},
+		"publishing another track": {
+			header:  bearerOf("42", scope("room/123/comments", false, "other", token.ActionPublish)),
+			wantErr: true,
+		},
+		"publishing beneath the broadcast": {
+			header:  bearerOf("42", scope("room/123/comments/user-42", false, "chat", token.ActionPublish)),
+			wantErr: true,
+		},
+		"publishing under a sibling prefix": {
+			header:  bearerOf("42", scope("room/12", true, "chat", token.ActionPublish)),
+			wantErr: true,
+		},
+		"publishing with fetch only": {
+			header:  bearerOf("42", scope("room/123/comments", false, "chat", token.ActionFetch)),
+			wantErr: true,
+		},
+		"publishing with subscribe only": {
+			header:  bearerOf("42", scope("room/123/comments", false, "chat", token.ActionSubscribe)),
+			wantErr: true,
+		},
+		"reading with fetch": {
+			header: bearerOf("42", scope("room/123/comments", false, "chat", token.ActionFetch)),
+			access: ingest.Read,
+		},
+		"reading under a fetch prefix": {
+			header: bearerOf("", scope("room", true, "", token.ActionFetch)),
+			access: ingest.Read,
+		},
+		"reading with subscribe only": {
+			header:  bearerOf("42", scope("room/123/comments", false, "chat", token.ActionSubscribe)),
+			access:  ingest.Read,
+			wantErr: true,
+		},
+		"reading with publish only": {
+			header:  bearerOf("42", scope("room/123/comments", false, "chat", token.ActionPublish)),
+			access:  ingest.Read,
+			wantErr: true,
+		},
+		"reading another track": {
+			header:  bearerOf("42", scope("room/123/comments", false, "other", token.ActionFetch)),
+			access:  ingest.Read,
+			wantErr: true,
+		},
+		"the second of two scopes": {
+			header: bearerOf("42",
+				scope("room/9", true, "", token.ActionPublish),
+				scope("room/123/comments", false, "chat", token.ActionPublish)),
+			wantSender: "42",
+		},
+	}
+	authorize := authorizer(v)
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
-			sender, ok := senderOf(tt.bases, "/room/123/comments")
+			r := httptest.NewRequest(http.MethodPost, "/tracks/room/123/comments/chat", nil)
+			r.Header.Set("Authorization", tt.header)
 
-			assert.Equal(t, tt.wantOK, ok)
+			sender, err := authorize(r, chat, tt.access)
+
+			if tt.wantErr {
+				require.Error(t, err)
+				assert.False(t, errors.Is(err, ingest.ErrUnauthenticated), "a valid credential that doesn't reach the track is forbidden")
+				return
+			}
+			require.NoError(t, err)
 			assert.Equal(t, tt.wantSender, sender)
 		})
 	}

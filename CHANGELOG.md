@@ -7,8 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+> **Breaking for Go callers and funnel senders.** `token.Grant` is `{Scopes, Subject}`: its `Publish` and `Subscribe` fields are gone, and `token.Sign` writes a `scopes` claim, never `path_auth`. A funnel no longer infers a sender from a credential publishing one segment beneath the broadcast: such a credential no longer records into it, and the sender is the credential's `sub`. See **Changed** below.
+
+> **Behavior change for apps.** A session no longer ends when its credential expires. An app ends a session by withholding its next credential and, at once, by removing the key from the set. See **Changed** below.
+
+### Added
+
+- **Credentials grant actions on exact tracks, and name their bearer (`token`, `internal/auth`).**
+  - **`scopes`.** A token grants a `scopes` claim, the JSON counterpart of CAT-4-MOQT's `moqt` claim: each scope lists `actions` (`publish`, `subscribe`, `fetch`), a `broadcast` match (`{"exact": "room/123"}`, or `{"prefix": "room/123"}` for it and every path beneath it on `/` boundaries, within the key's prefix) and an optional `track` match (`{"exact": "chat"}`; omitted, every track). Whatever no scope grants is denied. An unknown action or scope member, an empty scope list, or a token carrying both `path_auth` and `scopes` is refused.
+  - **`sub`.** A token with `scopes` may name its bearer in `sub`.
+  - **Go.** `token.Scope` and its `Allows`, `auth.Grant.Allows` (may this action reach this broadcast and track), `auth.Grant.Announces` and `auth.Grant.Subject`.
+  - **`qumo auth token -scope ACTIONS:BROADCAST[:TRACK]`** (repeatable; `a/b/**` for a prefix) and **`-sub`**.
+
 ### Changed
 
+- **One grant model: scopes (`token`, `internal/auth`, `internal/funnel`, `internal/relay`).**
+  - **`token.Grant`** is `{Scopes []Scope; Subject string}`. `Sign` writes only `scopes` (and `sub` when there is a subject).
+  - **`path_auth` is still accepted** from tokens signed elsewhere (the `@moq/token` convention), and read as scopes: `pub` as `publish`, and `sub` as `subscribe` and `fetch`, each on its path and every path beneath it, on every track. `sub` (the claim) with `path_auth` is still refused.
+  - **`qumo auth token -publish PATH` / `-subscribe PATH`** stay, as short for `-scope publish:PATH/**` and `-scope subscribe,fetch:PATH/**`.
+  - **The relay** lets a session announce a broadcast a `publish` scope matches on every track (one naming no `track`), and subscribe to a track a `subscribe` scope matches, by broadcast and track name. There is no separate announce action. A broadcast has one publisher: a `publish` scope naming one track doesn't announce, since it writes that track into a broadcast someone else announces, such as a funnel's, and so can't take the broadcast's route from its publisher. It ignores `fetch`. An internal client's grant is in the same model: a `subscribe` and `fetch` scope prefixing no path, which reaches every broadcast.
+  - **`qumo funnel`.** Recording into a track needs a `publish` scope matching its broadcast and name, and records as the credential's `sub`, or with no sender without one; reading history needs a `fetch` scope matching them. A path never names a sender. With `RELAY_SIGNING_KEY`, the funnel signs its relay credential as a `publish` scope on `RELAY_PUBLISH` and beneath it.
+  - **Key sets and usage.** A session publishes a broadcast when a `publish` scope permits every track of one. A key marked `"pause": ["publish"]` starts no such session, and usage reports count only such sessions as publishers: a viewer whose `publish` scope names one track, to write it at a funnel, still connects and is counted with the viewers.
+  - **Upgrading.** Upgrade relays and funnels before the apps that sign tokens: `token.Sign` writes `scopes`, which an older relay refuses as an unknown claim.
+- **Behavior change: a credential's expiry decides whether a session may start, not how long it lives (`token`, `internal/auth`).**
+  - **At connect, nothing changes:** `exp`, `nbf` and `iat` are checked with the 60 s leeway, and an expired credential is refused.
+  - **A live session outlives its credential's expiry,** so an app can issue short-lived credentials without its clients reconnecting, and dropping audio, every time one expires. The relay no longer ends a verified session with reason `expired`.
+  - **The key set still governs live sessions.** A key that leaves the set ends every session it admitted at the next 30 s re-check; `"pause": ["publish"]` still refuses new sessions that may publish and lets live ones continue.
+  - **`reval` is refused,** as any claim the relay doesn't know: CAT's `moqt-reval` asks for a live session to be revalidated against its token's expiry, which never happens here.
+  - **Go.** The new `token.VerifyLive` checks a live session's credential as the relay does: as `token.Verify`, without refusing it for its expiry.
+  - **Usage reports:** a session whose end never comes is forgotten five minutes after it was last re-checked, no longer five minutes after its credential's expiry.
 - **A key in a key set pauses its new publishing sessions with `"pause": ["publish"]` (`internal/auth/keyset.go`).** The member names what it does: the key starts no new sessions that may publish, while viewers still connect and live sessions continue. `"publish"` is the only entry; any other entry in `pause` makes the set invalid, so a misspelled entry can't leave a key unpaused, and the relay keeps its last good set as with any invalid set. That covers entries only: member names are case-sensitive, and a member the relay doesn't know (`"paused"`, `"Pause"`) is ignored, as JWK prescribes. A key naming a member twice, or carrying `"publish": true` beside `"pause": ["publish"]`, also makes the set invalid; key sets are now decoded with `encoding/json/v2`, as in the `token` package, so the relay and `token.ParseKeySet` read a set the same way. A key set without a `"keys"` list (`{}`, `{"keys": null}`), which was read as an empty set, is now refused, so the relay keeps its last good set instead of dropping every key and ending every live session; `{"keys": []}` is still a valid empty set.
 
 ### Deprecated

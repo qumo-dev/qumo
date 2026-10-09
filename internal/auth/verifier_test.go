@@ -2,6 +2,8 @@ package auth
 
 import (
 	"context"
+	"crypto/ed25519"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,6 +14,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/qumo-dev/gomoqt/moqt"
@@ -156,15 +159,33 @@ func TestVerifier_Grant(t *testing.T) {
 	k := genKey(t, "acme/app")
 	v := verifierWith(t, keySetJSON(t, []token.SigningKey{k}), time.Now())
 
-	g, err := v.Authorize(context.Background(), sessionReq(EventConnect, sign(t, k, token.Grant{Publish: "acme/app/live", Subscribe: "acme/app"})))
+	g, err := v.Authorize(context.Background(), sessionReq(EventConnect, sign(t, k, pathGrant("acme/app/live", "acme/app"))))
 	require.NoError(t, err)
-	assert.True(t, g.Publish.Contains(moqt.BroadcastPath("/acme/app/live/room1")))
-	assert.False(t, g.Publish.Contains(moqt.BroadcastPath("/acme/app/other")))
-	assert.True(t, g.Subscribe.Contains(moqt.BroadcastPath("/acme/app/other")))
-	assert.False(t, g.Subscribe.Contains(moqt.BroadcastPath("/globex/app")))
-	assert.Equal(t, revalidateEvery, g.Revalidate())
-	assert.WithinDuration(t, time.Now().Add(10*time.Minute+token.Leeway), g.Expires(), 5*time.Second,
-		"the session ends at the credential's exp plus the leeway")
+	assert.True(t, g.Allows(token.ActionPublish, moqt.BroadcastPath("/acme/app/live/room1"), "video"))
+	assert.False(t, g.Allows(token.ActionPublish, moqt.BroadcastPath("/acme/app/other"), "video"))
+	assert.True(t, g.Allows(token.ActionSubscribe, moqt.BroadcastPath("/acme/app/other"), "video"))
+	assert.False(t, g.Allows(token.ActionSubscribe, moqt.BroadcastPath("/globex/app"), "video"))
+	assert.Equal(t, revalidateEvery, g.Revalidate(), "every session is re-checked against the key set")
+	assert.True(t, g.Expires().IsZero(), "the credential's expiry doesn't end the session")
+}
+
+// TestVerifier_Expiry checks a credential after its expiry: refused at
+// connect, while the live session it admitted continues.
+func TestVerifier_Expiry(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		k := genKey(t, "acme/app")
+		v := verifierWith(t, keySetJSON(t, []token.SigningKey{k}), time.Now())
+		jwt := sign(t, k, pathGrant("", "acme/app"))
+		_, err := v.Authorize(context.Background(), sessionReq(EventConnect, jwt))
+		require.NoError(t, err)
+
+		time.Sleep(10*time.Minute + token.Leeway)
+
+		_, err = v.Authorize(context.Background(), sessionReq(EventConnect, jwt))
+		assert.Equal(t, http.StatusUnauthorized, statusOf(err), "connect: %v", err)
+		_, err = v.Authorize(context.Background(), sessionReq(EventRevalidate, jwt))
+		assert.NoError(t, err, "revalidate")
+	})
 }
 
 func TestVerifier_Decisions(t *testing.T) {
@@ -178,10 +199,10 @@ func TestVerifier_Decisions(t *testing.T) {
 		wantConnect    int
 		wantRevalidate int
 	}{
-		"active key":              {jwt: sign(t, active, token.Grant{Subscribe: "acme/app"}), wantConnect: 200, wantRevalidate: 200},
-		"key not in the set":      {jwt: sign(t, other, token.Grant{Subscribe: "acme/app"}), wantConnect: 401, wantRevalidate: 401},
-		"path outside the prefix": {jwt: sign(t, unconfined, token.Grant{Publish: "globex/app"}), wantConnect: 403, wantRevalidate: 403},
-		"prefix's sibling":        {jwt: sign(t, unconfined, token.Grant{Publish: "acme/application"}), wantConnect: 403, wantRevalidate: 403},
+		"active key":              {jwt: sign(t, active, pathGrant("", "acme/app")), wantConnect: 200, wantRevalidate: 200},
+		"key not in the set":      {jwt: sign(t, other, pathGrant("", "acme/app")), wantConnect: 401, wantRevalidate: 401},
+		"path outside the prefix": {jwt: sign(t, unconfined, pathGrant("globex/app", "")), wantConnect: 403, wantRevalidate: 403},
+		"prefix's sibling":        {jwt: sign(t, unconfined, pathGrant("acme/application", "")), wantConnect: 403, wantRevalidate: 403},
 		"no credential":           {jwt: "", wantConnect: 401, wantRevalidate: 401},
 		"not a credential":        {jwt: "not.a.jwt", wantConnect: 401, wantRevalidate: 401},
 	}
@@ -197,7 +218,7 @@ func TestVerifier_Decisions(t *testing.T) {
 
 func TestVerifier_FailStatic(t *testing.T) {
 	k := genKey(t, "acme/app")
-	jwt := sign(t, k, token.Grant{Subscribe: "acme/app"})
+	jwt := sign(t, k, pathGrant("", "acme/app"))
 
 	empty := &Verifier{now: time.Now}
 	_, err := empty.Authorize(context.Background(), sessionReq(EventConnect, jwt))
@@ -213,19 +234,34 @@ func TestVerifier_FailStatic(t *testing.T) {
 	assert.NoError(t, err, "stale: live sessions continue")
 }
 
+// TestVerifier_WithdrawnKeyEndsSessions checks that a key leaving the set
+// ends its live sessions, before or after their credentials' expiry.
 func TestVerifier_WithdrawnKeyEndsSessions(t *testing.T) {
-	k := genKey(t, "acme/app")
-	jwt := sign(t, k, token.Grant{Subscribe: "acme/app"})
-	v := verifierWith(t, keySetJSON(t, []token.SigningKey{k}), time.Now())
-	_, err := v.Authorize(context.Background(), sessionReq(EventConnect, jwt))
-	require.NoError(t, err)
+	tests := map[string]struct {
+		elapsed time.Duration
+	}{
+		"before its exp": {},
+		"after its exp":  {elapsed: 10*time.Minute + token.Leeway},
+	}
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				k := genKey(t, "acme/app")
+				jwt := sign(t, k, pathGrant("", "acme/app"))
+				v := verifierWith(t, keySetJSON(t, []token.SigningKey{k}), time.Now())
+				_, err := v.Authorize(context.Background(), sessionReq(EventConnect, jwt))
+				require.NoError(t, err)
 
-	set, err := parseKeySet([]byte(`{"keys":[]}`))
-	require.NoError(t, err)
-	v.store.replace(set, time.Now())
+				time.Sleep(tt.elapsed)
+				set, err := parseKeySet([]byte(`{"keys":[]}`))
+				require.NoError(t, err)
+				v.store.replace(set, time.Now())
 
-	_, err = v.Authorize(context.Background(), sessionReq(EventRevalidate, jwt))
-	assert.Equal(t, http.StatusUnauthorized, statusOf(err))
+				_, err = v.Authorize(context.Background(), sessionReq(EventRevalidate, jwt))
+				assert.Equal(t, http.StatusUnauthorized, statusOf(err))
+			})
+		})
+	}
 }
 
 func TestNewVerifier(t *testing.T) {
@@ -343,7 +379,7 @@ func TestVerifier_ReportsUsage(t *testing.T) {
 	defer srv.Close()
 	v, err := NewVerifier(VerifierConfig{Keys: writeKeySet(t, k), UsageURL: srv.URL, Token: "t"})
 	require.NoError(t, err)
-	jwt := sign(t, k, token.Grant{Publish: "acme/app/live", Subscribe: "acme/app"})
+	jwt := sign(t, k, pathGrant("acme/app/live", "acme/app"))
 
 	_, err = v.Authorize(context.Background(), sessionReq(EventConnect, jwt))
 	require.NoError(t, err)
@@ -379,15 +415,15 @@ func newTestUsage(t *testing.T, sink *fakeUsageSink) *usageReporter {
 	return r
 }
 
-var testUsageSession = usageSession{kid: "k1", role: rolePublish, expires: time.Now().Add(time.Hour)}
+var testUsageSession = usageSession{kid: "k1", role: rolePublish}
 
 func TestUsageReporter(t *testing.T) {
 	t.Run("usage is coalesced to the latest report", func(t *testing.T) {
 		sink := &fakeUsageSink{}
 		r := newTestUsage(t, sink)
 		r.open("s1", testUsageSession)
-		r.reportUsage("s1", Bytes{Sent: 1, Received: 10})
-		r.reportUsage("s1", Bytes{Sent: 2, Received: 20})
+		r.revalidated("s1", Bytes{Sent: 1, Received: 10}, true)
+		r.revalidated("s1", Bytes{Sent: 2, Received: 20}, true)
 		require.NoError(t, r.flush(context.Background()))
 		batches := sink.received()
 		require.Len(t, batches, 1)
@@ -400,9 +436,9 @@ func TestUsageReporter(t *testing.T) {
 		sink := &fakeUsageSink{statuses: []int{http.StatusBadGateway, http.StatusOK}}
 		r := newTestUsage(t, sink)
 		r.open("s1", testUsageSession)
-		r.reportUsage("s1", Bytes{Received: 10})
+		r.revalidated("s1", Bytes{Received: 10}, true)
 		assert.Error(t, r.flush(context.Background()))
-		r.reportUsage("s1", Bytes{Received: 20})
+		r.revalidated("s1", Bytes{Received: 20}, true)
 		require.NoError(t, r.flush(context.Background()))
 		retry := sink.received()[1]
 		require.Len(t, retry, 2)
@@ -470,18 +506,27 @@ func TestUsageReporter(t *testing.T) {
 		sink := &fakeUsageSink{}
 		r := newTestUsage(t, sink)
 		assert.False(t, r.close("nope", Bytes{Sent: 1}, ""))
-		r.reportUsage("nope", Bytes{Sent: 1})
+		r.revalidated("nope", Bytes{Sent: 1}, true)
 		require.NoError(t, r.flush(context.Background()))
 		assert.Empty(t, sink.received(), "nothing pending, nothing sent")
 	})
 
-	t.Run("sessions whose end never came are forgotten after their expiry", func(t *testing.T) {
+	t.Run("a session whose end never came is forgotten once no longer revalidated", func(t *testing.T) {
+		now := time.Now()
 		r := newTestUsage(t, &fakeUsageSink{})
-		r.open("old", usageSession{kid: "k1", role: rolePublish, expires: time.Now().Add(-sessionGrace - time.Second)})
+		r.now = func() time.Time { return now }
+		r.open("gone", testUsageSession)
+		r.open("refused", testUsageSession)
 		r.open("live", testUsageSession)
-		r.forgetExpired()
-		assert.False(t, r.close("old", Bytes{}, ""))
-		assert.True(t, r.close("live", Bytes{}, ""))
+
+		now = now.Add(sessionGrace + time.Second)
+		r.revalidated("refused", Bytes{Sent: 1}, false)
+		r.revalidated("live", Bytes{}, true)
+		r.forgetStale()
+
+		assert.False(t, r.close("gone", Bytes{}, ""), "not revalidated within the grace")
+		assert.False(t, r.close("refused", Bytes{}, ""), "a refused revalidate doesn't keep it")
+		assert.True(t, r.close("live", Bytes{}, ""), "revalidated: still remembered")
 	})
 }
 
@@ -556,7 +601,7 @@ func TestVerifier_RevalidateAfterEnd(t *testing.T) {
 	defer srv.Close()
 	v, err := NewVerifier(VerifierConfig{Keys: writeKeySet(t, k), UsageURL: srv.URL})
 	require.NoError(t, err)
-	jwt := sign(t, k, token.Grant{Publish: "acme/app/live"})
+	jwt := sign(t, k, pathGrant("acme/app/live", ""))
 
 	_, err = v.Authorize(context.Background(), sessionReq(EventConnect, jwt))
 	require.NoError(t, err)
@@ -585,10 +630,114 @@ func writeKeySet(t *testing.T, keys ...token.SigningKey) string {
 	return path
 }
 
+// pathGrant grants what a path_auth credential of pub and sub would: each
+// non-empty path as a prefix scope, publish for pub, and subscribe and fetch
+// for sub.
+func pathGrant(pub, sub string) token.Grant {
+	var g token.Grant
+	if pub != "" {
+		g.Scopes = append(g.Scopes, token.Scope{Actions: []token.Action{token.ActionPublish}, Broadcast: pub, Prefix: true})
+	}
+	if sub != "" {
+		g.Scopes = append(g.Scopes, token.Scope{Actions: []token.Action{token.ActionSubscribe, token.ActionFetch}, Broadcast: sub, Prefix: true})
+	}
+	return g
+}
+
+// signPathAuth mints a 10-minute token with a path_auth claim of pub and sub
+// (each left out when empty), as other MoQ implementations sign one.
+func signPathAuth(tb testing.TB, key token.SigningKey, pub, sub string) string {
+	tb.Helper()
+	pathAuth := map[string]string{"root": ""}
+	if pub != "" {
+		pathAuth["pub"] = pub
+	}
+	if sub != "" {
+		pathAuth["sub"] = sub
+	}
+	now := time.Now().Unix()
+	header, err := json.Marshal(map[string]string{"alg": "EdDSA", "kid": key.ID, "typ": "JWT"})
+	require.NoError(tb, err)
+	claims, err := json.Marshal(map[string]any{"path_auth": pathAuth, "iat": now, "nbf": now, "exp": now + 600})
+	require.NoError(tb, err)
+	input := base64.RawURLEncoding.EncodeToString(header) + "." + base64.RawURLEncoding.EncodeToString(claims)
+	return input + "." + base64.RawURLEncoding.EncodeToString(ed25519.Sign(key.Private, []byte(input)))
+}
+
 // sign mints a 10-minute token granting g.
 func sign(tb testing.TB, key token.SigningKey, g token.Grant) string {
 	tb.Helper()
 	tok, err := token.Sign(key, g, 10*time.Minute)
 	require.NoError(tb, err)
 	return tok
+}
+
+// A path_auth credential, as other MoQ implementations sign it, is admitted
+// with the scopes it amounts to: pub publishes, and sub subscribes and
+// fetches, on every track at or beneath each path. It names no subject.
+func TestVerifier_PathAuthGrant(t *testing.T) {
+	k := genKey(t, "acme/app")
+	v := verifierWith(t, keySetJSON(t, []token.SigningKey{k}), time.Now())
+
+	g, err := v.Authorize(context.Background(), sessionReq(EventConnect, signPathAuth(t, k, "acme/app/live", "acme/app/room")))
+
+	require.NoError(t, err)
+	assert.Empty(t, g.Subject())
+	assert.True(t, g.Announces("/acme/app/live/cam"))
+	assert.True(t, g.Allows(token.ActionPublish, "/acme/app/live/cam", "video"))
+	assert.False(t, g.Allows(token.ActionPublish, "/acme/app/room", "video"))
+	assert.True(t, g.Allows(token.ActionSubscribe, "/acme/app/room/1", "video"))
+	assert.True(t, g.Allows(token.ActionFetch, "/acme/app/room/1", "chat"))
+	assert.False(t, g.Allows(token.ActionSubscribe, "/acme/app/live", "video"))
+	assert.False(t, g.Announces("/acme/app/room"))
+}
+
+func TestVerifier_ScopedGrant(t *testing.T) {
+	k := genKey(t, "acme/app")
+	v := verifierWith(t, keySetJSON(t, []token.SigningKey{k}), time.Now())
+	jwt := sign(t, k, token.Grant{Subject: "42", Scopes: []token.Scope{
+		{Actions: []token.Action{token.ActionPublish}, Broadcast: "acme/app/room/123/comments", Track: "chat"},
+		{Actions: []token.Action{token.ActionFetch}, Broadcast: "acme/app/room/123", Prefix: true},
+	}})
+
+	g, err := v.Authorize(context.Background(), sessionReq(EventConnect, jwt))
+
+	require.NoError(t, err)
+	assert.Equal(t, "42", g.Subject())
+	assert.True(t, g.Allows(token.ActionPublish, "/acme/app/room/123/comments", "chat"))
+	assert.False(t, g.Allows(token.ActionPublish, "/acme/app/room/123/comments", "other"))
+	assert.True(t, g.Allows(token.ActionFetch, "/acme/app/room/123/comments", "any"))
+	assert.False(t, g.Allows(token.ActionSubscribe, "/acme/app/room/123/comments", "chat"))
+}
+
+func TestVerifier_UsageRole(t *testing.T) {
+	k := genKey(t, "acme/app")
+	v := verifierWith(t, keySetJSON(t, []token.SigningKey{k}), time.Now())
+	tests := map[string]struct {
+		jwt  string
+		want string
+	}{
+		"publish":               {jwt: sign(t, k, scoped(token.ActionPublish)), want: rolePublish},
+		"subscribe":             {jwt: sign(t, k, scoped(token.ActionSubscribe)), want: roleSubscribe},
+		"fetch":                 {jwt: sign(t, k, scoped(token.ActionFetch)), want: roleSubscribe},
+		"publish and fetch":     {jwt: sign(t, k, scoped(token.ActionPublish, token.ActionFetch)), want: roleBoth},
+		"a path_auth viewer":    {jwt: signPathAuth(t, k, "", "acme/app"), want: roleSubscribe},
+		"a path_auth publisher": {jwt: signPathAuth(t, k, "acme/app/live", ""), want: rolePublish},
+		"a path_auth of both":   {jwt: signPathAuth(t, k, "acme/app/live", "acme/app"), want: roleBoth},
+		"a viewer who may write one track": {
+			jwt: sign(t, k, token.Grant{Scopes: []token.Scope{
+				{Actions: []token.Action{token.ActionPublish}, Broadcast: "acme/app/live", Track: "chat"},
+				{Actions: []token.Action{token.ActionSubscribe}, Broadcast: "acme/app/live"},
+			}}),
+			want: roleSubscribe,
+		},
+	}
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			_, s, err := v.decide(sessionReq(EventConnect, tt.jwt))
+
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, s.role)
+		})
+	}
 }
