@@ -120,6 +120,23 @@ func record(t *testing.T, ingestURL, credential, payload string) int {
 	return sendChat(t, ingestURL, http.MethodPost, credential, payload)
 }
 
+// redactChat redacts the record of group in the chat track of /room/123 and
+// returns the status.
+func redactChat(t *testing.T, ingestURL, credential, group string) int {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodDelete, ingestURL+chatPath+"?group="+group, nil)
+	require.NoError(t, err)
+	if credential != "" {
+		req.Header.Set("Authorization", "Bearer "+credential)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	_, err = io.Copy(io.Discard, resp.Body)
+	require.NoError(t, err)
+	return resp.StatusCode
+}
+
 // createChat creates the chat track of /room/123 and returns the status.
 func createChat(t *testing.T, ingestURL, credential string) int {
 	t.Helper()
@@ -460,4 +477,61 @@ func TestFunnel_RedialsWhenTheRelayEndsTheSession(t *testing.T) {
 	seq, got := nextRecord(t, tr)
 	assert.Equal(t, moqt.GroupSequence(1), seq)
 	assert.Equal(t, `{"payload":"kept"}`, got)
+}
+
+// TestFunnel_RedactNeedsARedactScope redacts a posted record: only a credential
+// with a redact scope may, the redaction reaches live subscribers carrying the
+// credential's sub, and history keeps the record's place without its payload.
+func TestFunnel_RedactNeedsARedactScope(t *testing.T) {
+	key, _, keysFile := writeKeys(t)
+	verifier, err := auth.NewVerifier(auth.VerifierConfig{Keys: keysFile})
+	require.NoError(t, err)
+	ingestURL, serveURL := startFunnel(t, mem.New(), verifier)
+	credential := func(subject string, action token.Action) string {
+		c, err := token.Sign(key, token.Grant{Subject: subject, Scopes: []token.Scope{
+			{Actions: []token.Action{action}, Broadcast: "room/123", Track: "chat"},
+		}}, time.Minute)
+		require.NoError(t, err)
+		return c
+	}
+	alice := credential("alice", token.ActionPost)
+	reader := credential("", token.ActionFetch)
+	moderator := credential("moderator", token.ActionRedact)
+
+	require.Equal(t, http.StatusCreated, record(t, ingestURL, alice, `"hello"`))
+	// A subscription starts at the track's latest record.
+	tr := subscribeChat(t, serveURL)
+	_, posted := nextRecord(t, tr)
+	require.Equal(t, `{"sender":"alice","payload":"hello"}`, posted)
+	history := func() string {
+		req, err := http.NewRequest(http.MethodGet, ingestURL+chatPath, nil)
+		require.NoError(t, err)
+		req.Header.Set("Authorization", "Bearer "+reader)
+		resp, err := http.DefaultClient.Do(req)
+		require.NoError(t, err)
+		defer resp.Body.Close()
+		body, err := io.ReadAll(resp.Body)
+		require.NoError(t, err)
+		require.Equal(t, http.StatusOK, resp.StatusCode, string(body))
+		return string(body)
+	}
+	var page struct {
+		Records []struct {
+			Group string `json:"group"`
+		} `json:"records"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(history()), &page))
+	require.Len(t, page.Records, 1)
+	group := page.Records[0].Group
+
+	assert.Equal(t, http.StatusForbidden, redactChat(t, ingestURL, alice, group), "posting does not grant redacting")
+	assert.Equal(t, http.StatusForbidden, redactChat(t, ingestURL, reader, group), "fetching does not grant redacting")
+	require.Equal(t, http.StatusCreated, redactChat(t, ingestURL, moderator, group))
+
+	_, redaction := nextRecord(t, tr)
+	assert.Equal(t, `{"sender":"moderator","redacts":"`+group+`"}`, redaction, "live subscribers learn of the redaction")
+	after := history()
+	assert.Contains(t, after, `"group":"`+group+`"`, "the record keeps its place")
+	assert.Contains(t, after, `"redacted":true`)
+	assert.NotContains(t, after, `"hello"`)
 }

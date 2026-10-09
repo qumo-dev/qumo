@@ -12,12 +12,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - **A `post` action (`token`, `qumo auth token -scope`).** `post` grants sending messages into a track a funnel gathers many senders into: `{"actions": ["post"], "broadcast": {"exact": "room/123"}, "track": {"exact": "chat"}}`. A relay never reads it as publishing. In Go it is `token.ActionPost`.
+- **A `redact` action (`token`, `qumo auth token -scope`, `internal/funnel`).** `redact` grants taking a record out of a funnel's track (`DELETE ?group=`), and the redaction carries the credential's `sub` as its sender. No other action redacts. It belongs in credentials an app keeps to itself: who may redact which record is the app's decision. In Go it is `token.ActionRedact`.
 
 ### Changed
 
 - **A funnel takes posts with `post`, not `publish` (`internal/funnel`).** `POST` and `PUT` on a track need a `post` scope matching it. `publish` now only sends through a relay. When one key is trusted by both a relay and a funnel, a credential meant for posting therefore can't publish into the relay directly, skipping the funnel and choosing its own sender, and a publisher's credential can't post. A `path_auth` token's `pub` is read as `publish`, so it no longer posts; its `sub` still reads history. Apps sign their senders' credentials with `post` instead of `publish`.
 - **`"pause": ["publish"]` covers `post` on every track (`internal/auth`).** A credential that may post into every track of a broadcast may create any track of it at a funnel, which the funnel publishes. So a paused key starts no new such sessions, as it does for an every-track `publish`, and the usage role is `publish`. A `post` scope naming one track, a chat sender's, is a viewer's: it is not paused.
-- **qumo-ledger v0.3.0 (`internal/funnel`).** It brings redaction: a funnel answers `DELETE /tracks/…?group=<group>` by committing and publishing a redaction, `{"redacts": "<group>"}`, and deleting the record's payload, and history marks the record `"redacted": true`. With a key set, no credential grants a redaction yet, so the funnel refuses every one (`403`). Without a key set, a redaction is open, like every other request.
+- **qumo-ledger v0.3.0 (`internal/funnel`).** It brings redaction: a funnel answers `DELETE /tracks/…?group=<group>` by committing and publishing a redaction, `{"redacts": "<group>"}`, and deleting the record's payload, and history marks the record `"redacted": true`. With a key set it needs a `redact` scope (below). A track whose last record was redacted through the ledger directly restores with nothing to replay.
 - **The funnel docs lead with what it does:** gathering many senders' messages into one track. The ledger it commits each record to is in memory by default and durable with `LEDGER_URI`.
 
 ## [v0.13.261009] - 2026-10-09

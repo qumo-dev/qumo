@@ -20,7 +20,9 @@ import (
 // A write needs a post scope matching the track's broadcast and name, and
 // records as the credential's subject (its sub), or with no sender when it
 // names none; a publish scope, which sends through the relay, does not write.
-// A read needs a fetch scope matching them. A path_auth credential is read as
+// A read needs a fetch scope matching them, and a redaction a redact scope;
+// the redaction carries the credential's subject as its sender. A path_auth
+// credential is read as
 // scopes (token.Verify): its sub permits reading at its path and beneath it,
 // and its pub, being publish, permits no writing.
 //
@@ -60,9 +62,14 @@ func authorizer(v *auth.Verifier) func(*http.Request, ingest.Track, ingest.Acces
 				return "", fmt.Errorf("funnel: the credential may not post into %s track %q", broadcast, name)
 			}
 			return grant.Subject(), nil
+		case ingest.Redact:
+			if !grant.Allows(token.ActionRedact, broadcast, name) {
+				return "", fmt.Errorf("funnel: the credential may not redact %s track %q", broadcast, name)
+			}
+			return grant.Subject(), nil
 		default:
-			// Redacting, and any access added later, is refused until a scope
-			// grants it, so no credential gains it by default.
+			// An access added later is refused until a scope grants it, so no
+			// credential gains it by default.
 			return "", fmt.Errorf("funnel: no credential grants access %d to %s track %q", access, broadcast, name)
 		}
 	}
