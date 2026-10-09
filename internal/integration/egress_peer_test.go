@@ -36,7 +36,7 @@ func TestEgress_ClientCertificateIsInternalClient(t *testing.T) {
 	// Authorize refuses everyone: only a session the CA vouches for gets
 	// through.
 	server := &fakeAuth{err: auth.RefusedError{Status: http.StatusUnauthorized}}
-	publisher := &fakeAuth{grant: testGrant(t, "**", "", time.Time{}, 0)}
+	publisher := &fakeAuth{grant: testGrant(t, "**", "", 0)}
 	addr, srv := startAuthRelay(t, func(ctx context.Context, req auth.Request) (*auth.Grant, error) {
 		if req.Query == "jwt=publisher" {
 			return publisher.authorize(ctx, req)
@@ -88,7 +88,7 @@ func TestEgress_ClientCertificateIsInternalClient(t *testing.T) {
 // exist.
 func TestRelay_RefusedSessionTellsItsSubscribeWhy(t *testing.T) {
 	server := &fakeAuth{err: auth.RefusedError{Status: http.StatusUnauthorized}, hold: make(chan struct{})}
-	publisher := &fakeAuth{grant: testGrant(t, "**", "", time.Time{}, 0)}
+	publisher := &fakeAuth{grant: testGrant(t, "**", "", 0)}
 	addr, srv := startAuthRelay(t, func(ctx context.Context, req auth.Request) (*auth.Grant, error) {
 		if req.Query == "jwt=publisher" {
 			return publisher.authorize(ctx, req)

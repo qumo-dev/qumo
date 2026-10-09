@@ -42,7 +42,7 @@ func verifiedSession(t *testing.T, v *auth.Verifier, key token.SigningKey) (*fak
 	g, err := v.Authorize(t.Context(), req)
 	require.NoError(t, err)
 	sess := &fakeLeasedSession{}
-	l := startLease(t.Context(), sess, v.Authorize, req, deadlineOf(g), g.Revalidate())
+	l := startLease(t.Context(), sess, v.Authorize, req, g.Revalidate())
 	require.NotNil(t, l, "every verified session is re-checked")
 	return sess, l
 }

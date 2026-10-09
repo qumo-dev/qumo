@@ -91,14 +91,11 @@ func noRedirectClient(timeout time.Duration) *http.Client {
 // Request is one session event: what the relay asks its Authorize about at
 // connect and revalidate, and reports to its End.
 type Request struct {
-	ID         string
-	Event      string
-	Node       string
-	Transport  string
-	Remote     string
-	Local      string
-	ServerName string
-	Path       string
+	ID        string
+	Event     string
+	Transport string
+	Remote    string
+	Path      string
 	// Query is the connect URL's raw query, which carries the credential
 	// (jwt). It is never logged.
 	Query string
@@ -108,8 +105,6 @@ type Request struct {
 	Bytes Bytes
 	// Reason is why the session ended, set on end.
 	Reason string
-	// Duration is how long the session lasted in whole seconds, set on end.
-	Duration int64
 }
 
 // Bytes is a session's byte totals, both directions from the relay's point

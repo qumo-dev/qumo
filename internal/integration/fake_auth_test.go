@@ -4,11 +4,13 @@ package integration
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/qumo-dev/qumo/internal/auth"
+	"github.com/qumo-dev/qumo/token"
 	"github.com/stretchr/testify/require"
 )
 
@@ -68,20 +70,27 @@ func (f *fakeAuth) authorize(ctx context.Context, req auth.Request) (*auth.Grant
 	return f.grant, nil
 }
 
-// testGrant returns a grant for one publish and one subscribe pattern ("" for
-// none), ending at expires and checked again every revalidate.
-func testGrant(tb testing.TB, publish, subscribe string, expires time.Time, revalidate time.Duration) *auth.Grant {
+// testGrant returns a grant that may publish beneath one subtree pattern and
+// subscribe to and fetch beneath another ("**" for everything, "a/b/**" for
+// a/b and beneath it, "" for none), checked again every revalidate.
+func testGrant(tb testing.TB, publish, subscribe string, revalidate time.Duration) *auth.Grant {
 	tb.Helper()
-	var pub, sub []string
-	if publish != "" {
-		pub = []string{publish}
+	var scopes []token.Scope
+	for _, role := range []struct {
+		pattern string
+		actions []token.Action
+	}{
+		{publish, []token.Action{token.ActionPublish}},
+		{subscribe, []token.Action{token.ActionSubscribe, token.ActionFetch}},
+	} {
+		if role.pattern == "" {
+			continue
+		}
+		base, ok := strings.CutSuffix("/"+role.pattern, "/**")
+		require.True(tb, ok, "pattern %q is not a subtree", role.pattern)
+		scopes = append(scopes, token.Scope{Actions: role.actions, Broadcast: strings.TrimPrefix(base, "/"), Prefix: true})
 	}
-	if subscribe != "" {
-		sub = []string{subscribe}
-	}
-	g, err := auth.NewGrant(pub, sub, expires, revalidate)
-	require.NoError(tb, err)
-	return g
+	return auth.NewGrant(scopes, revalidate)
 }
 
 // received returns a copy of the requests seen so far.

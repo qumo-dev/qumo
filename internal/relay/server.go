@@ -150,7 +150,7 @@ func (s *Server) HandleWebTransport(w http.ResponseWriter, r *http.Request) {
 	// so the session counted at connect is closed.
 	if g != nil && !a.served.Load() {
 		s.sessionEnds.add()
-		s.reportEnd(r.Context(), req, moqt.SessionStats{}, endUpgradeFailed, 0)
+		s.reportEnd(r.Context(), req, moqt.SessionStats{}, endUpgradeFailed)
 		s.sessionEnds.done()
 	}
 }
@@ -654,19 +654,18 @@ func (s *Server) serveSession(sess *moqt.Session) {
 	var l *lease
 	if checked {
 		a.served.Store(true)
-		start := time.Now()
 		// Registered first so that it runs last: after the close below,
 		// with the session's final byte totals and close cause. Counted in
 		// sessionEnds, since it can run after Shutdown has returned.
 		s.sessionEnds.add()
 		defer func() {
 			defer s.sessionEnds.done()
-			s.reportEnd(sess.Context(), a.req, sess.Stats(), endReason(l, context.Cause(sess.Context())), time.Since(start))
+			s.reportEnd(sess.Context(), a.req, sess.Stats(), endReason(l, context.Cause(sess.Context())))
 		}()
 	}
 	defer sess.CloseWithError(moqt.NoError, moqt.NoError.String())
 	if checked {
-		if l = startLease(sess.Context(), sess, s.Authorize, a.req, a.deadline, a.grant.Revalidate()); l != nil {
+		if l = startLease(sess.Context(), sess, s.Authorize, a.req, a.grant.Revalidate()); l != nil {
 			defer l.stop()
 		}
 	}
