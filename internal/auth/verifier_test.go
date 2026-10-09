@@ -166,7 +166,6 @@ func TestVerifier_Grant(t *testing.T) {
 	assert.True(t, g.Allows(token.ActionSubscribe, moqt.BroadcastPath("/acme/app/other"), "video"))
 	assert.False(t, g.Allows(token.ActionSubscribe, moqt.BroadcastPath("/globex/app"), "video"))
 	assert.Equal(t, revalidateEvery, g.Revalidate(), "every session is re-checked against the key set")
-	assert.True(t, g.Expires().IsZero(), "the credential's expiry doesn't end the session")
 }
 
 // TestVerifier_Expiry checks a credential after its expiry: refused at

@@ -49,12 +49,9 @@ type Client struct {
 // Dial connects to the RTSP server at rawURL (which may carry user:pass for
 // auth) and returns a ready Client. The caller should [Client.Describe] next.
 func Dial(ctx context.Context, rawURL string) (*Client, error) {
-	u, err := url.Parse(rawURL)
+	u, err := parseURL(rawURL)
 	if err != nil {
-		return nil, fmt.Errorf("rtsp: parse url: %w", err)
-	}
-	if !strings.HasPrefix(strings.ToLower(u.Scheme), "rtsp") {
-		return nil, fmt.Errorf("rtsp: not an rtsp url: %s", rawURL)
+		return nil, err
 	}
 	host := u.Host
 	if !strings.Contains(host, ":") {
@@ -65,6 +62,34 @@ func Dial(ctx context.Context, rawURL string) (*Client, error) {
 	if err != nil {
 		return nil, fmt.Errorf("rtsp: dial %s: %w", host, err)
 	}
+	return newClient(nc, u), nil
+}
+
+// NewClient returns a Client for the RTSP server at rawURL over a connection
+// that is already established, as [Dial] does over one it makes itself. The
+// Client owns nc from then on and closes it in [Client.Close].
+func NewClient(nc net.Conn, rawURL string) (*Client, error) {
+	u, err := parseURL(rawURL)
+	if err != nil {
+		return nil, err
+	}
+	return newClient(nc, u), nil
+}
+
+// parseURL parses the URL of an RTSP server.
+func parseURL(rawURL string) (*url.URL, error) {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return nil, fmt.Errorf("rtsp: parse url: %w", err)
+	}
+	if !strings.HasPrefix(strings.ToLower(u.Scheme), "rtsp") {
+		return nil, fmt.Errorf("rtsp: not an rtsp url: %s", rawURL)
+	}
+	return u, nil
+}
+
+// newClient takes the credentials out of u, which it keeps.
+func newClient(nc net.Conn, u *url.URL) *Client {
 	var cred Credentials
 	if u.User != nil {
 		cred.Username = u.User.Username()
@@ -72,7 +97,7 @@ func Dial(ctx context.Context, rawURL string) (*Client, error) {
 	}
 	// Strip credentials from the URL so they don't appear in request lines.
 	u.User = nil
-	return &Client{conn: NewConn(nc), url: u, cred: cred, keepalive: MethodGetParameter}, nil
+	return &Client{conn: NewConn(nc), url: u, cred: cred, keepalive: MethodGetParameter}
 }
 
 // Close sends TEARDOWN (best-effort) and closes the underlying connection.

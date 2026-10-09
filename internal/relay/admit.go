@@ -6,11 +6,9 @@ import (
 	"encoding/hex"
 	"errors"
 	"log/slog"
-	"net"
 	"net/http"
 	"net/url"
 	"sync/atomic"
-	"time"
 
 	"github.com/qumo-dev/gomoqt/moqt"
 	"github.com/qumo-dev/qumo/internal/auth"
@@ -35,9 +33,6 @@ type admission struct {
 	// req is the connect request that admitted the session, set with
 	// grant. A revalidate re-sends it, with the same id.
 	req auth.Request
-	// deadline is when the session must end, set with grant: its expires,
-	// on the monotonic clock (see deadlineOf). Zero means never.
-	deadline time.Time
 	// served is set once serveSession runs the session, which then reports
 	// its end. An admitted upgrade that fails never sets it.
 	served atomic.Bool
@@ -50,15 +45,9 @@ var refusedGrant = &auth.Grant{}
 
 // internalGrant is what an internal client may do: subscribe to anything,
 // announce nothing.
-var internalGrant = mustGrant(nil, []string{"**"})
-
-func mustGrant(publish, subscribe []string) *auth.Grant {
-	g, err := auth.NewGrant(publish, subscribe, time.Time{}, 0)
-	if err != nil {
-		panic(err) // fixed patterns, checked at init
-	}
-	return g
-}
+var internalGrant = auth.NewGrant([]token.Scope{
+	{Actions: []token.Action{token.ActionSubscribe, token.ActionFetch}, Prefix: true},
+}, 0)
 
 func pendingAdmission() *admission {
 	return &admission{decided: make(chan struct{})}
@@ -75,7 +64,6 @@ func decidedAdmission(g *auth.Grant, req auth.Request) *admission {
 func (a *admission) decide(g *auth.Grant, req auth.Request) {
 	a.grant = g
 	a.req = req
-	a.deadline = deadlineOf(g)
 	close(a.decided)
 }
 
@@ -84,16 +72,6 @@ func (a *admission) decide(g *auth.Grant, req auth.Request) {
 func (a *admission) decideInternal() {
 	a.internal = true
 	a.decide(internalGrant, auth.Request{})
-}
-
-// deadlineOf returns when a session holding g must end: its expires, taken
-// now on the monotonic clock so that a wall-clock jump doesn't move it.
-// time.Now carries a monotonic reading and Add keeps it. Zero means never.
-func deadlineOf(g *auth.Grant) time.Time {
-	if g == nil || g.Expires().IsZero() {
-		return time.Time{}
-	}
-	return time.Now().Add(time.Until(g.Expires()))
 }
 
 func withAdmission(ctx context.Context, a *admission) context.Context {
@@ -158,22 +136,14 @@ func newSessionID() string {
 
 // webTransportRequest describes a WebTransport upgrade for Authorize.
 func (s *Server) webTransportRequest(r *http.Request) auth.Request {
-	req := auth.Request{
+	return auth.Request{
 		ID:        newSessionID(),
 		Event:     auth.EventConnect,
-		Node:      s.nodeID(),
 		Transport: auth.TransportWebTransport,
 		Remote:    r.RemoteAddr,
 		Path:      r.URL.Path,
 		Query:     r.URL.RawQuery,
 	}
-	if local, ok := r.Context().Value(http.LocalAddrContextKey).(net.Addr); ok {
-		req.Local = local.String()
-	}
-	if r.TLS != nil {
-		req.ServerName = r.TLS.ServerName
-	}
-	return req
 }
 
 // nativeRequest describes a native-QUIC session for Authorize. Its path
@@ -183,7 +153,6 @@ func (s *Server) nativeRequest(sess *moqt.Session) auth.Request {
 	req := auth.Request{
 		ID:        newSessionID(),
 		Event:     auth.EventConnect,
-		Node:      s.nodeID(),
 		Transport: auth.TransportQUIC,
 		Path:      sess.RequestURI(),
 	}
@@ -193,20 +162,7 @@ func (s *Server) nativeRequest(sess *moqt.Session) auth.Request {
 	if addr := sess.RemoteAddr(); addr != nil {
 		req.Remote = addr.String()
 	}
-	if addr := sess.LocalAddr(); addr != nil {
-		req.Local = addr.String()
-	}
-	if state := sess.ConnectionState().TLS; state != nil {
-		req.ServerName = state.ServerName
-	}
 	return req
-}
-
-func (s *Server) nodeID() string {
-	if s.Config == nil {
-		return ""
-	}
-	return s.Config.NodeID
 }
 
 // admitUnchecked admits every session without asking anyone: the relay runs
@@ -267,18 +223,16 @@ func (s *Server) admit(ctx context.Context, req auth.Request) (*auth.Grant, erro
 }
 
 // reportEnd sends the end event of a checked session admitted by req, with
-// its final byte totals, why it ended and how long it lasted. ctx is the
-// session's: done by now, so the report keeps its values but not its
-// cancellation. A failed report is recorded and otherwise ignored; End
-// bounds its own wait.
-func (s *Server) reportEnd(ctx context.Context, req auth.Request, stats moqt.SessionStats, reason string, d time.Duration) {
+// its final byte totals and why it ended. ctx is the session's: done by now,
+// so the report keeps its values but not its cancellation. A failed report is
+// recorded and otherwise ignored; End bounds its own wait.
+func (s *Server) reportEnd(ctx context.Context, req auth.Request, stats moqt.SessionStats, reason string) {
 	if s.End == nil {
 		return
 	}
 	req.Event = auth.EventEnd
 	req.Bytes = sessionBytes(stats)
 	req.Reason = reason
-	req.Duration = int64(d / time.Second)
 	if err := s.End(context.WithoutCancel(ctx), req); err != nil {
 		metricAuthRequests.WithLabelValues(auth.EventEnd, authError).Inc()
 		slog.Warn("relay: end report failed", "id", req.ID, "reason", reason, "error", err)

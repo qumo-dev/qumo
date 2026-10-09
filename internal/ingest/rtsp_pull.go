@@ -193,9 +193,9 @@ func PullAndServe(parentCtx context.Context, cfg PullConfig) (*PullHandle, error
 	return h, nil
 }
 
-// pullStream connects to the RTSP source, sets up all tracks, and reads
-// interleaved RTP frames until an error occurs (connection drop, PLAY failure,
-// or context cancellation). The caller handles reconnection.
+// pullStream connects to the RTSP source and pulls from it until an error
+// occurs (connection drop, PLAY failure, or context cancellation). The caller
+// handles reconnection.
 func pullStream(ctx context.Context, srcURL string, sess *Session) error {
 	client, err := rtsp.Dial(ctx, srcURL)
 	if err != nil {
@@ -203,6 +203,13 @@ func pullStream(ctx context.Context, srcURL string, sess *Session) error {
 	}
 	defer client.Close()
 
+	return pullFrom(ctx, client, srcURL, sess)
+}
+
+// pullFrom sets up all tracks of the source client is connected to, and reads
+// interleaved RTP frames into sess, keeping the RTSP session alive meanwhile,
+// until an error occurs or ctx ends. It does not close client.
+func pullFrom(ctx context.Context, client *rtsp.Client, srcURL string, sess *Session) error {
 	sdp, err := client.Describe(ctx)
 	if err != nil {
 		return fmt.Errorf("describe: %w", err)

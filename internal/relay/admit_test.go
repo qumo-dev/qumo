@@ -7,7 +7,6 @@ import (
 	"net/http/httptest"
 	"testing"
 	"testing/synctest"
-	"time"
 
 	"github.com/qumo-dev/gomoqt/moqt"
 	"github.com/qumo-dev/qumo/internal/auth"
@@ -168,34 +167,6 @@ func TestServer_Admit_Metrics(t *testing.T) {
 	}
 }
 
-// TestAdmission_Decide_Deadline verifies a decided admission carries its
-// grant's expires as the session deadline, measured from when the grant is
-// accepted, and no deadline for a grant without expires or no grant.
-func TestAdmission_Decide_Deadline(t *testing.T) {
-	synctest.Test(t, func(t *testing.T) {
-		expiring := testGrant(t, "", "**", time.Now().Add(90*time.Second), 0)
-		cases := []struct {
-			name  string
-			grant *auth.Grant
-			want  time.Duration // from now; 0 means no deadline
-		}{
-			{name: "grant with expires", grant: expiring, want: 90 * time.Second},
-			{name: "grant without expires", grant: testGrant(t, "", "**", time.Time{}, 0)},
-			{name: "unchecked", grant: nil},
-		}
-		// t.Run is unsupported inside a synctest bubble.
-		for _, tc := range cases {
-			a := decidedAdmission(tc.grant, auth.Request{})
-
-			if tc.want == 0 {
-				assert.True(t, a.deadline.IsZero(), tc.name)
-				continue
-			}
-			assert.Equal(t, tc.want, time.Until(a.deadline), tc.name)
-		}
-	})
-}
-
 func TestServer_ReportEnd(t *testing.T) {
 	stats := moqt.SessionStats{BytesSent: 9000, BytesReceived: 120}
 	tests := map[string]struct {
@@ -212,7 +183,7 @@ func TestServer_ReportEnd(t *testing.T) {
 			connect := auth.Request{ID: "00ff", Event: auth.EventConnect, Path: "/acme", Query: "jwt=h.p.s"}
 
 			delta := counterDelta(t, func() {
-				srv.reportEnd(context.Background(), connect, stats, endDropped, 42*time.Second+900*time.Millisecond)
+				srv.reportEnd(context.Background(), connect, stats, endDropped)
 			}, metricAuthRequests.WithLabelValues(auth.EventEnd, tt.wantResult))
 
 			assert.Equal(t, 1.0, delta)
@@ -220,7 +191,6 @@ func TestServer_ReportEnd(t *testing.T) {
 			want.Event = auth.EventEnd
 			want.Bytes = auth.Bytes{Sent: 9000, Received: 120}
 			want.Reason = endDropped
-			want.Duration = 42
 			assert.Equal(t, []auth.Request{want}, server.ended())
 		})
 	}
@@ -230,7 +200,7 @@ func TestServer_ReportEnd(t *testing.T) {
 // reports nothing.
 func TestServer_ReportEnd_Off(t *testing.T) {
 	delta := counterDelta(t, func() {
-		(&Server{}).reportEnd(context.Background(), auth.Request{ID: "00ff"}, moqt.SessionStats{}, endClosed, time.Second)
+		(&Server{}).reportEnd(context.Background(), auth.Request{ID: "00ff"}, moqt.SessionStats{}, endClosed)
 	}, metricAuthRequests.WithLabelValues(auth.EventEnd, authOK))
 
 	assert.Zero(t, delta)
@@ -240,7 +210,7 @@ func TestServer_ReportEnd_Off(t *testing.T) {
 // from an Origin the upgrade refuses is never checked, which
 // would otherwise count a session that never starts.
 func TestServer_HandleWebTransport_DisallowedOriginNotAsked(t *testing.T) {
-	fake := &fakeAuth{grant: testGrant(t, "", "**", time.Time{}, 0)}
+	fake := &fakeAuth{grant: testGrant(t, "", "**", 0)}
 	srv := newTestServer("127.0.0.1:0")
 	srv.Authorize = fake.authorize
 	srv.End = fake.end
@@ -262,7 +232,7 @@ func TestServer_HandleWebTransport_DisallowedOriginNotAsked(t *testing.T) {
 // upgrade that fails anyway reports an end, which closes the
 // session it counted at connect.
 func TestServer_HandleWebTransport_FailedUpgradeReportsEnd(t *testing.T) {
-	fake := &fakeAuth{grant: testGrant(t, "", "**", time.Time{}, 0)}
+	fake := &fakeAuth{grant: testGrant(t, "", "**", 0)}
 	srv := newTestServer("127.0.0.1:0")
 	srv.Authorize = fake.authorize
 	srv.End = fake.end

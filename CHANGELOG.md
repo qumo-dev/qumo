@@ -33,7 +33,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **Upgrading.** Upgrade relays and funnels before the apps that sign tokens: `token.Sign` writes `scopes`, which an older relay refuses as an unknown claim.
 - **Behavior change: a credential's expiry decides whether a session may start, not how long it lives (`token`, `internal/auth`).**
   - **At connect, nothing changes:** `exp`, `nbf` and `iat` are checked with the 60 s leeway, and an expired credential is refused.
-  - **A live session outlives its credential's expiry,** so an app can issue short-lived credentials without its clients reconnecting, and dropping audio, every time one expires. The relay no longer ends a verified session with reason `expired`.
+  - **A live session outlives its credential's expiry,** so an app can issue short-lived credentials without its clients reconnecting, and dropping audio, every time one expires. The relay no longer ends a session with reason `expired`, and `qumo_relay_sessions_ended_total{reason}` counts only `refused`.
   - **The key set still governs live sessions.** A key that leaves the set ends every session it admitted at the next 30 s re-check; `"pause": ["publish"]` still refuses new sessions that may publish and lets live ones continue.
   - **`reval` is refused,** as any claim the relay doesn't know: CAT's `moqt-reval` asks for a live session to be revalidated against its token's expiry, which never happens here.
   - **Go.** The new `token.VerifyLive` checks a live session's credential as the relay does: as `token.Verify`, without refusing it for its expiry.
@@ -43,6 +43,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Deprecated
 
 - **`"publish": false` on a key** still pauses its publishing, but reads as if the key could never publish. Write `"pause": ["publish"]`; the old member will be removed in a later release. The relay logs a warning naming the keys that use it when it loads such a set, once per change rather than on every refresh.
+
+### Fixed
+
+- **qumo-ledger moves to v0.2.2 (`qumo funnel`, `qumo hls`).** Seeking a track by media time or wall-clock time now reports a store that can't be read as an error, not as a missing group; a group ID no longer loses the bits of an epoch or sequence too wide for it; and a fragment whose `trun` is shorter than its flags declare is refused rather than given any duration.
 
 ### Security
 

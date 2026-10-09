@@ -411,18 +411,27 @@ func TestFunnel_PublishesThroughTheRelay(t *testing.T) {
 	assert.Equal(t, `{"payload":"second"}`, got)
 }
 
-// TestFunnel_RedialsWhenTheRelayEndsTheSession gives each session a grant that
-// expires a moment later: the relay ends the funnel's session, the funnel
-// dials again, and a subscriber that arrives afterwards still reaches the
-// track through the relay.
+// TestFunnel_RedialsWhenTheRelayEndsTheSession refuses the funnel's session
+// at its first revalidate: the relay ends it, the funnel dials again, and a
+// subscriber that arrives afterwards still reaches the track through the
+// relay.
 func TestFunnel_RedialsWhenTheRelayEndsTheSession(t *testing.T) {
 	var connects atomic.Int32
+	// refusing refuses every revalidate until the funnel has dialed again.
+	var refusing atomic.Bool
+	refusing.Store(true)
+	grant := testGrant(t, "**", "**", time.Second)
 	relayAddr, relaySrv := startAuthRelay(t, func(_ context.Context, req auth.Request) (*auth.Grant, error) {
-		if req.Event == auth.EventConnect {
+		switch {
+		case req.Event == auth.EventConnect:
 			connects.Add(1)
+		case req.Event == auth.EventRevalidate && refusing.Load():
+			return nil, auth.RefusedError{Status: http.StatusUnauthorized}
 		}
-		return auth.NewGrant([]string{"**"}, []string{"**"}, time.Now().Add(time.Second), 0)
+		return grant, nil
 	}, nil)
+	// The relay's readiness probes connected too.
+	probes := connects.Load()
 
 	mux := moqt.NewTrackMux(0)
 	ingestURL := startFunnelHTTP(t, mem.New(), mux, nil)
@@ -437,9 +446,10 @@ func TestFunnel_RedialsWhenTheRelayEndsTheSession(t *testing.T) {
 	})
 	require.Equal(t, http.StatusCreated, record(t, ingestURL, "", `"kept"`))
 
-	// The funnel's first session expires; the relay sees it dial again.
-	require.Eventually(t, func() bool { return connects.Load() >= 2 }, 10*time.Second, 50*time.Millisecond,
+	// The relay ends the funnel's first session; it sees the funnel dial again.
+	require.Eventually(t, func() bool { return connects.Load()-probes >= 2 }, 10*time.Second, 50*time.Millisecond,
 		"the funnel dials again after the relay ends its session")
+	refusing.Store(false)
 	require.Eventually(t, routed(relaySrv, "/room/123"), 5*time.Second, 25*time.Millisecond)
 
 	tr := subscribeChat(t, nativeURL(relayAddr))

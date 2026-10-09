@@ -156,12 +156,12 @@ func TestRelay_SessionAuth_WebTransport(t *testing.T) {
 		wantRoute bool
 	}{
 		"admitted, path granted": {
-			server:    &fakeAuth{grant: testGrant(t, "acme/app/**", "", time.Time{}, 0)},
+			server:    &fakeAuth{grant: testGrant(t, "acme/app/**", "", 0)},
 			wantDial:  true,
 			wantRoute: true,
 		},
 		"admitted, path not granted": {
-			server:   &fakeAuth{grant: testGrant(t, "acme/other/**", "acme/**", time.Time{}, 0)},
+			server:   &fakeAuth{grant: testGrant(t, "acme/other/**", "acme/**", 0)},
 			wantDial: true,
 		},
 		"401":              {server: &fakeAuth{err: auth.RefusedError{Status: http.StatusUnauthorized}}},
@@ -221,7 +221,7 @@ func TestRelay_SessionAuth_NativeQUIC(t *testing.T) {
 		wantRequests bool
 	}{
 		"untrusted, admitted": {
-			server:       &fakeAuth{grant: testGrant(t, "acme/**", "", time.Time{}, 0)},
+			server:       &fakeAuth{grant: testGrant(t, "acme/**", "", 0)},
 			wantRoute:    true,
 			wantRequests: true,
 		},
