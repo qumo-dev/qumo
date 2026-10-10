@@ -137,7 +137,9 @@ func (s *Server) HandleWebTransport(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusServiceUnavailable)
 		return
 	}
-	if s.websocketHandler != nil && moqt.IsWebSocketUpgrade(r) {
+	// A WebSocket upgrade that does not offer the subprotocol is not one
+	// the relay takes: it goes on like any request that is no upgrade.
+	if s.websocketHandler != nil && s.websocketHandler.Accepts(r) {
 		s.handleWebSocket(w, r)
 		return
 	}
@@ -163,24 +165,21 @@ func (s *Server) HandleWebTransport(w http.ResponseWriter, r *http.Request) {
 // else gets 426.
 func (s *Server) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 	s.init()
-	if s.websocketHandler == nil || !moqt.IsWebSocketUpgrade(r) {
-		http.Error(w, "WebSocket upgrade required", http.StatusUpgradeRequired)
+	if s.websocketHandler == nil || !s.websocketHandler.Accepts(r) {
+		http.Error(w, "a WebSocket upgrade offering "+moqt.NextProtoQMux+" is required", http.StatusUpgradeRequired)
 		return
 	}
 	s.handleWebSocket(w, r)
 }
 
-// handleWebSocket admits a WebSocket upgrade and serves its session.
+// handleWebSocket admits a WebSocket upgrade the handler accepts, and
+// serves its session.
 func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	h := s.websocketHandler
 	// An upgrade gomoqt would refuse is answered here, unasked: checking
 	// it first would count a session that never starts.
-	switch {
-	case !h.CheckOrigin(r):
+	if !h.CheckOrigin(r) {
 		http.Error(w, "origin not allowed", http.StatusForbidden)
-		return
-	case !h.Accepts(r):
-		http.Error(w, "no supported subprotocol offered", http.StatusBadRequest)
 		return
 	}
 	req := s.upgradeRequest(r, auth.TransportWebSocket)

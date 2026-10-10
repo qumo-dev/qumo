@@ -227,6 +227,22 @@ func TestServer_HandleWebSocket_NotAnUpgrade(t *testing.T) {
 			webSocket: false,
 			request:   func() *http.Request { return webSocketUpgrade("https://relay.example/acme?jwt=a.b.c") },
 		},
+		"a WebSocket upgrade that offers no subprotocol": {
+			webSocket: true,
+			request: func() *http.Request {
+				r := webSocketUpgrade("https://relay.example/acme?jwt=a.b.c")
+				r.Header.Del("Sec-WebSocket-Protocol")
+				return r
+			},
+		},
+		"a WebSocket upgrade for another QMux draft": {
+			webSocket: true,
+			request: func() *http.Request {
+				r := webSocketUpgrade("https://relay.example/acme?jwt=a.b.c")
+				r.Header.Set("Sec-WebSocket-Protocol", "qmux-01.moq-lite-05")
+				return r
+			},
+		},
 	}
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {

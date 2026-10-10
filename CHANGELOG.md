@@ -18,7 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **A WebSocket session whose connection is lost ends as `dropped`,** like a QUIC session that times out.
   - Behind a TLS proxy on `RELAY_ADDR`'s port, a session's remote address is the proxy's: the relay reads no forwarding header.
   - **`CORS_ALLOWED_ORIGINS` is the only origin check for WebSocket,** since browsers do not apply CORS to it.
-  - **The subprotocol is the version negotiation:** `qmux-02.moq-lite-05`. An upgrade that offers none the relay speaks is refused with `400`, before the session is checked.
+  - **The subprotocol is the version negotiation:** `qmux-02.moq-lite-05`. An upgrade that does not offer it is not taken, and is answered (`400`, or `426` on a TLS port of WebSocket's own) before the session is checked.
   - Sessions on every transport share tracks: a publisher on one reaches subscribers on the others.
   - There is no `WS_PATH`: a session's path is part of what it is admitted for, so WebSocket is taken on the same paths as WebTransport.
 - **Per-transport session metrics (`qumo relay`).** `qumo_relay_sessions_total{transport}`, `qumo_relay_sessions_closed_total{transport,reason}` and `qumo_relay_session_bytes_total{transport,direction}`.
