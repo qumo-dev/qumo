@@ -59,6 +59,15 @@ func TestParseKeySet(t *testing.T) {
 			wantKid:   rfc8037Kid,
 			wantPause: []Action{ActionPublish},
 		},
+		"a pause listed twice is one": {
+			raw:       `{"keys":[{"kty":"OKP","crv":"Ed25519","x":"` + rfc8037X + `","pause":["publish","publish"]}]}`,
+			wantKid:   rfc8037Kid,
+			wantPause: []Action{ActionPublish},
+		},
+		"an empty pause is none": {
+			raw:     `{"keys":[{"kty":"OKP","crv":"Ed25519","x":"` + rfc8037X + `","pause":[]}]}`,
+			wantKid: rfc8037Kid,
+		},
 		"pause names something else": {
 			raw:         `{"keys":[{"kty":"OKP","crv":"Ed25519","x":"` + rfc8037X + `","pause":["subscribe"]}]}`,
 			wantErrText: "only",
@@ -139,6 +148,17 @@ func TestMarshalKeySet_RoundTrip(t *testing.T) {
 	assert.False(t, keys[free.ID].Pauses(ActionPublish))
 	assert.True(t, keys[limited.ID].Pauses(ActionPublish))
 	assert.NotContains(t, string(raw), `"pause"`+`:null`, "an unpaused key carries no pause")
+}
+
+func TestMarshalKeySet_RefusesAnotherPause(t *testing.T) {
+	key, err := GenerateKey("acme/app")
+	require.NoError(t, err)
+	public := key.Public()
+	public.Pause = []Action{ActionSubscribe}
+
+	_, err = MarshalKeySet(public)
+
+	assert.ErrorContains(t, err, "only", "a set a verifier would refuse is not written")
 }
 
 // What keygen writes, the relay and the app read back: the public key

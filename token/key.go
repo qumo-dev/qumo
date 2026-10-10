@@ -86,15 +86,36 @@ func (k Key) jwk() jwk {
 }
 
 // MarshalKeySet encodes keys as a JWK Set, the file a relay loads
-// (LoadKeySet).
+// (LoadKeySet). A key pausing anything but ActionPublish is refused, since a
+// verifier would refuse the whole set.
 func MarshalKeySet(keys ...Key) ([]byte, error) {
 	set := struct {
 		Keys []jwk `json:"keys"`
 	}{Keys: make([]jwk, 0, len(keys))}
-	for _, k := range keys {
-		set.Keys = append(set.Keys, k.jwk())
+	for i, k := range keys {
+		pause, err := normalizePause(k.Pause)
+		if err != nil {
+			return nil, fmt.Errorf("token: key %d: %w", i, err)
+		}
+		j := k.jwk()
+		j.Pause = pause
+		set.Keys = append(set.Keys, j)
 	}
 	return json.Marshal(set, jsontext.WithIndent("  "))
+}
+
+// normalizePause checks that pause lists only ActionPublish and returns it as
+// one entry, or nil when it lists nothing, so equal pauses compare equal.
+func normalizePause(pause []Action) ([]Action, error) {
+	for _, a := range pause {
+		if a != ActionPublish {
+			return nil, fmt.Errorf("pause %q: only %q can be paused", a, ActionPublish)
+		}
+	}
+	if len(pause) == 0 {
+		return nil, nil
+	}
+	return []Action{ActionPublish}, nil
 }
 
 // MarshalJWK encodes k as a private JWK, the file an app signs with
@@ -179,12 +200,11 @@ func ParseKeySet(raw []byte) (map[string]Key, error) {
 		if err != nil {
 			return nil, fmt.Errorf("token: key %d: prefix: %w", i, err)
 		}
-		for _, a := range k.Pause {
-			if a != ActionPublish {
-				return nil, fmt.Errorf("token: key %d: pause %q: only %q can be paused", i, a, ActionPublish)
-			}
+		pause, err := normalizePause(k.Pause)
+		if err != nil {
+			return nil, fmt.Errorf("token: key %d: %w", i, err)
 		}
-		keys[kid] = Key{ID: kid, Public: ed25519.PublicKey(x), Prefix: prefix, Pause: k.Pause}
+		keys[kid] = Key{ID: kid, Public: ed25519.PublicKey(x), Prefix: prefix, Pause: pause}
 	}
 	return keys, nil
 }
