@@ -62,6 +62,31 @@ func TestRestore(t *testing.T) {
 	assert.Nil(t, ann)
 }
 
+// A track whose last record was redacted around the funnel, through the
+// ledger, is restored with nothing to replay rather than failing.
+func TestRestore_LatestRedacted(t *testing.T) {
+	objects := mem.New()
+	recordInto(t, objects, "/room/123", `"one"`)
+	lt, err := ledger.Open(t.Context(), objects, "room/123/chat", ledger.Config{})
+	require.NoError(t, err)
+	reader, err := lt.Reader(t.Context())
+	require.NoError(t, err)
+	last, err := reader.Lookup(t.Context(), ledger.NewGroupID(1, 0))
+	require.NoError(t, err)
+	require.NoError(t, lt.Redact(t.Context(), last))
+	mux := moqt.NewTrackMux(0)
+
+	restored, err := restore(t.Context(), objects, newEgress(t.Context(), mux))
+
+	require.NoError(t, err)
+	assert.Equal(t, 1, restored)
+	_, handler := mux.TrackHandler("/room/123")
+	require.NotNil(t, handler)
+	chat, ok := handler.(*broadcast).lookup("chat")
+	require.True(t, ok)
+	assert.Nil(t, chat.latest, "a redacted record is not replayed")
+}
+
 func TestRestore_StoreWithoutListing(t *testing.T) {
 	objects := mem.New()
 	recordInto(t, objects, "/room/123", `"one"`)

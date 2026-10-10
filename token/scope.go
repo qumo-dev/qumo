@@ -25,11 +25,16 @@ const (
 	// relay never reads it as publishing, so a credential that posts can't
 	// send into the relay directly.
 	ActionPost Action = "post"
+	// ActionRedact is taking a record out of a track at a funnel: the funnel
+	// publishes a redaction naming it and deletes its payload. Who may redact
+	// which record is the app's to decide, so it belongs in credentials the
+	// app keeps to itself, not in a sender's.
+	ActionRedact Action = "redact"
 )
 
 func (a Action) known() bool {
 	switch a {
-	case ActionPublish, ActionSubscribe, ActionFetch, ActionPost:
+	case ActionPublish, ActionSubscribe, ActionFetch, ActionPost, ActionRedact:
 		return true
 	}
 	return false
