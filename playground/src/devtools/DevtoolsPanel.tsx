@@ -8,7 +8,8 @@ import {
 	onMount,
 	Show,
 } from "solid-js";
-import type { Session } from "@qumo/moq";
+import type { Session, TransportKind } from "@qumo/moq";
+import { TRANSPORT_NAMES } from "../transport.ts";
 import {
 	clockTime,
 	describe,
@@ -122,7 +123,11 @@ interface Focus {
  * The recorder runs whether or not the panel is open; the panel only reads it,
  * while open and not paused.
  */
-export function DevtoolsPanel(props: { recorder: Recorder; session: Promise<Session> }) {
+export function DevtoolsPanel(props: {
+	recorder: Recorder;
+	session: Promise<Session>;
+	transport: TransportKind;
+}) {
 	const [open, setOpen] = createSignal(readOpen());
 	const [reading, setReading] = createSignal<Reading>({
 		now: 0,
@@ -230,7 +235,11 @@ export function DevtoolsPanel(props: { recorder: Recorder; session: Promise<Sess
 					/>
 					<details class="devtools-more">
 						<summary>More figures</summary>
-						<SessionRow reading={session()} stalls={reading().stalls} />
+						<SessionRow
+							transport={props.transport}
+							reading={session()}
+							stalls={reading().stalls}
+						/>
 						<Show when={reading().audio.at(-1)}>
 							{(audio) => (
 								<AudioBufferRow
@@ -274,6 +283,7 @@ export function DevtoolsPanel(props: { recorder: Recorder; session: Promise<Sess
 // without WebTransport statistics returns zeros, which would read as "nothing
 // is flowing". The media rate comes from the recorder, so it is always there.
 function SessionRow(props: {
+	transport: TransportKind;
 	reading: SessionReading | undefined;
 	stalls: readonly StallRecord[];
 }) {
@@ -281,6 +291,10 @@ function SessionRow(props: {
 
 	return (
 		<dl class="devtools-session">
+			<div title="What the session with the relay runs on. WebSocket is taken on WebKit (Safari, and every browser on iOS), whose WebTransport stalls; ?transport= in the address chooses either. Over WebSocket everything shares one TCP connection.">
+				<dt>Transport</dt>
+				<dd>{TRANSPORT_NAMES[props.transport]}</dd>
+			</div>
 			<div title="How often, and for how long at most, the page itself stopped (its main thread was busy) in the last minute. All media passes through it, so a stop longer than the audio buffer is a gap in the sound.">
 				<dt>Page stops</dt>
 				<dd>

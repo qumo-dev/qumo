@@ -2,6 +2,7 @@ import { Show } from "solid-js";
 import type { TransportKind } from "@qumo/moq";
 import type { CertHashProblem } from "./cert.ts";
 import { sanitizeReason } from "./errors.ts";
+import { TRANSPORT_NAMES } from "./transport.ts";
 
 // Session lifecycle as surfaced to the user (issue #134).
 // "connecting" until the connect() promise settles; "connected" on success;
@@ -14,11 +15,6 @@ const LABELS: Record<ConnectionState, string> = {
 	connected: "Connected to relay",
 	closed: "Connection closed",
 	failed: "Connection failed",
-};
-
-const TRANSPORTS: Record<TransportKind, string> = {
-	webtransport: "WebTransport",
-	websocket: "WebSocket",
 };
 
 // User-facing guidance shown whenever the cert hash can't pin the relay cert.
@@ -42,7 +38,7 @@ export function ConnectionStatus(props: {
 			<span class="status-dot" />
 			<span class="status-label">
 				{LABELS[props.state]}
-				{props.state === "connected" ? ` over ${TRANSPORTS[props.transport]}` : ""}
+				{props.state === "connected" ? ` over ${TRANSPORT_NAMES[props.transport]}` : ""}
 			</span>
 
 			<Show when={(props.state === "failed" || props.state === "closed") && props.error}>

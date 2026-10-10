@@ -11,7 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **The playground takes WebSocket on WebKit (`playground/src/transport.ts`, #59).** On Safari and every browser on iOS it reaches the relay over WebSocket, where WebKit's WebTransport stalls after about 7,600 streams or 16 MB; elsewhere it stays on WebTransport. The status line says which: "Connected to relay over WebSocket".
+- **The playground takes WebSocket on WebKit (`playground/src/transport.ts`, #59).** On Safari and every browser on iOS it reaches the relay over WebSocket, where WebKit's WebTransport stalls after about 7,600 streams or 16 MB; elsewhere it stays on WebTransport. The status line says which, "Connected to relay over WebSocket", and so does a Transport row in the DevTools panel's figures.
   - **`?transport=websocket` or `?transport=webtransport` in the address overrides the choice,** to try either on any browser. The address keeps it when the scenario or the path changes.
   - **From a page on plain http, WebSocket is dialed without TLS (`ws://`) on the relay's port.** That is the relay on its development certificate, which WebTransport pins by its hash and WebSocket cannot. From a page on https it is `wss://`.
   - **Only the relay takes WebSocket.** The RTMP, RTSP and IP-camera scenarios reach an ingest on a port of its own, over WebTransport on every browser: on WebKit they still stall.

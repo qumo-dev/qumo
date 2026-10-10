@@ -1,6 +1,12 @@
 // Which transport the page reaches the relay on.
 import { isWebKit, type TransportKind } from "@qumo/moq";
 
+/** A transport's name, as the page shows it. */
+export const TRANSPORT_NAMES: Readonly<Record<TransportKind, string>> = {
+	webtransport: "WebTransport",
+	websocket: "WebSocket",
+};
+
 /**
  * Chooses the transport for a session.
  *

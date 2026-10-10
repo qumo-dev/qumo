@@ -189,7 +189,7 @@ export function ScenarioView(props: {
 			</div>
 
 			<Show when={showsSubscriber() || !ingest}>
-				<DevtoolsPanel recorder={recorder} session={session} />
+				<DevtoolsPanel recorder={recorder} session={session} transport={transport} />
 			</Show>
 		</>
 	);
