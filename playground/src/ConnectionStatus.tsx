@@ -10,11 +10,13 @@ import { TRANSPORT_NAMES } from "./transport.ts";
 // with a concise reason on a handshake rejection or transport error.
 export type ConnectionState = "connecting" | "connected" | "closed" | "failed";
 
-const LABELS: Record<ConnectionState, string> = {
-	connecting: "Connecting to relay…",
-	connected: "Connected to relay",
-	closed: "Connection closed",
-	failed: "Connection failed",
+// The label names the transport in every state: one that fails says what
+// was tried, which on WebKit is not what the address shows.
+const LABELS: Record<ConnectionState, (transport: string) => string> = {
+	connecting: (transport) => `Connecting to relay over ${transport}…`,
+	connected: (transport) => `Connected to relay over ${transport}`,
+	closed: (transport) => `${transport} connection closed`,
+	failed: (transport) => `${transport} connection failed`,
 };
 
 // User-facing guidance shown whenever the cert hash can't pin the relay cert.
@@ -25,11 +27,14 @@ const CERT_WARN: Record<CertHashProblem, string> = {
 };
 
 // Connection status indicator: live transport state (dot + label, with the
-// transport the session is on), a concise failure reason, and up-front remediation when the cert hash is missing or
-// malformed.
+// transport the session is on), a concise failure reason, up-front
+// remediation when the cert hash is missing or malformed, and a warning for
+// a session on the WebTransport that stalls.
 export function ConnectionStatus(props: {
 	state: ConnectionState;
 	transport: TransportKind;
+	/** Whether the session is on WebKit's WebTransport (see transport.ts). */
+	stalls: boolean;
 	error: string | null;
 	certHashProblem: CertHashProblem | null;
 }) {
@@ -37,12 +42,18 @@ export function ConnectionStatus(props: {
 		<div class="connection-status" data-state={props.state}>
 			<span class="status-dot" />
 			<span class="status-label">
-				{LABELS[props.state]}
-				{props.state === "connected" ? ` over ${TRANSPORT_NAMES[props.transport]}` : ""}
+				{LABELS[props.state](TRANSPORT_NAMES[props.transport])}
 			</span>
 
 			<Show when={(props.state === "failed" || props.state === "closed") && props.error}>
 				<span class="status-reason">{props.error}</span>
+			</Show>
+
+			<Show when={props.stalls}>
+				<span class="status-warn">
+					This browser's WebTransport freezes after about 16 MB or 7,600 streams, with no
+					error. The relay's own scenarios take WebSocket instead; this session cannot.
+				</span>
 			</Show>
 
 			<Show when={props.certHashProblem}>
@@ -57,7 +68,7 @@ export function ConnectionStatus(props: {
 	);
 }
 
-// Map a raw WebTransport connect failure to a concise, actionable message.
+// Map a raw connect failure to a concise, actionable message.
 // Returns null when the failure is cert-related — ConnectionStatus already
 // shows the cert remediation, so a duplicate reason would only clutter the bar.
 // (When certHashProblem is null the cert hash IS configured correctly, so we

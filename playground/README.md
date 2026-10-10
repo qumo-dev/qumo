@@ -144,23 +144,6 @@ WebTransport origin, so switching tabs reconnects. The path field is shared,
 editable, and shareable — **Copy link** produces a `?scenario=&path=` URL that
 opens the demo on the exact same stream.
 
-## Transport
-
-The demo reaches the relay over WebTransport, except on WebKit (Safari, and
-every browser on iOS), where it takes WebSocket: WebKit's WebTransport stalls
-after about 7,600 streams or 16 MB
-([WebKit bug 319818](https://bugs.webkit.org/show_bug.cgi?id=319818)). The
-status line says which one a session is on.
-
-- `?transport=websocket` or `?transport=webtransport` in the address
-  overrides the choice, to try either on any browser.
-- From a page on plain http, which is the relay on its development
-  certificate, WebSocket is dialed without TLS (`ws://`) on the relay's port:
-  WebTransport pins that certificate by its hash, and WebSocket cannot. From a
-  page on https it is `wss://`, which needs a certificate the browser trusts.
-- Only the relay takes WebSocket. The RTMP, RTSP and IP-camera scenarios reach
-  an ingest on a port of its own, over WebTransport whatever the browser.
-
 Every default path embeds a per-session unique token (`/<name>-<id>` for echo,
 `/<scheme>/<id>` for ingest) so that on a **shared public relay** no two users
 collide on the same broadcast. The RTMP/RTSP tabs show a push command whose
@@ -184,6 +167,28 @@ The RTMP/RTSP tabs also show a copy-pasteable ffmpeg push command. All origins
 share one `mage cert` certificate. With mkcert the single cert is
 browser-trusted for every origin; in the self-signed fallback a single
 `VITE_CERT_HASH` (from `mage cert`) validates them.
+
+## Transport
+
+The demo reaches the relay over WebTransport, except on WebKit (Safari, and
+every browser on iOS), where it takes WebSocket: WebKit's WebTransport stalls
+after about 7,600 streams or 16 MB
+([WebKit bug 319818](https://bugs.webkit.org/show_bug.cgi?id=319818)). The
+status line and the DevTools figures say which one a session is on.
+
+- `?transport=websocket` or `?transport=webtransport` in the address
+  overrides the choice, to try either on any browser. **Copy link** leaves it
+  out.
+- From a page on plain http, WebSocket is dialed without TLS (`ws://`) on the
+  relay's port, when the relay is on the page's host or on this machine. That
+  is the relay on its development certificate, which WebTransport pins by its
+  hash and WebSocket cannot. Otherwise it is `wss://`, which needs a
+  certificate the browser trusts.
+- WebSocket is dialed on the port the relay's URL names. A relay that takes it
+  elsewhere (`WS_PORT`) is not reached: `/config` does not say where.
+- Only the relay takes WebSocket. The RTMP, RTSP and IP-camera scenarios reach
+  an ingest on a port of its own, over WebTransport whatever the browser. On
+  WebKit the status line warns that such a session will freeze.
 
 ## Controls
 

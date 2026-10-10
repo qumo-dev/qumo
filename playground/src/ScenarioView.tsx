@@ -8,8 +8,8 @@ import { type ConnectionState, ConnectionStatus, friendlyConnError } from "./Con
 import { sanitizeReason } from "./errors.ts";
 import { buildTransportOptions, type CertHashProblem } from "./cert.ts";
 import { getConfig, type RelayEndpoint, relayEndpoint } from "./config.ts";
-import { relayUrlFor, type ScenarioId, SCENARIOS } from "./scenarios.ts";
-import { chooseTransport, webSocketUrlFor } from "./transport.ts";
+import { relayUrlFor, type ScenarioId, SCENARIOS, servedByRelay } from "./scenarios.ts";
+import { chooseTransport, plainWebSocketUrl, stalls } from "./transport.ts";
 import { PushInstructions } from "./PushInstructions.tsx";
 import { CameraPullForm, type PullState } from "./CameraPullForm.tsx";
 import { DevtoolsPanel } from "./devtools/DevtoolsPanel.tsx";
@@ -17,9 +17,10 @@ import { Recorder } from "./devtools/recorder.ts";
 import { watchMainThread } from "./devtools/stall_monitor.ts";
 
 // Owns one session for the active scenario, over WebTransport or, on a
-// browser whose WebTransport does not work, WebSocket (see transport.ts). Each scenario is a
-// different origin, so the parent <Show> remounts this component (tearing down
-// the old session via onCleanup) whenever the scenario changes.
+// browser whose WebTransport does not work, WebSocket (see transport.ts).
+// Each scenario is a different origin, so the parent <Show> remounts this
+// component (tearing down the old session via onCleanup) whenever the
+// scenario changes.
 export function ScenarioView(props: {
 	scenario: ScenarioId;
 	path: Accessor<string>;
@@ -40,7 +41,7 @@ export function ScenarioView(props: {
 	const transport = chooseTransport(
 		navigator.userAgent,
 		location.search,
-		scenario.port === undefined,
+		servedByRelay(props.scenario),
 	);
 	// Where the relay and the ingest origins are reached; unknown until the
 	// runtime config has been read.
@@ -77,7 +78,7 @@ export function ScenarioView(props: {
 			? connect(url, {
 				mux,
 				transport,
-				webSocketURL: webSocketUrlFor(url, location.protocol),
+				webSocketURL: plainWebSocketUrl(url, location),
 			})
 			: connect(url, { mux, transportOptions: cachedTransportOptions! });
 		dialSession(connected);
@@ -145,6 +146,7 @@ export function ScenarioView(props: {
 				<ConnectionStatus
 					state={connState()}
 					transport={transport}
+					stalls={stalls(navigator.userAgent, transport)}
 					error={connError()}
 					certHashProblem={certHashProblem()}
 				/>

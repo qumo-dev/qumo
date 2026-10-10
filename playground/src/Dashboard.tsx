@@ -79,7 +79,7 @@ export function Dashboard() {
 			<p class="scenario-desc">{SCENARIOS[scenario()].description}</p>
 
 			{
-				/* Keyed remount: each scenario is a different WebTransport origin, so the
+				/* Keyed remount: each scenario is a different origin, so the
 			    session/connection-status/boards rebuild on switch. */
 			}
 			<Show when={scenario()} keyed>

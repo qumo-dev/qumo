@@ -23,6 +23,9 @@ export function PathControl(props: {
 		const url = new URL(globalThis.location.href);
 		url.searchParams.set("scenario", props.scenario);
 		url.searchParams.set("path", props.path());
+		// A transport tried here is not one to hand on: the browser that
+		// opens the link takes the one that works for it.
+		url.searchParams.delete("transport");
 		navigator.clipboard?.writeText(url.toString()).then(() => flash("link")).catch(() => {});
 	};
 

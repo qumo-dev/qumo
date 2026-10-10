@@ -49,7 +49,7 @@ export function relayEndpoint(config: ResolvedConfig): RelayEndpoint {
 
 // Hosts that are this machine. A page on https may still fetch them over
 // http: browsers leave loopback out of mixed-content blocking.
-function isLoopback(hostname: string): boolean {
+export function isLoopback(hostname: string): boolean {
 	return hostname === "localhost" || hostname.endsWith(".localhost") ||
 		hostname === "127.0.0.1" || hostname === "[::1]";
 }
