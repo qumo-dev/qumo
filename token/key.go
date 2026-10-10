@@ -79,10 +79,6 @@ type jwk struct {
 	Kid    string   `json:"kid,omitempty"`
 	Prefix string   `json:"prefix,omitempty"`
 	Pause  []Action `json:"pause,omitempty"`
-	// Publish is read only to refuse it: "publish": false was the earlier
-	// spelling of "pause": ["publish"], and a verifier that ignored it would
-	// leave a key unpaused that its server meant to pause.
-	Publish *bool `json:"publish,omitempty"`
 }
 
 func (k Key) jwk() jwk {
@@ -146,9 +142,9 @@ func LoadSigningKey(path string) (SigningKey, error) {
 // ParseKeySet decodes a JWK Set of Ed25519 public keys, by kid. A key without
 // a kid gets its RFC 7638 thumbprint; a key whose kid differs from it, or that
 // is listed twice, is refused. A key's "pause" may list only "publish", so a
-// misspelled entry can't leave a key unpaused, and the earlier "publish"
-// member is refused. Any key that can't be used is an error, not skipped: the
-// set is configuration.
+// misspelled entry can't leave a key unpaused; a member it doesn't know is
+// ignored, as JWK prescribes. Any key that can't be used is an error, not
+// skipped: the set is configuration.
 func ParseKeySet(raw []byte) (map[string]Key, error) {
 	var set struct {
 		Keys []jwk `json:"keys"`
@@ -182,9 +178,6 @@ func ParseKeySet(raw []byte) (map[string]Key, error) {
 		prefix, err := normalizePath(k.Prefix)
 		if err != nil {
 			return nil, fmt.Errorf("token: key %d: prefix: %w", i, err)
-		}
-		if k.Publish != nil {
-			return nil, fmt.Errorf(`token: key %d: "publish" is no longer read; pause publishing with "pause": [%q]`, i, ActionPublish)
 		}
 		for _, a := range k.Pause {
 			if a != ActionPublish {

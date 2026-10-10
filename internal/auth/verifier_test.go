@@ -73,8 +73,6 @@ func TestParseKeySet(t *testing.T) {
 		"private key":               `{"keys":[{"kty":"OKP","crv":"Ed25519","x":"11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo","d":"nWGxne_9WmC6hEr0kuwsxERJxWl7MmkZcDusAxyuf2A"}]}`,
 		"unknown pause":             `{"keys":[` + keyEntry(t, active, map[string]any{"pause": []string{"publsh"}}) + `]}`,
 		"pause not a list":          `{"keys":[` + keyEntry(t, active, map[string]any{"pause": "publish"}) + `]}`,
-		"the earlier publish false": `{"keys":[` + keyEntry(t, active, map[string]any{"publish": false}) + `]}`,
-		"the earlier publish true":  `{"keys":[` + keyEntry(t, active, map[string]any{"publish": true}) + `]}`,
 		"pause named twice": `{"keys":[{"pause":["publish"],"pause":[],` +
 			strings.TrimPrefix(keyEntry(t, active, nil), "{") + `]}`,
 		"keys named twice":           `{"keys":[],"keys":[` + keyEntry(t, active, nil) + `]}`,
@@ -100,6 +98,7 @@ func TestParseKeySet_Pause(t *testing.T) {
 		"names are case-sensitive":        {members: map[string]any{"Pause": []string{"publish"}}, paused: false},
 		"another case can't unpause":      {members: map[string]any{"pause": []string{"publish"}, "Pause": []string{}}, paused: true},
 		"unknown member is ignored":       {members: map[string]any{"paused": []string{"publish"}}, paused: false},
+		"publish false is not a pause":    {members: map[string]any{"publish": false}, paused: false},
 		"pause listed twice is one pause": {members: map[string]any{"pause": []string{"publish", "publish"}}, paused: true},
 	}
 	for name, tt := range tests {

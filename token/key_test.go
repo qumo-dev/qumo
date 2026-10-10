@@ -67,11 +67,9 @@ func TestParseKeySet(t *testing.T) {
 			raw:         `{"keys":[{"kty":"OKP","crv":"Ed25519","x":"` + rfc8037X + `","pause":["publsh"]}]}`,
 			wantErrText: "only",
 		},
-		// A server still writing the earlier spelling means to pause; ignoring
-		// it would leave the key unpaused.
-		"the earlier publish member": {
-			raw:         `{"keys":[{"kty":"OKP","crv":"Ed25519","x":"` + rfc8037X + `","publish":false}]}`,
-			wantErrText: `"publish" is no longer read`,
+		"an unknown member is ignored": {
+			raw:     `{"keys":[{"kty":"OKP","crv":"Ed25519","x":"` + rfc8037X + `","publish":false}]}`,
+			wantKid: rfc8037Kid,
 		},
 		"kid not the thumbprint": {
 			raw:         `{"keys":[{"kty":"OKP","crv":"Ed25519","x":"` + rfc8037X + `","kid":"other"}]}`,
