@@ -62,7 +62,11 @@ func TestRelay_SessionAuth_WebSocket(t *testing.T) {
 
 			err := announceOver(t, ws+"/acme/app?jwt=header.payload.signature", nil, nil, path)
 
-			require.NoError(t, err)
+			if tt.server.err == nil {
+				require.NoError(t, err)
+			}
+			// A refused session is closed as soon as it is upgraded: the
+			// dial either fails with that close or succeeds just before it.
 			if tt.wantRoute {
 				require.Eventually(t, routed(srv, path), 3*time.Second, 25*time.Millisecond)
 			} else {

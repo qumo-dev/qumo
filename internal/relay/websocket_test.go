@@ -12,6 +12,7 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/qumo-dev/gomoqt/moqt"
+	"github.com/qumo-dev/gomoqt/transport"
 	"github.com/qumo-dev/qumo/internal/auth"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -72,18 +73,26 @@ func TestServer_HandleWebTransport_WebSocketRefused(t *testing.T) {
 			servedBefore := testutil.ToFloat64(served)
 
 			sess, err := dialWebSocket(t, srv, "/acme/app?jwt=a.b.c")
-			require.NoError(t, err, "the upgrade goes through, so that the client can be told why")
 
-			select {
-			case <-sess.Context().Done():
-			case <-time.After(5 * time.Second):
-				require.FailNow(t, "a refused session stayed open")
+			// The close follows the upgrade at once. It reaches the client
+			// either while it still dials, which then fails with it, or
+			// just after: the client is told why in both cases.
+			var refusal *transport.ApplicationError
+			if err != nil {
+				require.ErrorAs(t, err, &refusal)
+			} else {
+				select {
+				case <-sess.Context().Done():
+				case <-time.After(5 * time.Second):
+					require.FailNow(t, "a refused session stayed open")
+				}
+				var serr *moqt.SessionError
+				require.ErrorAs(t, moqt.Cause(sess.Context()), &serr)
+				refusal = serr.ApplicationError
 			}
-			var serr *moqt.SessionError
-			require.ErrorAs(t, moqt.Cause(sess.Context()), &serr)
-			assert.True(t, serr.Remote)
-			assert.Equal(t, moqt.UnauthorizedSessionErrorCode, serr.SessionErrorCode())
-			assert.Equal(t, tt.wantReason, serr.ErrorMessage)
+			assert.True(t, refusal.Remote)
+			assert.Equal(t, transport.ApplicationErrorCode(moqt.UnauthorizedSessionErrorCode), refusal.ErrorCode)
+			assert.Equal(t, tt.wantReason, refusal.ErrorMessage)
 
 			got := fake.received()
 			require.Len(t, got, 1, "an upgrade is checked once")
