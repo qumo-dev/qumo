@@ -1,56 +1,33 @@
-# Stage 1: build the playground web UI.
-# The Go binary embeds playground/dist via //go:embed all:playground/dist, so
-# the real UI must exist before `go build`. The build needs Deno (jsr deps +
-# `deno check`) and Node (Vite). Deno only publishes glibc-linked linux binaries
-# (no musl), so the base must be glibc — node:22-slim (Debian) gives us that plus
-# a Vite-compatible Node. Deno has no official multi-arch image, so download the
-# pinned binary from GitHub releases with arch detection. DENO_VERSION must match
-# .github/workflows/release.yml.
-FROM node:22-slim AS frontend
-ARG DENO_VERSION=2.8.1
-RUN apt-get update \
- && apt-get install -y --no-install-recommends curl unzip ca-certificates \
- && rm -rf /var/lib/apt/lists/* \
- && case "$(uname -m)" in \
-      x86_64)  DARCH=x86_64-unknown-linux-gnu ;; \
-      aarch64) DARCH=aarch64-unknown-linux-gnu ;; \
-      *) echo "unsupported arch: $(uname -m)"; exit 1 ;; \
-    esac \
- && curl -fsSL -o /tmp/deno.zip \
-      "https://github.com/denoland/deno/releases/download/v${DENO_VERSION}/deno-${DARCH}.zip" \
- && unzip -o /tmp/deno.zip -d /usr/local/bin \
- && rm /tmp/deno.zip \
- && deno --version \
- && deno --version | grep -q "${DENO_VERSION}"
-WORKDIR /ui
-COPY playground/ ./
-RUN deno install && deno task build
+# Build stage. It runs on the machine that builds, whatever the image is for:
+# Go cross-compiles to TARGETARCH, so a multi-platform build emulates nothing
+# here. Only the runtime stage's few commands run under QEMU.
+#
+# The playground UI the binary embeds (//go:embed all:playground/dist) is the
+# one committed in playground/dist, as it is for `go install` and the release
+# binaries. It is not rebuilt here: CI's "Web UI dist freshness" job and the
+# release workflow's gate (scripts/check-webui-dist.sh) hold it to a fresh
+# build, byte for byte.
+FROM --platform=$BUILDPLATFORM golang:1.27-alpine AS builder
 
-# Stage 2: build the Go binary.
-FROM golang:1.27-alpine AS builder
-
+ARG TARGETOS=linux
+ARG TARGETARCH
 ARG VERSION=dev
 ARG COMMIT=none
 ARG BUILD_DATE=unknown
-
-# Install build dependencies
-RUN apk add --no-cache git ca-certificates
 
 WORKDIR /build
 
 # Copy go mod files
 COPY go.mod go.sum ./
-RUN go mod download
+RUN --mount=type=cache,target=/go/pkg/mod go mod download
 
 # Copy source code
 COPY . .
 
-# Overlay the real playground UI (built in the frontend stage) onto the
-# placeholder that ships in the repo, so go:embed picks it up.
-COPY --from=frontend /ui/dist ./playground/dist
-
 # Build the binary with version info
-RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo \
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build \
     -ldflags "-s -w \
       -X github.com/qumo-dev/qumo/internal/version.version=${VERSION} \
       -X github.com/qumo-dev/qumo/internal/version.commit=${COMMIT} \

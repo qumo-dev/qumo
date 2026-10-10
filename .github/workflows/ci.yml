@@ -140,7 +140,7 @@ jobs:
       # runtime (@deno/vite-plugin) with the npm deps resolved from deno.lock,
       # so no Node is involved. The committed dist must be byte-identical to a
       # fresh build (scripts/check-webui-dist.sh), so pin the EXACT deno
-      # version — shared with release.yml and docker/Dockerfile's DENO_VERSION.
+      # version — shared with release.yml.
       - name: Set up Deno
         uses: denoland/setup-deno@v2
         with:

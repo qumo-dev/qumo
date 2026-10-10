@@ -42,11 +42,10 @@ docs/
 
 # Node modules
 **/node_modules/
-# The docker/Dockerfile frontend stage builds the playground UI from source, so
-# the playground tree must be in context. Exclude only host build output and the
-# local env (the real dist is built inside the image).
-playground/dist
-playground/.env
+# The binary embeds the committed playground/dist and the image does not
+# rebuild it, so that directory is all of the playground the build needs.
+playground/*
+!playground/dist
 
 # Magefiles
 magefiles/

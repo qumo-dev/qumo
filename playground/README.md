@@ -40,9 +40,9 @@ There are two ways to run the demo:
 
   Because that check is byte-exact, rebuild with the same toolchain CI uses:
 
-  - **deno 2.8.1** (pinned in `.github/workflows/ci.yml`, `release.yml` and
-    `docker/Dockerfile`). A different deno usually produces identical output,
-    but only this version is guaranteed to.
+  - **deno 2.8.1** (pinned in `.github/workflows/ci.yml` and `release.yml`).
+    A different deno usually produces identical output, but only this version
+    is guaranteed to.
   - **No Node needed.** `deno task build` runs Vite on the Deno runtime via
     `@deno/vite-plugin`, with the npm deps resolved from `deno.lock`.
   - `mage webbuild` runs `deno install --frozen`, so it builds against exactly

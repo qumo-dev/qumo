@@ -29,7 +29,7 @@ jobs:
 
       # Deno is required by the goreleaser `before` hooks to build the playground
       # web UI (jsr deps + `deno check`; Vite itself runs on the Deno runtime,
-      # no Node involved). Pinned to match docker/Dockerfile's DENO_VERSION and
+      # no Node involved). Pinned to match
       # ci.yml's webui job — the byte-exact dist check below must run the same
       # toolchain as the PR gate or the two can disagree.
       - name: Set up Deno
@@ -65,8 +65,12 @@ jobs:
         # SHA: actions/checkout@v6
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
 
+      # The Dockerfile's build stage cross-compiles, so QEMU only runs the
+      # arm64 runtime stage's package commands.
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v4
+        with:
+          platforms: arm64
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
