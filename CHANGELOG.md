@@ -16,9 +16,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - **`"publish": false` is gone (`token`, `internal/auth`).** It was the deprecated spelling of `"pause": ["publish"]`. A set carrying a `"publish"` member on a key is now refused, rather than ignored: the server means to pause the key, and ignoring the member would leave it unpaused. The relay's warning about the old spelling goes with it.
-
-### Changed
-
 - **The Docker image is built without emulating its build (`docker/Dockerfile`).** The v0.14.261010 image build crashed: the arm64 half ran Deno and Vite under QEMU to rebuild the playground UI (`qemu: uncaught target signal 4 (Illegal instruction)`), and the retry that passed took 16 minutes.
   - **The image embeds the committed `playground/dist`,** as `go install` and the release binaries do, and no longer rebuilds it. CI and the release workflow already hold that directory to a fresh build, byte for byte. The image needs no Deno or Node to build.
   - **The Go binary is cross-compiled** on the machine that builds (`FROM --platform=$BUILDPLATFORM`, `GOARCH=$TARGETARCH`), with the module and build caches kept between steps. Only the runtime stage's package commands run under QEMU.
