@@ -3,8 +3,10 @@ package relay
 import (
 	"context"
 	"errors"
+	"io"
 	"log/slog"
 	"math/rand/v2"
+	"net"
 	"sync"
 	"time"
 
@@ -201,5 +203,20 @@ func endReason(l *lease, cause error) string {
 	if _, ok := errors.AsType[*transport.StatelessResetError](cause); ok {
 		return endDropped
 	}
+	if lostStream(cause) {
+		return endDropped
+	}
 	return endClosed
+}
+
+// lostStream reports whether cause is the loss of a session's underlying
+// byte stream: how a WebSocket session's connection drops, where QUIC's
+// would time out. The stream ended or failed without the close that says
+// why.
+func lostStream(cause error) bool {
+	if errors.Is(cause, io.EOF) || errors.Is(cause, io.ErrUnexpectedEOF) {
+		return true
+	}
+	_, ok := errors.AsType[*net.OpError](cause)
+	return ok
 }

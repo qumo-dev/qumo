@@ -46,6 +46,13 @@ type Config struct {
 	// ANNOUNCE_PLEASE and registers them on the local TrackMux.
 	Peers []Peer
 
+	// WebSocket makes HandleWebTransport also take WebSocket upgrades and
+	// serve them as MoQ sessions over QMux, for clients whose WebTransport
+	// does not work (every browser on WebKit). Such a session is admitted
+	// exactly as a WebTransport one. The relay command sets it unless WS_ENABLE
+	// turns it off.
+	WebSocket bool
+
 	// NextSessionURI is the redirect URI sent to clients/peers in a GOAWAY
 	// message during graceful shutdown (gomoqt Server.NextSessionURI). Empty
 	// means no redirect is advertised. GOAWAY is an escape-hatch primitive;

@@ -66,8 +66,11 @@ type Server struct {
 	framePool *FramePool
 
 	webtransportHandler *moqt.WebTransportHandler
-	statusHandler       *statusHandler
-	initOnce            sync.Once
+	// websocketHandler serves MoQ over QMux on WebSocket. It is nil unless
+	// Config.WebSocket is set.
+	websocketHandler *moqt.WebSocketHandler
+	statusHandler    *statusHandler
+	initOnce         sync.Once
 
 	// sampler is the single server-wide stats sampler. It replaces the former
 	// per-connection, per-session, and per-track poller goroutines with one
@@ -124,10 +127,20 @@ func (s *Server) ServeStatus(w http.ResponseWriter, r *http.Request) {
 // the request context. Only an upgrade (an extended CONNECT) is checked;
 // any other request falls through to the
 // WebTransport handler, which answers it without a session.
+//
+// With Config.WebSocket set it takes WebSocket upgrades too, on the same
+// paths and through the same admission: the transport is the only
+// difference between the two kinds of session.
 func (s *Server) HandleWebTransport(w http.ResponseWriter, r *http.Request) {
 	s.init()
 	if s.webtransportHandler == nil {
 		w.WriteHeader(http.StatusServiceUnavailable)
+		return
+	}
+	// A WebSocket upgrade that does not offer the subprotocol is not one
+	// the relay takes: it goes on like any request that is no upgrade.
+	if s.websocketHandler != nil && s.websocketHandler.Accepts(r) {
+		s.handleWebSocket(w, r)
 		return
 	}
 	// A request gomoqt won't upgrade goes straight to it, unasked: not an
@@ -137,14 +150,59 @@ func (s *Server) HandleWebTransport(w http.ResponseWriter, r *http.Request) {
 		s.webtransportHandler.ServeHTTP(w, r)
 		return
 	}
-	req := s.webTransportRequest(r)
+	req := s.upgradeRequest(r, auth.TransportWebTransport)
 	g, err := s.admit(r.Context(), req)
 	if err != nil {
 		w.WriteHeader(auth.RefusalStatus(err))
 		return
 	}
+	s.serveUpgrade(w, r, s.webtransportHandler, g, req)
+}
+
+// HandleWebSocket serves WebSocket upgrades alone, admitted as
+// HandleWebTransport admits them. It is for a listener that is there for
+// them only, where a WebTransport upgrade could never succeed. Anything
+// else gets 426.
+func (s *Server) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
+	s.init()
+	if s.websocketHandler == nil || !s.websocketHandler.Accepts(r) {
+		http.Error(w, "a WebSocket upgrade offering "+moqt.NextProtoQMux+" is required", http.StatusUpgradeRequired)
+		return
+	}
+	s.handleWebSocket(w, r)
+}
+
+// handleWebSocket admits a WebSocket upgrade the handler accepts, and
+// serves its session.
+func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
+	h := s.websocketHandler
+	// An upgrade gomoqt would refuse is answered here, unasked: checking
+	// it first would count a session that never starts.
+	if !h.CheckOrigin(r) {
+		http.Error(w, "origin not allowed", http.StatusForbidden)
+		return
+	}
+	req := s.upgradeRequest(r, auth.TransportWebSocket)
+	g, err := s.admit(r.Context(), req)
+	if err != nil {
+		// A browser hides the status of a failed WebSocket handshake from
+		// the page, which could then not tell a refusal from a relay it
+		// cannot reach, and would retry. So the upgrade goes through and
+		// Relay closes the session with the reason, as relayPeer closes a
+		// refused native-QUIC session.
+		a := decidedAdmission(refusedGrant, req)
+		a.refusal = refusalReason(err)
+		h.ServeHTTP(w, r.WithContext(withAdmission(r.Context(), a)))
+		return
+	}
+	s.serveUpgrade(w, r, h, g, req)
+}
+
+// serveUpgrade hands a request admitted with g to upgrader, with its
+// admission.
+func (s *Server) serveUpgrade(w http.ResponseWriter, r *http.Request, upgrader http.Handler, g *auth.Grant, req auth.Request) {
 	a := decidedAdmission(g, req)
-	s.webtransportHandler.ServeHTTP(w, r.WithContext(withAdmission(r.Context(), a)))
+	upgrader.ServeHTTP(w, r.WithContext(withAdmission(r.Context(), a)))
 	// gomoqt serves the session within ServeHTTP. If the upgrade failed
 	// anyway, no session ran and none will report its end: report it here,
 	// so the session counted at connect is closed.
@@ -198,6 +256,18 @@ func (s *Server) init() {
 			CheckOrigin: cors.NewChecker(s.AllowedOrigins),
 		}
 
+		if s.Config != nil && s.Config.WebSocket {
+			// Server ties the sessions to MOQServer's Shutdown and Close,
+			// so they get the GOAWAY a WebTransport session gets.
+			s.websocketHandler = &moqt.WebSocketHandler{
+				TrackMux:    s.TrackMux,
+				Handler:     moqt.HandleFunc(s.Relay),
+				Logger:      s.MOQServer.Logger,
+				CheckOrigin: cors.NewChecker(s.AllowedOrigins),
+				Server:      s.MOQServer,
+			}
+		}
+
 		// ConnContext intercepts each accepted QUIC connection before the MOQ
 		// handshake and gives its session a pending admission. For native
 		// QUIC connections the underlying type satisfies connStatsProvider,
@@ -210,6 +280,11 @@ func (s *Server) init() {
 				s.sampler.addConn(addr, provider)
 				sampleConnStats(provider, addr) // immediate first sample
 				context.AfterFunc(conn.Context(), func() { s.sampler.removeConn(addr) })
+			}
+			if admissionFrom(ctx) != nil {
+				// A WebSocket session: admitted at its upgrade, whose
+				// context this one derives from.
+				return ctx
 			}
 			// relayPeer decides the admission once the session's SETUP has
 			// named its path; a subscription arriving before then waits.
@@ -582,12 +657,19 @@ func (s *Server) maintainPeer(ctx context.Context, peer Peer) {
 	}
 }
 
-// Relay handles inbound WebTransport sessions (publishers and browser
-// clients), already admitted at the upgrade (HandleWebTransport).
+// Relay handles inbound WebTransport and WebSocket sessions (publishers
+// and browser clients), already admitted at the upgrade
+// (HandleWebTransport).
 func (s *Server) Relay(sess *moqt.Session) {
-	if admissionFrom(sess.Context()) == nil {
+	a := admissionFrom(sess.Context())
+	if a == nil {
 		// Unreachable through HandleWebTransport; refuse rather than run open.
 		_ = sess.CloseWithError(moqt.UnauthorizedSessionErrorCode, "not admitted")
+		return
+	}
+	if a.refusal != "" {
+		// A WebSocket session refused at connect: see handleWebSocket.
+		_ = sess.CloseWithError(moqt.UnauthorizedSessionErrorCode, a.refusal)
 		return
 	}
 	s.serveSession(sess)
@@ -663,6 +745,16 @@ func (s *Server) serveSession(sess *moqt.Session) {
 			s.reportEnd(sess.Context(), a.req, sess.Stats(), endReason(l, context.Cause(sess.Context())))
 		}()
 	}
+	// Registered before the close below, so that it runs after it, with the
+	// session's final byte totals and close cause.
+	transport := sessionTransport(a)
+	metricSessionsTotal.WithLabelValues(transport).Inc()
+	defer func() {
+		stats := sess.Stats()
+		metricSessionBytes.WithLabelValues(transport, "sent").Add(float64(stats.BytesSent))
+		metricSessionBytes.WithLabelValues(transport, "received").Add(float64(stats.BytesReceived))
+		metricSessionsClosed.WithLabelValues(transport, endReason(l, context.Cause(sess.Context()))).Inc()
+	}()
 	defer sess.CloseWithError(moqt.NoError, moqt.NoError.String())
 	if checked {
 		if l = startLease(sess.Context(), sess, s.Authorize, a.req, a.grant.Revalidate()); l != nil {

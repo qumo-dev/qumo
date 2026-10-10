@@ -52,7 +52,7 @@ services:
       RELAY_NAME: "demo-relay"
     ports:
       - "4433:4433/udp"   # MoQT (QUIC)
-      - "4433:4433/tcp"   # HTTP health/metrics
+      - "4433:4433/tcp"   # HTTP health/metrics, and MoQT over WebSocket (wss)
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "-", "http://localhost:4433/health"]
       interval: 15s

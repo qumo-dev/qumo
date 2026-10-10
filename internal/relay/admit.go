@@ -36,6 +36,10 @@ type admission struct {
 	// served is set once serveSession runs the session, which then reports
 	// its end. An admitted upgrade that fails never sets it.
 	served atomic.Bool
+	// refusal is why a session that was refused at connect, and upgraded
+	// all the same, is to be closed: refusalRefused or refusalUnavailable.
+	// Only a WebSocket session has one (handleWebSocket).
+	refusal string
 }
 
 type admissionKey struct{}
@@ -134,12 +138,14 @@ func newSessionID() string {
 	return hex.EncodeToString(b[:])
 }
 
-// webTransportRequest describes a WebTransport upgrade for Authorize.
-func (s *Server) webTransportRequest(r *http.Request) auth.Request {
+// upgradeRequest describes an HTTP upgrade, to WebTransport or to
+// WebSocket, for Authorize. Both carry the path and the credential in the
+// request URI, so a session is described the same on either.
+func (s *Server) upgradeRequest(r *http.Request, transport string) auth.Request {
 	return auth.Request{
 		ID:        newSessionID(),
 		Event:     auth.EventConnect,
-		Transport: auth.TransportWebTransport,
+		Transport: transport,
 		Remote:    r.RemoteAddr,
 		Path:      r.URL.Path,
 		Query:     r.URL.RawQuery,
@@ -239,4 +245,43 @@ func (s *Server) reportEnd(ctx context.Context, req auth.Request, stats moqt.Ses
 		return
 	}
 	metricAuthRequests.WithLabelValues(auth.EventEnd, authOK).Inc()
+}
+
+// Transports of the sessions that have no connect request to name one.
+const (
+	transportPeer     = "peer"
+	transportInternal = "internal"
+)
+
+// sessionTransport names the transport of a session for the per-transport
+// metrics: what its connect request said, or peer or internal for a session
+// admitted without one.
+func sessionTransport(a *admission) string {
+	switch {
+	case a == nil:
+		// A session this relay dialed: a relay peer.
+		return transportPeer
+	case a.internal:
+		return transportInternal
+	case a.req.Transport != "":
+		return a.req.Transport
+	}
+	return transportPeer
+}
+
+// Reasons a session refused at connect is closed with.
+const (
+	// refusalRefused is a credential that was not accepted: retrying with
+	// it will not help.
+	refusalRefused = "refused"
+	// refusalUnavailable is a session that could not be checked just now.
+	refusalUnavailable = "unavailable"
+)
+
+// refusalReason is the close reason for a session refused with err.
+func refusalReason(err error) string {
+	if _, refused := errors.AsType[auth.RefusedError](err); refused {
+		return refusalRefused
+	}
+	return refusalUnavailable
 }
