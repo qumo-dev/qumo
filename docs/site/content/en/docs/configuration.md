@@ -120,7 +120,18 @@ relay's HTTP port.
 
 ## WebSocket fallback
 
-WebTransport does not work on WebKit: a session stalls after about 7,600 streams or 16 MB ([WebKit bug 319818](https://bugs.webkit.org/show_bug.cgi?id=319818)), and every browser on iOS is WebKit. So the relay also takes WebSocket upgrades on its client endpoint (`/`) and serves them as MoQ sessions over [QMux](https://www.ietf.org/archive/id/draft-ietf-quic-qmux-02.html), with TLS on `RELAY_ADDR`'s own TCP port. It is on by default. `@qumo/moq` picks WebSocket by itself on WebKit, at the address it was given: `https://relay.example.com:4433/…` is reached as `wss://relay.example.com:4433/…`.
+WebTransport does not work on WebKit: a session stalls after about 7,600 streams or 16 MB ([WebKit bug 319818](https://bugs.webkit.org/show_bug.cgi?id=319818)), and every browser on iOS is WebKit. So the relay also takes WebSocket upgrades on its client endpoint (`/`) and serves them as MoQ sessions over [QMux](https://www.ietf.org/archive/id/draft-ietf-quic-qmux-02.html), with TLS on `RELAY_ADDR`'s own TCP port. It is on by default.
+
+The application chooses the transport: `@qumo/moq`'s `connect` uses WebTransport unless it is told `transport: "websocket"`, and does not switch by itself. For the browsers that need it:
+
+```ts
+import { connect, isWebKit } from "@qumo/moq";
+
+const transport = isWebKit(navigator.userAgent) ? "websocket" : "webtransport";
+const session = await connect("https://relay.example.com:4433/…", { transport });
+```
+
+The WebSocket is dialed at the address `connect` was given: `https://relay.example.com:4433/…` is reached as `wss://relay.example.com:4433/…`.
 
 | Variable | Default | Description |
 |---|---|---|
@@ -129,7 +140,7 @@ WebTransport does not work on WebKit: a session stalls after about 7,600 streams
 
 **One TCP port, two protocols.** `RELAY_ADDR`'s TCP port has always served plain HTTP: health, status and metrics. It now serves TLS as well, and tells the two apart by a connection's first byte, so both keep working: `http://relay:4433/health` as before, and `wss://relay:4433/…` for clients. Open the port for TCP wherever it is open for UDP.
 
-**A port of its own.** With `WS_PORT` set to another port, the TLS side moves there and `RELAY_ADDR`'s port is plain HTTP only. A client is then told where: `@qumo/moq`'s `webSocketURL` option. Without it, a WebKit client finds no WebSocket at the relay's address and falls back to WebTransport, which stalls.
+**A port of its own.** With `WS_PORT` set to another port, the TLS side moves there and `RELAY_ADDR`'s port is plain HTTP only. A client is then told where: `@qumo/moq`'s `webSocketURL` option. Without it, a client that asks for WebSocket finds none at the relay's address, and fails to connect.
 
 A WebSocket session is admitted exactly as a WebTransport one: the same paths, the same credential in the URL (`wss://relay.example.com/…?jwt=…`), the same grant and the same revalidation. Sessions on every transport share tracks, so a publisher on one reaches subscribers on the others.
 

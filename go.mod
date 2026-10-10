@@ -8,7 +8,7 @@ require (
 	github.com/prometheus/client_golang v1.24.1
 	github.com/prometheus/client_model v0.6.3
 	github.com/quic-go/quic-go v0.63.0
-	github.com/qumo-dev/gomoqt v0.22.2-0.20261010101028-d0b1fe3d54db
+	github.com/qumo-dev/gomoqt v0.22.2-0.20261010102806-71a548fbbcb7
 	github.com/stretchr/testify v1.12.1
 	golang.org/x/sync v0.23.0
 )
