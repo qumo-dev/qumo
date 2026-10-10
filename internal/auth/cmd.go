@@ -14,7 +14,7 @@ import (
 	"github.com/qumo-dev/qumo/token"
 )
 
-const usage = `Usage: qumo auth <command>
+const cmdUsage = `Usage: qumo auth <command>
 
 Sets up the credentials a relay verifies (QUMO_AUTH_KEYS). An app signs a
 capability token per client with its own Ed25519 key; the client connects
@@ -31,7 +31,7 @@ Run "qumo auth <command> -h" for a command's flags.
 // Run executes "qumo auth" with args, the arguments after "auth".
 func Run(args []string) error {
 	if len(args) == 0 {
-		fmt.Fprint(os.Stderr, usage)
+		fmt.Fprint(os.Stderr, cmdUsage)
 		return errors.New("qumo auth: a command is needed")
 	}
 	switch cmd, rest := args[0], args[1:]; cmd {
@@ -40,10 +40,10 @@ func Run(args []string) error {
 	case "token":
 		return runToken(rest, os.Stdout, os.Stderr)
 	case "-h", "--help", "help":
-		_, err := fmt.Fprint(os.Stdout, usage)
+		_, err := fmt.Fprint(os.Stdout, cmdUsage)
 		return err
 	default:
-		fmt.Fprint(os.Stderr, usage)
+		fmt.Fprint(os.Stderr, cmdUsage)
 		return fmt.Errorf("qumo auth: unknown command %q", cmd)
 	}
 }

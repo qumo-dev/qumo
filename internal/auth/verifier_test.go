@@ -23,6 +23,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/qumo-dev/qumo/token"
+	"github.com/qumo-dev/qumo/usage"
 )
 
 func genKey(t *testing.T, prefix string) token.SigningKey {
@@ -70,9 +71,9 @@ func TestParseKeySet(t *testing.T) {
 			require.NoError(t, json.Unmarshal(one, &set))
 			return `{"keys":[` + string(set.Keys[0]) + `,` + string(set.Keys[0]) + `]}`
 		}(),
-		"private key":               `{"keys":[{"kty":"OKP","crv":"Ed25519","x":"11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo","d":"nWGxne_9WmC6hEr0kuwsxERJxWl7MmkZcDusAxyuf2A"}]}`,
-		"unknown pause":             `{"keys":[` + keyEntry(t, active, map[string]any{"pause": []string{"publsh"}}) + `]}`,
-		"pause not a list":          `{"keys":[` + keyEntry(t, active, map[string]any{"pause": "publish"}) + `]}`,
+		"private key":      `{"keys":[{"kty":"OKP","crv":"Ed25519","x":"11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo","d":"nWGxne_9WmC6hEr0kuwsxERJxWl7MmkZcDusAxyuf2A"}]}`,
+		"unknown pause":    `{"keys":[` + keyEntry(t, active, map[string]any{"pause": []string{"publsh"}}) + `]}`,
+		"pause not a list": `{"keys":[` + keyEntry(t, active, map[string]any{"pause": "publish"}) + `]}`,
 		"pause named twice": `{"keys":[{"pause":["publish"],"pause":[],` +
 			strings.TrimPrefix(keyEntry(t, active, nil), "{") + `]}`,
 		"keys named twice":           `{"keys":[],"keys":[` + keyEntry(t, active, nil) + `]}`,
@@ -377,13 +378,12 @@ func TestVerifier_ReportsUsage(t *testing.T) {
 
 	batches := sink.received()
 	require.Len(t, batches, 1)
-	var types []string
+	var types []usage.Type
 	for _, r := range batches[0] {
 		types = append(types, r.Type)
 		assert.Equal(t, k.ID, r.KID)
-		assert.Equal(t, roleBoth, r.Role)
 	}
-	assert.Equal(t, []string{recordSessionOpen, recordSessionClose}, types, "the close supersedes the pending usage")
+	assert.Equal(t, []usage.Type{usage.SessionOpen, usage.SessionClose}, types, "the close supersedes the pending usage")
 	assert.Equal(t, map[string]int64{"gateway.ingress_bytes": 40, "gateway.egress_bytes": 30}, batches[0][1].Metrics,
 		"what the relay received is ingress, what it sent egress")
 	assert.Equal(t, "Bearer t", sink.gotAuth)
@@ -398,7 +398,7 @@ func newTestUsage(t *testing.T, sink *fakeUsageSink) *usageReporter {
 	return r
 }
 
-var testUsageSession = usageSession{kid: "k1", role: rolePublish}
+var testUsageSession = usageSession{kid: "k1", publishes: true}
 
 func TestUsageReporter(t *testing.T) {
 	t.Run("usage is coalesced to the latest report", func(t *testing.T) {
@@ -411,7 +411,7 @@ func TestUsageReporter(t *testing.T) {
 		batches := sink.received()
 		require.Len(t, batches, 1)
 		require.Len(t, batches[0], 2)
-		assert.Equal(t, recordSessionOpen, batches[0][0].Type)
+		assert.Equal(t, usage.SessionOpen, batches[0][0].Type)
 		assert.Equal(t, int64(20), batches[0][1].Metrics["gateway.ingress_bytes"])
 	})
 
@@ -425,7 +425,7 @@ func TestUsageReporter(t *testing.T) {
 		require.NoError(t, r.flush(context.Background()))
 		retry := sink.received()[1]
 		require.Len(t, retry, 2)
-		assert.Equal(t, recordSessionOpen, retry[0].Type, "the open is resent")
+		assert.Equal(t, usage.SessionOpen, retry[0].Type, "the open is resent")
 		assert.Equal(t, int64(20), retry[1].Metrics["gateway.ingress_bytes"], "the newer report wins")
 	})
 
@@ -514,11 +514,18 @@ func TestUsageReporter(t *testing.T) {
 }
 
 func TestUsageRecordWire(t *testing.T) {
-	raw, err := json.Marshal(usageRecord{Type: recordUsage, SessionID: "s1", KID: "k1", Role: roleSubscribe,
-		Metrics: map[string]int64{"gateway.ingress_bytes": 1}, TS: "2026-10-05T00:00:00Z"})
+	ts := time.Date(2026, 10, 5, 0, 0, 0, 0, time.UTC)
+	session, err := json.Marshal(usage.Record{Type: usage.Usage, SessionID: "s1", KID: "k1",
+		Metrics: map[string]int64{usage.IngressBytes: 1}, TS: ts})
 	require.NoError(t, err)
-	assert.JSONEq(t, `{"type":"usage","session_id":"s1","kid":"k1","role":"subscribe",`+
-		`"metrics":{"gateway.ingress_bytes":1},"ts":"2026-10-05T00:00:00Z"}`, string(raw), "no reason member when empty")
+	viewers, err := json.Marshal(usage.Record{Type: usage.Viewers, Run: "r1", KID: "k1",
+		Metrics: map[string]int64{usage.EgressBytes: 2}, TS: ts})
+	require.NoError(t, err)
+
+	assert.JSONEq(t, `{"type":"usage","session_id":"s1","kid":"k1",`+
+		`"metrics":{"gateway.ingress_bytes":1},"ts":"2026-10-05T00:00:00Z"}`, string(session), "no reason or run when empty")
+	assert.JSONEq(t, `{"type":"viewers","run":"r1","kid":"k1",`+
+		`"metrics":{"gateway.egress_bytes":2},"ts":"2026-10-05T00:00:00Z"}`, string(viewers), "no session_id")
 }
 
 func TestNextRefresh(t *testing.T) {
@@ -597,11 +604,11 @@ func TestVerifier_RevalidateAfterEnd(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, v.usage.flush(context.Background()))
 
-	var types []string
+	var types []usage.Type
 	for _, rec := range sink.received()[0] {
 		types = append(types, rec.Type)
 	}
-	assert.Equal(t, []string{recordSessionOpen, recordSessionClose}, types)
+	assert.Equal(t, []usage.Type{usage.SessionOpen, usage.SessionClose}, types)
 	assert.False(t, v.usage.close(late.ID, Bytes{}, ""), "the session isn't known again")
 }
 
@@ -693,27 +700,38 @@ func TestVerifier_ScopedGrant(t *testing.T) {
 	assert.False(t, g.Allows(token.ActionSubscribe, "/acme/app/room/123/comments", "chat"))
 }
 
-func TestVerifier_UsageRole(t *testing.T) {
+// TestVerifier_UsagePublishes pins which sessions are reported as
+// publishers, one by one, and which as viewers, in their key's total: a
+// session publishes when a scope lets it publish or post every track of a
+// broadcast, and any other session, whatever else it may do, is a viewer.
+func TestVerifier_UsagePublishes(t *testing.T) {
 	k := genKey(t, "acme/app")
 	v := verifierWith(t, keySetJSON(t, []token.SigningKey{k}), time.Now())
 	tests := map[string]struct {
 		jwt  string
-		want string
+		want bool
 	}{
-		"publish":               {jwt: sign(t, k, scoped(token.ActionPublish)), want: rolePublish},
-		"subscribe":             {jwt: sign(t, k, scoped(token.ActionSubscribe)), want: roleSubscribe},
-		"fetch":                 {jwt: sign(t, k, scoped(token.ActionFetch)), want: roleSubscribe},
-		"publish and fetch":     {jwt: sign(t, k, scoped(token.ActionPublish, token.ActionFetch)), want: roleBoth},
-		"a path_auth viewer":    {jwt: signPathAuth(t, k, "", "acme/app"), want: roleSubscribe},
-		"a path_auth publisher": {jwt: signPathAuth(t, k, "acme/app/live", ""), want: rolePublish},
-		"a path_auth of both":   {jwt: signPathAuth(t, k, "acme/app/live", "acme/app"), want: roleBoth},
-		"post every track":      {jwt: sign(t, k, scoped(token.ActionPost)), want: rolePublish},
+		"publish":               {jwt: sign(t, k, scoped(token.ActionPublish)), want: true},
+		"publish and fetch":     {jwt: sign(t, k, scoped(token.ActionPublish, token.ActionFetch)), want: true},
+		"post every track":      {jwt: sign(t, k, scoped(token.ActionPost)), want: true},
+		"a path_auth publisher": {jwt: signPathAuth(t, k, "acme/app/live", ""), want: true},
+		"a path_auth of both":   {jwt: signPathAuth(t, k, "acme/app/live", "acme/app"), want: true},
+		"subscribe":             {jwt: sign(t, k, scoped(token.ActionSubscribe)), want: false},
+		"fetch":                 {jwt: sign(t, k, scoped(token.ActionFetch)), want: false},
+		"a path_auth viewer":    {jwt: signPathAuth(t, k, "", "acme/app"), want: false},
+		"redact only":           {jwt: sign(t, k, scoped(token.ActionRedact)), want: false},
 		"a viewer who may post into one track": {
 			jwt: sign(t, k, token.Grant{Scopes: []token.Scope{
 				{Actions: []token.Action{token.ActionPost}, Broadcast: "acme/app/live", Track: "chat"},
 				{Actions: []token.Action{token.ActionSubscribe}, Broadcast: "acme/app/live"},
 			}}),
-			want: roleSubscribe,
+			want: false,
+		},
+		"post into one track only": {
+			jwt: sign(t, k, token.Grant{Scopes: []token.Scope{
+				{Actions: []token.Action{token.ActionPost}, Broadcast: "acme/app/live", Track: "chat"},
+			}}),
+			want: false,
 		},
 	}
 	for name, tt := range tests {
@@ -721,7 +739,7 @@ func TestVerifier_UsageRole(t *testing.T) {
 			_, s, err := v.decide(sessionReq(EventConnect, tt.jwt))
 
 			require.NoError(t, err)
-			assert.Equal(t, tt.want, s.role)
+			assert.Equal(t, tt.want, s.publishes)
 		})
 	}
 }

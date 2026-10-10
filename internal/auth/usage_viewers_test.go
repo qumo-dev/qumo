@@ -3,18 +3,18 @@ package auth
 import (
 	"context"
 	"net/http"
-	"strings"
 	"testing"
 
+	"github.com/qumo-dev/qumo/usage"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
 func viewerSession(kid string) usageSession {
-	return usageSession{kid: kid, role: roleSubscribe}
+	return usageSession{kid: kid}
 }
 
-// TestUsageReporter_ViewersAreTotalled pins that subscribe-only sessions cost
+// TestUsageReporter_ViewersAreTotalled pins that viewer sessions cost
 // the receiver one record per key, however many there are: no opens or
 // closes, and one running total that only grows.
 func TestUsageReporter_ViewersAreTotalled(t *testing.T) {
@@ -32,12 +32,13 @@ func TestUsageReporter_ViewersAreTotalled(t *testing.T) {
 
 	first := sink.received()[0]
 	require.Len(t, first, 2, "one record per key, not per viewer")
-	byKID := map[string]usageRecord{}
+	byKID := map[string]usage.Record{}
 	for _, rec := range first {
 		byKID[rec.KID] = rec
-		assert.Equal(t, recordUsage, rec.Type)
-		assert.Equal(t, roleSubscribe, rec.Role)
-		assert.Equal(t, "viewers."+r.runID+"."+rec.KID, rec.SessionID)
+		assert.Equal(t, usage.Viewers, rec.Type)
+		assert.Equal(t, r.runID, rec.Run)
+		assert.Empty(t, rec.SessionID)
+		assert.NoError(t, rec.Validate())
 	}
 	assert.Equal(t, map[string]int64{"gateway.egress_bytes": 300, "gateway.ingress_bytes": 30}, byKID["k1"].Metrics)
 	assert.Equal(t, int64(7), byKID["k2"].Metrics["gateway.egress_bytes"])
@@ -81,21 +82,20 @@ func TestUsageReporter_ViewerTotalSurvivesAFailedSend(t *testing.T) {
 func TestUsageReporter_PublishersStayPerSession(t *testing.T) {
 	sink := &fakeUsageSink{}
 	r := newTestUsage(t, sink)
-	r.open("p1", usageSession{kid: "k1", role: rolePublish})
-	r.open("b1", usageSession{kid: "k1", role: roleBoth})
+	r.open("p1", usageSession{kid: "k1", publishes: true})
+	r.open("p2", usageSession{kid: "k1", publishes: true})
 	r.revalidated("p1", Bytes{Received: 50}, true)
 	require.NoError(t, r.flush(context.Background()))
 
 	var got []string
 	for _, rec := range sink.received()[0] {
-		got = append(got, rec.Type+" "+rec.SessionID)
-		assert.False(t, strings.HasPrefix(rec.SessionID, "viewers."))
+		got = append(got, string(rec.Type)+" "+rec.SessionID)
+		assert.NoError(t, rec.Validate())
 	}
-	assert.ElementsMatch(t, []string{"session_open p1", "session_open b1", "usage p1"}, got)
+	assert.ElementsMatch(t, []string{"session_open p1", "session_open p2", "usage p1"}, got)
 }
 
 func TestUsageReporter_EachRunHasItsOwnTotals(t *testing.T) {
 	a, b := newTestUsage(t, &fakeUsageSink{}), newTestUsage(t, &fakeUsageSink{})
-	assert.NotEqual(t, a.viewerSessionID("k1"), b.viewerSessionID("k1"),
-		"a restarted relay starts new totals rather than lowering old ones")
+	assert.NotEqual(t, a.runID, b.runID, "a restarted relay starts new totals rather than lowering old ones")
 }

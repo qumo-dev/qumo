@@ -9,13 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 > **Breaking for key-set servers.** `"publish": false` no longer pauses a key; write `"pause": ["publish"]`. See **Changed** below.
 
+> **Breaking for usage receivers.** Usage records carry no `role`, and viewer totals come as `viewers` records with a `run` instead of `usage` records with a `viewers.<run>.<kid>` session id. See **Changed** below.
+
 ### Added
 
+- **The usage report format is a Go package (`usage`).** `usage.Record`, its types, metric names and close reasons, and `Record.Validate` are what the relay sends to `QUMO_USAGE_URL`, so a receiver decodes and checks the same type instead of its own copy.
 - **`token.Key` carries its pause (`token`).** `Key.Pause` lists what the key starts no new sessions for (only `token.ActionPublish`), and `Key.Pauses` reports it. `MarshalKeySet` writes it as `"pause"` and `ParseKeySet` reads it, so a key-set server builds the set from `token.Key` values instead of writing JSON by hand. The relay and the funnel read the pause from the same parse.
 
 ### Changed
 
 - **`"publish": false` is gone (`token`, `internal/auth`).** It was the deprecated spelling of `"pause": ["publish"]`. It is no longer read and, like any JWK member the relay doesn't know, is ignored. The relay's warning about the old spelling goes with it. A server must write `"pause"` before its relays move to this release, or its paused keys stop being paused.
+- **Usage records have no `role` (`internal/auth`, `usage`).** A session was reported as `publish`, `subscribe` or `both`, but what a receiver needs is whether it publishes a broadcast, and `both` meant the same as `publish`. Now a session that publishes (a `publish` or `post` scope on every track) is reported by itself, with `session_open`, `usage` and `session_close` and no `role`. Every other session is a viewer, in its key's total, sent as a `viewers` record carrying `run` and `kid`. This also means no record goes out with an empty role. Before, a session granted neither publishing nor viewing, such as a chat sender's single-track `post`, was reported with `role: ""`, and a receiver that refused it dropped the relay's whole batch. `ts` stays to the second. A receiver must take the new records before its relays move to this release, or it refuses every batch and the relay drops them.
 - **The Docker image is built without emulating its build (`docker/Dockerfile`).** The v0.14.261010 image build crashed: the arm64 half ran Deno and Vite under QEMU to rebuild the playground UI (`qemu: uncaught target signal 4 (Illegal instruction)`), and the retry that passed took 16 minutes.
   - **The image embeds the committed `playground/dist`,** as `go install` and the release binaries do, and no longer rebuilds it. CI and the release workflow already hold that directory to a fresh build, byte for byte. The image needs no Deno or Node to build.
   - **The Go binary is cross-compiled** on the machine that builds (`FROM --platform=$BUILDPLATFORM`, `GOARCH=$TARGETARCH`), with the module and build caches kept between steps. Only the runtime stage's package commands run under QEMU.

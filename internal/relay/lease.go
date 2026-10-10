@@ -13,6 +13,7 @@ import (
 	"github.com/qumo-dev/gomoqt/moqt"
 	"github.com/qumo-dev/gomoqt/transport"
 	"github.com/qumo-dev/qumo/internal/auth"
+	"github.com/qumo-dev/qumo/usage"
 )
 
 // Backoff for a revalidate that could not be answered: the first retry
@@ -28,15 +29,10 @@ const (
 // metricSessionsEnded and the close message the client sees with
 // Unauthorized.
 const (
-	endRefused = "refused"
-	// endClosed is a session the client or the relay closed normally.
-	endClosed = "closed"
-	// endDropped is a session whose connection was lost: an idle timeout or
-	// a stateless reset.
-	endDropped = "dropped"
-	// endUpgradeFailed is a WebTransport session that was admitted but
-	// whose upgrade then failed, so it never started.
-	endUpgradeFailed = "upgrade_failed"
+	endRefused       = usage.ReasonRefused
+	endClosed        = usage.ReasonClosed
+	endDropped       = usage.ReasonDropped
+	endUpgradeFailed = usage.ReasonUpgradeFailed
 )
 
 // leasedSession is the part of a session a lease uses: it reads its byte
