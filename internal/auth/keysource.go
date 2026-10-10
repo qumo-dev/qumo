@@ -12,7 +12,6 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -53,19 +52,11 @@ func (s *keyStore) current(now time.Time) (*keySet, bool) {
 	return s.set, s.set != nil && now.Sub(s.lastSuccess) <= keysMaxStale
 }
 
-// replace makes set the current key set. A set that pauses keys with the
-// deprecated "publish": false is warned about when it is first loaded and
-// whenever those keys change, not on every refresh.
+// replace makes set the current key set.
 func (s *keyStore) replace(set *keySet, now time.Time) {
 	s.mu.Lock()
-	prev := s.set
+	defer s.mu.Unlock()
 	s.set, s.lastSuccess = set, now
-	s.mu.Unlock()
-	if len(set.deprecatedPublish) > 0 &&
-		(prev == nil || !slices.Equal(prev.deprecatedPublish, set.deprecatedPublish)) {
-		slog.Warn(`relay: key set pauses keys with the deprecated "publish": false; write "pause": ["publish"]`,
-			"kids", set.deprecatedPublish)
-	}
 }
 
 func (s *keyStore) confirm(now time.Time) {

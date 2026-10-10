@@ -170,7 +170,7 @@ func (v *Verifier) decide(req Request) (*Grant, usageSession, error) {
 		return nil, usageSession{}, refuse(status, "%v", err)
 	}
 	publishes, subscribes := rolesOf(c.Grant)
-	if connect && publishes && set.pausedPublish[c.Key.ID] {
+	if connect && publishes && c.Key.Pauses(token.ActionPublish) {
 		return nil, usageSession{}, refuse(http.StatusForbidden,
 			"signing key %s starts no new publishing sessions", c.Key.ID)
 	}
