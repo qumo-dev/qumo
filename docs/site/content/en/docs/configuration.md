@@ -191,21 +191,23 @@ A token's `exp`, `nbf` and `iat` are checked **when a session starts**: they dec
 - **`reval` is refused.** CAT's `moqt-reval` asks for a live session to be revalidated against its token's expiry, which this relay never does, so a token carrying it is refused like any claim the relay doesn't know.
 
 ### Usage reports
-With `QUMO_USAGE_URL` set, the relay POSTs a JSON array of records to it every 10 s:
+With `QUMO_USAGE_URL` set, the relay POSTs a JSON array of records to it every 10 s. Go's [`github.com/qumo-dev/qumo/usage`](https://pkg.go.dev/github.com/qumo-dev/qumo/usage) is the format, `usage.Record`, for a receiver to decode and check (`Record.Validate`):
 
 ```json
-[{"type": "session_open", "session_id": "…", "kid": "…", "role": "publish", "ts": "…"},
- {"type": "usage", "session_id": "…", "kid": "…", "role": "publish",
+[{"type": "session_open", "session_id": "…", "kid": "…", "ts": "…"},
+ {"type": "usage", "session_id": "…", "kid": "…",
   "metrics": {"gateway.ingress_bytes": 10162, "gateway.egress_bytes": 9223}, "ts": "…"},
- {"type": "session_close", "session_id": "…", "kid": "…", "role": "publish",
-  "metrics": {"gateway.ingress_bytes": 10438, "gateway.egress_bytes": 9165}, "reason": "closed", "ts": "…"}]
+ {"type": "session_close", "session_id": "…", "kid": "…",
+  "metrics": {"gateway.ingress_bytes": 10438, "gateway.egress_bytes": 9165}, "reason": "closed", "ts": "…"},
+ {"type": "viewers", "run": "…", "kid": "…",
+  "metrics": {"gateway.ingress_bytes": 120, "gateway.egress_bytes": 880412}, "ts": "…"}]
 ```
 
-`role` is `publish`, `subscribe` or `both`, from what the token grants. Byte counts are cumulative and from the relay's point of view (what it received is ingress), so a receiver can take a resent record without counting it twice.
+Byte counts are cumulative and from the relay's point of view (what it received is ingress), so a receiver can take a resent record without counting it twice.
 
-**Sessions that may publish are reported one by one,** as above: an open, usage every 30 s, and a close.
+**Sessions that publish a broadcast are reported one by one,** as the first three records: an open, usage every 30 s, and a close. A session publishes when its token lets it publish, or post, every track of a broadcast.
 
-**Sessions that only subscribe are reported together.** Viewers outnumber publishers by orders of magnitude, and a record per viewer would make the receiver's load grow with the audience. Their bytes are added up per key into one running total since the relay started, sent as a `usage` record whose `session_id` is `viewers.<run>.<kid>`, where `<run>` is new each time the relay starts (so a restart begins new totals rather than lowering old ones). There is no open or close for them, and a total is sent only when it has changed.
+**Every other session is a viewer, and viewers are reported together.** Viewers outnumber publishers by orders of magnitude, and a record per viewer would make the receiver's load grow with the audience. Their bytes are added up per key into one running total since the relay started, sent as a `viewers` record naming the key and the relay's `run`. The `run` is new each time the relay starts, so a restart begins new totals rather than lowering old ones. There is no open or close for viewers, and a total is sent only when it has changed.
 
 Records go out in batches of at most 500. A failed send, a 401, 403, 408, 413 or 429 included, keeps the records and retries them (logged once, then again when it recovers); only a batch the receiver can't read (400 or 422) is dropped. When the relay shuts down, it waits up to 5 s for its last sessions to record their end before the final send.
 

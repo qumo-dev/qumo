@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"sync"
+
+	"github.com/qumo-dev/qumo/usage"
 )
 
 // fakeUsageSink records the batches POSTed to it and answers from a status
@@ -11,7 +13,7 @@ import (
 type fakeUsageSink struct {
 	mu       sync.Mutex
 	statuses []int
-	batches  [][]usageRecord
+	batches  [][]usage.Record
 	gotAuth  string
 }
 
@@ -19,7 +21,7 @@ func (f *fakeUsageSink) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.gotAuth = r.Header.Get("Authorization")
-	var batch []usageRecord
+	var batch []usage.Record
 	if err := json.NewDecoder(r.Body).Decode(&batch); err == nil {
 		f.batches = append(f.batches, batch)
 	}
@@ -33,8 +35,8 @@ func (f *fakeUsageSink) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(status)
 }
 
-func (f *fakeUsageSink) received() [][]usageRecord {
+func (f *fakeUsageSink) received() [][]usage.Record {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return append([][]usageRecord(nil), f.batches...)
+	return append([][]usage.Record(nil), f.batches...)
 }

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"slices"
 	"sync"
 	"time"
 
@@ -169,43 +170,29 @@ func (v *Verifier) decide(req Request) (*Grant, usageSession, error) {
 		}
 		return nil, usageSession{}, refuse(status, "%v", err)
 	}
-	publishes, subscribes := rolesOf(c.Grant)
+	publishes := publishesBroadcast(c.Grant)
 	if connect && publishes && c.Key.Pauses(token.ActionPublish) {
 		return nil, usageSession{}, refuse(http.StatusForbidden,
 			"signing key %s starts no new publishing sessions", c.Key.ID)
 	}
 
 	g := &Grant{scopes: c.Scopes, subject: c.Subject, revalidate: revalidateEvery}
-	s := usageSession{kid: c.Key.ID}
-	switch {
-	case publishes && subscribes:
-		s.role = roleBoth
-	case publishes:
-		s.role = rolePublish
-	case subscribes:
-		s.role = roleSubscribe
-	}
-	return g, s, nil
+	return g, usageSession{kid: c.Key.ID, publishes: publishes}, nil
 }
 
-// rolesOf reports whether g lets its bearer publish a broadcast and subscribe
-// (a scope permitting subscribe or fetch). A scope permitting publish or post
-// on every track publishes: through a relay it announces the broadcast, and at
-// a funnel it may create any track of it, which the funnel publishes. A scope
-// naming one track publishes no broadcast of its own, so its bearer is a
-// viewer, such as a chat sender posting into a funnel's track.
-func rolesOf(g token.Grant) (publishes, subscribes bool) {
+// publishesBroadcast reports whether g lets its bearer publish a broadcast: a
+// scope permitting publish or post on every track. Through a relay it
+// announces the broadcast, and at a funnel it may create any track of it,
+// which the funnel publishes. A scope naming one track publishes no broadcast
+// of its own, so its bearer is a viewer, such as a chat sender posting into a
+// funnel's track.
+func publishesBroadcast(g token.Grant) bool {
 	for _, s := range g.Scopes {
-		for _, a := range s.Actions {
-			switch a {
-			case token.ActionPublish, token.ActionPost:
-				publishes = publishes || s.Track == ""
-			case token.ActionSubscribe, token.ActionFetch:
-				subscribes = true
-			}
+		if s.Track == "" && (slices.Contains(s.Actions, token.ActionPublish) || slices.Contains(s.Actions, token.ActionPost)) {
+			return true
 		}
 	}
-	return publishes, subscribes
+	return false
 }
 
 // End reports a session's end with its final byte totals.

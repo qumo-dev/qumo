@@ -13,6 +13,8 @@ import (
 	"net/http"
 	"sync"
 	"time"
+
+	"github.com/qumo-dev/qumo/usage"
 )
 
 const (
@@ -32,64 +34,37 @@ const (
 	sessionGrace = 5 * time.Minute
 )
 
-// Usage record types and roles, as a usage receiver takes them.
-const (
-	recordSessionOpen  = "session_open"
-	recordUsage        = "usage"
-	recordSessionClose = "session_close"
-
-	rolePublish   = "publish"
-	roleSubscribe = "subscribe"
-	roleBoth      = "both"
-)
-
-// usageRecord is one session record as sent: a session's open, its
-// cumulative bytes, or its close with the final totals. Bytes are named from
-// the relay's point of view: what it received is ingress, what it sent is
-// egress.
-type usageRecord struct {
-	Type      string           `json:"type"`
-	SessionID string           `json:"session_id"`
-	KID       string           `json:"kid"`
-	Role      string           `json:"role"`
-	Metrics   map[string]int64 `json:"metrics,omitempty"`
-	Reason    string           `json:"reason,omitempty"`
-	TS        string           `json:"ts"`
-}
-
 // usageSession is what the reporter remembers of a verified session.
 type usageSession struct {
-	kid  string
-	role string
+	kid string
+	// publishes is a session that may publish a broadcast, reported by
+	// itself; every other session is a viewer, in its key's viewer total.
+	publishes bool
 	// seen is when the session was last heard of, at connect or a
 	// revalidate: one whose end never came is forgotten once it stops being
 	// revalidated.
 	seen time.Time
-	// counted is how much of a subscribe-only session's bytes its key's
-	// viewer total already holds.
+	// counted is how much of a viewer session's bytes its key's viewer total
+	// already holds.
 	counted Bytes
 }
 
-// viewerTotal is the bytes of every subscribe-only session of one key since
-// the relay started, and how much of it the receiver has acknowledged.
+// viewerTotal is the bytes of every viewer session of one key since the relay
+// started, and how much of it the receiver has acknowledged.
 type viewerTotal struct {
 	total    Bytes
 	reported Bytes
 	sent     bool // reported at least once
 }
 
-// usageReporter sends usage records to a usage URL (QUMO_USAGE_URL).
+// usageReporter sends usage records (package usage) to a usage URL
+// (QUMO_USAGE_URL).
 //
 // A session that may publish is reported by itself: an open when it is
 // admitted, its cumulative bytes at each revalidate, and a close with the
-// final totals.
-//
-// Sessions that only subscribe are reported together. Viewers outnumber
-// publishers by orders of magnitude, and a record per viewer every 30 s would
-// make the receiver's load grow with the audience. Their bytes are added up
-// per key into one running total since the relay started, sent as a usage
-// record whose session id names this run of the relay and the key
-// ("viewers.<run>.<kid>"). No open or close is sent for them.
+// final totals. Every other session is a viewer, added up per key into one
+// running total for this run of the relay, sent as a viewers record. No open
+// or close is sent for viewers.
 //
 // Every record is cumulative, so a receiver can take a resent one without
 // counting it twice. Records wait in memory between sends and through an
@@ -99,14 +74,14 @@ type usageReporter struct {
 	token  string
 	client *http.Client
 	now    func() time.Time
-	// run names this run of the relay in viewer totals' session ids: a
-	// restarted relay starts new totals rather than lowering old ones.
+	// run names this run of the relay in its viewers records: a restarted
+	// relay starts new totals rather than lowering old ones.
 	runID string
 
 	mu       sync.Mutex
 	sessions map[string]usageSession
-	events   []usageRecord           // opens and closes, in order
-	usage    map[string]usageRecord  // latest cumulative report per session
+	events   []usage.Record          // opens and closes, in order
+	latest   map[string]usage.Record // latest cumulative report per session
 	viewers  map[string]*viewerTotal // by kid
 	failing  bool                    // the last send failed
 }
@@ -122,7 +97,7 @@ func newUsageReporter(rawURL, bearer string) (*usageReporter, error) {
 		now:      time.Now,
 		runID:    rand.Text(),
 		sessions: map[string]usageSession{},
-		usage:    map[string]usageRecord{},
+		latest:   map[string]usage.Record{},
 		viewers:  map[string]*viewerTotal{},
 	}, nil
 }
@@ -133,8 +108,8 @@ func (r *usageReporter) open(id string, s usageSession) {
 	defer r.mu.Unlock()
 	s.seen = r.now()
 	r.sessions[id] = s
-	if s.role != roleSubscribe {
-		r.appendEvent(r.record(recordSessionOpen, id, s))
+	if s.publishes {
+		r.appendEvent(r.record(usage.SessionOpen, id, s))
 	}
 }
 
@@ -152,12 +127,12 @@ func (r *usageReporter) revalidated(id string, b Bytes, live bool) {
 		s.seen = r.now()
 	}
 	switch {
-	case s.role == roleSubscribe:
+	case !s.publishes:
 		s = r.countViewer(s, b)
 	case b.Sent > 0 || b.Received > 0:
-		rec := r.record(recordUsage, id, s)
+		rec := r.record(usage.Usage, id, s)
 		rec.Metrics = usageMetrics(b)
-		r.usage[id] = rec
+		r.latest[id] = rec
 	}
 	r.sessions[id] = s
 }
@@ -172,19 +147,19 @@ func (r *usageReporter) close(id string, b Bytes, reason string) bool {
 		return false
 	}
 	delete(r.sessions, id)
-	if s.role == roleSubscribe {
+	if !s.publishes {
 		r.countViewer(s, b)
 		return true
 	}
-	delete(r.usage, id) // the close carries totals at least as large
-	rec := r.record(recordSessionClose, id, s)
+	delete(r.latest, id) // the close carries totals at least as large
+	rec := r.record(usage.SessionClose, id, s)
 	rec.Metrics = usageMetrics(b)
 	rec.Reason = reason
 	r.appendEvent(rec)
 	return true
 }
 
-// countViewer adds what a subscribe-only session moved since it was last
+// countViewer adds what a viewer session moved since it was last
 // counted to its key's viewer total, and returns the session with that
 // recorded. The caller holds mu.
 func (r *usageReporter) countViewer(s usageSession, b Bytes) usageSession {
@@ -204,18 +179,19 @@ func (r *usageReporter) countViewer(s usageSession, b Bytes) usageSession {
 	return s
 }
 
-// viewerSessionID is the session id a key's viewer total is reported under.
-func (r *usageReporter) viewerSessionID(kid string) string {
-	return "viewers." + r.runID + "." + kid
+func (r *usageReporter) record(typ usage.Type, id string, s usageSession) usage.Record {
+	return usage.Record{Type: typ, SessionID: id, KID: s.kid, TS: r.timestamp()}
 }
 
-func (r *usageReporter) record(typ, id string, s usageSession) usageRecord {
-	return usageRecord{Type: typ, SessionID: id, KID: s.kid, Role: s.role, TS: r.now().UTC().Format(time.RFC3339)}
+// timestamp is a record's ts: now, to the second, as the reports have always
+// carried it.
+func (r *usageReporter) timestamp() time.Time {
+	return r.now().UTC().Truncate(time.Second)
 }
 
 // appendEvent queues an open or close, dropping the oldest past the cap.
 // The caller holds mu.
-func (r *usageReporter) appendEvent(rec usageRecord) {
+func (r *usageReporter) appendEvent(rec usage.Record) {
 	r.events = append(r.events, rec)
 	if over := len(r.events) - maxPendingEvents; over > 0 {
 		slog.Warn("relay: usage backlog full; dropping the oldest session events", "dropped", over)
@@ -224,7 +200,7 @@ func (r *usageReporter) appendEvent(rec usageRecord) {
 }
 
 func usageMetrics(b Bytes) map[string]int64 {
-	return map[string]int64{"gateway.ingress_bytes": clampInt64(b.Received), "gateway.egress_bytes": clampInt64(b.Sent)}
+	return map[string]int64{usage.IngressBytes: clampInt64(b.Received), usage.EgressBytes: clampInt64(b.Sent)}
 }
 
 func clampInt64(v uint64) int64 {
@@ -299,40 +275,38 @@ var errMalformed = errors.New("usage batch malformed")
 // replaced them, to try again next time.
 func (r *usageReporter) flush(ctx context.Context) error {
 	r.mu.Lock()
-	events, usage := r.events, r.usage
-	r.events, r.usage = nil, map[string]usageRecord{}
+	events, latest := r.events, r.latest
+	r.events, r.latest = nil, map[string]usage.Record{}
 	// A viewer total is sent when it has changed since the receiver last
 	// acknowledged it. It stays pending until then, so it needs no requeue.
-	totals := map[string]Bytes{} // by the record's session id
-	kids := map[string]string{}
-	var viewers []usageRecord
+	totals := map[string]Bytes{} // by kid
+	var viewers []usage.Record
 	for kid, t := range r.viewers {
 		if t.sent && t.total == t.reported {
 			continue
 		}
-		id := r.viewerSessionID(kid)
-		rec := r.record(recordUsage, id, usageSession{kid: kid, role: roleSubscribe})
-		rec.Metrics = usageMetrics(t.total)
-		viewers = append(viewers, rec)
-		totals[id], kids[id] = t.total, kid
+		viewers = append(viewers, usage.Record{
+			Type: usage.Viewers, Run: r.runID, KID: kid, Metrics: usageMetrics(t.total), TS: r.timestamp(),
+		})
+		totals[kid] = t.total
 	}
 	r.mu.Unlock()
-	if len(events) == 0 && len(usage) == 0 && len(viewers) == 0 {
+	if len(events) == 0 && len(latest) == 0 && len(viewers) == 0 {
 		return nil
 	}
 
-	all := make([]usageRecord, 0, len(events)+len(usage)+len(viewers))
+	all := make([]usage.Record, 0, len(events)+len(latest)+len(viewers))
 	for _, e := range events {
-		if e.Type == recordSessionOpen {
+		if e.Type == usage.SessionOpen {
 			all = append(all, e)
 		}
 	}
-	for _, u := range usage {
+	for _, u := range latest {
 		all = append(all, u)
 	}
 	all = append(all, viewers...)
 	for _, e := range events {
-		if e.Type == recordSessionClose {
+		if e.Type == usage.SessionClose {
 			all = append(all, e)
 		}
 	}
@@ -342,55 +316,55 @@ func (r *usageReporter) flush(ctx context.Context) error {
 		err := r.send(ctx, batch)
 		switch {
 		case err == nil:
-			r.acknowledge(batch, totals, kids)
+			r.acknowledge(batch, totals)
 		case errors.Is(err, errMalformed):
 			slog.Error("relay: usage batch refused as malformed; dropped", "records", len(batch), "error", err)
 			// Not resent as it is; a viewer total goes again when it grows.
-			r.acknowledge(batch, totals, kids)
+			r.acknowledge(batch, totals)
 		default:
-			r.requeue(all[start:], kids)
+			r.requeue(all[start:])
 			return err
 		}
 	}
 	return nil
 }
 
-// acknowledge records the viewer totals in a sent batch as reported.
-func (r *usageReporter) acknowledge(batch []usageRecord, totals map[string]Bytes, kids map[string]string) {
+// acknowledge records the viewer totals in a sent batch, by kid in totals, as
+// reported.
+func (r *usageReporter) acknowledge(batch []usage.Record, totals map[string]Bytes) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	for _, rec := range batch {
-		kid, ok := kids[rec.SessionID]
-		if !ok {
+		if rec.Type != usage.Viewers {
 			continue
 		}
-		if t := r.viewers[kid]; t != nil {
-			t.reported, t.sent = totals[rec.SessionID], true
+		if t := r.viewers[rec.KID]; t != nil {
+			t.reported, t.sent = totals[rec.KID], true
 		}
 	}
 }
 
 // requeue puts unsent records back before anything recorded since: opens
 // and closes in order, and a session's usage record only if the session is
-// still live and has no newer one. Viewer totals (viewerIDs) aren't put
-// back: they stay pending until acknowledged.
-func (r *usageReporter) requeue(unsent []usageRecord, viewerIDs map[string]string) {
+// still live and has no newer one. Viewer totals aren't put back: they stay
+// pending until acknowledged.
+func (r *usageReporter) requeue(unsent []usage.Record) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	var events []usageRecord
+	var events []usage.Record
 	for _, rec := range unsent {
-		if _, viewers := viewerIDs[rec.SessionID]; viewers {
+		switch rec.Type {
+		case usage.Viewers:
 			continue
-		}
-		if rec.Type != recordUsage {
+		case usage.SessionOpen, usage.SessionClose:
 			events = append(events, rec)
 			continue
 		}
-		if _, newer := r.usage[rec.SessionID]; newer {
+		if _, newer := r.latest[rec.SessionID]; newer {
 			continue
 		}
 		if _, live := r.sessions[rec.SessionID]; live {
-			r.usage[rec.SessionID] = rec
+			r.latest[rec.SessionID] = rec
 		}
 	}
 	r.events = append(events, r.events...)
@@ -400,7 +374,7 @@ func (r *usageReporter) requeue(unsent []usageRecord, viewerIDs map[string]strin
 	}
 }
 
-func (r *usageReporter) send(ctx context.Context, batch []usageRecord) error {
+func (r *usageReporter) send(ctx context.Context, batch []usage.Record) error {
 	body, err := json.Marshal(batch)
 	if err != nil {
 		return fmt.Errorf("encode usage: %w", err)
