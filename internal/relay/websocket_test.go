@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -287,40 +286,37 @@ func TestLoadWebSocketSettings(t *testing.T) {
 		want      webSocketSettings
 		wantErr   string
 	}{
-		"defaults": {
+		"by default, RELAY_ADDR's port is shared": {
 			enable: unset, port: unset, relayAddr: ":4433",
-			want: webSocketSettings{enabled: true, addr: ":4434"},
+			want: webSocketSettings{enabled: true, shared: true},
 		},
-		"on RELAY_ADDR's host": {
-			enable: unset, port: unset, relayAddr: "127.0.0.1:4433",
-			want: webSocketSettings{enabled: true, addr: "127.0.0.1:4434"},
-		},
-		"on RELAY_ADDR's IPv6 host": {
-			enable: unset, port: unset, relayAddr: "[::1]:4433",
-			want: webSocketSettings{enabled: true, addr: "[::1]:4434"},
+		"RELAY_ADDR's port, named": {
+			enable: unset, port: "4433", relayAddr: "127.0.0.1:4433",
+			want: webSocketSettings{enabled: true, shared: true},
 		},
 		"a port of its own": {
 			enable: unset, port: "443", relayAddr: ":4433",
-			want: webSocketSettings{enabled: true, addr: ":443", explicit: true},
+			want: webSocketSettings{enabled: true, addr: ":443"},
 		},
-		"0 opens no port": {
+		"a port of its own, on RELAY_ADDR's host": {
+			enable: unset, port: "443", relayAddr: "127.0.0.1:4433",
+			want: webSocketSettings{enabled: true, addr: "127.0.0.1:443"},
+		},
+		"a port of its own, on RELAY_ADDR's IPv6 host": {
+			enable: unset, port: "443", relayAddr: "[::1]:4433",
+			want: webSocketSettings{enabled: true, addr: "[::1]:443"},
+		},
+		"0 serves no TLS": {
 			enable: unset, port: "0", relayAddr: ":4433",
-			want: webSocketSettings{enabled: true, explicit: true},
+			want: webSocketSettings{enabled: true},
 		},
 		"WebSocket off": {
 			enable: "0", port: "443", relayAddr: ":4433",
 			want: webSocketSettings{},
 		},
-		"the default port is RELAY_ADDR's": {
-			enable: unset, port: unset, relayAddr: ":4434",
-			want: webSocketSettings{enabled: true},
-		},
 		"a RELAY_ADDR that is not an address": {
 			enable: unset, port: unset, relayAddr: "4433",
-			want: webSocketSettings{enabled: true, addr: ":4434"},
-		},
-		"RELAY_ADDR's port, chosen": {
-			enable: unset, port: "4433", relayAddr: ":4433", wantErr: "RELAY_ADDR's TCP port",
+			want: webSocketSettings{enabled: true, shared: true},
 		},
 		"an address, not a port": {
 			enable: unset, port: ":443", relayAddr: ":4433", wantErr: "invalid WS_PORT",
@@ -351,40 +347,6 @@ func TestLoadWebSocketSettings(t *testing.T) {
 			assert.Equal(t, tt.want, got)
 		})
 	}
-}
-
-// A default port that is taken is done without; a chosen one is an error.
-func TestWebSocketSettings_listen(t *testing.T) {
-	taken, err := net.Listen("tcp", "127.0.0.1:0")
-	require.NoError(t, err)
-	defer func() { assert.NoError(t, taken.Close()) }()
-	addr := taken.Addr().String()
-
-	t.Run("no port", func(t *testing.T) {
-		ln, err := webSocketSettings{enabled: true}.listen()
-
-		require.NoError(t, err)
-		assert.Nil(t, ln)
-	})
-	t.Run("a free port", func(t *testing.T) {
-		ln, err := webSocketSettings{enabled: true, addr: "127.0.0.1:0"}.listen()
-
-		require.NoError(t, err)
-		require.NotNil(t, ln)
-		assert.NoError(t, ln.Close())
-	})
-	t.Run("the default port is taken", func(t *testing.T) {
-		ln, err := webSocketSettings{enabled: true, addr: addr}.listen()
-
-		require.NoError(t, err)
-		assert.Nil(t, ln)
-	})
-	t.Run("a chosen port is taken", func(t *testing.T) {
-		ln, err := webSocketSettings{enabled: true, addr: addr, explicit: true}.listen()
-
-		assert.ErrorContains(t, err, "WS_PORT")
-		assert.Nil(t, ln)
-	})
 }
 
 func TestSessionTransport(t *testing.T) {

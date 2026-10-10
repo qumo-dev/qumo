@@ -70,15 +70,16 @@ func sanitizeLog(s string) string {
 //	                           the only check: browsers do not apply CORS to
 //	                           WebSocket.
 //	WS_PORT                  - TCP port to take WebSocket upgrades on, with
-//	                           TLS (default: 4434), on RELAY_ADDR's host and
-//	                           with CERT_FILE and KEY_FILE. They are served
-//	                           as MoQ sessions over QMux, for clients whose
-//	                           WebTransport does not work (every browser on
-//	                           WebKit). "0" opens no such port: WebSocket
-//	                           upgrades then arrive only on RELAY_ADDR's TCP
-//	                           port, which is plain HTTP, for a proxy that
-//	                           terminates TLS. It must not be RELAY_ADDR's
-//	                           port.
+//	                           TLS (default: RELAY_ADDR's own), on
+//	                           RELAY_ADDR's host and with CERT_FILE and
+//	                           KEY_FILE. They are served as MoQ sessions over
+//	                           QMux, for clients whose WebTransport does not
+//	                           work (every browser on WebKit). On RELAY_ADDR's
+//	                           port, TLS shares it with the plain HTTP served
+//	                           there, so that a client reaches the relay at
+//	                           one address over either transport. "0" serves
+//	                           no TLS: WebSocket upgrades then arrive in plain
+//	                           HTTP only, for a proxy that terminates TLS.
 //	WS_ENABLE                - "0" to take no WebSocket upgrades at all
 //	                           (default: on).
 func Run(args []string) error {
@@ -286,23 +287,40 @@ func Run(args []string) error {
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
-	// WebSocket with TLS: WebSocket upgrades alone, on a TCP port of their
-	// own. The health, status and metrics routes stay on the plain HTTP
-	// server.
-	httpServers := servers{httpServer}
-	wsListener, err := ws.listen()
-	if err != nil {
-		return err
-	}
-	if wsListener != nil {
-		httpServers = append(httpServers, tlsServer{
+	// WebSocket with TLS takes WebSocket upgrades alone; the health, status
+	// and metrics routes stay in plain HTTP. By default the two share
+	// RELAY_ADDR's TCP port, told apart by how a connection starts.
+	webSocketServer := func(ln net.Listener) server {
+		return listenerServer{
 			Server: &http.Server{
 				Handler:           http.HandlerFunc(relayServer.HandleWebSocket),
 				TLSConfig:         &tls.Config{MinVersion: tls.VersionTLS12, Certificates: certificates},
 				ReadHeaderTimeout: 5 * time.Second,
+				// A WebSocket upgrade is HTTP/1.1.
+				TLSNextProto: map[string]func(*http.Server, *tls.Conn, http.Handler){},
 			},
-			listener: wsListener,
-		})
+			listener: ln,
+			tls:      true,
+		}
+	}
+	httpServers := servers{httpServer}
+	switch {
+	case ws.shared:
+		ln, err := net.Listen("tcp", addr)
+		if err != nil {
+			return fmt.Errorf("listen on RELAY_ADDR %s: %w", addr, err)
+		}
+		tlsListener, plainListener := splitTLS(ln)
+		httpServers = servers{
+			listenerServer{Server: httpServer, listener: plainListener},
+			webSocketServer(tlsListener),
+		}
+	case ws.addr != "":
+		ln, err := net.Listen("tcp", ws.addr)
+		if err != nil {
+			return fmt.Errorf("WS_PORT: listen on %s: %w", ws.addr, err)
+		}
+		httpServers = append(httpServers, webSocketServer(ln))
 	}
 
 	log.Printf("\t%-8s: %s\n", "Host", sanitizeLog(addr))
@@ -312,10 +330,12 @@ func Run(args []string) error {
 	}
 	log.Printf("\t%-8s: WebTransport endpoint\n", "/")
 	switch {
-	case wsListener != nil:
-		log.Printf("\t%-8s: WebSocket (QMux) endpoint, with TLS on %s\n", "/", sanitizeLog(wsListener.Addr().String()))
+	case ws.shared:
+		log.Printf("\t%-8s: WebSocket (QMux) endpoint, with TLS on the same TCP port\n", "/")
+	case ws.addr != "":
+		log.Printf("\t%-8s: WebSocket (QMux) endpoint, with TLS on %s\n", "/", sanitizeLog(ws.addr))
 	case ws.enabled:
-		log.Printf("\t%-8s: WebSocket (QMux) endpoint, on the host's plain HTTP only: needs TLS in front\n", "/")
+		log.Printf("\t%-8s: WebSocket (QMux) endpoint, in plain HTTP only: needs TLS in front\n", "/")
 	}
 	log.Printf("\t%-8s: health probe\n", "/health")
 	log.Printf("\t%-8s: Prometheus metrics\n", "/metrics")
@@ -394,36 +414,33 @@ func envBoolDefault(key string, def bool) bool {
 	return def
 }
 
-// defaultWebSocketPort is the TCP port WebSocket upgrades are taken on with
-// TLS, next to RELAY_ADDR's default.
-const defaultWebSocketPort = "4434"
-
 // webSocketSettings is how the relay takes WebSocket upgrades.
 type webSocketSettings struct {
 	// enabled is whether it takes any.
 	enabled bool
-	// addr is the TCP address of the TLS listener, or "" for none.
+	// shared is whether it takes them with TLS on RELAY_ADDR's TCP port,
+	// next to the plain HTTP served there.
+	shared bool
+	// addr is the TCP address of a TLS listener of their own, or "".
 	addr string
-	// explicit is whether WS_PORT chose the port, or the default did. A
-	// default that cannot be had is done without; a chosen one is an error.
-	explicit bool
 }
 
-// loadWebSocketSettings reads WS_ENABLE and WS_PORT. The TLS listener is on
-// relayAddr's host, and never on its port, which the plain HTTP server has.
+// loadWebSocketSettings reads WS_ENABLE and WS_PORT. With TLS, WebSocket
+// upgrades are taken on relayAddr's host: on its port unless WS_PORT names
+// another.
 func loadWebSocketSettings(relayAddr string) (webSocketSettings, error) {
 	if !envBoolDefault("WS_ENABLE", true) {
 		return webSocketSettings{}, nil
 	}
 	ws := webSocketSettings{enabled: true}
 	port := strings.TrimSpace(os.Getenv("WS_PORT"))
-	ws.explicit = port != ""
-	if !ws.explicit {
-		port = defaultWebSocketPort
+	if port == "" {
+		ws.shared = true
+		return ws, nil
 	}
 	n, err := strconv.Atoi(port)
 	if err != nil || n < 0 || n > 65535 {
-		return webSocketSettings{}, fmt.Errorf("invalid WS_PORT %q: a port number, or 0 for no WebSocket port", port)
+		return webSocketSettings{}, fmt.Errorf("invalid WS_PORT %q: a port number, or 0 for no TLS", port)
 	}
 	if n == 0 {
 		return ws, nil
@@ -432,45 +449,34 @@ func loadWebSocketSettings(relayAddr string) (webSocketSettings, error) {
 	// from it, the port is opened on every address.
 	host, relayPort, _ := net.SplitHostPort(relayAddr) // not actionable: see above
 	if port == relayPort {
-		if ws.explicit {
-			return webSocketSettings{}, fmt.Errorf("WS_PORT %s is RELAY_ADDR's TCP port, which serves plain HTTP (health, metrics): give WS_PORT a port of its own", port)
-		}
-		slog.Warn("relay: no WebSocket port: the default is RELAY_ADDR's own; set WS_PORT to another",
-			"port", port)
+		ws.shared = true
 		return ws, nil
 	}
 	ws.addr = net.JoinHostPort(host, port)
 	return ws, nil
 }
 
-// listen opens the TLS listener's TCP port, or returns nil when there is
-// none to open. A default port that is taken, as by a second relay on the
-// host, is done without and said so; a chosen one is an error.
-func (ws webSocketSettings) listen() (net.Listener, error) {
-	if ws.addr == "" {
-		return nil, nil
-	}
-	ln, err := net.Listen("tcp", ws.addr)
-	switch {
-	case err == nil:
-		return ln, nil
-	case ws.explicit:
-		return nil, fmt.Errorf("WS_PORT: listen on %s: %w", ws.addr, err)
-	}
-	slog.Warn("relay: no WebSocket port: the default is taken; set WS_PORT to another, or to 0",
-		"addr", ws.addr, "error", err)
-	return nil, nil
-}
-
-// tlsServer is an HTTP server that serves TLS on a listener it was given,
-// with the certificates of its TLSConfig.
-type tlsServer struct {
+// listenerServer is an HTTP server that serves a listener it was given, in
+// plain HTTP or, with tls set, with the certificates of its TLSConfig.
+type listenerServer struct {
 	*http.Server
 	listener net.Listener
+	tls      bool
 }
 
-func (s tlsServer) ListenAndServe() error {
-	return s.ServeTLS(s.listener, "", "")
+func (s listenerServer) ListenAndServe() error {
+	var err error
+	if s.tls {
+		err = s.ServeTLS(s.listener, "", "")
+	} else {
+		err = s.Serve(s.listener)
+	}
+	// Two servers that share a port share its listener: shutting one down
+	// closes it under the other, which is that other's shutdown too.
+	if errors.Is(err, net.ErrClosed) {
+		return http.ErrServerClosed
+	}
+	return err
 }
 
 // servers runs several servers as one: ListenAndServe returns when the
