@@ -144,6 +144,23 @@ WebTransport origin, so switching tabs reconnects. The path field is shared,
 editable, and shareable — **Copy link** produces a `?scenario=&path=` URL that
 opens the demo on the exact same stream.
 
+## Transport
+
+The demo reaches the relay over WebTransport, except on WebKit (Safari, and
+every browser on iOS), where it takes WebSocket: WebKit's WebTransport stalls
+after about 7,600 streams or 16 MB
+([WebKit bug 319818](https://bugs.webkit.org/show_bug.cgi?id=319818)). The
+status line says which one a session is on.
+
+- `?transport=websocket` or `?transport=webtransport` in the address
+  overrides the choice, to try either on any browser.
+- From a page on plain http, which is the relay on its development
+  certificate, WebSocket is dialed without TLS (`ws://`) on the relay's port:
+  WebTransport pins that certificate by its hash, and WebSocket cannot. From a
+  page on https it is `wss://`, which needs a certificate the browser trusts.
+- Only the relay takes WebSocket. The RTMP, RTSP and IP-camera scenarios reach
+  an ingest on a port of its own, over WebTransport whatever the browser.
+
 Every default path embeds a per-session unique token (`/<name>-<id>` for echo,
 `/<scheme>/<id>` for ingest) so that on a **shared public relay** no two users
 collide on the same broadcast. The RTMP/RTSP tabs show a push command whose
@@ -219,7 +236,8 @@ src/
   ScenarioPicker.tsx   Echo / RTMP / RTSP tab selector (#137)
   PathControl.tsx      Shared editable path + copy/share (#137)
   PushInstructions.tsx ffmpeg push command for ingest scenarios (#141)
-  ConnectionStatus.tsx WebTransport lifecycle indicator (#134)
+  ConnectionStatus.tsx Session lifecycle indicator, with its transport (#134)
+  transport.ts         WebTransport or WebSocket, per browser or ?transport=
   scenarios.ts         Scenario registry (ports, modes, push commands)
   cert.ts              VITE_CERT_HASH parsing + transport options
   publish/             Publish board, and the publisher behind it (publisher.ts):

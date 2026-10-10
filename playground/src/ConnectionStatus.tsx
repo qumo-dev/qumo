@@ -1,8 +1,9 @@
 import { Show } from "solid-js";
+import type { TransportKind } from "@qumo/moq";
 import type { CertHashProblem } from "./cert.ts";
 import { sanitizeReason } from "./errors.ts";
 
-// WebTransport session lifecycle as surfaced to the user (issue #134).
+// Session lifecycle as surfaced to the user (issue #134).
 // "connecting" until the connect() promise settles; "connected" on success;
 // "closed" when the relay ends the session gracefully mid-stream; "failed"
 // with a concise reason on a handshake rejection or transport error.
@@ -15,6 +16,11 @@ const LABELS: Record<ConnectionState, string> = {
 	failed: "Connection failed",
 };
 
+const TRANSPORTS: Record<TransportKind, string> = {
+	webtransport: "WebTransport",
+	websocket: "WebSocket",
+};
+
 // User-facing guidance shown whenever the cert hash can't pin the relay cert.
 const CERT_WARN: Record<CertHashProblem, string> = {
 	missing: "Certificate hash not set — WebTransport will reject the relay's self-signed cert.",
@@ -22,18 +28,22 @@ const CERT_WARN: Record<CertHashProblem, string> = {
 		"VITE_CERT_HASH is malformed (expected 64 hex chars) — WebTransport can't pin the relay cert.",
 };
 
-// Connection status indicator: live transport state (dot + label), a concise
-// failure reason, and up-front remediation when the cert hash is missing or
+// Connection status indicator: live transport state (dot + label, with the
+// transport the session is on), a concise failure reason, and up-front remediation when the cert hash is missing or
 // malformed.
 export function ConnectionStatus(props: {
 	state: ConnectionState;
+	transport: TransportKind;
 	error: string | null;
 	certHashProblem: CertHashProblem | null;
 }) {
 	return (
 		<div class="connection-status" data-state={props.state}>
 			<span class="status-dot" />
-			<span class="status-label">{LABELS[props.state]}</span>
+			<span class="status-label">
+				{LABELS[props.state]}
+				{props.state === "connected" ? ` over ${TRANSPORTS[props.transport]}` : ""}
+			</span>
 
 			<Show when={(props.state === "failed" || props.state === "closed") && props.error}>
 				<span class="status-reason">{props.error}</span>

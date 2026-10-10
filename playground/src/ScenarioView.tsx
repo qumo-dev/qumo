@@ -9,13 +9,15 @@ import { sanitizeReason } from "./errors.ts";
 import { buildTransportOptions, type CertHashProblem } from "./cert.ts";
 import { getConfig, type RelayEndpoint, relayEndpoint } from "./config.ts";
 import { relayUrlFor, type ScenarioId, SCENARIOS } from "./scenarios.ts";
+import { chooseTransport, webSocketUrlFor } from "./transport.ts";
 import { PushInstructions } from "./PushInstructions.tsx";
 import { CameraPullForm, type PullState } from "./CameraPullForm.tsx";
 import { DevtoolsPanel } from "./devtools/DevtoolsPanel.tsx";
 import { Recorder } from "./devtools/recorder.ts";
 import { watchMainThread } from "./devtools/stall_monitor.ts";
 
-// Owns one WebTransport session for the active scenario. Each scenario is a
+// Owns one session for the active scenario, over WebTransport or, on a
+// browser whose WebTransport does not work, WebSocket (see transport.ts). Each scenario is a
 // different origin, so the parent <Show> remounts this component (tearing down
 // the old session via onCleanup) whenever the scenario changes.
 export function ScenarioView(props: {
@@ -35,6 +37,11 @@ export function ScenarioView(props: {
 	const showsSubscriber = () => !isHls && (isCamera ? pullActive() : true);
 
 	const mux = DefaultTrackMux;
+	const transport = chooseTransport(
+		navigator.userAgent,
+		location.search,
+		scenario.port === undefined,
+	);
 	// Where the relay and the ingest origins are reached; unknown until the
 	// runtime config has been read.
 	const [relay, setRelay] = createSignal<RelayEndpoint>();
@@ -65,10 +72,14 @@ export function ScenarioView(props: {
 		if (!certReady || to === undefined || dialled) return;
 		dialled = true;
 		setConnState("connecting");
-		const connected = connect(relayUrlFor(props.scenario, to), {
-			mux,
-			transportOptions: cachedTransportOptions!,
-		});
+		const url = relayUrlFor(props.scenario, to);
+		const connected = transport === "websocket"
+			? connect(url, {
+				mux,
+				transport,
+				webSocketURL: webSocketUrlFor(url, location.protocol),
+			})
+			: connect(url, { mux, transportOptions: cachedTransportOptions! });
 		dialSession(connected);
 		connected.then(
 			(s) => {
@@ -100,7 +111,10 @@ export function ScenarioView(props: {
 
 	onMount(async () => {
 		const cfg = await getConfig();
-		const { transportOptions, problem } = buildTransportOptions(cfg.certHash);
+		const { transportOptions, problem: pinProblem } = buildTransportOptions(cfg.certHash);
+		// Only WebTransport pins the certificate: WebSocket has no use for
+		// the hash, so its absence is no problem there.
+		const problem = transport === "webtransport" ? pinProblem : null;
 		cachedTransportOptions = transportOptions;
 		cachedProblem = problem;
 		certReady = true;
@@ -130,6 +144,7 @@ export function ScenarioView(props: {
 			<Show when={!isCamera || pullActive()}>
 				<ConnectionStatus
 					state={connState()}
+					transport={transport}
 					error={connError()}
 					certHashProblem={certHashProblem()}
 				/>
