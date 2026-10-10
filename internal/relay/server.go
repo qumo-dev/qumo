@@ -281,6 +281,11 @@ func (s *Server) init() {
 				sampleConnStats(provider, addr) // immediate first sample
 				context.AfterFunc(conn.Context(), func() { s.sampler.removeConn(addr) })
 			}
+			if admissionFrom(ctx) != nil {
+				// A WebSocket session: admitted at its upgrade, whose
+				// context this one derives from.
+				return ctx
+			}
 			// relayPeer decides the admission once the session's SETUP has
 			// named its path; a subscription arriving before then waits.
 			return withAdmission(ctx, pendingAdmission())
