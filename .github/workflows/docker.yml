@@ -5,6 +5,7 @@ on:
     branches: [ main, develop ]
     paths:
       - 'docker/**'
+      - '.github/workflows/docker.yml'
       - 'go.mod'
       - 'go.sum'
       - '*.go'
@@ -13,6 +14,7 @@ on:
     branches: [ main, develop ]
     paths:
       - 'docker/**'
+      - '.github/workflows/docker.yml'
       - 'go.mod'
       - 'go.sum'
       - '*.go'
@@ -51,6 +53,23 @@ jobs:
           tags: qumo:ci-test
           cache-from: type=gha
           cache-to: type=gha,mode=min
+
+      # The release builds linux/arm64 too. The build stage cross-compiles, so
+      # this costs little here, and a Dockerfile that only builds for the
+      # runner's own platform is found before a tag is pushed, not after.
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v4
+        with:
+          platforms: arm64
+
+      - name: Build for linux/arm64
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: docker/Dockerfile
+          platforms: linux/arm64
+          push: false
+          cache-from: type=gha
 
       - name: Scan image for vulnerabilities
         # SHA: aquasecurity/trivy-action@0.35.0 (commit 57a97c7).

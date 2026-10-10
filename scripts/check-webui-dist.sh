@@ -3,8 +3,8 @@
 # matches byte-for-byte. Shared by ci.yml ("Web UI dist freshness") and
 # release.yml (pre-GoReleaser gate) so the PR gate and the tag-time gate
 # cannot drift apart. Requires deno on PATH — the build output must be
-# reproducible, so the deno version is pinned in both workflows (and in
-# docker/Dockerfile). Node is NOT needed: `deno task build` runs Vite on the
+# reproducible, so the deno version is pinned in both workflows. The Docker
+# image embeds the committed dist too, without rebuilding it. Node is NOT needed: `deno task build` runs Vite on the
 # Deno runtime via @deno/vite-plugin, resolving npm deps from deno.lock.
 # Same build recipe as `mage webbuild` (magefiles/magefile.go).
 #
