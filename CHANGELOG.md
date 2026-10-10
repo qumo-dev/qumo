@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [v0.14.261010] - 2026-10-10
+
+> **For operators.** `RELAY_ADDR`'s TCP port now takes WebSocket with TLS next to its plain HTTP, for browsers whose WebTransport does not work (WebKit). Open that port for TCP wherever it is open for UDP, or set `WS_ENABLE=0`. See **Added** below.
+
 > **Breaking for funnel senders.** A funnel takes posts only with a `post` scope; a `publish` scope, including a `path_auth` token's `pub`, no longer posts. See **Changed** below.
 
 ### Added
