@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 )
 
 // Key is a public signing key a verifier trusts.
@@ -22,6 +23,18 @@ type Key struct {
 	// Prefix confines every path a token signed by this key may grant, at a
 	// "/" boundary. Empty leaves the key unconstrained.
 	Prefix string
+	// Pause lists what the key starts no new sessions for. Only ActionPublish
+	// can be paused: a verifier then starts no session that may publish a
+	// broadcast with the key (publish, or post, on every track of one), for
+	// example while its owner is at a limit on broadcasts. Sessions that only
+	// subscribe, fetch, post into one track or redact still start, and live
+	// sessions continue.
+	Pause []Action
+}
+
+// Pauses reports whether the key starts no new sessions for action.
+func (k Key) Pauses(action Action) bool {
+	return slices.Contains(k.Pause, action)
 }
 
 // SigningKey is an app's private signing key. Keep it on the app's server;
@@ -56,19 +69,24 @@ func (k SigningKey) Public() Key {
 	return Key{ID: k.ID, Public: k.Private.Public().(ed25519.PublicKey), Prefix: k.Prefix}
 }
 
-// jwk is one Ed25519 key in JWK form (RFC 8037), plus a "prefix" member. D is
-// set only for a private key.
+// jwk is one Ed25519 key in JWK form (RFC 8037), plus "prefix" and "pause"
+// members. D is set only for a private key.
 type jwk struct {
-	Kty    string `json:"kty"`
-	Crv    string `json:"crv"`
-	X      string `json:"x"`
-	D      string `json:"d,omitempty"`
-	Kid    string `json:"kid,omitempty"`
-	Prefix string `json:"prefix,omitempty"`
+	Kty    string   `json:"kty"`
+	Crv    string   `json:"crv"`
+	X      string   `json:"x"`
+	D      string   `json:"d,omitempty"`
+	Kid    string   `json:"kid,omitempty"`
+	Prefix string   `json:"prefix,omitempty"`
+	Pause  []Action `json:"pause,omitempty"`
+	// Publish is read only to refuse it: "publish": false was the earlier
+	// spelling of "pause": ["publish"], and a verifier that ignored it would
+	// leave a key unpaused that its server meant to pause.
+	Publish *bool `json:"publish,omitempty"`
 }
 
 func (k Key) jwk() jwk {
-	return jwk{Kty: "OKP", Crv: "Ed25519", X: base64.RawURLEncoding.EncodeToString(k.Public), Kid: k.ID, Prefix: k.Prefix}
+	return jwk{Kty: "OKP", Crv: "Ed25519", X: base64.RawURLEncoding.EncodeToString(k.Public), Kid: k.ID, Prefix: k.Prefix, Pause: k.Pause}
 }
 
 // MarshalKeySet encodes keys as a JWK Set, the file a relay loads
@@ -127,8 +145,10 @@ func LoadSigningKey(path string) (SigningKey, error) {
 
 // ParseKeySet decodes a JWK Set of Ed25519 public keys, by kid. A key without
 // a kid gets its RFC 7638 thumbprint; a key whose kid differs from it, or that
-// is listed twice, is refused. Any key that can't be used is an error, not skipped: the set is
-// configuration.
+// is listed twice, is refused. A key's "pause" may list only "publish", so a
+// misspelled entry can't leave a key unpaused, and the earlier "publish"
+// member is refused. Any key that can't be used is an error, not skipped: the
+// set is configuration.
 func ParseKeySet(raw []byte) (map[string]Key, error) {
 	var set struct {
 		Keys []jwk `json:"keys"`
@@ -163,7 +183,15 @@ func ParseKeySet(raw []byte) (map[string]Key, error) {
 		if err != nil {
 			return nil, fmt.Errorf("token: key %d: prefix: %w", i, err)
 		}
-		keys[kid] = Key{ID: kid, Public: ed25519.PublicKey(x), Prefix: prefix}
+		if k.Publish != nil {
+			return nil, fmt.Errorf(`token: key %d: "publish" is no longer read; pause publishing with "pause": [%q]`, i, ActionPublish)
+		}
+		for _, a := range k.Pause {
+			if a != ActionPublish {
+				return nil, fmt.Errorf("token: key %d: pause %q: only %q can be paused", i, a, ActionPublish)
+			}
+		}
+		keys[kid] = Key{ID: kid, Public: ed25519.PublicKey(x), Prefix: prefix, Pause: k.Pause}
 	}
 	return keys, nil
 }

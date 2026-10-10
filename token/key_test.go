@@ -31,6 +31,7 @@ func TestParseKeySet(t *testing.T) {
 		raw         string
 		wantKid     string
 		wantPrefix  string
+		wantPause   []Action
 		wantErr     error
 		wantErrText string
 	}{
@@ -52,6 +53,25 @@ func TestParseKeySet(t *testing.T) {
 			raw:        `{"keys":[{"kty":"OKP","crv":"Ed25519","x":"` + rfc8037X + `","prefix":"/acme//app/"}]}`,
 			wantKid:    rfc8037Kid,
 			wantPrefix: "acme/app",
+		},
+		"publishing paused": {
+			raw:       `{"keys":[{"kty":"OKP","crv":"Ed25519","x":"` + rfc8037X + `","pause":["publish"]}]}`,
+			wantKid:   rfc8037Kid,
+			wantPause: []Action{ActionPublish},
+		},
+		"pause names something else": {
+			raw:         `{"keys":[{"kty":"OKP","crv":"Ed25519","x":"` + rfc8037X + `","pause":["subscribe"]}]}`,
+			wantErrText: "only",
+		},
+		"pause misspelled": {
+			raw:         `{"keys":[{"kty":"OKP","crv":"Ed25519","x":"` + rfc8037X + `","pause":["publsh"]}]}`,
+			wantErrText: "only",
+		},
+		// A server still writing the earlier spelling means to pause; ignoring
+		// it would leave the key unpaused.
+		"the earlier publish member": {
+			raw:         `{"keys":[{"kty":"OKP","crv":"Ed25519","x":"` + rfc8037X + `","publish":false}]}`,
+			wantErrText: `"publish" is no longer read`,
 		},
 		"kid not the thumbprint": {
 			raw:         `{"keys":[{"kty":"OKP","crv":"Ed25519","x":"` + rfc8037X + `","kid":"other"}]}`,
@@ -95,9 +115,32 @@ func TestParseKeySet(t *testing.T) {
 				require.NoError(t, err)
 				require.Contains(t, keys, tt.wantKid)
 				assert.Equal(t, tt.wantPrefix, keys[tt.wantKid].Prefix)
+				assert.Equal(t, tt.wantPause, keys[tt.wantKid].Pause)
 			}
 		})
 	}
+}
+
+// A key set a server writes with MarshalKeySet reads back with each key's
+// prefix and pause.
+func TestMarshalKeySet_RoundTrip(t *testing.T) {
+	free, err := GenerateKey("acme/app")
+	require.NoError(t, err)
+	limited, err := GenerateKey("acme/app")
+	require.NoError(t, err)
+	paused := limited.Public()
+	paused.Pause = []Action{ActionPublish}
+
+	raw, err := MarshalKeySet(free.Public(), paused)
+	require.NoError(t, err)
+	keys, err := ParseKeySet(raw)
+
+	require.NoError(t, err)
+	assert.Equal(t, free.Public(), keys[free.ID])
+	assert.Equal(t, paused, keys[limited.ID])
+	assert.False(t, keys[free.ID].Pauses(ActionPublish))
+	assert.True(t, keys[limited.ID].Pauses(ActionPublish))
+	assert.NotContains(t, string(raw), `"pause"`+`:null`, "an unpaused key carries no pause")
 }
 
 // What keygen writes, the relay and the app read back: the public key
