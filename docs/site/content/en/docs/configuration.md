@@ -118,20 +118,24 @@ relay's HTTP port.
 |---|---|---|
 | `CORS_ALLOWED_ORIGINS` | (unset) | Origins permitted to open WebTransport sessions to `qumo relay`, `qumo rtmp`, and `qumo rtsp`/`rtsp-push`. Comma-separated. `*` allows any origin; `same-host` allows any port on the request's own host. If unset, only same-origin and headerless (non-browser) clients are accepted. |
 
-## WebSocket fallback (optional)
+## WebSocket fallback
 
-WebTransport does not work on WebKit: a session stalls after about 7,600 streams or 16 MB ([WebKit bug 319818](https://bugs.webkit.org/show_bug.cgi?id=319818)), and every browser on iOS is WebKit. With the fallback on, the relay also takes WebSocket upgrades on its client endpoint (`/`) and serves them as MoQ sessions over [QMux](https://www.ietf.org/archive/id/draft-ietf-quic-qmux-02.html). `@qumo/moq` picks WebSocket by itself on WebKit.
+WebTransport does not work on WebKit: a session stalls after about 7,600 streams or 16 MB ([WebKit bug 319818](https://bugs.webkit.org/show_bug.cgi?id=319818)), and every browser on iOS is WebKit. So the relay also takes WebSocket upgrades on its client endpoint (`/`) and serves them as MoQ sessions over [QMux](https://www.ietf.org/archive/id/draft-ietf-quic-qmux-02.html), on a TCP port of its own with TLS. It is on by default. `@qumo/moq` picks WebSocket by itself on WebKit.
 
 | Variable | Default | Description |
 |---|---|---|
-| `WS_ENABLE` | (unset) | `1` takes WebSocket upgrades on `RELAY_ADDR`'s TCP port. That port is plain HTTP and browsers need `wss://`, so put TLS in front of it (a proxy or a load balancer), or set `WS_TLS_ADDR`. |
-| `WS_TLS_ADDR` | (unset) | A TCP address, such as `:443`, to take WebSocket upgrades on with TLS, using `CERT_FILE` and `KEY_FILE`. Implies `WS_ENABLE`. It takes WebSocket upgrades and nothing else (anything else gets `426`); health, status and metrics stay on `RELAY_ADDR`. It must be a port other than `RELAY_ADDR`'s. |
+| `WS_PORT` | `4434` | The TCP port WebSocket upgrades are taken on with TLS, on `RELAY_ADDR`'s host and with `CERT_FILE` and `KEY_FILE`. A port, not an address. It takes WebSocket upgrades and nothing else (anything else gets `426`); health, status and metrics stay on `RELAY_ADDR`. It must be a port other than `RELAY_ADDR`'s. `0` opens no such port: upgrades then arrive only on `RELAY_ADDR`'s TCP port, which is plain HTTP, for a proxy or a load balancer that terminates TLS. |
+| `WS_ENABLE` | `1` | `0` takes no WebSocket upgrades at all. |
+
+Open the port to clients as you do `RELAY_ADDR`'s UDP port: a client reaches it at `wss://relay.example.com:4434/…`.
+
+A relay that cannot have the default port starts without it and logs a warning, so that several relays on one host keep starting; give each its own `WS_PORT`. A `WS_PORT` you set that cannot be had stops the relay.
 
 A WebSocket session is admitted exactly as a WebTransport one: the same paths, the same credential in the URL (`wss://relay.example.com/…?jwt=…`), the same grant and the same revalidation. Sessions on every transport share tracks, so a publisher on one reaches subscribers on the others.
 
 **A refused WebSocket client is told so in the session, not in the handshake.** A browser hides the HTTP status of a failed WebSocket handshake from the page, which could then not tell a refusal from a relay it cannot reach. So the relay completes the upgrade and closes the session at once with the MoQ `Unauthorized` code and a reason: `refused` for a credential it does not accept, `unavailable` when it could not check one just now. A WebTransport client still gets `401`, `403` or `503`.
 
-**Behind a proxy, the remote address is the proxy's.** With `WS_ENABLE` and TLS in front, connect and end reports and the relay's logs carry the proxy's address for every WebSocket session: the relay reads no forwarding header. `WS_TLS_ADDR` has the client's own.
+**Behind a proxy, the remote address is the proxy's.** With TLS in front of `RELAY_ADDR`'s port, connect and end reports and the relay's logs carry the proxy's address for every WebSocket session that comes through it: the relay reads no forwarding header. A session on `WS_PORT` has the client's own.
 
 `CORS_ALLOWED_ORIGINS` applies to WebSocket upgrades too, and there it is the only origin check: browsers do not apply CORS to WebSocket.
 

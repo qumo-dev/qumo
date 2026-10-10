@@ -53,6 +53,7 @@ services:
     ports:
       - "4433:4433/udp"   # MoQT (QUIC)
       - "4433:4433/tcp"   # HTTP health/metrics
+      - "4434:4434/tcp"   # MoQT over WebSocket (wss), for WebKit
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "-", "http://localhost:4433/health"]
       interval: 15s

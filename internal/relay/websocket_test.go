@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -277,33 +278,113 @@ func TestRefusalReason(t *testing.T) {
 	}
 }
 
-func TestCheckWebSocketAddr(t *testing.T) {
+func TestLoadWebSocketSettings(t *testing.T) {
+	const unset = ""
 	tests := map[string]struct {
+		enable    string
+		port      string
 		relayAddr string
-		wsAddr    string
+		want      webSocketSettings
 		wantErr   string
 	}{
-		"no listener":                    {relayAddr: ":4433", wsAddr: ""},
-		"a port of its own":              {relayAddr: ":4433", wsAddr: ":443"},
-		"the same port on another host":  {relayAddr: "127.0.0.1:4433", wsAddr: "192.0.2.1:4433"},
-		"RELAY_ADDR's port":              {relayAddr: ":4433", wsAddr: ":4433", wantErr: "RELAY_ADDR's TCP port"},
-		"RELAY_ADDR's port on one host":  {relayAddr: "127.0.0.1:4433", wsAddr: "127.0.0.1:4433", wantErr: "RELAY_ADDR's TCP port"},
-		"RELAY_ADDR's port on all hosts": {relayAddr: "127.0.0.1:4433", wsAddr: ":4433", wantErr: "RELAY_ADDR's TCP port"},
-		"all hosts under one of them":    {relayAddr: ":4433", wsAddr: "127.0.0.1:4433", wantErr: "RELAY_ADDR's TCP port"},
-		"not an address":                 {relayAddr: ":4433", wsAddr: "443", wantErr: "invalid WS_TLS_ADDR"},
-		"a RELAY_ADDR that is not one":   {relayAddr: "4433", wsAddr: ":443"},
+		"defaults": {
+			enable: unset, port: unset, relayAddr: ":4433",
+			want: webSocketSettings{enabled: true, addr: ":4434"},
+		},
+		"on RELAY_ADDR's host": {
+			enable: unset, port: unset, relayAddr: "127.0.0.1:4433",
+			want: webSocketSettings{enabled: true, addr: "127.0.0.1:4434"},
+		},
+		"on RELAY_ADDR's IPv6 host": {
+			enable: unset, port: unset, relayAddr: "[::1]:4433",
+			want: webSocketSettings{enabled: true, addr: "[::1]:4434"},
+		},
+		"a port of its own": {
+			enable: unset, port: "443", relayAddr: ":4433",
+			want: webSocketSettings{enabled: true, addr: ":443", explicit: true},
+		},
+		"0 opens no port": {
+			enable: unset, port: "0", relayAddr: ":4433",
+			want: webSocketSettings{enabled: true, explicit: true},
+		},
+		"WebSocket off": {
+			enable: "0", port: "443", relayAddr: ":4433",
+			want: webSocketSettings{},
+		},
+		"the default port is RELAY_ADDR's": {
+			enable: unset, port: unset, relayAddr: ":4434",
+			want: webSocketSettings{enabled: true},
+		},
+		"a RELAY_ADDR that is not an address": {
+			enable: unset, port: unset, relayAddr: "4433",
+			want: webSocketSettings{enabled: true, addr: ":4434"},
+		},
+		"RELAY_ADDR's port, chosen": {
+			enable: unset, port: "4433", relayAddr: ":4433", wantErr: "RELAY_ADDR's TCP port",
+		},
+		"an address, not a port": {
+			enable: unset, port: ":443", relayAddr: ":4433", wantErr: "invalid WS_PORT",
+		},
+		"not a number": {
+			enable: unset, port: "https", relayAddr: ":4433", wantErr: "invalid WS_PORT",
+		},
+		"out of range": {
+			enable: unset, port: "70000", relayAddr: ":4433", wantErr: "invalid WS_PORT",
+		},
+		"negative": {
+			enable: unset, port: "-1", relayAddr: ":4433", wantErr: "invalid WS_PORT",
+		},
 	}
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
-			err := checkWebSocketAddr(tt.relayAddr, tt.wsAddr)
+			// An empty variable is an unset one.
+			t.Setenv("WS_ENABLE", tt.enable)
+			t.Setenv("WS_PORT", tt.port)
 
-			if tt.wantErr == "" {
-				assert.NoError(t, err)
+			got, err := loadWebSocketSettings(tt.relayAddr)
+
+			if tt.wantErr != "" {
+				assert.ErrorContains(t, err, tt.wantErr)
 				return
 			}
-			assert.ErrorContains(t, err, tt.wantErr)
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, got)
 		})
 	}
+}
+
+// A default port that is taken is done without; a chosen one is an error.
+func TestWebSocketSettings_listen(t *testing.T) {
+	taken, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	defer func() { assert.NoError(t, taken.Close()) }()
+	addr := taken.Addr().String()
+
+	t.Run("no port", func(t *testing.T) {
+		ln, err := webSocketSettings{enabled: true}.listen()
+
+		require.NoError(t, err)
+		assert.Nil(t, ln)
+	})
+	t.Run("a free port", func(t *testing.T) {
+		ln, err := webSocketSettings{enabled: true, addr: "127.0.0.1:0"}.listen()
+
+		require.NoError(t, err)
+		require.NotNil(t, ln)
+		assert.NoError(t, ln.Close())
+	})
+	t.Run("the default port is taken", func(t *testing.T) {
+		ln, err := webSocketSettings{enabled: true, addr: addr}.listen()
+
+		require.NoError(t, err)
+		assert.Nil(t, ln)
+	})
+	t.Run("a chosen port is taken", func(t *testing.T) {
+		ln, err := webSocketSettings{enabled: true, addr: addr, explicit: true}.listen()
+
+		assert.ErrorContains(t, err, "WS_PORT")
+		assert.Nil(t, ln)
+	})
 }
 
 func TestSessionTransport(t *testing.T) {
@@ -340,26 +421,29 @@ func TestSessionTransport(t *testing.T) {
 	}
 }
 
-func TestEnvBool(t *testing.T) {
+func TestEnvBoolDefault(t *testing.T) {
 	tests := map[string]struct {
 		value string
+		def   bool
 		want  bool
 	}{
-		"1":             {value: "1", want: true},
-		"true":          {value: "true", want: true},
-		"any case":      {value: "TRUE", want: true},
-		"yes":           {value: "yes", want: true},
-		"on":            {value: " on ", want: true},
-		"unset":         {value: ""},
-		"0":             {value: "0"},
-		"false":         {value: "false"},
-		"anything else": {value: "enabled"},
+		"1":                            {value: "1", want: true},
+		"true, in any case":            {value: "TRUE", want: true},
+		"yes":                          {value: "yes", want: true},
+		"on, with spaces":              {value: " on ", want: true},
+		"0 over a true default":        {value: "0", def: true, want: false},
+		"false over a true default":    {value: "false", def: true, want: false},
+		"no":                           {value: "no", def: true, want: false},
+		"off":                          {value: "OFF", def: true, want: false},
+		"unset keeps a true default":   {value: "", def: true, want: true},
+		"unset keeps a false default":  {value: "", def: false, want: false},
+		"anything else is the default": {value: "enabled", def: true, want: true},
 	}
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
 			t.Setenv("QUMO_TEST_ENV_BOOL", tt.value)
 
-			got := envBool("QUMO_TEST_ENV_BOOL")
+			got := envBoolDefault("QUMO_TEST_ENV_BOOL", tt.def)
 
 			assert.Equal(t, tt.want, got)
 		})

@@ -49,7 +49,8 @@ type Config struct {
 	// WebSocket makes HandleWebTransport also take WebSocket upgrades and
 	// serve them as MoQ sessions over QMux, for clients whose WebTransport
 	// does not work (every browser on WebKit). Such a session is admitted
-	// exactly as a WebTransport one. Set via WS_ENABLE or WS_TLS_ADDR.
+	// exactly as a WebTransport one. The relay command sets it unless WS_ENABLE
+	// turns it off.
 	WebSocket bool
 
 	// NextSessionURI is the redirect URI sent to clients/peers in a GOAWAY
