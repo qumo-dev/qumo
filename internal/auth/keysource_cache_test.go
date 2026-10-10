@@ -1,14 +1,11 @@
 package auth
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
-	"log/slog"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
@@ -105,12 +102,7 @@ func TestURLKeySource_UnchangedSetKeepsTheCacheFresh(t *testing.T) {
 
 func TestVerifier_PublishLimit(t *testing.T) {
 	limited, free := genKey(t, "acme/app"), genKey(t, "acme/app")
-	raw := []byte(`{"keys":[` +
-		keyEntry(t, limited, map[string]any{"publish": false}) + `,` + keyEntry(t, free, nil) + `]}`)
-	set, err := parseKeySet(raw)
-	require.NoError(t, err)
-	assert.True(t, set.pausedPublish[limited.ID])
-	assert.False(t, set.pausedPublish[free.ID])
+	raw := keySetJSON(t, []token.SigningKey{limited, free}, limited)
 	v := verifierWith(t, raw, time.Now())
 
 	tests := map[string]struct {
@@ -156,35 +148,6 @@ func TestVerifier_PublishLimit(t *testing.T) {
 // scoped is a grant of actions on every track beneath acme/app/live.
 func scoped(actions ...token.Action) token.Grant {
 	return token.Grant{Scopes: []token.Scope{{Actions: actions, Broadcast: "acme/app/live", Prefix: true}}}
-}
-
-// TestKeyStore_DeprecatedPublishWarning pins that a set pausing keys with the
-// deprecated "publish": false is warned about once, naming the keys, and not
-// again on refreshes that load the same keys.
-func TestKeyStore_DeprecatedPublishWarning(t *testing.T) {
-	var logs bytes.Buffer
-	prev := slog.Default()
-	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
-	t.Cleanup(func() { slog.SetDefault(prev) })
-
-	limited, free := genKey(t, "acme/app"), genKey(t, "acme/app")
-	deprecated := []byte(`{"keys":[` +
-		keyEntry(t, limited, map[string]any{"publish": false}) + `,` + keyEntry(t, free, nil) + `]}`)
-	var store keyStore
-	replace := func(raw []byte) int {
-		t.Helper()
-		set, err := parseKeySet(raw)
-		require.NoError(t, err)
-		store.replace(set, time.Now())
-		return strings.Count(logs.String(), "deprecated")
-	}
-
-	assert.Equal(t, 1, replace(deprecated), "first load")
-	assert.Contains(t, logs.String(), limited.ID)
-	assert.NotContains(t, logs.String(), free.ID)
-	assert.Equal(t, 1, replace(deprecated), "a refresh to the same set")
-	assert.Equal(t, 1, replace(keySetJSON(t, []token.SigningKey{limited, free}, limited)), "the new spelling")
-	assert.Equal(t, 2, replace(deprecated), "the old spelling again")
 }
 
 // keyEntry is k's public JWK with the given members added.

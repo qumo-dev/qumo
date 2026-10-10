@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+> **Breaking for key-set servers.** A key set carrying `"publish"` on a key is refused; write `"pause": ["publish"]`. See **Changed** below.
+
+### Added
+
+- **`token.Key` carries its pause (`token`).** `Key.Pause` lists what the key starts no new sessions for (only `token.ActionPublish`), and `Key.Pauses` reports it. `MarshalKeySet` writes it as `"pause"` and `ParseKeySet` reads it, so a key-set server builds the set from `token.Key` values instead of writing JSON by hand. The relay and the funnel read the pause from the same parse.
+
+### Changed
+
+- **`"publish": false` is gone (`token`, `internal/auth`).** It was the deprecated spelling of `"pause": ["publish"]`. A set carrying a `"publish"` member on a key is now refused, rather than ignored: the server means to pause the key, and ignoring the member would leave it unpaused. The relay's warning about the old spelling goes with it.
+
 ### Changed
 
 - **The Docker image is built without emulating its build (`docker/Dockerfile`).** The v0.14.261010 image build crashed: the arm64 half ran Deno and Vite under QEMU to rebuild the playground UI (`qemu: uncaught target signal 4 (Illegal instruction)`), and the retry that passed took 16 minutes.

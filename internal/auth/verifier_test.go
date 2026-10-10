@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"testing/synctest"
@@ -31,33 +32,20 @@ func genKey(t *testing.T, prefix string) token.SigningKey {
 	return k
 }
 
-// keySetJSON is a JWK Set of keys, with "pause": ["publish"] on those in
+// keySetJSON is a JWK Set of keys, with publishing paused on those in
 // pausedPublish.
 func keySetJSON(t *testing.T, keys []token.SigningKey, pausedPublish ...token.SigningKey) []byte {
 	t.Helper()
 	public := make([]token.Key, len(keys))
 	for i, k := range keys {
 		public[i] = k.Public()
+		if slices.ContainsFunc(pausedPublish, func(p token.SigningKey) bool { return p.ID == k.ID }) {
+			public[i].Pause = []token.Action{token.ActionPublish}
+		}
 	}
 	raw, err := token.MarshalKeySet(public...)
 	require.NoError(t, err)
-	if len(pausedPublish) == 0 {
-		return raw
-	}
-	var set struct {
-		Keys []map[string]any `json:"keys"`
-	}
-	require.NoError(t, json.Unmarshal(raw, &set))
-	for _, entry := range set.Keys {
-		for _, k := range pausedPublish {
-			if entry["kid"] == k.ID {
-				entry["pause"] = []string{"publish"}
-			}
-		}
-	}
-	out, err := json.Marshal(set)
-	require.NoError(t, err)
-	return out
+	return raw
 }
 
 func TestParseKeySet(t *testing.T) {
@@ -67,8 +55,8 @@ func TestParseKeySet(t *testing.T) {
 	require.NoError(t, err)
 	assert.Len(t, set.keys, 2)
 	assert.Equal(t, "acme/app", set.keys[active.ID].Prefix)
-	assert.False(t, set.pausedPublish[active.ID])
-	assert.True(t, set.pausedPublish[limited.ID])
+	assert.False(t, set.keys[active.ID].Pauses(token.ActionPublish))
+	assert.True(t, set.keys[limited.ID].Pauses(token.ActionPublish))
 
 	empty, err := parseKeySet([]byte(`{"keys":[]}`))
 	require.NoError(t, err, "an empty set is valid: it admits nothing")
@@ -82,11 +70,11 @@ func TestParseKeySet(t *testing.T) {
 			require.NoError(t, json.Unmarshal(one, &set))
 			return `{"keys":[` + string(set.Keys[0]) + `,` + string(set.Keys[0]) + `]}`
 		}(),
-		"private key":      `{"keys":[{"kty":"OKP","crv":"Ed25519","x":"11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo","d":"nWGxne_9WmC6hEr0kuwsxERJxWl7MmkZcDusAxyuf2A"}]}`,
-		"unknown pause":    `{"keys":[` + keyEntry(t, active, map[string]any{"pause": []string{"publsh"}}) + `]}`,
-		"pause not a list": `{"keys":[` + keyEntry(t, active, map[string]any{"pause": "publish"}) + `]}`,
-		"publish true contradicts a pause": `{"keys":[` +
-			keyEntry(t, active, map[string]any{"publish": true, "pause": []string{"publish"}}) + `]}`,
+		"private key":               `{"keys":[{"kty":"OKP","crv":"Ed25519","x":"11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo","d":"nWGxne_9WmC6hEr0kuwsxERJxWl7MmkZcDusAxyuf2A"}]}`,
+		"unknown pause":             `{"keys":[` + keyEntry(t, active, map[string]any{"pause": []string{"publsh"}}) + `]}`,
+		"pause not a list":          `{"keys":[` + keyEntry(t, active, map[string]any{"pause": "publish"}) + `]}`,
+		"the earlier publish false": `{"keys":[` + keyEntry(t, active, map[string]any{"publish": false}) + `]}`,
+		"the earlier publish true":  `{"keys":[` + keyEntry(t, active, map[string]any{"publish": true}) + `]}`,
 		"pause named twice": `{"keys":[{"pause":["publish"],"pause":[],` +
 			strings.TrimPrefix(keyEntry(t, active, nil), "{") + `]}`,
 		"keys named twice":           `{"keys":[],"keys":[` + keyEntry(t, active, nil) + `]}`,
@@ -109,10 +97,7 @@ func TestParseKeySet_Pause(t *testing.T) {
 		"nothing":                         {members: nil, paused: false},
 		"pause publish":                   {members: map[string]any{"pause": []string{"publish"}}, paused: true},
 		"pause nothing":                   {members: map[string]any{"pause": []string{}}, paused: false},
-		"deprecated publish false":        {members: map[string]any{"publish": false}, paused: true},
-		"deprecated publish true":         {members: map[string]any{"publish": true}, paused: false},
-		"either form pausing is a pause":  {members: map[string]any{"publish": false, "pause": []string{"publish"}}, paused: true},
-		"names are case-sensitive":        {members: map[string]any{"Pause": []string{"publish"}, "Publish": false}, paused: false},
+		"names are case-sensitive":        {members: map[string]any{"Pause": []string{"publish"}}, paused: false},
 		"another case can't unpause":      {members: map[string]any{"pause": []string{"publish"}, "Pause": []string{}}, paused: true},
 		"unknown member is ignored":       {members: map[string]any{"paused": []string{"publish"}}, paused: false},
 		"pause listed twice is one pause": {members: map[string]any{"pause": []string{"publish", "publish"}}, paused: true},
@@ -122,7 +107,7 @@ func TestParseKeySet_Pause(t *testing.T) {
 			set, err := parseKeySet([]byte(`{"keys":[` + keyEntry(t, key, tt.members) + `]}`))
 
 			require.NoError(t, err)
-			assert.Equal(t, tt.paused, set.pausedPublish[key.ID])
+			assert.Equal(t, tt.paused, set.keys[key.ID].Pauses(token.ActionPublish))
 		})
 	}
 }
