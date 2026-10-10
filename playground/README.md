@@ -168,6 +168,28 @@ share one `mage cert` certificate. With mkcert the single cert is
 browser-trusted for every origin; in the self-signed fallback a single
 `VITE_CERT_HASH` (from `mage cert`) validates them.
 
+## Transport
+
+The demo reaches the relay over WebTransport, except on WebKit (Safari, and
+every browser on iOS), where it takes WebSocket: WebKit's WebTransport stalls
+after about 7,600 streams or 16 MB
+([WebKit bug 319818](https://bugs.webkit.org/show_bug.cgi?id=319818)). The
+status line and the DevTools figures say which one a session is on.
+
+- `?transport=websocket` or `?transport=webtransport` in the address
+  overrides the choice, to try either on any browser. **Copy link** leaves it
+  out.
+- From a page on plain http, WebSocket is dialed without TLS (`ws://`) on the
+  relay's port, when the relay is on the page's host or on this machine. That
+  is the relay on its development certificate, which WebTransport pins by its
+  hash and WebSocket cannot. Otherwise it is `wss://`, which needs a
+  certificate the browser trusts.
+- WebSocket is dialed on the port the relay's URL names. A relay that takes it
+  elsewhere (`WS_PORT`) is not reached: `/config` does not say where.
+- Only the relay takes WebSocket. The RTMP, RTSP and IP-camera scenarios reach
+  an ingest on a port of its own, over WebTransport whatever the browser. On
+  WebKit the status line warns that such a session will freeze.
+
 ## Controls
 
 - **Publish (Echo):** source (camera, screen, or a test pattern made in the
@@ -219,7 +241,8 @@ src/
   ScenarioPicker.tsx   Echo / RTMP / RTSP tab selector (#137)
   PathControl.tsx      Shared editable path + copy/share (#137)
   PushInstructions.tsx ffmpeg push command for ingest scenarios (#141)
-  ConnectionStatus.tsx WebTransport lifecycle indicator (#134)
+  ConnectionStatus.tsx Session lifecycle indicator, with its transport (#134)
+  transport.ts         WebTransport or WebSocket, per browser or ?transport=
   scenarios.ts         Scenario registry (ports, modes, push commands)
   cert.ts              VITE_CERT_HASH parsing + transport options
   publish/             Publish board, and the publisher behind it (publisher.ts):

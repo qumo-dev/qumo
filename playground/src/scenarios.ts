@@ -76,6 +76,12 @@ export function isScenarioId(x: string): x is ScenarioId {
 // Each scenario is a WebTransport origin on the one host the runtime config
 // names (see relayEndpoint in config.ts): the relay itself, on the port it was
 // started on, or an ingest on a port of its own.
+// Whether a scenario's session is with the relay itself, not with an ingest
+// on a port of its own. Only the relay takes WebSocket (see transport.ts).
+export function servedByRelay(id: ScenarioId): boolean {
+	return SCENARIOS[id].port === undefined;
+}
+
 export function relayUrlFor(id: ScenarioId, relay: RelayEndpoint): string {
 	return `https://${relay.host}:${SCENARIOS[id].port ?? relay.port}`;
 }

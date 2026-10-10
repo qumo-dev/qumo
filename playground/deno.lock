@@ -3,7 +3,7 @@
   "specifiers": {
     "jsr:@okdaichi/golikejs@0.10.0": "0.10.0",
     "jsr:@okdaichi/media-log@0.1": "0.1.0",
-    "jsr:@qumo/moq@0.20": "0.20.0",
+    "jsr:@qumo/moq@0.23": "0.23.0",
     "jsr:@std/assert@*": "1.0.16",
     "jsr:@std/assert@^1.0.19": "1.0.19",
     "jsr:@std/async@^1.5.1": "1.5.1",
@@ -15,6 +15,7 @@
     "jsr:@std/path@^1.1.6": "1.1.6",
     "jsr:@std/testing@^1.0.21": "1.0.21",
     "npm:@deno/vite-plugin@^2.0.2": "2.0.2_vite@8.1.3__@types+node@26.1.0_@types+node@26.1.0",
+    "npm:@moq/qmux@~0.3.3": "0.3.3",
     "npm:@types/node@^26.1.0": "26.1.0",
     "npm:hls.js@^1.5.20": "1.6.16",
     "npm:lucide-solid@^1.23.0": "1.23.0_solid-js@1.9.14",
@@ -31,10 +32,11 @@
     "@okdaichi/media-log@0.1.0": {
       "integrity": "c8ed4fdaac82cf8a2ecb7aa1a5a114d136f9886548ceae2c64b2322485a3c034"
     },
-    "@qumo/moq@0.20.0": {
-      "integrity": "5b43f8eb67ada00d84b3dcc86b3df89a31abf801871945ff8df3243534af7136",
+    "@qumo/moq@0.23.0": {
+      "integrity": "d1d989c41d6a679e6604a45d8bf17853e15b5da874e327979e7f05e1e083ecc3",
       "dependencies": [
         "jsr:@okdaichi/golikejs",
+        "npm:@moq/qmux",
         "npm:zod"
       ]
     },
@@ -305,6 +307,15 @@
         "@jsr/std__bytes"
       ],
       "tarball": "https://npm.jsr.io/~/11/@jsr/std__streams/1.1.1.tgz"
+    },
+    "@moq/qmux@0.3.3": {
+      "integrity": "sha512-Ez1GCVwpyNGB0eWvhKIXOjXrfRlMdmO0lpJ7gqInZFzsOsYTyML0WRgh24Itczp9Kev0CXsUA/K+XrGs1dRKUA==",
+      "dependencies": [
+        "@moq/web-socket-stream"
+      ]
+    },
+    "@moq/web-socket-stream@0.1.1": {
+      "integrity": "sha512-VKi/GE/CLqmbEZlgNbBLbAFk2pQTxT+KUD2DjCSoxqZxbS3KBe5BBZ0m3fila4fEGyll2JT5MmgEyVr4zkZEVA=="
     },
     "@napi-rs/wasm-runtime@1.1.6_@emnapi+core@1.11.1_@emnapi+runtime@1.11.1": {
       "integrity": "sha512-ZLv/JdUfkvOy9eCnnBaGfiO+XimbjebAeO+MRQqD/B+FR1tnRN0tpKSJHRbE8sFfS6aqsXZ67TQjfwfsxULVbg==",
@@ -798,7 +809,7 @@
     "dependencies": [
       "jsr:@okdaichi/golikejs@0.10.0",
       "jsr:@okdaichi/media-log@0.1",
-      "jsr:@qumo/moq@0.20",
+      "jsr:@qumo/moq@0.23",
       "jsr:@std/assert@^1.0.19",
       "jsr:@std/testing@^1.0.21",
       "npm:hls.js@^1.5.20"

@@ -51,8 +51,12 @@ export function Dashboard() {
 	const [path, setPath] = createSignal<string>(initial.path ?? defaultPathFor(initial.scenario));
 
 	// Keep the URL in sync so the current scenario+path is shareable as-is.
+	// What else the address carries stays: ?transport= is read when a
+	// scenario is entered (transport.ts), so it has to outlive this.
 	createEffect(() => {
-		const params = new URLSearchParams({ scenario: scenario(), path: path() });
+		const params = new URLSearchParams(globalThis.location.search);
+		params.set("scenario", scenario());
+		params.set("path", path());
 		globalThis.history.replaceState(null, "", `?${params.toString()}`);
 	});
 
@@ -75,7 +79,7 @@ export function Dashboard() {
 			<p class="scenario-desc">{SCENARIOS[scenario()].description}</p>
 
 			{
-				/* Keyed remount: each scenario is a different WebTransport origin, so the
+				/* Keyed remount: each scenario is a different origin, so the
 			    session/connection-status/boards rebuild on switch. */
 			}
 			<Show when={scenario()} keyed>
