@@ -22,7 +22,6 @@ import (
 	"golang.org/x/sync/errgroup"
 
 	"github.com/prometheus/client_golang/prometheus/promhttp"
-	"github.com/quic-go/quic-go"
 	"github.com/qumo-dev/gomoqt/moqt"
 	"github.com/qumo-dev/qumo/internal/auth"
 	"github.com/qumo-dev/qumo/internal/cors"
@@ -57,6 +56,10 @@ func sanitizeLog(s string) string {
 //	RELAY_NAME                   - node ID (default: "relay-" + hostname)
 //	GROUP_CACHE_SIZE             - completed groups retained per track (default: 8)
 //	FRAME_CAPACITY               - frame buffer size in bytes (default: 1500)
+//	RELAY_QUIC_*                 - QUIC transport settings: initial packet
+//	                               size, path MTU discovery, keep-alive, idle
+//	                               timeouts and receive windows
+//	                               (quicConfigFromEnv lists them)
 //	PEERS                        - comma-separated relays to dial (host:port);
 //	                               each host is resolved to all its addresses
 //	                               (e.g. "role-hub.qumo-relay.service.consul:4433").
@@ -200,19 +203,9 @@ func Run(args []string) error {
 	// Create relay server
 	httpMux := http.NewServeMux()
 
-	quicConfig := &quic.Config{
-		Allow0RTT:                        true,
-		EnableDatagrams:                  true,
-		EnableStreamResetPartialDelivery: true,
-		KeepAlivePeriod:                  10 * time.Second,
-		MaxIdleTimeout:                   60 * time.Second,
-		// MaxIncomingUniStreams/Streams left at quic-go defaults (~100). gomoqt's
-		// OpenGroup(ctx) blocks on MAX_STREAMS as designed backpressure; the relay
-		// passes a deadline-bearing context (openGroupTimeout) so a blocked open
-		// drops the group (MoQ semi-reliable) rather than hanging the egress
-		// goroutine and accumulating stream objects. Setting these to 1<<20 (as a
-		// previous fix did) removes the backpressure entirely, causing unbounded
-		// stream-object retention and a GC-driven degradation spiral.
+	quicConfig, err := quicConfigFromEnv()
+	if err != nil {
+		return err
 	}
 
 	// Dialing peers: the peer identity as the client certificate, the peering

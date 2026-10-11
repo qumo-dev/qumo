@@ -13,6 +13,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **The relay's QUIC transport is configurable (`internal/relay`).** Nine `RELAY_QUIC_*` variables set what was fixed in code or left to quic-go: the initial packet size, path MTU discovery, the keep-alive period, the idle and handshake timeouts, and the four receive windows. Unset, nothing changes. An invalid value stops the relay at startup, naming the variable.
+  - **`RELAY_QUIC_INITIAL_PACKET_SIZE` is the one with a known need.** quic-go starts a connection with 1280-byte UDP payloads, a 1308-byte IPv4 packet sent with "don't fragment". On a path whose MTU is 1280, such as Tailscale, the relay's handshake packets cannot be sent and no session opens. `1200` makes it work; path MTU discovery raises the size afterwards.
+  - **The stream limits are deliberately not settings.** The relay uses quic-go's limit as backpressure.
 - **The usage report format is a Go package (`usage`).** `usage.Record`, its types, metric names and close reasons, and `Record.Validate` are what the relay sends to `QUMO_USAGE_URL`, so a receiver decodes and checks the same type instead of its own copy.
 - **`token.Key` carries its pause (`token`).** `Key.Pause` lists what the key starts no new sessions for (only `token.ActionPublish`), and `Key.Pauses` reports it. `MarshalKeySet` writes it as `"pause"` and `ParseKeySet` reads it, so a key-set server builds the set from `token.Key` values instead of writing JSON by hand. The relay and the funnel read the pause from the same parse.
 
