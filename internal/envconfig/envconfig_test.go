@@ -2,6 +2,7 @@ package envconfig
 
 import (
 	"os"
+	"strconv"
 	"testing"
 	"time"
 
@@ -32,15 +33,16 @@ func TestUint(t *testing.T) {
 		want    uint64
 		wantSet bool
 		wantErr bool
+		wantIs  error // what the error wraps, when it wraps strconv's
 	}{
 		"empty is unset":   {value: ""},
 		"blank is unset":   {value: " \t"},
 		"zero":             {value: "0", wantSet: true},
 		"a number":         {value: "1200", want: 1200, wantSet: true},
 		"the largest":      {value: "18446744073709551615", want: 1<<64 - 1, wantSet: true},
-		"one too large":    {value: "18446744073709551616", wantErr: true},
+		"one too large":    {value: "18446744073709551616", wantErr: true, wantIs: strconv.ErrRange},
 		"negative":         {value: "-1", wantErr: true},
-		"with a unit":      {value: "6MB", wantErr: true},
+		"with a unit":      {value: "6MB", wantErr: true, wantIs: strconv.ErrSyntax},
 		"with a fraction":  {value: "1.5", wantErr: true},
 		"surrounded space": {value: " 12 ", want: 12, wantSet: true},
 		"a CRLF ending":    {value: "12\r", want: 12, wantSet: true},
@@ -55,6 +57,9 @@ func TestUint(t *testing.T) {
 			if tt.wantErr {
 				assert.ErrorContains(t, err, key)
 				assert.False(t, set)
+				if tt.wantIs != nil {
+					assert.ErrorIs(t, err, tt.wantIs)
+				}
 				return
 			}
 			require.NoError(t, err)

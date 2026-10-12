@@ -279,28 +279,38 @@ func TestQUICConfigFromEnv_InvalidValue(t *testing.T) {
 	}
 }
 
+func TestQUICEnvSet_NothingSet(t *testing.T) {
+	clearQUICEnv(t)
+
+	assert.Empty(t, quicEnvSet())
+}
+
 func TestQUICEnvSet(t *testing.T) {
 	clearQUICEnv(t)
-	assert.Empty(t, quicEnvSet(), "nothing set")
-
 	t.Setenv("RELAY_QUIC_MAX_IDLE_TIMEOUT", "2m")
 	t.Setenv("RELAY_QUIC_INITIAL_PACKET_SIZE", "1200\nforged=line")
 
 	t.Setenv("RELAY_QUIC_DISABLE_PMTUD", "  ")
+
+	set := quicEnvSet()
 
 	// In documented order, with line breaks taken out of the value, and
 	// without the blank one, which is read as unset.
 	assert.Equal(t, []string{
 		"RELAY_QUIC_INITIAL_PACKET_SIZE=1200forged=line",
 		"RELAY_QUIC_MAX_IDLE_TIMEOUT=2m",
-	}, quicEnvSet())
+	}, set)
 }
 
-// TestQUICGoDefaults_Version fails when go.mod moves to another quic-go, so
-// the defaults and bounds copied from it (quicGo*Window, the initial packet
-// size range) are read again from the new release before quicGoVersion is
-// raised.
-func TestQUICGoDefaults_Version(t *testing.T) {
+// quicGoVersion is the quic-go release the defaults and bounds in
+// quic_config.go were read from.
+const quicGoVersion = "v0.63.0"
+
+// TestQUICWindows_QUICGoVersion fails when go.mod moves to another quic-go, so
+// the defaults quicWindows checks against (quicGo*Window) and the initial
+// packet size range are read again from the new release before quicGoVersion
+// is raised.
+func TestQUICWindows_QUICGoVersion(t *testing.T) {
 	gomod, err := os.ReadFile("../../go.mod")
 	require.NoError(t, err)
 

@@ -36,7 +36,7 @@ func Uint(key string) (v uint64, set bool, err error) {
 	}
 	v, err = strconv.ParseUint(raw, 10, 64)
 	if err != nil {
-		return 0, false, fmt.Errorf("invalid %s %q: want a whole number, zero or more", key, raw)
+		return 0, false, fmt.Errorf("invalid %s %q: want a whole number, zero or more: %w", key, raw, err)
 	}
 	return v, true, nil
 }
@@ -51,7 +51,10 @@ func Duration(key string) (v time.Duration, set bool, err error) {
 		return 0, false, nil
 	}
 	v, err = time.ParseDuration(raw)
-	if err != nil || v < 0 {
+	if err != nil {
+		return 0, false, fmt.Errorf("invalid %s %q: want a duration of zero or more, such as 10s: %w", key, raw, err)
+	}
+	if v < 0 {
 		return 0, false, fmt.Errorf("invalid %s %q: want a duration of zero or more, such as 10s", key, raw)
 	}
 	return v, true, nil

@@ -31,13 +31,11 @@ const (
 	// zero means none, so a shorter one would be announced as no timeout.
 	minQUICDuration = time.Millisecond
 
-	// quicGoVersion is the quic-go release the values below were read from.
-	// A test fails when go.mod moves on, so they are read again.
-	quicGoVersion = "v0.63.0"
-
-	// quic-go's receive windows when a setting is left unset
-	// (internal/protocol): what an unset half of an initial/max pair is
-	// checked against.
+	// quic-go's receive windows when a setting is left unset: what an unset
+	// half of an initial/max pair is checked against. They are copied from
+	// quic-go's internal/protocol, like the packet size range above, and
+	// TestQUICWindows_QUICGoVersion fails when go.mod moves to another
+	// release, so they are read again.
 	quicGoInitialStreamWindow     = 512 << 10
 	quicGoMaxStreamWindow         = 6 << 20
 	quicGoInitialConnectionWindow = 768 << 10

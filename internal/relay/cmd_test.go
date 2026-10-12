@@ -153,6 +153,20 @@ func TestRun_InvalidGroupCacheSize(t *testing.T) {
 	assert.Contains(t, err.Error(), "GROUP_CACHE_SIZE")
 }
 
+// A QUIC setting the relay refuses stops Run, and before the certificate is
+// loaded: the missing one here would otherwise be what fails.
+func TestRun_InvalidQUICSetting(t *testing.T) {
+	clearQUICEnv(t)
+	t.Setenv("RELAY_ADDR", "localhost:4433")
+	t.Setenv("CERT_FILE", "/nonexistent/cert.pem")
+	t.Setenv("KEY_FILE", "/nonexistent/key.pem")
+	t.Setenv("RELAY_QUIC_INITIAL_PACKET_SIZE", "900")
+
+	err := Run(nil)
+
+	assert.ErrorContains(t, err, "RELAY_QUIC_INITIAL_PACKET_SIZE")
+}
+
 // A relay still pointed at an auth server refuses to start, rather than
 // starting with auth off.
 func TestRun_RefusesQUMOAuthURL(t *testing.T) {
