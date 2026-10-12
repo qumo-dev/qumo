@@ -105,3 +105,86 @@ func TestDuration(t *testing.T) {
 		})
 	}
 }
+
+func TestBool(t *testing.T) {
+	// A key of this test's own, so the ambient environment cannot set it.
+	const key = "QUMO_TEST_ENVCONFIG_BOOL"
+	tests := map[string]struct {
+		value string
+		def   bool
+		want  bool
+	}{
+		"1":                            {value: "1", want: true},
+		"true, in any case":            {value: "TRUE", want: true},
+		"yes":                          {value: "yes", want: true},
+		"on, with spaces":              {value: " on ", want: true},
+		"0 over a true default":        {value: "0", def: true, want: false},
+		"false over a true default":    {value: "false", def: true, want: false},
+		"no":                           {value: "no", def: true, want: false},
+		"off":                          {value: "OFF", def: true, want: false},
+		"unset keeps a true default":   {value: "", def: true, want: true},
+		"unset keeps a false default":  {value: "", def: false, want: false},
+		"anything else is the default": {value: "enabled", def: true, want: true},
+	}
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Setenv(key, tt.value)
+
+			got := Bool(key, tt.def)
+
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
+func TestSwitch(t *testing.T) {
+	// A key of this test's own, so the ambient environment cannot set it.
+	const key = "QUMO_TEST_ENVCONFIG_SWITCH"
+	tests := map[string]struct {
+		value   string
+		def     bool
+		want    bool
+		wantErr bool
+	}{
+		"true":                        {value: "true", want: true},
+		"1":                           {value: "1", want: true},
+		"yes in capitals":             {value: "YES", want: true},
+		"on with spaces":              {value: " on ", want: true},
+		"false over a true default":   {value: "false", def: true, want: false},
+		"0 over a true default":       {value: "0", def: true, want: false},
+		"no":                          {value: "no", def: true, want: false},
+		"off, with a CRLF ending":     {value: "off\r", def: true, want: false},
+		"unset keeps a true default":  {value: "", def: true, want: true},
+		"unset keeps a false default": {value: "", def: false, want: false},
+		"blank keeps the default":     {value: "  ", def: true, want: true},
+		"an unknown word":             {value: "maybe", wantErr: true},
+		"a single letter":             {value: "t", wantErr: true},
+		"a number above 1":            {value: "2", wantErr: true},
+	}
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Setenv(key, tt.value)
+
+			got, err := Switch(key, tt.def)
+
+			if tt.wantErr {
+				assert.ErrorContains(t, err, key)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
+func TestQUICKeys(t *testing.T) {
+	keys := QUICKeys()
+
+	assert.Len(t, keys, 9)
+	seen := map[string]bool{}
+	for _, key := range keys {
+		assert.Regexp(t, `^QUIC_[A-Z_]+$`, key)
+		assert.False(t, seen[key], "%s is listed twice", key)
+		seen[key] = true
+	}
+}

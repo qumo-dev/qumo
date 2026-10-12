@@ -59,3 +59,40 @@ func Duration(key string) (v time.Duration, set bool, err error) {
 	}
 	return v, true, nil
 }
+
+// Bool reads the environment variable key as a switch, with the words Switch
+// takes. Anything else, or nothing, is def: a value it does not know leaves
+// the default in place instead of stopping the command.
+func Bool(key string, def bool) bool {
+	if v, ok := parseSwitch(os.Getenv(key)); ok {
+		return v
+	}
+	return def
+}
+
+// Switch reads the environment variable key as a switch: "1", "true", "yes"
+// or "on" is true, and "0", "false", "no" or "off" is false, in any case and
+// with space around it ignored. Unset or blank is def. Unlike Bool it refuses
+// anything else, with an error that names key and quotes the value.
+func Switch(key string, def bool) (bool, error) {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return def, nil
+	}
+	v, ok := parseSwitch(raw)
+	if !ok {
+		return false, fmt.Errorf("invalid %s %q: want 1, true, yes or on, or 0, false, no or off", key, raw)
+	}
+	return v, nil
+}
+
+// parseSwitch reads the words of a switch. ok is false for anything else.
+func parseSwitch(raw string) (v, ok bool) {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "1", "true", "yes", "on":
+		return true, true
+	case "0", "false", "no", "off":
+		return false, true
+	}
+	return false, false
+}

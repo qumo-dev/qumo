@@ -7,13 +7,15 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/qumo-dev/qumo/internal/envconfig"
 )
 
 // clearQUICEnv empties every QUIC_* setting for the test, so one left in
 // the developer's or the runner's environment cannot reach it.
 func clearQUICEnv(tb testing.TB) {
 	tb.Helper()
-	for _, key := range quicEnvKeys() {
+	for _, key := range envconfig.QUICKeys() {
 		tb.Setenv(key, "")
 	}
 }

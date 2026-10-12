@@ -396,28 +396,6 @@ type server interface {
 	Shutdown(ctx context.Context) error
 }
 
-// envBoolDefault reads the environment variable key as a switch, with the
-// words parseSwitch takes; anything else, or nothing, is def.
-func envBoolDefault(key string, def bool) bool {
-	if v, ok := parseSwitch(os.Getenv(key)); ok {
-		return v
-	}
-	return def
-}
-
-// parseSwitch reads a switch: "1", "true", "yes" or "on" is true, and "0",
-// "false", "no" or "off" is false, in any case and with surrounding space.
-// ok is false for anything else.
-func parseSwitch(raw string) (v, ok bool) {
-	switch strings.ToLower(strings.TrimSpace(raw)) {
-	case "1", "true", "yes", "on":
-		return true, true
-	case "0", "false", "no", "off":
-		return false, true
-	}
-	return false, false
-}
-
 // webSocketSettings is how the relay takes WebSocket upgrades.
 type webSocketSettings struct {
 	// enabled is whether it takes any.
@@ -433,7 +411,7 @@ type webSocketSettings struct {
 // upgrades are taken on relayAddr's host: on its port unless WS_PORT names
 // another.
 func loadWebSocketSettings(relayAddr string) (webSocketSettings, error) {
-	if !envBoolDefault("WS_ENABLE", true) {
+	if !envconfig.Bool("WS_ENABLE", true) {
 		return webSocketSettings{}, nil
 	}
 	ws := webSocketSettings{enabled: true}

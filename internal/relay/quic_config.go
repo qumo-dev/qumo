@@ -42,42 +42,13 @@ const (
 	quicGoMaxConnectionWindow     = 15 << 20
 )
 
-// The QUIC_* settings, one variable each.
-const (
-	envQUICInitialPacketSize    = "QUIC_INITIAL_PACKET_SIZE"
-	envQUICPMTUD                = "QUIC_PMTUD"
-	envQUICKeepAlive            = "QUIC_KEEPALIVE"
-	envQUICIdleTimeout          = "QUIC_IDLE_TIMEOUT"
-	envQUICHandshakeIdleTimeout = "QUIC_HANDSHAKE_IDLE_TIMEOUT"
-	envQUICStreamWindow         = "QUIC_STREAM_RECEIVE_WINDOW"
-	envQUICMaxStreamWindow      = "QUIC_MAX_STREAM_RECEIVE_WINDOW"
-	envQUICConnectionWindow     = "QUIC_CONNECTION_RECEIVE_WINDOW"
-	envQUICMaxConnectionWindow  = "QUIC_MAX_CONNECTION_RECEIVE_WINDOW"
-)
-
-// quicEnvKeys lists every QUIC_* setting, in the order they are
-// documented.
-func quicEnvKeys() []string {
-	return []string{
-		envQUICInitialPacketSize,
-		envQUICPMTUD,
-		envQUICKeepAlive,
-		envQUICIdleTimeout,
-		envQUICHandshakeIdleTimeout,
-		envQUICStreamWindow,
-		envQUICMaxStreamWindow,
-		envQUICConnectionWindow,
-		envQUICMaxConnectionWindow,
-	}
-}
-
 // quicEnvSet returns the QUIC_* settings present in the environment as
 // "NAME=value", for the startup log: a setting that never reached the process
 // fails the same way as one left unset. A blank value counts as unset, as it
 // does when the setting is read.
 func quicEnvSet() []string {
 	var set []string
-	for _, key := range quicEnvKeys() {
+	for _, key := range envconfig.QUICKeys() {
 		if v := strings.TrimSpace(os.Getenv(key)); v != "" {
 			set = append(set, key+"="+sanitizeLog(v))
 		}
@@ -133,28 +104,28 @@ func quicConfigFromEnv() (*quic.Config, error) {
 		MaxIdleTimeout:                   defaultQUICMaxIdleTimeout,
 	}
 
-	size, set, err := envconfig.Uint(envQUICInitialPacketSize)
+	size, set, err := envconfig.Uint(envconfig.QUICInitialPacketSize)
 	if err != nil {
 		return nil, err
 	}
 	if set {
 		if size < minQUICInitialPacketSize || size > maxQUICInitialPacketSize {
 			return nil, fmt.Errorf("invalid %s %d: want %d to %d",
-				envQUICInitialPacketSize, size, minQUICInitialPacketSize, maxQUICInitialPacketSize)
+				envconfig.QUICInitialPacketSize, size, minQUICInitialPacketSize, maxQUICInitialPacketSize)
 		}
 		cfg.InitialPacketSize = uint16(size)
 	}
 
-	pmtud, err := envSwitch(envQUICPMTUD, true)
+	pmtud, err := envconfig.Switch(envconfig.QUICPMTUD, true)
 	if err != nil {
 		return nil, err
 	}
 	cfg.DisablePathMTUDiscovery = !pmtud
 
-	if err := setQUICTimeout(envQUICIdleTimeout, &cfg.MaxIdleTimeout); err != nil {
+	if err := setQUICTimeout(envconfig.QUICIdleTimeout, &cfg.MaxIdleTimeout); err != nil {
 		return nil, err
 	}
-	if err := setQUICTimeout(envQUICHandshakeIdleTimeout, &cfg.HandshakeIdleTimeout); err != nil {
+	if err := setQUICTimeout(envconfig.QUICHandshakeIdleTimeout, &cfg.HandshakeIdleTimeout); err != nil {
 		return nil, err
 	}
 	if cfg.KeepAlivePeriod, err = quicKeepAlive(cfg.KeepAlivePeriod, cfg.MaxIdleTimeout); err != nil {
@@ -162,13 +133,13 @@ func quicConfigFromEnv() (*quic.Config, error) {
 	}
 
 	if cfg.InitialStreamReceiveWindow, cfg.MaxStreamReceiveWindow, err = quicWindows(
-		envQUICStreamWindow, envQUICMaxStreamWindow,
+		envconfig.QUICStreamReceiveWindow, envconfig.QUICMaxStreamReceiveWindow,
 		quicGoInitialStreamWindow, quicGoMaxStreamWindow,
 	); err != nil {
 		return nil, err
 	}
 	if cfg.InitialConnectionReceiveWindow, cfg.MaxConnectionReceiveWindow, err = quicWindows(
-		envQUICConnectionWindow, envQUICMaxConnectionWindow,
+		envconfig.QUICConnectionReceiveWindow, envconfig.QUICMaxConnectionReceiveWindow,
 		quicGoInitialConnectionWindow, quicGoMaxConnectionWindow,
 	); err != nil {
 		return nil, err
@@ -199,7 +170,7 @@ func setQUICTimeout(key string, dst *time.Duration) error {
 // minQUICDuration or more and at most half of idleTimeout: quic-go pings no
 // less often than that, whatever is asked.
 func quicKeepAlive(def, idleTimeout time.Duration) (time.Duration, error) {
-	v, set, err := envconfig.Duration(envQUICKeepAlive)
+	v, set, err := envconfig.Duration(envconfig.QUICKeepAlive)
 	if err != nil {
 		return 0, err
 	}
@@ -210,11 +181,11 @@ func quicKeepAlive(def, idleTimeout time.Duration) (time.Duration, error) {
 		return 0, nil
 	}
 	if v < minQUICDuration {
-		return 0, fmt.Errorf("invalid %s %s: want 0 for none, or %s or more", envQUICKeepAlive, v, minQUICDuration)
+		return 0, fmt.Errorf("invalid %s %s: want 0 for none, or %s or more", envconfig.QUICKeepAlive, v, minQUICDuration)
 	}
 	if v > idleTimeout/2 {
 		return 0, fmt.Errorf("invalid %s %s: more than half the idle timeout %s (%s); a session would be pinged every %s whatever is set here",
-			envQUICKeepAlive, v, idleTimeout, envQUICIdleTimeout, idleTimeout/2)
+			envconfig.QUICKeepAlive, v, idleTimeout, envconfig.QUICIdleTimeout, idleTimeout/2)
 	}
 	return v, nil
 }
@@ -258,20 +229,6 @@ func quicWindow(key string) (uint64, error) {
 	}
 	if v == 0 || v > quicvarint.Max {
 		return 0, fmt.Errorf("invalid %s %d: want 1 to %d; unset it for the default", key, v, uint64(quicvarint.Max))
-	}
-	return v, nil
-}
-
-// envSwitch reads key as a switch, with the words parseSwitch takes. Unset or
-// blank is def. Unlike envBoolDefault it refuses anything else.
-func envSwitch(key string, def bool) (bool, error) {
-	raw := strings.TrimSpace(os.Getenv(key))
-	if raw == "" {
-		return def, nil
-	}
-	v, ok := parseSwitch(raw)
-	if !ok {
-		return false, fmt.Errorf("invalid %s %q: want 1, true, yes or on, or 0, false, no or off", key, raw)
 	}
 	return v, nil
 }
