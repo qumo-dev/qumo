@@ -44,6 +44,7 @@ import (
 
 	"github.com/quic-go/quic-go"
 	"github.com/qumo-dev/gomoqt/moqt"
+	"github.com/qumo-dev/qumo/internal/quicconfig"
 	"github.com/qumo-dev/qumo/internal/relay"
 	"github.com/qumo-dev/qumo/internal/tlsclient"
 )
@@ -109,7 +110,7 @@ type dialTarget struct {
 // relay is the relay's host:port, or a moqt:// URL whose query may carry a
 // credential (?jwt=…) for a relay with auth on. Only the host:port is
 // logged.
-func newTarget(relay, metrics, path, track, caFile string, insecure bool, idle, keepalive time.Duration) (dialTarget, error) {
+func newTarget(relay, metrics, path, track, caFile string, insecure bool, quicConfig *quic.Config) (dialTarget, error) {
 	u, err := parseRelay(relay)
 	if err != nil {
 		return dialTarget{}, fmt.Errorf("--relay: %w", err)
@@ -132,11 +133,7 @@ func newTarget(relay, metrics, path, track, caFile string, insecure bool, idle, 
 		path:    path,
 		track:   track,
 		tls:     tc,
-		quic: &quic.Config{
-			EnableDatagrams: true,
-			KeepAlivePeriod: keepalive,
-			MaxIdleTimeout:  idle,
-		},
+		quic:    quicConfig,
 	}, nil
 }
 
@@ -161,6 +158,31 @@ func parseRelay(relay string) (*url.URL, error) {
 	return u, nil
 }
 
+// targetQUICConfig is the QUIC configuration of the sessions to the relay:
+// the flags' values, with the QUIC_* settings found in the environment
+// applied (quicconfig.FromEnv), and then --idle-timeout and --keepalive again
+// where the operator passed them, so a flag on the command line wins over the
+// environment.
+func targetQUICConfig(fs *flag.FlagSet, idle, keepalive time.Duration) (*quic.Config, error) {
+	cfg, err := quicconfig.FromEnv(&quic.Config{
+		EnableDatagrams: true,
+		KeepAlivePeriod: keepalive,
+		MaxIdleTimeout:  idle,
+	})
+	if err != nil {
+		return nil, err
+	}
+	fs.Visit(func(f *flag.Flag) {
+		switch f.Name {
+		case "idle-timeout":
+			cfg.MaxIdleTimeout = idle
+		case "keepalive":
+			cfg.KeepAlivePeriod = keepalive
+		}
+	})
+	return cfg, nil
+}
+
 // bindCommon registers the flags common to publish/subscribe on fs and returns a
 // finalizer that validates them and builds the TLS/QUIC config after Parse.
 func bindCommon(fs *flag.FlagSet) func() (dialTarget, error) {
@@ -169,14 +191,18 @@ func bindCommon(fs *flag.FlagSet) func() (dialTarget, error) {
 	caFile := fs.String("ca", "", "PEM file of the relay's TLS cert/CA to trust (required unless --insecure)")
 	path := fs.String("path", "/bench/carry", "broadcast path")
 	track := fs.String("track", "data", "track name")
-	idle := fs.Duration("idle-timeout", 30*time.Second, "QUIC max idle timeout")
-	keepalive := fs.Duration("keepalive", 5*time.Second, "QUIC keep-alive period")
+	idle := fs.Duration("idle-timeout", 30*time.Second, "QUIC max idle timeout; QUIC_IDLE_TIMEOUT replaces the default")
+	keepalive := fs.Duration("keepalive", 5*time.Second, "QUIC keep-alive period; QUIC_KEEPALIVE replaces the default")
 	insecure := fs.Bool("insecure", false, "skip relay TLS verification (dev; self-signed relay)")
 	return func() (dialTarget, error) {
 		if *caFile == "" && !*insecure {
 			return dialTarget{}, errors.New("--ca is required (or --insecure for a self-signed dev relay)")
 		}
-		return newTarget(*relay, *metrics, *path, *track, *caFile, *insecure, *idle, *keepalive)
+		quicConfig, err := targetQUICConfig(fs, *idle, *keepalive)
+		if err != nil {
+			return dialTarget{}, err
+		}
+		return newTarget(*relay, *metrics, *path, *track, *caFile, *insecure, quicConfig)
 	}
 }
 

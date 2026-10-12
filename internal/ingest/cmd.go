@@ -13,6 +13,7 @@ import (
 	"github.com/qumo-dev/gomoqt/moqt"
 	"github.com/qumo-dev/qumo/internal/cors"
 	"github.com/qumo-dev/qumo/internal/envconfig"
+	"github.com/qumo-dev/qumo/internal/quicconfig"
 )
 
 const (
@@ -38,6 +39,11 @@ func RunRTMP(_ []string) error {
 	certFile := envconfig.String("CERT_FILE", "certs/server.crt")
 	keyFile := envconfig.String("KEY_FILE", "certs/server.key")
 	allowedOrigins := cors.LoadAllowed()
+	quicConfig, err := quicconfig.FromEnv(nil)
+	if err != nil {
+		return err
+	}
+	quicconfig.LogEnvSet("rtmp")
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
@@ -66,6 +72,7 @@ func RunRTMP(_ []string) error {
 	// Minimal MoQT origin that serves subscribers from the shared TrackMux.
 	moqtSrv := &moqt.Server{
 		Addr:               serveAddr,
+		QUICConfig:         quicConfig,
 		WebTransportServer: moqt.NewWebTransportServer(mux),
 		TrackMux:           trackMux,
 	}
@@ -116,6 +123,11 @@ func RunRTSP(_ []string) error {
 	certFile := envconfig.String("CERT_FILE", "certs/server.crt")
 	keyFile := envconfig.String("KEY_FILE", "certs/server.key")
 	allowedOrigins := cors.LoadAllowed()
+	quicConfig, err := quicconfig.FromEnv(nil)
+	if err != nil {
+		return err
+	}
+	quicconfig.LogEnvSet("rtsp")
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
@@ -144,6 +156,7 @@ func RunRTSP(_ []string) error {
 	// Minimal MoQT origin
 	moqtSrv := &moqt.Server{
 		Addr:               serveAddr,
+		QUICConfig:         quicConfig,
 		WebTransportServer: moqt.NewWebTransportServer(mux),
 		TrackMux:           trackMux,
 	}

@@ -13,9 +13,11 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/quic-go/quic-go"
 	"github.com/qumo-dev/gomoqt/moqt"
 	"github.com/qumo-dev/qumo/internal/cors"
 	"github.com/qumo-dev/qumo/internal/envconfig"
+	"github.com/qumo-dev/qumo/internal/quicconfig"
 	"github.com/qumo-dev/qumo/internal/rtsp"
 )
 
@@ -46,6 +48,11 @@ func RunRTSPPull(args []string) error {
 	certFile := envconfig.String("CERT_FILE", "certs/server.crt")
 	keyFile := envconfig.String("KEY_FILE", "certs/server.key")
 	allowedOrigins := cors.LoadAllowed()
+	quicConfig, err := quicconfig.FromEnv(nil)
+	if err != nil {
+		return err
+	}
+	quicconfig.LogEnvSet("rtsp")
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
@@ -57,6 +64,7 @@ func RunRTSPPull(args []string) error {
 		CertFile:       certFile,
 		KeyFile:        keyFile,
 		AllowedOrigins: allowedOrigins,
+		QUIC:           quicConfig,
 	})
 	if err != nil {
 		return err
@@ -74,6 +82,9 @@ type PullConfig struct {
 	CertFile       string
 	KeyFile        string
 	AllowedOrigins []string
+	// QUIC is the QUIC configuration of the MoQT origin; nil is quic-go's
+	// defaults.
+	QUIC *quic.Config
 }
 
 // PullHandle is a running RTSP pull ingest. Close stops the pull + MoQT server;
@@ -146,6 +157,7 @@ func PullAndServe(parentCtx context.Context, cfg PullConfig) (*PullHandle, error
 	mux.Handle("/", wtHandler)
 	moqSrv := &moqt.Server{
 		Addr:               cfg.ServeAddr,
+		QUICConfig:         cfg.QUIC,
 		WebTransportServer: moqt.NewWebTransportServer(mux),
 		TrackMux:           trackMux,
 	}

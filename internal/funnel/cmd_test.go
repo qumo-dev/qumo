@@ -48,3 +48,12 @@ func TestWithCORS(t *testing.T) {
 		})
 	}
 }
+
+// A QUIC setting the funnel refuses stops Run before it opens anything.
+func TestRun_InvalidQUICSetting(t *testing.T) {
+	t.Setenv("QUIC_INITIAL_PACKET_SIZE", "900")
+
+	err := Run(nil)
+
+	assert.ErrorContains(t, err, "QUIC_INITIAL_PACKET_SIZE")
+}
