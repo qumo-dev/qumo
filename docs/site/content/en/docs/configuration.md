@@ -103,7 +103,7 @@ read-only, it changes nothing. See [Observability]({{< relref "observability" >}
 Every command that listens or dials over QUIC reads these: `relay`, `funnel`, `hls`, `rtmp`, `rtsp`, `loadgen` and `seed-moq`. Unset, each keeps the default shown.
 
 - **Listeners** take all of them: the relay, the funnel's own MoQT listener, and the MoQT origin of `rtmp`, `rtsp` and `seed-moq`.
-- **Sessions a command dials** take them only for a `moqt://` URL (native QUIC): the relay's peers, the funnel's and the HLS egress's `RELAY_URL`, and `loadgen`. An `https://` URL is dialed as WebTransport, which gomoqt opens with its own QUIC configuration, so the settings do not reach it.
+- **Sessions a command dials** take them too, for a `moqt://` URL (native QUIC) and for an `https://` one (WebTransport): the relay's peers, the funnel's and the HLS egress's `RELAY_URL`, and `loadgen`.
 - **The keep-alive period and the idle timeout** default to `10s` and `60s` in the relay. In the other commands they are quic-go's: no keep-alive, and `30s`. In `loadgen`, `--keepalive` and `--idle-timeout` set them, and a flag on the command line wins over the environment.
 - **The relay's WebSocket sessions** take some too, as the last column says.
 
@@ -111,7 +111,7 @@ Every command that listens or dials over QUIC reads these: `relay`, `funnel`, `h
 |---|---|---|---|
 | `QUIC_INITIAL_PACKET_SIZE` | `1280` (quic-go) | UDP payload, in bytes, a connection starts with, `1200` to `1452`. With the IP and UDP headers a `1280`-byte payload is a 1308-byte IPv4 packet, sent with "don't fragment", so it does not pass a path whose MTU is 1280: Tailscale and some other VPNs and tunnels, or an IPv6 link at the minimum MTU. The handshake then never completes. Set `1200`, the smallest QUIC allows, on such a path. Path MTU discovery raises the size again once the connection is up. | No |
 | `QUIC_PMTUD` | `on` | A switch (`1`, `true`, `yes`, `on`, or `0`, `false`, `no`, `off`). Off turns path MTU discovery off, which keeps packets at the initial size for the life of the connection. | No |
-| `QUIC_KEEPALIVE` | `10s` in the relay, or half the idle timeout if less | How often an idle connection is kept alive: `1ms` or more, and at most half of `QUIC_IDLE_TIMEOUT`, since quic-go pings no less often than that. `0` sends no keep-alives over QUIC. | Yes, but `0` means 10s there, not none |
+| `QUIC_KEEPALIVE` | `10s` in the relay, or half the idle timeout if less | How often an idle connection is kept alive: `1ms` or more, and at most half of `QUIC_IDLE_TIMEOUT`, since quic-go pings no less often than that. `0` sends no keep-alives. | Yes. Without pings a WebSocket session has no round-trip time, and a proxy may close it while idle |
 | `QUIC_IDLE_TIMEOUT` | `60s` in the relay | A connection silent for this long is closed, `1ms` or more. There is no "never": `0` is refused. A peer may announce a shorter timeout, and the shorter one applies. | Yes |
 | `QUIC_HANDSHAKE_IDLE_TIMEOUT` | `5s` (quic-go) | A handshake silent for this long is given up, `1ms` or more. | Yes |
 | `QUIC_STREAM_RECEIVE_WINDOW` | `524288` (quic-go) | Bytes a peer may send on one stream before the relay has read any. | Yes |

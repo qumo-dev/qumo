@@ -27,8 +27,8 @@ type upstream struct {
 	url string
 	// tls is the client TLS configuration for the relay.
 	tls *tls.Config
-	// quic is the QUIC configuration of a native (moqt://) session; nil is
-	// quic-go's defaults.
+	// quic is the QUIC configuration of the session; nil is quic-go's
+	// defaults.
 	quic *quic.Config
 	// key, when set, signs a credential for each session that grants
 	// publishing at publish, replacing any ?jwt= in url.
@@ -51,8 +51,8 @@ type RelayConfig struct {
 	// of any ?jwt= in URL.
 	SigningKeyFile string
 	Publish        string
-	// QUIC is the QUIC configuration of a native (moqt://) session; nil is
-	// quic-go's defaults. gomoqt dials https:// with its own.
+	// QUIC is the QUIC configuration of the session, whether moqt:// or
+	// https://; nil is quic-go's defaults.
 	QUIC *quic.Config
 }
 

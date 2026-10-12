@@ -41,8 +41,8 @@ type feedConfig struct {
 	// credential and has no grant to expire, and may only subscribe. Only a
 	// native-QUIC (moqt://) relayURL presents it.
 	certFile, keyFile string
-	// quic is the QUIC configuration of a native-QUIC (moqt://) session; nil
-	// is quic-go's defaults. gomoqt dials https:// with its own.
+	// quic is the QUIC configuration of the session, whether moqt:// or
+	// https://; nil is quic-go's defaults.
 	quic *quic.Config
 
 	// liveTimeout is how long the feed waits for a group before deciding the

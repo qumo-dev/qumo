@@ -78,7 +78,7 @@ const (
 //	QUMO_RELAY_TOKEN     - bearer token sent to a key-set URL
 //	FUNNEL_SENDER_LIMIT  - records each sender may send into a track, as "RATE,BURST": per second, and at once (default: no limit)
 //	FUNNEL_TRACK_LIMIT   - records a track takes from every sender together, as "RATE,BURST" (default: no limit)
-//	QUIC_*               - QUIC transport settings of the MoQT listener and of a moqt:// session to the relay (quicconfig.FromEnv lists them)
+//	QUIC_*               - QUIC transport settings of the MoQT listener and of the session to the relay (quicconfig.FromEnv lists them)
 //
 // The HTTP listener is plain HTTP: terminate TLS in front of it.
 func Run(_ []string) error {

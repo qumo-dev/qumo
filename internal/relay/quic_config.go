@@ -22,9 +22,9 @@ const (
 // them). Unset, the keep-alive period is 10s and the idle timeout 60s.
 //
 // WebSocket sessions take part of this configuration too (gomoqt's qmux): the
-// two timeouts, the two initial windows, and the keep-alive period, where
-// zero means gomoqt's 10s default instead of none. The packet size, path MTU
-// discovery and the max windows are QUIC only.
+// two timeouts, the two initial windows, and the keep-alive period. Zero
+// sends no pings there either, and then a proxy may close an idle session.
+// The packet size, path MTU discovery and the max windows are QUIC only.
 //
 // The stream limits (MaxIncomingStreams, MaxIncomingUniStreams) are not
 // settings and stay at quic-go's defaults (100). gomoqt's OpenGroup blocks on

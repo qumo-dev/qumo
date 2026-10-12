@@ -64,9 +64,8 @@ import (
 //	                     RELAY_URL, since only native QUIC sessions present a
 //	                     certificate. Re-read on every reconnect, so a renewed
 //	                     certificate is picked up.
-//	QUIC_*               - QUIC transport settings of a moqt:// session to the
-//	                     relay (quicconfig.FromEnv lists them); an https:// one
-//	                     is dialed with gomoqt's own.
+//	QUIC_*               - QUIC transport settings of the session to the relay
+//	                     (quicconfig.FromEnv lists them).
 //	CORS_ALLOWED_ORIGINS - comma-separated origins allowed to fetch manifests
 //	                     and segments, or "*" for any. Unset disables CORS.
 //	                     Required when the player is served from another origin,
