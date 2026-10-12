@@ -40,6 +40,9 @@ type admission struct {
 	// all the same, is to be closed: refusalRefused or refusalUnavailable.
 	// Only a WebSocket session has one (handleWebSocket).
 	refusal string
+	// client is what the upgrade request said about its client, set before
+	// the session starts. Zero for a native-QUIC session.
+	client upgradeClient
 }
 
 type admissionKey struct{}
