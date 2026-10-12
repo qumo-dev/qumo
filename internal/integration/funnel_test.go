@@ -432,6 +432,54 @@ func TestFunnel_PublishesThroughTheRelay(t *testing.T) {
 	assert.Equal(t, `{"payload":"second"}`, got)
 }
 
+// TestFunnel_RelaySubscriberJoinsAfterSeveralRecords subscribes through the
+// relay to a track that already holds several records: the subscription is
+// answered with the latest of them.
+func TestFunnel_RelaySubscriberJoinsAfterSeveralRecords(t *testing.T) {
+	key, keyFile, keysFile := writeKeys(t)
+	verifier, err := auth.NewVerifier(auth.VerifierConfig{Keys: keysFile})
+	require.NoError(t, err)
+	relayAddr, relaySrv := startAuthRelay(t, verifier.Authorize, nil)
+
+	mux := moqt.NewTrackMux(0)
+	ingestURL := startFunnelHTTP(t, mem.New(), mux, nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	published := make(chan error, 1)
+	go func() {
+		published <- funnel.PublishThroughRelay(ctx, funnel.RelayConfig{
+			URL:            nativeURL(relayAddr),
+			Insecure:       true,
+			SigningKeyFile: keyFile,
+			Publish:        "room",
+		}, mux)
+	}()
+	t.Cleanup(func() {
+		cancel()
+		assert.NoError(t, <-published)
+	})
+
+	for _, payload := range []string{`"first"`, `"second"`, `"third"`} {
+		require.Equal(t, http.StatusCreated, record(t, ingestURL, "", payload))
+	}
+	require.Eventually(t, routed(relaySrv, "/room/123"), 5*time.Second, 25*time.Millisecond,
+		"the relay routes the broadcast to the funnel")
+
+	viewer, err := token.Sign(key, token.Grant{Scopes: []token.Scope{
+		{Actions: []token.Action{token.ActionSubscribe}, Broadcast: "room/123", Prefix: true},
+	}}, time.Minute)
+	require.NoError(t, err)
+	tr := subscribeChat(t, nativeURL(relayAddr)+"?jwt="+viewer)
+
+	seq, got := nextRecord(t, tr)
+	assert.Equal(t, moqt.GroupSequence(3), seq, "the relay's subscriber starts at the latest record")
+	assert.Equal(t, `{"payload":"third"}`, got)
+
+	require.Equal(t, http.StatusCreated, record(t, ingestURL, "", `"fourth"`))
+	seq, got = nextRecord(t, tr)
+	assert.Equal(t, moqt.GroupSequence(4), seq)
+	assert.Equal(t, `{"payload":"fourth"}`, got)
+}
+
 // TestFunnel_RedialsWhenTheRelayEndsTheSession refuses the funnel's session
 // at its first revalidate: the relay ends it, the funnel dials again, and a
 // subscriber that arrives afterwards still reaches the track through the
