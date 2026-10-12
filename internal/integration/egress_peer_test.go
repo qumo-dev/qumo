@@ -21,17 +21,17 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestEgress_ClientCertificateIsInternalClient verifies the HLS egress's
-// connection (#432): with the client certificate it loads through
+// TestEgress_PeerCertificateIsPeer verifies the HLS egress's connection with
+// a certificate: with a peer certificate it loads through
 // tlsclient.ApplyClientCert (RELAY_CERT_FILE, RELAY_KEY_FILE) from the CA the
-// relay trusts, it subscribes outside any grant without a credential, and the
-// credential is never checked. Without the certificate it is refused. Its
-// certificate carries no peering name, so it is an internal client, not a
-// peer: it may announce nothing.
-func TestEgress_ClientCertificateIsInternalClient(t *testing.T) {
+// relay trusts, it is a relay peer, and subscribes outside any grant without
+// a credential that is never checked. A certificate from the CA without the
+// peering name grants nothing: the session is a client's, asked for its
+// credential like one without a certificate.
+func TestEgress_PeerCertificateIsPeer(t *testing.T) {
 	ca := newTestCA(t)
-	egress := ca.issue(t, "egress-1", false)
-	certFile, keyFile := writeCert(t, egress)
+	certFile, keyFile := writeCert(t, ca.issue(t, "egress-1", true))
+	unnamedCertFile, unnamedKeyFile := writeCert(t, ca.issue(t, "egress-2", false))
 
 	// Authorize refuses everyone: only a session the CA vouches for gets
 	// through.
@@ -45,16 +45,20 @@ func TestEgress_ClientCertificateIsInternalClient(t *testing.T) {
 	}, ca.trust(t, nil))
 	publishOver(t, srv, "https://"+addr+"/?jwt=publisher", "/hls/live")
 
+	// The sessions under test connect at a path of their own, apart from
+	// the relay's readiness probes.
+	const egressPath = "/egress"
 	tests := map[string]struct {
 		certFile, keyFile string
 		wantTrusted       bool
 	}{
-		"with the CA-issued certificate": {certFile: certFile, keyFile: keyFile, wantTrusted: true},
-		"without a certificate":          {},
+		"with a peer certificate":                        {certFile: certFile, keyFile: keyFile, wantTrusted: true},
+		"with a certificate that lacks the peering name": {certFile: unnamedCertFile, keyFile: unnamedKeyFile},
+		"without a certificate":                          {},
 	}
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
-			asked := len(server.received())
+			asked := askedAt(server, egressPath)
 			authorized := subscribeAuthorizations(t)
 			tc := &tls.Config{
 				InsecureSkipVerify: true, //nolint:gosec // test-only self-signed cert
@@ -62,24 +66,31 @@ func TestEgress_ClientCertificateIsInternalClient(t *testing.T) {
 			}
 			require.NoError(t, tlsclient.ApplyClientCert(tc, tt.certFile, tt.keyFile))
 
-			err := subscribeWith(t, nativeURL(addr)+"/", tc, "/hls/live")
+			err := subscribeWith(t, nativeURL(addr)+egressPath, tc, "/hls/live")
 
 			if tt.wantTrusted {
-				assert.NoError(t, err, "an internal client subscribes outside any grant")
-				assert.Len(t, server.received(), asked, "an internal client is never asked about")
+				assert.NoError(t, err, "a peer subscribes outside any grant")
+				assert.Equal(t, asked, askedAt(server, egressPath), "a peer is never asked about")
 				assert.Equal(t, authorized, subscribeAuthorizations(t), "its subscription is not counted as checked against a credential")
 				return
 			}
 			assert.Error(t, err)
+			assert.Equal(t, asked+1, askedAt(server, egressPath), "a client is asked for its credential")
 		})
 	}
+}
 
-	t.Run("an internal client cannot announce", func(t *testing.T) {
-		const path = moqt.BroadcastPath("/hls/from-egress")
-		require.NoError(t, announceOver(t, nativeURL(addr)+"/", []string{moqt.NextProtoMOQ}, &egress, path))
-
-		assert.Never(t, routed(srv, path), 1500*time.Millisecond, 25*time.Millisecond, "the announcement is refused")
-	})
+// askedAt returns how many sessions that connected at path the relay asked
+// auth about. A relay's readiness probes connect at "/", and their requests
+// can land late: counting one path leaves them out.
+func askedAt(auth *fakeAuth, path string) int {
+	n := 0
+	for _, req := range auth.received() {
+		if req.Path == path {
+			n++
+		}
+	}
+	return n
 }
 
 // A session the relay refuses is closed before its subscribes are answered:

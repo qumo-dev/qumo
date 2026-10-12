@@ -69,7 +69,7 @@ func TestServer_HandleWebTransport_WebSocketRefused(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			fake := &fakeAuth{err: tt.err}
 			srv := newWebSocketTestServer(t, fake)
-			served := metricSessionsTotal.WithLabelValues(auth.TransportWebSocket, classClient.label())
+			served := metricSessionsTotal.WithLabelValues(auth.TransportWebSocket, classClient.String())
 			servedBefore := testutil.ToFloat64(served)
 
 			sess, err := dialWebSocket(t, srv, "/acme/app?jwt=a.b.c")
@@ -183,8 +183,8 @@ func TestServer_HandleWebTransport_WebSocketSession(t *testing.T) {
 	defer httpSrv.Close()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	served := metricSessionsTotal.WithLabelValues(auth.TransportWebSocket, classClient.label())
-	closed := metricSessionsClosed.WithLabelValues(auth.TransportWebSocket, classClient.label(), endClosed)
+	served := metricSessionsTotal.WithLabelValues(auth.TransportWebSocket, classClient.String())
+	closed := metricSessionsClosed.WithLabelValues(auth.TransportWebSocket, classClient.String(), endClosed)
 	servedBefore, closedBefore := testutil.ToFloat64(served), testutil.ToFloat64(closed)
 
 	url := "ws" + strings.TrimPrefix(httpSrv.URL, "http") + "/acme/app?jwt=a.b.c"
@@ -375,8 +375,6 @@ func TestLoadWebSocketSettings(t *testing.T) {
 }
 
 func TestSessionTransport(t *testing.T) {
-	internal := pendingAdmission()
-	internal.decideInternal()
 	tests := map[string]struct {
 		admission     *admission
 		wantTransport string
@@ -386,7 +384,6 @@ func TestSessionTransport(t *testing.T) {
 		"an inbound peer has no connect request": {
 			admission: decidedAdmission(nil, auth.Request{}), wantTransport: auth.TransportQUIC, wantClass: classPeer,
 		},
-		"an internal client": {admission: internal, wantTransport: auth.TransportQUIC, wantClass: classInternal},
 		"a WebTransport client": {
 			admission:     decidedAdmission(nil, auth.Request{Transport: auth.TransportWebTransport}),
 			wantTransport: auth.TransportWebTransport, wantClass: classClient,

@@ -210,7 +210,7 @@ func TestRelay_SessionAuth_NativeQUIC(t *testing.T) {
 	otherCA := newTestCA(t)
 	own := ca.issue(t, "relay-under-test", true)
 	peer := ca.issue(t, "relay-2", true)
-	internal := ca.issue(t, "egress-1", false)
+	unnamed := ca.issue(t, "egress-1", false)
 	foreign := otherCA.issue(t, "relay-x", true)
 	refuse := func() *fakeAuth { return &fakeAuth{err: auth.RefusedError{Status: http.StatusUnauthorized}} }
 	tests := map[string]struct {
@@ -235,11 +235,11 @@ func TestRelay_SessionAuth_NativeQUIC(t *testing.T) {
 			clientCert: &peer,
 			wantRoute:  true,
 		},
-		"an internal client's certificate announces nothing": {
-			server:     refuse(),
-			trust:      ca.trust(t, &own),
-			clientCert: &internal,
-			// Not asked for a credential, and its announcement is refused.
+		"a certificate from the CA without the peering name is a client": {
+			server:       refuse(),
+			trust:        ca.trust(t, &own),
+			clientCert:   &unnamed,
+			wantRequests: true,
 		},
 		"a peer certificate from another CA fails the handshake": {
 			server:     refuse(),
@@ -281,7 +281,7 @@ func TestRelay_SessionAuth_NativeQUIC(t *testing.T) {
 				}
 			}
 			if !tt.wantRequests {
-				assert.Empty(t, reqs, "a peer, an internal client, or a failed handshake is never asked")
+				assert.Empty(t, reqs, "a peer or a failed handshake is never asked")
 				return
 			}
 			require.NotEmpty(t, reqs)

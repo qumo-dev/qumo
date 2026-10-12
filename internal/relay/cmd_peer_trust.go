@@ -17,8 +17,9 @@ import (
 // they make a valid configuration, given whether PEERS is set:
 //
 //   - nothing set: a standalone relay, no session is a peer;
-//   - CA_FILE alone: CA-issued certificates authenticate internal clients,
-//     but the relay is no peer itself;
+//   - CA_FILE alone: a session with a CA-issued peer certificate is a
+//     peer, but the relay has no peer identity itself: it dials no peer and
+//     no relay can dial it;
 //   - CA_FILE with a peer certificate: the relay accepts peers;
 //   - all of that with PEERS: full peering.
 //

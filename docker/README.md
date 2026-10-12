@@ -98,7 +98,7 @@ Environment variables (relay)
 | `RELAY_NAME` | `relay-$HOSTNAME` | Node ID |
 | `CERT_FILE` / `KEY_FILE` | `certs/server.crt` / `certs/server.key` | TLS cert/key (mount them; e.g. from `mage cert`) |
 | `PEERS` | (empty) | Comma-separated relays to dial, e.g. an edge's hub(s); each host is resolved to all its addresses. Needs the three below. |
-| `CA_FILE` | (empty) | PEM relay CA. A client certificate it verifies authenticates an internal client; one that also carries the peering name makes a relay peer. |
+| `CA_FILE` | (empty) | PEM relay CA. A client certificate it verifies that carries the peering name makes a relay peer; one without the name grants nothing. |
 | `PEER_CERT_FILE` / `PEER_KEY_FILE` | (empty) | This relay's peer identity, a certificate `CA_FILE` issued (`mage cert` writes dev ones under `certs/peers/`). Set together, with `CA_FILE`. |
 
 Build locally

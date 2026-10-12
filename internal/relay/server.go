@@ -52,8 +52,8 @@ type Server struct {
 	// refuses it as unavailable.
 	//
 	// A nil Authorize refuses every client session and logs why: a Server
-	// never runs open by omission. Relay peers and internal clients
-	// (peer_trust.go) are never asked.
+	// never runs open by omission. Relay peers (peer_trust.go) are never
+	// asked.
 	Authorize func(ctx context.Context, req auth.Request) (*auth.Grant, error)
 
 	// End reports the end of a checked session, with its final byte totals:
@@ -678,9 +678,9 @@ func (s *Server) Relay(sess *moqt.Session) {
 
 // relayPeer handles inbound native QUIC sessions. What the handshake made
 // the session decides (peer_trust.go): a relay peer is served without
-// asking; an internal client may subscribe and announce nothing; any other
-// native-QUIC session is admitted exactly like a WebTransport client, since
-// speaking the native protocol is not itself proof of being a peer.
+// asking; any other native-QUIC session is admitted exactly like a
+// WebTransport client, since speaking the native protocol is not itself
+// proof of being a peer.
 func (s *Server) relayPeer(sess *moqt.Session) {
 	a := admissionFrom(sess.Context())
 	if a == nil {
@@ -691,20 +691,17 @@ func (s *Server) relayPeer(sess *moqt.Session) {
 	state := sess.ConnectionState().TLS
 	if isSelf(state, s.PeerCertificate) {
 		// This relay dialed itself through a name among its peers; the
-		// dialing side drops the session too.
+		// dialing side drops the session too. Anything else that presents
+		// this relay's own peer certificate is dropped the same way.
+		slog.Info("relay: session dropped: it presented this relay's own peer certificate (a relay that reached itself; anything else needs a certificate of its own)",
+			"remote", sess.RemoteAddr())
 		a.decide(refusedGrant, auth.Request{})
 		_ = sess.CloseWithError(moqt.NoError, "self")
 		return
 	}
-	switch class, identity := classify(state); class {
-	case classPeer:
+	if class, identity := classify(state); class == classPeer {
 		slog.Info("relay: peer session", "remote", sess.RemoteAddr(), "identity", identity)
 		a.decide(nil, auth.Request{})
-		s.serveSession(sess)
-		return
-	case classInternal:
-		slog.Info("relay: internal client session", "remote", sess.RemoteAddr(), "identity", identity)
-		a.decideInternal()
 		s.serveSession(sess)
 		return
 	}
@@ -731,9 +728,7 @@ func (s *Server) serveSession(sess *moqt.Session) {
 		return
 	}
 	a := admissionFrom(sess.Context())
-	// An internal client is restricted by its grant but has no credential:
-	// nothing to re-check, and no usage to report.
-	checked := a != nil && a.grant != nil && !a.internal
+	checked := a != nil && a.grant != nil
 	var l *lease
 	if checked {
 		a.served.Store(true)
@@ -748,7 +743,7 @@ func (s *Server) serveSession(sess *moqt.Session) {
 	}
 	// Registered before the close below, so that it runs after it, with the
 	// session's final byte totals and close cause.
-	transport, class := sessionTransport(a), admittedClass(a).label()
+	transport, class := sessionTransport(a), admittedClass(a).String()
 	addr := sess.RemoteAddr().String()
 	started := time.Now()
 	metricSessionsTotal.WithLabelValues(transport, class).Inc()

@@ -64,9 +64,9 @@ All metrics are under the `qumo_relay_` prefix.
 | Metric | Type | Description |
 |---|---|---|
 | `qumo_relay_sessions_active` | Gauge | Current number of active MoQT relay sessions. |
-| `qumo_relay_sessions_total{transport,class}` | Counter | Sessions served, by transport (`webtransport`, `websocket` or `quic`) and class: `client` (admitted by its credential, or unchecked with auth off), `internal` (an internal client) or `peer` (a relay peer). Relay peers and internal clients run over `quic`. |
+| `qumo_relay_sessions_total{transport,class}` | Counter | Sessions served, by transport (`webtransport`, `websocket` or `quic`) and class: `client` (admitted by its credential, or unchecked with auth off) or `peer` (admitted by a peer certificate: another relay, or anything else given one, such as an HLS egress). Peers run over `quic`. |
 | `qumo_relay_sessions_closed_total{transport,class,reason}` | Counter | Ended sessions, by transport, class and reason: `closed`, `dropped` (the connection was lost), or what the session's lease ended it for. |
-| `qumo_relay_session_bytes_total{transport,class,direction}` | Counter | Bytes of ended sessions, by transport, class and direction (`sent`, `received`). Added when a session ends. Traffic between relays is `class="peer"`; what clients sent and received is `class="client"`. |
+| `qumo_relay_session_bytes_total{transport,class,direction}` | Counter | Bytes of ended sessions, by transport, class and direction (`sent`, `received`). Added when a session ends. Traffic between relays is `class="peer"`, along with that of anything else holding a peer certificate; what clients sent and received is `class="client"`. |
 | `qumo_relay_subscribers_active` | Gauge | Current number of active MoQT track subscribers. |
 | `qumo_relay_track_subscriptions_active{path,track}` | Gauge | Current downstream subscriptions observed for a broadcast path and track. |
 | `qumo_relay_track_distributor_reuses_total{path,track}` | Counter | Track subscription requests served by an existing relay distributor. |

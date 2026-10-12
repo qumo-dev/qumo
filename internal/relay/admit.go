@@ -26,10 +26,6 @@ type admission struct {
 	// grant is set before decided closes. nil is unchecked: a relay peer, or
 	// any session with auth off.
 	grant *auth.Grant
-	// internal marks an internal client (peer_trust.go): grant restricts
-	// what it may do, but it has no credential to re-check and no usage to
-	// report.
-	internal bool
 	// req is the connect request that admitted the session, set with
 	// grant. A revalidate re-sends it, with the same id.
 	req auth.Request
@@ -50,12 +46,6 @@ type admissionKey struct{}
 // refusedGrant is the grant of a refused session: it covers nothing.
 var refusedGrant = &auth.Grant{}
 
-// internalGrant is what an internal client may do: subscribe to anything,
-// announce nothing.
-var internalGrant = auth.NewGrant([]token.Scope{
-	{Actions: []token.Action{token.ActionSubscribe, token.ActionFetch}, Prefix: true},
-}, 0)
-
 func pendingAdmission() *admission {
 	return &admission{decided: make(chan struct{})}
 }
@@ -72,13 +62,6 @@ func (a *admission) decide(g *auth.Grant, req auth.Request) {
 	a.grant = g
 	a.req = req
 	close(a.decided)
-}
-
-// decideInternal records an internal client's admission: internalGrant,
-// with no connect request behind it.
-func (a *admission) decideInternal() {
-	a.internal = true
-	a.decide(internalGrant, auth.Request{})
 }
 
 func withAdmission(ctx context.Context, a *admission) context.Context {
@@ -118,10 +101,6 @@ func authorizeSubscribe(tw *moqt.TrackWriter) bool {
 		// The subscription ended before its session was admitted.
 		return false
 	case g == nil:
-		return true
-	case admissionFrom(tw.Context()).internal:
-		// An internal client's grant covers every path and came from no
-		// credential: there is nothing to count as an authorization.
 		return true
 	case g.Allows(token.ActionSubscribe, tw.BroadcastPath, tw.TrackName):
 		metricSubscribeAuthorizations.WithLabelValues("admitted").Inc()
@@ -252,7 +231,7 @@ func (s *Server) reportEnd(ctx context.Context, req auth.Request, stats moqt.Ses
 
 // sessionTransport names what a session runs over, for the metrics and the
 // log: what its connect request said. A session admitted without one, a
-// relay peer or an internal client, runs over native QUIC.
+// relay peer, runs over native QUIC.
 func sessionTransport(a *admission) string {
 	if a != nil && a.req.Transport != "" {
 		return a.req.Transport
@@ -261,16 +240,10 @@ func sessionTransport(a *admission) string {
 }
 
 // admittedClass is the class a session was admitted as, for the metrics and
-// the log. A session this relay dialed has no admission: it is a relay peer.
-// So is an inbound one admitted without a connect request that is no
-// internal client.
+// the log. A client has a connect request. A relay peer has none: neither
+// an inbound one, nor one this relay dialed, which has no admission either.
 func admittedClass(a *admission) sessionClass {
-	switch {
-	case a == nil:
-		return classPeer
-	case a.internal:
-		return classInternal
-	case a.req.Transport != "":
+	if a != nil && a.req.Transport != "" {
 		return classClient
 	}
 	return classPeer

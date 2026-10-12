@@ -13,7 +13,7 @@ import (
 )
 
 // testCA is a relay CA for a test: it issues peer certificates (with the
-// peering name) and internal clients' certificates (without).
+// peering name) and certificates without it, which grant nothing.
 type testCA struct {
 	ca *devcert.CA
 }

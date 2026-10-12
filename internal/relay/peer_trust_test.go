@@ -52,14 +52,14 @@ func verifiedChain(leaf *x509.Certificate) *tls.ConnectionState {
 func Test_classify(t *testing.T) {
 	ca := testCA(t)
 	peer := issue(t, ca, peerLeaf("relay-1"))
-	internal := issue(t, ca, devcert.Leaf{CommonName: "egress-1"})
+	unnamed := issue(t, ca, devcert.Leaf{CommonName: "egress-1"})
 	tests := map[string]struct {
 		state        *tls.ConnectionState
 		wantClass    sessionClass
 		wantIdentity string
 	}{
 		"a peer certificate":                   {state: verifiedChain(peer.Leaf), wantClass: classPeer, wantIdentity: "relay-1"},
-		"an internal client's certificate":     {state: verifiedChain(internal.Leaf), wantClass: classInternal, wantIdentity: "egress-1"},
+		"a CA certificate without the name":    {state: verifiedChain(unnamed.Leaf), wantClass: classClient},
 		"a certificate the CA didn't verify":   {state: &tls.ConnectionState{PeerCertificates: []*x509.Certificate{peer.Leaf}}, wantClass: classClient},
 		"no certificate":                       {state: &tls.ConnectionState{}, wantClass: classClient},
 		"no TLS state":                         {state: nil, wantClass: classClient},
@@ -210,7 +210,7 @@ func TestPeerTrust_ServerTLS(t *testing.T) {
 	public := issue(t, otherCA, devcert.Leaf{CommonName: "localhost", DNSNames: []string{"localhost"}, ExtKeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}})
 	own := issue(t, ca, peerLeaf("relay-1"))
 	other := issue(t, ca, peerLeaf("relay-2"))
-	internal := issue(t, ca, devcert.Leaf{CommonName: "egress-1"})
+	unnamed := issue(t, ca, devcert.Leaf{CommonName: "egress-1"})
 	foreign := issue(t, otherCA, peerLeaf("relay-x"))
 	// Certificates the CA did issue, and that a relay must still refuse.
 	expired := issue(t, ca, devcert.Leaf{CommonName: "relay-old", DNSNames: []string{PeeringName}, Validity: -time.Minute})
@@ -251,17 +251,17 @@ func TestPeerTrust_ServerTLS(t *testing.T) {
 		"a peer dials":           {trust: withIdentity, dialer: asPeer, wantServed: &own, wantClass: classPeer},
 		"the relay dials itself": {trust: withIdentity, dialer: withIdentity.DialerTLS(), wantServed: &own, wantClass: classPeer, wantSelf: true},
 		// A browser holds a certificate here, and is never asked for one.
-		"a browser":                                   {trust: withIdentity, dialer: viaPublicName([]string{"h3"}, &internal), wantServed: &public, wantClass: classClient},
+		"a browser":                                   {trust: withIdentity, dialer: viaPublicName([]string{"h3"}, &unnamed), wantServed: &public, wantClass: classClient},
 		"a native client with a credential":           {trust: withIdentity, dialer: viaPublicName(native, nil), wantServed: &public, wantClass: classClient},
-		"an internal client, through the public name": {trust: withIdentity, dialer: viaPublicName(native, &internal), wantServed: &public, wantClass: classInternal},
+		"a CA certificate without the name":           {trust: withIdentity, dialer: viaPublicName(native, &unnamed), wantServed: &public, wantClass: classClient},
 		"a peer certificate, through the public name": {trust: withIdentity, dialer: viaPublicName(native, &other), wantServed: &public, wantClass: classPeer},
 		// Offering h3 as well makes it a browser's handshake: its certificate isn't asked for, so it earns nothing.
 		"a peer certificate, offering h3 too": {trust: withIdentity, dialer: viaPublicName([]string{"h3", moqt.NextProtoMOQ}, &other), wantServed: &public, wantClass: classClient},
 		// The peering name alone makes no peer: the certificate must carry it.
-		"an internal client asks for the peering name": {trust: withIdentity, dialer: viaPeeringName(&internal), wantServed: &own, wantClass: classInternal},
-		// A relay with the CA alone still tells the two classes apart.
-		"an internal client, relay with the CA only": {trust: caOnly, dialer: viaPublicName(native, &internal), wantServed: &public, wantClass: classInternal},
-		"a peer certificate, relay with the CA only": {trust: caOnly, dialer: viaPublicName(native, &other), wantServed: &public, wantClass: classPeer},
+		"a CA certificate without the name asks for the peering name": {trust: withIdentity, dialer: viaPeeringName(&unnamed), wantServed: &own, wantClass: classClient},
+		// A relay with the CA alone still tells a peer from a client.
+		"a CA certificate without the name, relay with the CA only": {trust: caOnly, dialer: viaPublicName(native, &unnamed), wantServed: &public, wantClass: classClient},
+		"a peer certificate, relay with the CA only":                {trust: caOnly, dialer: viaPublicName(native, &other), wantServed: &public, wantClass: classPeer},
 		// A certificate the relay can't verify ends the handshake. It is never
 		// taken for a client without one, which a credential could then admit.
 		"a foreign certificate, through the public name":     {trust: withIdentity, dialer: viaPublicName(native, &foreign), wantDialedErr: "certificate signed by unknown authority"},

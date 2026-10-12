@@ -111,14 +111,13 @@ func sessionEndAttrs(a *admission, remote, reason string, ran time.Duration, sta
 }
 
 // sessionIdentityAttrs names a session the same way in every line about it.
-// A session without a connect request (a relay peer, an internal client) has
-// no id.
+// A session without a connect request, a relay peer, has no id.
 func sessionIdentityAttrs(a *admission, remote string) []any {
 	attrs := make([]any, 0, 24)
 	if a != nil && a.req.ID != "" {
 		attrs = append(attrs, "id", a.req.ID)
 	}
-	return append(attrs, "class", admittedClass(a).label(), "transport", sessionTransport(a), "remote", remote)
+	return append(attrs, "class", admittedClass(a).String(), "transport", sessionTransport(a), "remote", remote)
 }
 
 // isUpgrade reports whether transport is one a session reaches through an
