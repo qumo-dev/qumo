@@ -67,8 +67,8 @@ func loggedHeader(v string) string {
 // isRuneStart reports whether b begins a UTF-8 sequence.
 func isRuneStart(b byte) bool { return b&0xC0 != 0x80 }
 
-// sessionStartAttrs describes a session the relay starts to serve: who it
-// is, how it reached the relay, and what the two ends speak. moq is the MoQ
+// sessionStartAttrs describes a session the relay starts to serve: whom the
+// relay takes it for, how it reached the relay, and what the two ends speak. moq is the MoQ
 // version the relay speaks on it; alpn and offered are what the client
 // asked for.
 func sessionStartAttrs(a *admission, state moqt.ConnectionState, remote string, checked bool) []any {
@@ -118,7 +118,7 @@ func sessionIdentityAttrs(a *admission, remote string) []any {
 	if a != nil && a.req.ID != "" {
 		attrs = append(attrs, "id", a.req.ID)
 	}
-	return append(attrs, "transport", sessionTransport(a), "remote", remote)
+	return append(attrs, "class", admittedClass(a).label(), "transport", sessionTransport(a), "remote", remote)
 }
 
 // isUpgrade reports whether transport is one a session reaches through an

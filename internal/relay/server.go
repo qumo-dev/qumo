@@ -748,16 +748,16 @@ func (s *Server) serveSession(sess *moqt.Session) {
 	}
 	// Registered before the close below, so that it runs after it, with the
 	// session's final byte totals and close cause.
-	transport := sessionTransport(a)
+	transport, class := sessionTransport(a), admittedClass(a).label()
 	addr := sess.RemoteAddr().String()
 	started := time.Now()
-	metricSessionsTotal.WithLabelValues(transport).Inc()
+	metricSessionsTotal.WithLabelValues(transport, class).Inc()
 	defer func() {
 		stats := sess.Stats()
 		reason := endReason(l, context.Cause(sess.Context()))
-		metricSessionBytes.WithLabelValues(transport, "sent").Add(float64(stats.BytesSent))
-		metricSessionBytes.WithLabelValues(transport, "received").Add(float64(stats.BytesReceived))
-		metricSessionsClosed.WithLabelValues(transport, reason).Inc()
+		metricSessionBytes.WithLabelValues(transport, class, "sent").Add(float64(stats.BytesSent))
+		metricSessionBytes.WithLabelValues(transport, class, "received").Add(float64(stats.BytesReceived))
+		metricSessionsClosed.WithLabelValues(transport, class, reason).Inc()
 		slog.Info("relay: session ended", sessionEndAttrs(a, addr, reason, time.Since(started), stats)...)
 	}()
 	defer sess.CloseWithError(moqt.NoError, moqt.NoError.String())

@@ -92,7 +92,7 @@ func TestSessionStartAttrs(t *testing.T) {
 			state:     moqt.ConnectionState{Version: moqt.NextProtoMOQ, TLS: h3},
 			checked:   true,
 			want: []any{
-				"id", "abc", "transport", auth.TransportWebTransport, "remote", "192.0.2.1:5000",
+				"id", "abc", "class", "client", "transport", auth.TransportWebTransport, "remote", "192.0.2.1:5000",
 				"checked", true, "moq", moqt.NextProtoMOQ, "path", "/room/1",
 				"alpn", moqt.NextProtoH3, "tls", "TLS 1.3", "sni", "relay.example",
 				"offered", `"moq-lite-05"`, "user_agent", "Chrome/153", "origin", "https://app.example",
@@ -102,7 +102,7 @@ func TestSessionStartAttrs(t *testing.T) {
 			admission: silent,
 			state:     moqt.ConnectionState{Version: moqt.NextProtoMOQ},
 			want: []any{
-				"id", "def", "transport", auth.TransportWebTransport, "remote", "192.0.2.1:5000",
+				"id", "def", "class", "client", "transport", auth.TransportWebTransport, "remote", "192.0.2.1:5000",
 				"checked", false, "moq", moqt.NextProtoMOQ, "path", "/room/1", "offered", "",
 			},
 		},
@@ -113,7 +113,7 @@ func TestSessionStartAttrs(t *testing.T) {
 				TLS:     &tls.ConnectionState{NegotiatedProtocol: moqt.NextProtoMOQ, Version: tls.VersionTLS13},
 			},
 			want: []any{
-				"id", "ghi", "transport", auth.TransportQUIC, "remote", "192.0.2.1:5000",
+				"id", "ghi", "class", "client", "transport", auth.TransportQUIC, "remote", "192.0.2.1:5000",
 				"checked", false, "moq", moqt.NextProtoMOQ, "path", "/room/1",
 				"alpn", moqt.NextProtoMOQ, "tls", "TLS 1.3",
 			},
@@ -121,11 +121,11 @@ func TestSessionStartAttrs(t *testing.T) {
 		"an internal client has no id": {
 			admission: internal,
 			state:     moqt.ConnectionState{Version: moqt.NextProtoMOQ},
-			want:      []any{"transport", transportInternal, "remote", "192.0.2.1:5000", "checked", false, "moq", moqt.NextProtoMOQ},
+			want:      []any{"class", "internal", "transport", auth.TransportQUIC, "remote", "192.0.2.1:5000", "checked", false, "moq", moqt.NextProtoMOQ},
 		},
 		"a peer this relay dialed": {
 			state: moqt.ConnectionState{Version: moqt.NextProtoMOQ},
-			want:  []any{"transport", transportPeer, "remote", "192.0.2.1:5000", "checked", false, "moq", moqt.NextProtoMOQ},
+			want:  []any{"class", "peer", "transport", auth.TransportQUIC, "remote", "192.0.2.1:5000", "checked", false, "moq", moqt.NextProtoMOQ},
 		},
 	}
 	for name, tt := range tests {
@@ -144,7 +144,7 @@ func TestSessionEndAttrs(t *testing.T) {
 	got := sessionEndAttrs(a, "192.0.2.1:5000", endDropped, 1500*time.Millisecond+300*time.Microsecond, stats)
 
 	assert.Equal(t, []any{
-		"id", "abc", "transport", auth.TransportWebSocket, "remote", "192.0.2.1:5000",
+		"id", "abc", "class", "client", "transport", auth.TransportWebSocket, "remote", "192.0.2.1:5000",
 		"reason", endDropped, "duration", 1500 * time.Millisecond,
 		"bytes_sent", stats.BytesSent, "bytes_received", stats.BytesReceived,
 	}, got)
