@@ -67,10 +67,10 @@ func TestTrackDistributor_GroupRingIntegration(t *testing.T) {
 	require.NotNil(t, dist.ring, "Ring should be initialized")
 
 	head := dist.ring.head()
-	assert.Equal(t, moqt.GroupSequence(0), head, "Expected initial head to be 0")
+	assert.Equal(t, ringPosition(0), head, "Expected initial head to be 0")
 
 	earliest := dist.ring.earliestAvailable()
-	assert.Equal(t, moqt.GroupSequence(1), earliest, "Expected earliest to be 1")
+	assert.Equal(t, ringPosition(1), earliest, "Expected earliest to be 1")
 }
 
 // TestTrackDistributor_DoneChannel tests that the done channel is closed when ingest stops
@@ -107,7 +107,7 @@ func TestTrackDistributor_RingBehavior(t *testing.T) {
 
 		// Verify initial head
 		head := dist.ring.head()
-		assert.Equal(t, moqt.GroupSequence(0), head, "Expected head 0")
+		assert.Equal(t, ringPosition(0), head, "Expected head 0")
 	})
 
 	t.Run("earliest_available_at_start", func(t *testing.T) {
@@ -116,7 +116,7 @@ func TestTrackDistributor_RingBehavior(t *testing.T) {
 		}
 
 		earliest := dist.ring.earliestAvailable()
-		assert.Equal(t, moqt.GroupSequence(1), earliest, "Expected earliest 1 at start")
+		assert.Equal(t, ringPosition(1), earliest, "Expected earliest 1 at start")
 	})
 
 	t.Run("catchup_logic", func(t *testing.T) {
@@ -125,7 +125,7 @@ func TestTrackDistributor_RingBehavior(t *testing.T) {
 		}
 
 		// Initially head should be 0
-		assert.Equal(t, moqt.GroupSequence(0), dist.ring.head(), "Expected initial head to be 0")
+		assert.Equal(t, ringPosition(0), dist.ring.head(), "Expected initial head to be 0")
 
 		// Verify earliest available - starts at 1 for empty ring
 		earliest := dist.ring.earliestAvailable()
