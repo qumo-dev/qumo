@@ -408,35 +408,6 @@ func TestSessionTransport(t *testing.T) {
 	}
 }
 
-func TestEnvBoolDefault(t *testing.T) {
-	tests := map[string]struct {
-		value string
-		def   bool
-		want  bool
-	}{
-		"1":                            {value: "1", want: true},
-		"true, in any case":            {value: "TRUE", want: true},
-		"yes":                          {value: "yes", want: true},
-		"on, with spaces":              {value: " on ", want: true},
-		"0 over a true default":        {value: "0", def: true, want: false},
-		"false over a true default":    {value: "false", def: true, want: false},
-		"no":                           {value: "no", def: true, want: false},
-		"off":                          {value: "OFF", def: true, want: false},
-		"unset keeps a true default":   {value: "", def: true, want: true},
-		"unset keeps a false default":  {value: "", def: false, want: false},
-		"anything else is the default": {value: "enabled", def: true, want: true},
-	}
-	for name, tt := range tests {
-		t.Run(name, func(t *testing.T) {
-			t.Setenv("QUMO_TEST_ENV_BOOL", tt.value)
-
-			got := envBoolDefault("QUMO_TEST_ENV_BOOL", tt.def)
-
-			assert.Equal(t, tt.want, got)
-		})
-	}
-}
-
 // ListenAndServe returns with the first server to end, and Shutdown ends
 // them all.
 func TestServers(t *testing.T) {

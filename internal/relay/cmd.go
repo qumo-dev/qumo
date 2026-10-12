@@ -22,7 +22,6 @@ import (
 	"golang.org/x/sync/errgroup"
 
 	"github.com/prometheus/client_golang/prometheus/promhttp"
-	"github.com/quic-go/quic-go"
 	"github.com/qumo-dev/gomoqt/moqt"
 	"github.com/qumo-dev/qumo/internal/auth"
 	"github.com/qumo-dev/qumo/internal/cors"
@@ -57,6 +56,10 @@ func sanitizeLog(s string) string {
 //	RELAY_NAME                   - node ID (default: "relay-" + hostname)
 //	GROUP_CACHE_SIZE             - completed groups retained per track (default: 8)
 //	FRAME_CAPACITY               - frame buffer size in bytes (default: 1500)
+//	QUIC_*                 - QUIC transport settings: initial packet
+//	                               size, path MTU discovery, keep-alive, idle
+//	                               timeouts and receive windows
+//	                               (quicConfigFromEnv lists them)
 //	PEERS                        - comma-separated relays to dial (host:port);
 //	                               each host is resolved to all its addresses
 //	                               (e.g. "role-hub.qumo-relay.service.consul:4433").
@@ -117,6 +120,13 @@ func Run(args []string) error {
 	frameCapacity, err := envInt("FRAME_CAPACITY", 1500)
 	if err != nil {
 		return fmt.Errorf("invalid FRAME_CAPACITY: %w", err)
+	}
+	quicConfig, err := quicConfigFromEnv()
+	if err != nil {
+		return err
+	}
+	if set := quicEnvSet(); len(set) > 0 {
+		slog.Info("relay: QUIC transport settings from the environment", "set", set)
 	}
 
 	var peers []Peer
@@ -199,21 +209,6 @@ func Run(args []string) error {
 
 	// Create relay server
 	httpMux := http.NewServeMux()
-
-	quicConfig := &quic.Config{
-		Allow0RTT:                        true,
-		EnableDatagrams:                  true,
-		EnableStreamResetPartialDelivery: true,
-		KeepAlivePeriod:                  10 * time.Second,
-		MaxIdleTimeout:                   60 * time.Second,
-		// MaxIncomingUniStreams/Streams left at quic-go defaults (~100). gomoqt's
-		// OpenGroup(ctx) blocks on MAX_STREAMS as designed backpressure; the relay
-		// passes a deadline-bearing context (openGroupTimeout) so a blocked open
-		// drops the group (MoQ semi-reliable) rather than hanging the egress
-		// goroutine and accumulating stream objects. Setting these to 1<<20 (as a
-		// previous fix did) removes the backpressure entirely, causing unbounded
-		// stream-object retention and a GC-driven degradation spiral.
-	}
 
 	// Dialing peers: the peer identity as the client certificate, the peering
 	// name as the server name, the CA as the only root (peer_trust.go). The
@@ -401,19 +396,6 @@ type server interface {
 	Shutdown(ctx context.Context) error
 }
 
-// envBoolDefault reads the environment variable key as a switch: "1",
-// "true", "yes" or "on" is true, "0", "false", "no" or "off" is false, in
-// any case, and anything else, or nothing, is def.
-func envBoolDefault(key string, def bool) bool {
-	switch strings.ToLower(strings.TrimSpace(os.Getenv(key))) {
-	case "1", "true", "yes", "on":
-		return true
-	case "0", "false", "no", "off":
-		return false
-	}
-	return def
-}
-
 // webSocketSettings is how the relay takes WebSocket upgrades.
 type webSocketSettings struct {
 	// enabled is whether it takes any.
@@ -429,7 +411,7 @@ type webSocketSettings struct {
 // upgrades are taken on relayAddr's host: on its port unless WS_PORT names
 // another.
 func loadWebSocketSettings(relayAddr string) (webSocketSettings, error) {
-	if !envBoolDefault("WS_ENABLE", true) {
+	if !envconfig.Bool("WS_ENABLE", true) {
 		return webSocketSettings{}, nil
 	}
 	ws := webSocketSettings{enabled: true}
