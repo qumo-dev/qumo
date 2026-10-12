@@ -121,6 +121,13 @@ func Run(args []string) error {
 	if err != nil {
 		return fmt.Errorf("invalid FRAME_CAPACITY: %w", err)
 	}
+	quicConfig, err := quicConfigFromEnv()
+	if err != nil {
+		return err
+	}
+	if set := quicEnvSet(); len(set) > 0 {
+		slog.Info("relay: QUIC transport settings from the environment", "set", set)
+	}
 
 	var peers []Peer
 	for _, p := range splitAddrList(os.Getenv("PEERS")) {
@@ -203,10 +210,6 @@ func Run(args []string) error {
 	// Create relay server
 	httpMux := http.NewServeMux()
 
-	quicConfig, err := quicConfigFromEnv()
-	if err != nil {
-		return err
-	}
 
 	// Dialing peers: the peer identity as the client certificate, the peering
 	// name as the server name, the CA as the only root (peer_trust.go). The

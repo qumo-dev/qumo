@@ -95,6 +95,9 @@ See [Deployment → TLS & mTLS]({{< relref "deployment/tls" >}}).
 | `RELAY_UDP_RCVBUF` | `262144` | UDP receive buffer (`SO_RCVBUF`) for the relay's QUIC listener socket. Raise on deployments pushing beyond ~15K concurrent sessions in burst. Set to `0` to use the unmodified OS default. |
 | `RELAY_GOGC` | (unset) | GC target percentage. Opt-in: if unset (and `GOGC` is unset), the Go runtime default (100) is used. A fan-out relay's goroutine stacks dominate RSS, so GC-scan CPU grows with session count; `RELAY_GOGC=600..1600` reached ~18–20K sessions on an 8-core host. `GOGC` (the runtime's own env var) always wins if set. Do **not** use `GOMEMLIMIT` for this workload — it forces constant GC and collapses throughput. |
 
+Run `qumo doctor` to see the effective GC target, which input won, and why —
+read-only, it changes nothing. See [Observability]({{< relref "observability" >}}).
+
 ## QUIC transport (optional)
 
 These tune the QUIC connections the relay accepts and the ones it dials to peers. Unset, each keeps the default shown. An invalid value stops the relay at startup with a message naming the variable.
@@ -102,21 +105,18 @@ These tune the QUIC connections the relay accepts and the ones it dials to peers
 | Variable | Default | Description |
 |---|---|---|
 | `RELAY_QUIC_INITIAL_PACKET_SIZE` | `1280` (quic-go) | UDP payload, in bytes, a connection starts with, `1200` to `1452`. With the IP and UDP headers a `1280`-byte payload is a 1308-byte IPv4 packet, sent with "don't fragment", so it does not pass a path whose MTU is 1280: Tailscale and some other VPNs and tunnels, or an IPv6 link at the minimum MTU. The handshake then never completes. Set `1200`, the smallest QUIC allows, on such a path. Path MTU discovery raises the size again once the connection is up. |
-| `RELAY_QUIC_DISABLE_PMTUD` | `false` | `true` keeps packets at the initial size for the life of the connection. |
+| `RELAY_QUIC_DISABLE_PMTUD` | `false` | A switch (`1`, `true`, `yes`, `on`, or `0`, `false`, `no`, `off`). On keeps packets at the initial size for the life of the connection. |
 | `RELAY_QUIC_KEEPALIVE_PERIOD` | `10s` | How often an idle connection is kept alive. `0` sends no keep-alives. |
-| `RELAY_QUIC_MAX_IDLE_TIMEOUT` | `60s` | A connection silent for this long is closed. Keep it well above the keep-alive period. |
-| `RELAY_QUIC_HANDSHAKE_IDLE_TIMEOUT` | `5s` (quic-go) | A handshake silent for this long is given up. |
+| `RELAY_QUIC_MAX_IDLE_TIMEOUT` | `60s` | A connection silent for this long is closed, `1ms` or more. Keep it well above the keep-alive period. There is no "never": `0` is refused. |
+| `RELAY_QUIC_HANDSHAKE_IDLE_TIMEOUT` | `5s` (quic-go) | A handshake silent for this long is given up, `1ms` or more. |
 | `RELAY_QUIC_INITIAL_STREAM_RECEIVE_WINDOW` | `524288` (quic-go) | Bytes a peer may send on one stream before the relay has read any. |
-| `RELAY_QUIC_MAX_STREAM_RECEIVE_WINDOW` | `6291456` (quic-go) | Upper bound the per-stream window grows to. |
+| `RELAY_QUIC_MAX_STREAM_RECEIVE_WINDOW` | `6291456` (quic-go) | Upper bound the per-stream window grows to. No less than the initial window in effect: the window starts there and never shrinks. |
 | `RELAY_QUIC_INITIAL_CONNECTION_RECEIVE_WINDOW` | `786432` (quic-go) | Bytes a peer may send on a whole connection before the relay has read any. |
-| `RELAY_QUIC_MAX_CONNECTION_RECEIVE_WINDOW` | `15728640` (quic-go) | Upper bound the per-connection window grows to. |
+| `RELAY_QUIC_MAX_CONNECTION_RECEIVE_WINDOW` | `15728640` (quic-go) | Upper bound the per-connection window grows to. No less than the initial window in effect. |
 
-Durations are written as Go durations (`10s`, `2m`); windows as whole numbers of bytes.
+Durations are written as Go durations (`10s`, `2m`); windows as whole numbers of bytes, `1` or more. The relay logs the `RELAY_QUIC_*` variables it found at startup, so a setting that did not reach the process shows by its absence.
 
 The number of streams a peer may open is not a setting. The relay relies on quic-go's limit as backpressure, and raising it removes that.
-
-Run `qumo doctor` to see the effective GC target, which input won, and why —
-read-only, it changes nothing. See [Observability]({{< relref "observability" >}}).
 
 ## Profiling
 

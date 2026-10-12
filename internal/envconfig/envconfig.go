@@ -6,7 +6,12 @@
 // lives here once rather than copy-pasted per command.
 package envconfig
 
-import "os"
+import (
+	"fmt"
+	"os"
+	"strconv"
+	"time"
+)
 
 // String returns the value of the environment variable key, or def when key is
 // unset or empty. os.Getenv cannot distinguish a missing variable from one set
@@ -17,4 +22,34 @@ func String(key, def string) string {
 		return v
 	}
 	return def
+}
+
+// Uint reads the environment variable key as a whole number of zero or more.
+// set is false when key is unset or empty, so the caller keeps its default.
+// The error names key and quotes the value.
+func Uint(key string) (v uint64, set bool, err error) {
+	raw := os.Getenv(key)
+	if raw == "" {
+		return 0, false, nil
+	}
+	v, err = strconv.ParseUint(raw, 10, 64)
+	if err != nil {
+		return 0, false, fmt.Errorf("invalid %s %q: want a whole number, zero or more", key, raw)
+	}
+	return v, true, nil
+}
+
+// Duration reads the environment variable key as a Go duration of zero or
+// more, such as "10s". set is false when key is unset or empty, so the caller
+// keeps its default. The error names key and quotes the value.
+func Duration(key string) (v time.Duration, set bool, err error) {
+	raw := os.Getenv(key)
+	if raw == "" {
+		return 0, false, nil
+	}
+	v, err = time.ParseDuration(raw)
+	if err != nil || v < 0 {
+		return 0, false, fmt.Errorf("invalid %s %q: want a duration of zero or more, such as 10s", key, raw)
+	}
+	return v, true, nil
 }
