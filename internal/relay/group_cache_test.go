@@ -200,6 +200,7 @@ func TestGroupRing_Get_SequencesNotStartingAtOneOrDense(t *testing.T) {
 		"with gaps":         {1, 5, 9},
 		"a single late one": {7},
 		"wrapping the ring": {10, 20, 30, 40, 50, 60},
+		"out of order":      {5, 4, 6},
 	}
 	for name, seqs := range tests {
 		t.Run(name, func(t *testing.T) {
@@ -215,6 +216,7 @@ func TestGroupRing_Get_SequencesNotStartingAtOneOrDense(t *testing.T) {
 				got := ring.get(pos)
 				require.NotNil(t, got, "position %d", pos)
 				assert.Equal(t, seqs[pos-1], got.seq, "position %d", pos)
+				ring.decrRef(got)
 			}
 		})
 	}
@@ -301,9 +303,7 @@ func TestGroupRing_Reserve_AdvancesHead(t *testing.T) {
 func TestGroupRing_Reserve_SlotVisibleBeforeFill(t *testing.T) {
 	ring := newGroupRing(DefaultGroupCacheSize, DefaultFramePool)
 
-	// reserve increments pos and stores at slot (pos % size).
-	// get(seq) looks up slot (seq % size).
-	// Both align when seq == post-increment pos (normal sequential arrival).
+	// reserve stores the cache at its position before any frame is read.
 	cache := ring.reserve(moqt.GroupSequence(1))
 
 	got := ring.get(ringPosition(1))

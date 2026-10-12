@@ -26,6 +26,7 @@ import (
 	"github.com/qumo-dev/gomoqt/moqt"
 	"github.com/qumo-dev/qumo/internal/auth"
 	"github.com/qumo-dev/qumo/internal/funnel"
+	"github.com/qumo-dev/qumo/internal/relay"
 	"github.com/qumo-dev/qumo/token"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -386,17 +387,19 @@ func TestFunnel_ScopedCredentialsNameTracksAndSenders(t *testing.T) {
 	assert.Equal(t, http.StatusForbidden, status, "posting does not grant fetching")
 }
 
-// TestFunnel_PublishesThroughTheRelay runs the funnel with no listener of its
-// own: it dials a relay that verifies credentials, signing a fresh one, and a
-// subscriber of the relay receives what the funnel records.
-func TestFunnel_PublishesThroughTheRelay(t *testing.T) {
+// startFunnelBehindRelay runs a relay that verifies credentials and a funnel
+// with no listener of its own, which dials that relay with a credential it
+// signs for publishing at "room". It returns the funnel's record URL, the
+// relay's address and server, and the key the relay trusts.
+func startFunnelBehindRelay(t *testing.T) (ingestURL, relayAddr string, relaySrv *relay.Server, key token.SigningKey) {
+	t.Helper()
 	key, keyFile, keysFile := writeKeys(t)
 	verifier, err := auth.NewVerifier(auth.VerifierConfig{Keys: keysFile})
 	require.NoError(t, err)
-	relayAddr, relaySrv := startAuthRelay(t, verifier.Authorize, nil)
+	relayAddr, relaySrv = startAuthRelay(t, verifier.Authorize, nil)
 
 	mux := moqt.NewTrackMux(0)
-	ingestURL := startFunnelHTTP(t, mem.New(), mux, nil)
+	ingestURL = startFunnelHTTP(t, mem.New(), mux, nil)
 	ctx, cancel := context.WithCancel(context.Background())
 	published := make(chan error, 1)
 	go func() {
@@ -411,16 +414,31 @@ func TestFunnel_PublishesThroughTheRelay(t *testing.T) {
 		cancel()
 		assert.NoError(t, <-published, "the funnel stops publishing when its context ends")
 	})
+	return ingestURL, relayAddr, relaySrv, key
+}
+
+// subscribeChatAsViewer subscribes to the chat track of /room/123 through the
+// relay at relayAddr, with a credential key signs for subscribing to it.
+func subscribeChatAsViewer(t *testing.T, relayAddr string, key token.SigningKey) *moqt.TrackReader {
+	t.Helper()
+	viewer, err := token.Sign(key, token.Grant{Scopes: []token.Scope{
+		{Actions: []token.Action{token.ActionSubscribe}, Broadcast: "room/123", Prefix: true},
+	}}, time.Minute)
+	require.NoError(t, err)
+	return subscribeChat(t, nativeURL(relayAddr)+"?jwt="+viewer)
+}
+
+// TestFunnel_PublishesThroughTheRelay runs the funnel with no listener of its
+// own: it dials a relay that verifies credentials, signing a fresh one, and a
+// subscriber of the relay receives what the funnel records.
+func TestFunnel_PublishesThroughTheRelay(t *testing.T) {
+	ingestURL, relayAddr, relaySrv, key := startFunnelBehindRelay(t)
 
 	require.Equal(t, http.StatusCreated, record(t, ingestURL, "", `"first"`))
 	require.Eventually(t, routed(relaySrv, "/room/123"), 5*time.Second, 25*time.Millisecond,
 		"the relay routes the broadcast to the funnel")
 
-	viewer, err := token.Sign(key, token.Grant{Scopes: []token.Scope{
-		{Actions: []token.Action{token.ActionSubscribe}, Broadcast: "room/123", Prefix: true},
-	}}, time.Minute)
-	require.NoError(t, err)
-	tr := subscribeChat(t, nativeURL(relayAddr)+"?jwt="+viewer)
+	tr := subscribeChatAsViewer(t, relayAddr, key)
 
 	seq, got := nextRecord(t, tr)
 	assert.Equal(t, moqt.GroupSequence(1), seq, "the relay's subscriber starts at the latest record")
@@ -436,27 +454,7 @@ func TestFunnel_PublishesThroughTheRelay(t *testing.T) {
 // relay to a track that already holds several records: the subscription is
 // answered with the latest of them.
 func TestFunnel_RelaySubscriberJoinsAfterSeveralRecords(t *testing.T) {
-	key, keyFile, keysFile := writeKeys(t)
-	verifier, err := auth.NewVerifier(auth.VerifierConfig{Keys: keysFile})
-	require.NoError(t, err)
-	relayAddr, relaySrv := startAuthRelay(t, verifier.Authorize, nil)
-
-	mux := moqt.NewTrackMux(0)
-	ingestURL := startFunnelHTTP(t, mem.New(), mux, nil)
-	ctx, cancel := context.WithCancel(context.Background())
-	published := make(chan error, 1)
-	go func() {
-		published <- funnel.PublishThroughRelay(ctx, funnel.RelayConfig{
-			URL:            nativeURL(relayAddr),
-			Insecure:       true,
-			SigningKeyFile: keyFile,
-			Publish:        "room",
-		}, mux)
-	}()
-	t.Cleanup(func() {
-		cancel()
-		assert.NoError(t, <-published)
-	})
+	ingestURL, relayAddr, relaySrv, key := startFunnelBehindRelay(t)
 
 	for _, payload := range []string{`"first"`, `"second"`, `"third"`} {
 		require.Equal(t, http.StatusCreated, record(t, ingestURL, "", payload))
@@ -464,11 +462,7 @@ func TestFunnel_RelaySubscriberJoinsAfterSeveralRecords(t *testing.T) {
 	require.Eventually(t, routed(relaySrv, "/room/123"), 5*time.Second, 25*time.Millisecond,
 		"the relay routes the broadcast to the funnel")
 
-	viewer, err := token.Sign(key, token.Grant{Scopes: []token.Scope{
-		{Actions: []token.Action{token.ActionSubscribe}, Broadcast: "room/123", Prefix: true},
-	}}, time.Minute)
-	require.NoError(t, err)
-	tr := subscribeChat(t, nativeURL(relayAddr)+"?jwt="+viewer)
+	tr := subscribeChatAsViewer(t, relayAddr, key)
 
 	seq, got := nextRecord(t, tr)
 	assert.Equal(t, moqt.GroupSequence(3), seq, "the relay's subscriber starts at the latest record")

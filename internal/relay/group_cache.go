@@ -215,6 +215,9 @@ func newGroupRing(size int, pool *FramePool) *groupRing {
 
 // ringPosition is a group's place in a groupRing: 1 for the first group
 // reserved, 2 for the next, in arrival order. It is not the group's sequence.
+// Subscribers are served by position, so groups that arrive out of sequence
+// order leave in the order they arrived, and a new subscriber starts at the
+// group that arrived last.
 type ringPosition uint64
 
 type groupRing struct {
