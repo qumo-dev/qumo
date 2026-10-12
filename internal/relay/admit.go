@@ -40,6 +40,9 @@ type admission struct {
 	// all the same, is to be closed: refusalRefused or refusalUnavailable.
 	// Only a WebSocket session has one (handleWebSocket).
 	refusal string
+	// client is what the upgrade request said about its client, set before
+	// the session starts. Zero for a native-QUIC session.
+	client upgradeClient
 }
 
 type admissionKey struct{}
@@ -247,26 +250,30 @@ func (s *Server) reportEnd(ctx context.Context, req auth.Request, stats moqt.Ses
 	metricAuthRequests.WithLabelValues(auth.EventEnd, authOK).Inc()
 }
 
-// Transports of the sessions that have no connect request to name one.
-const (
-	transportPeer     = "peer"
-	transportInternal = "internal"
-)
-
-// sessionTransport names the transport of a session for the per-transport
-// metrics: what its connect request said, or peer or internal for a session
-// admitted without one.
+// sessionTransport names what a session runs over, for the metrics and the
+// log: what its connect request said. A session admitted without one, a
+// relay peer or an internal client, runs over native QUIC.
 func sessionTransport(a *admission) string {
-	switch {
-	case a == nil:
-		// A session this relay dialed: a relay peer.
-		return transportPeer
-	case a.internal:
-		return transportInternal
-	case a.req.Transport != "":
+	if a != nil && a.req.Transport != "" {
 		return a.req.Transport
 	}
-	return transportPeer
+	return auth.TransportQUIC
+}
+
+// admittedClass is the class a session was admitted as, for the metrics and
+// the log. A session this relay dialed has no admission: it is a relay peer.
+// So is an inbound one admitted without a connect request that is no
+// internal client.
+func admittedClass(a *admission) sessionClass {
+	switch {
+	case a == nil:
+		return classPeer
+	case a.internal:
+		return classInternal
+	case a.req.Transport != "":
+		return classClient
+	}
+	return classPeer
 }
 
 // Reasons a session refused at connect is closed with.

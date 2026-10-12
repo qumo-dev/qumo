@@ -43,7 +43,10 @@ import (
 // and the DNS name a peer certificate must carry. It can never resolve.
 const PeeringName = "peer.qumo.internal"
 
-// sessionClass is what a native-QUIC session's TLS handshake made it.
+// sessionClass is whom the relay takes a session for, which decides what it
+// asks of the session and what it lets it do. A native-QUIC session's TLS
+// handshake decides it; a session that came through an HTTP upgrade is a
+// client.
 type sessionClass int
 
 const (
@@ -62,6 +65,17 @@ func (c sessionClass) String() string {
 	switch c {
 	case classInternal:
 		return "internal client"
+	case classPeer:
+		return "peer"
+	}
+	return "client"
+}
+
+// label is the class as a metric label and a log attribute.
+func (c sessionClass) label() string {
+	switch c {
+	case classInternal:
+		return "internal"
 	case classPeer:
 		return "peer"
 	}

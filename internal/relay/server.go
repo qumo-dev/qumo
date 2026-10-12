@@ -202,6 +202,7 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 // admission.
 func (s *Server) serveUpgrade(w http.ResponseWriter, r *http.Request, upgrader http.Handler, g *auth.Grant, req auth.Request) {
 	a := decidedAdmission(g, req)
+	a.client = upgradeClientOf(r, req.Transport)
 	upgrader.ServeHTTP(w, r.WithContext(withAdmission(r.Context(), a)))
 	// gomoqt serves the session within ServeHTTP. If the upgrade failed
 	// anyway, no session ran and none will report its end: report it here,
@@ -747,13 +748,17 @@ func (s *Server) serveSession(sess *moqt.Session) {
 	}
 	// Registered before the close below, so that it runs after it, with the
 	// session's final byte totals and close cause.
-	transport := sessionTransport(a)
-	metricSessionsTotal.WithLabelValues(transport).Inc()
+	transport, class := sessionTransport(a), admittedClass(a).label()
+	addr := sess.RemoteAddr().String()
+	started := time.Now()
+	metricSessionsTotal.WithLabelValues(transport, class).Inc()
 	defer func() {
 		stats := sess.Stats()
-		metricSessionBytes.WithLabelValues(transport, "sent").Add(float64(stats.BytesSent))
-		metricSessionBytes.WithLabelValues(transport, "received").Add(float64(stats.BytesReceived))
-		metricSessionsClosed.WithLabelValues(transport, endReason(l, context.Cause(sess.Context()))).Inc()
+		reason := endReason(l, context.Cause(sess.Context()))
+		metricSessionBytes.WithLabelValues(transport, class, "sent").Add(float64(stats.BytesSent))
+		metricSessionBytes.WithLabelValues(transport, class, "received").Add(float64(stats.BytesReceived))
+		metricSessionsClosed.WithLabelValues(transport, class, reason).Inc()
+		slog.Info("relay: session ended", sessionEndAttrs(a, addr, reason, time.Since(started), stats)...)
 	}()
 	defer sess.CloseWithError(moqt.NoError, moqt.NoError.String())
 	if checked {
@@ -765,12 +770,11 @@ func (s *Server) serveSession(sess *moqt.Session) {
 	metricSessionsActive.Inc()
 	defer metricSessionsActive.Dec()
 
-	addr := sess.RemoteAddr().String()
 	s.sampler.addSession(addr, sess)
 	sampleSessionStats(sess, addr) // immediate first sample
 	defer s.sampler.removeSession(addr)
 
-	slog.Info("relay: new session", "remote", addr, "checked", checked)
+	slog.Info("relay: new session", sessionStartAttrs(a, sess.ConnectionState(), addr, checked)...)
 
 	announced, err := sess.AcceptAnnounce("/")
 	if err != nil {

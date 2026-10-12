@@ -16,36 +16,37 @@ var (
 		Help:      "Current number of active MoQT relay sessions.",
 	})
 
-	// metricSessionsTotal counts the sessions served, by transport:
-	// webtransport, websocket, quic (a native-QUIC client), internal (an
-	// internal client) or peer (a relay peer, dialed or dialing).
+	// metricSessionsTotal counts the sessions served, by transport
+	// (webtransport, websocket or quic) and class: client (admitted by its
+	// credential, or unchecked with auth off), internal (an internal
+	// client) or peer (a relay peer, dialed or dialing).
 	metricSessionsTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "qumo",
 		Subsystem: "relay",
 		Name:      "sessions_total",
-		Help:      "MoQT relay sessions served, by transport.",
-	}, []string{"transport"})
+		Help:      "MoQT relay sessions served, by transport and class.",
+	}, []string{"transport", "class"})
 
 	// metricSessionBytes counts the bytes of sessions that have ended, by
-	// transport and direction (sent, received). A session's bytes are added
+	// transport, class and direction (sent, received). A session's bytes are added
 	// when it ends, so a long session shows up late; the live rate is in
 	// the relay's ingress and egress byte counters.
 	metricSessionBytes = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "qumo",
 		Subsystem: "relay",
 		Name:      "session_bytes_total",
-		Help:      "Bytes of ended MoQT relay sessions, by transport and direction.",
-	}, []string{"transport", "direction"})
+		Help:      "Bytes of ended MoQT relay sessions, by transport, class and direction.",
+	}, []string{"transport", "class", "direction"})
 
-	// metricSessionsClosed counts ended sessions by transport and reason:
+	// metricSessionsClosed counts ended sessions by transport, class and reason:
 	// closed, dropped (the connection was lost), or what the session's
 	// lease ended it for.
 	metricSessionsClosed = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "qumo",
 		Subsystem: "relay",
 		Name:      "sessions_closed_total",
-		Help:      "Ended MoQT relay sessions, by transport and reason.",
-	}, []string{"transport", "reason"})
+		Help:      "Ended MoQT relay sessions, by transport, class and reason.",
+	}, []string{"transport", "class", "reason"})
 
 	// metricAuthRequests counts session admissions by event and result:
 	// admitted, refused (401/403), error (it could not be checked) or

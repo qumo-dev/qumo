@@ -69,7 +69,7 @@ func TestServer_HandleWebTransport_WebSocketRefused(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			fake := &fakeAuth{err: tt.err}
 			srv := newWebSocketTestServer(t, fake)
-			served := metricSessionsTotal.WithLabelValues(auth.TransportWebSocket)
+			served := metricSessionsTotal.WithLabelValues(auth.TransportWebSocket, classClient.label())
 			servedBefore := testutil.ToFloat64(served)
 
 			sess, err := dialWebSocket(t, srv, "/acme/app?jwt=a.b.c")
@@ -183,8 +183,8 @@ func TestServer_HandleWebTransport_WebSocketSession(t *testing.T) {
 	defer httpSrv.Close()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	served := metricSessionsTotal.WithLabelValues(auth.TransportWebSocket)
-	closed := metricSessionsClosed.WithLabelValues(auth.TransportWebSocket, endClosed)
+	served := metricSessionsTotal.WithLabelValues(auth.TransportWebSocket, classClient.label())
+	closed := metricSessionsClosed.WithLabelValues(auth.TransportWebSocket, classClient.label(), endClosed)
 	servedBefore, closedBefore := testutil.ToFloat64(served), testutil.ToFloat64(closed)
 
 	url := "ws" + strings.TrimPrefix(httpSrv.URL, "http") + "/acme/app?jwt=a.b.c"
@@ -378,32 +378,32 @@ func TestSessionTransport(t *testing.T) {
 	internal := pendingAdmission()
 	internal.decideInternal()
 	tests := map[string]struct {
-		admission *admission
-		want      string
+		admission     *admission
+		wantTransport string
+		wantClass     sessionClass
 	}{
-		"a dialed peer has no admission": {admission: nil, want: transportPeer},
+		"a dialed peer has no admission": {admission: nil, wantTransport: auth.TransportQUIC, wantClass: classPeer},
 		"an inbound peer has no connect request": {
-			admission: decidedAdmission(nil, auth.Request{}), want: transportPeer,
+			admission: decidedAdmission(nil, auth.Request{}), wantTransport: auth.TransportQUIC, wantClass: classPeer,
 		},
-		"an internal client": {admission: internal, want: transportInternal},
+		"an internal client": {admission: internal, wantTransport: auth.TransportQUIC, wantClass: classInternal},
 		"a WebTransport client": {
-			admission: decidedAdmission(nil, auth.Request{Transport: auth.TransportWebTransport}),
-			want:      auth.TransportWebTransport,
+			admission:     decidedAdmission(nil, auth.Request{Transport: auth.TransportWebTransport}),
+			wantTransport: auth.TransportWebTransport, wantClass: classClient,
 		},
 		"a WebSocket client": {
-			admission: decidedAdmission(nil, auth.Request{Transport: auth.TransportWebSocket}),
-			want:      auth.TransportWebSocket,
+			admission:     decidedAdmission(nil, auth.Request{Transport: auth.TransportWebSocket}),
+			wantTransport: auth.TransportWebSocket, wantClass: classClient,
 		},
 		"a native-QUIC client": {
-			admission: decidedAdmission(nil, auth.Request{Transport: auth.TransportQUIC}),
-			want:      auth.TransportQUIC,
+			admission:     decidedAdmission(nil, auth.Request{Transport: auth.TransportQUIC}),
+			wantTransport: auth.TransportQUIC, wantClass: classClient,
 		},
 	}
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
-			got := sessionTransport(tt.admission)
-
-			assert.Equal(t, tt.want, got)
+			assert.Equal(t, tt.wantTransport, sessionTransport(tt.admission))
+			assert.Equal(t, tt.wantClass, admittedClass(tt.admission))
 		})
 	}
 }
