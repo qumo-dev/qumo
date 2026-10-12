@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -25,10 +26,11 @@ func String(key, def string) string {
 }
 
 // Uint reads the environment variable key as a whole number of zero or more.
-// set is false when key is unset or empty, so the caller keeps its default.
-// The error names key and quotes the value.
+// Space around the value is ignored, as an env file may leave some. set is
+// false when key is unset or blank, so the caller keeps its default. The
+// error names key and quotes the value.
 func Uint(key string) (v uint64, set bool, err error) {
-	raw := os.Getenv(key)
+	raw := strings.TrimSpace(os.Getenv(key))
 	if raw == "" {
 		return 0, false, nil
 	}
@@ -40,10 +42,11 @@ func Uint(key string) (v uint64, set bool, err error) {
 }
 
 // Duration reads the environment variable key as a Go duration of zero or
-// more, such as "10s". set is false when key is unset or empty, so the caller
-// keeps its default. The error names key and quotes the value.
+// more, such as "10s". Space around the value is ignored, as an env file may
+// leave some. set is false when key is unset or blank, so the caller keeps
+// its default. The error names key and quotes the value.
 func Duration(key string) (v time.Duration, set bool, err error) {
-	raw := os.Getenv(key)
+	raw := strings.TrimSpace(os.Getenv(key))
 	if raw == "" {
 		return 0, false, nil
 	}

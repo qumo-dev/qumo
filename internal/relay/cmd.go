@@ -210,7 +210,6 @@ func Run(args []string) error {
 	// Create relay server
 	httpMux := http.NewServeMux()
 
-
 	// Dialing peers: the peer identity as the client certificate, the peering
 	// name as the server name, the CA as the only root (peer_trust.go). The
 	// dialer advertises only the moqt ALPN: with "h3" too, ALPN would pick
@@ -397,17 +396,26 @@ type server interface {
 	Shutdown(ctx context.Context) error
 }
 
-// envBoolDefault reads the environment variable key as a switch: "1",
-// "true", "yes" or "on" is true, "0", "false", "no" or "off" is false, in
-// any case, and anything else, or nothing, is def.
+// envBoolDefault reads the environment variable key as a switch, with the
+// words parseSwitch takes; anything else, or nothing, is def.
 func envBoolDefault(key string, def bool) bool {
-	switch strings.ToLower(strings.TrimSpace(os.Getenv(key))) {
-	case "1", "true", "yes", "on":
-		return true
-	case "0", "false", "no", "off":
-		return false
+	if v, ok := parseSwitch(os.Getenv(key)); ok {
+		return v
 	}
 	return def
+}
+
+// parseSwitch reads a switch: "1", "true", "yes" or "on" is true, and "0",
+// "false", "no" or "off" is false, in any case and with surrounding space.
+// ok is false for anything else.
+func parseSwitch(raw string) (v, ok bool) {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "1", "true", "yes", "on":
+		return true, true
+	case "0", "false", "no", "off":
+		return false, true
+	}
+	return false, false
 }
 
 // webSocketSettings is how the relay takes WebSocket upgrades.

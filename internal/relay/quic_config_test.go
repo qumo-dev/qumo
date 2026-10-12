@@ -1,6 +1,7 @@
 package relay
 
 import (
+	"os"
 	"testing"
 	"time"
 
@@ -175,7 +176,7 @@ func TestQUICConfigFromEnv_WindowBounds(t *testing.T) {
 	)
 	tests := map[string]struct {
 		env     map[string]string
-		wantErr string // the variable the error names, or "" for none
+		wantErr string // the variable the error calls invalid, or "" for none
 	}{
 		"largest varint as a max window":         {env: map[string]string{maxStream: largestVarint}},
 		"initial equal to max":                   {env: map[string]string{initialStream: "1000", maxStream: "1000"}},
@@ -185,7 +186,10 @@ func TestQUICConfigFromEnv_WindowBounds(t *testing.T) {
 		"zero window":                            {env: map[string]string{initialStream: "0"}, wantErr: initialStream},
 		"initial above max":                      {env: map[string]string{initialStream: "2000", maxStream: "1000"}, wantErr: maxStream},
 		"max alone below quic-go's initial":      {env: map[string]string{maxStream: "262144"}, wantErr: maxStream},
-		"initial alone above quic-go's max":      {env: map[string]string{initialStream: "8388608"}, wantErr: maxStream},
+		"initial alone above quic-go's max":      {env: map[string]string{initialStream: "8388608"}, wantErr: initialStream},
+		"connection initial above quic-go's max": {env: map[string]string{initialConn: "16777216"}, wantErr: initialConn},
+		"initial alone at quic-go's max":         {env: map[string]string{initialStream: "6291456"}},
+		"max alone at quic-go's initial":         {env: map[string]string{maxStream: "524288"}},
 		"connection max below quic-go's initial": {env: map[string]string{maxConn: "262144"}, wantErr: maxConn},
 		"connection initial above its max":       {env: map[string]string{initialConn: "2000", maxConn: "1000"}, wantErr: maxConn},
 	}
@@ -199,10 +203,52 @@ func TestQUICConfigFromEnv_WindowBounds(t *testing.T) {
 			_, err := quicConfigFromEnv()
 
 			if tt.wantErr != "" {
-				assert.ErrorContains(t, err, tt.wantErr)
+				// "invalid NAME ..." names a variable the operator set.
+				assert.ErrorContains(t, err, "invalid "+tt.wantErr+" ")
 				return
 			}
 			assert.NoError(t, err)
+		})
+	}
+}
+
+func TestQUICConfigFromEnv_KeepAlive(t *testing.T) {
+	const (
+		keepAlive = "RELAY_QUIC_KEEPALIVE_PERIOD"
+		idle      = "RELAY_QUIC_MAX_IDLE_TIMEOUT"
+	)
+	tests := map[string]struct {
+		env     map[string]string
+		want    time.Duration
+		wantErr bool
+	}{
+		"unset keeps the default":               {want: 10 * time.Second},
+		"unset follows a shorter idle timeout":  {env: map[string]string{idle: "10s"}, want: 5 * time.Second},
+		"unset ignores a longer idle timeout":   {env: map[string]string{idle: "10m"}, want: 10 * time.Second},
+		"zero sends none":                       {env: map[string]string{keepAlive: "0"}, want: 0},
+		"exactly half the default idle timeout": {env: map[string]string{keepAlive: "30s"}, want: 30 * time.Second},
+		"past half the default idle timeout":    {env: map[string]string{keepAlive: "31s"}, wantErr: true},
+		"past half a set idle timeout":          {env: map[string]string{keepAlive: "10s", idle: "15s"}, wantErr: true},
+		"half a set idle timeout":               {env: map[string]string{keepAlive: "10s", idle: "20s"}, want: 10 * time.Second},
+		"one millisecond":                       {env: map[string]string{keepAlive: "1ms"}, want: time.Millisecond},
+		"under a millisecond":                   {env: map[string]string{keepAlive: "1ns"}, wantErr: true},
+		"padded with space, as an env file may": {env: map[string]string{keepAlive: " 5s\r"}, want: 5 * time.Second},
+	}
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			clearQUICEnv(t)
+			for key, value := range tt.env {
+				t.Setenv(key, value)
+			}
+
+			cfg, err := quicConfigFromEnv()
+
+			if tt.wantErr {
+				assert.ErrorContains(t, err, "invalid "+keepAlive+" ")
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, cfg.KeepAlivePeriod)
 		})
 	}
 }
@@ -240,9 +286,23 @@ func TestQUICEnvSet(t *testing.T) {
 	t.Setenv("RELAY_QUIC_MAX_IDLE_TIMEOUT", "2m")
 	t.Setenv("RELAY_QUIC_INITIAL_PACKET_SIZE", "1200\nforged=line")
 
-	// In documented order, with line breaks taken out of the value.
+	t.Setenv("RELAY_QUIC_DISABLE_PMTUD", "  ")
+
+	// In documented order, with line breaks taken out of the value, and
+	// without the blank one, which is read as unset.
 	assert.Equal(t, []string{
 		"RELAY_QUIC_INITIAL_PACKET_SIZE=1200forged=line",
 		"RELAY_QUIC_MAX_IDLE_TIMEOUT=2m",
 	}, quicEnvSet())
+}
+
+// TestQUICGoDefaults_Version fails when go.mod moves to another quic-go, so
+// the defaults and bounds copied from it (quicGo*Window, the initial packet
+// size range) are read again from the new release before quicGoVersion is
+// raised.
+func TestQUICGoDefaults_Version(t *testing.T) {
+	gomod, err := os.ReadFile("../../go.mod")
+	require.NoError(t, err)
+
+	assert.Contains(t, string(gomod), "github.com/quic-go/quic-go "+quicGoVersion+"\n")
 }

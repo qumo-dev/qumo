@@ -26,14 +26,18 @@ const (
 	minQUICInitialPacketSize = 1200
 	maxQUICInitialPacketSize = 1452
 
-	// minQUICTimeout is the shortest timeout the relay takes. A peer is told
-	// the idle timeout in whole milliseconds, where zero means none, so a
-	// shorter one would be announced as no timeout at all.
-	minQUICTimeout = time.Millisecond
+	// minQUICDuration is the shortest keep-alive period or timeout the relay
+	// takes. A peer is told the idle timeout in whole milliseconds, where
+	// zero means none, so a shorter one would be announced as no timeout.
+	minQUICDuration = time.Millisecond
 
-	// quic-go's receive windows when a setting is left unset (quic-go
-	// v0.63.0, internal/protocol): what an unset half of an initial/max pair
-	// is checked against.
+	// quicGoVersion is the quic-go release the values below were read from.
+	// A test fails when go.mod moves on, so they are read again.
+	quicGoVersion = "v0.63.0"
+
+	// quic-go's receive windows when a setting is left unset
+	// (internal/protocol): what an unset half of an initial/max pair is
+	// checked against.
 	quicGoInitialStreamWindow     = 512 << 10
 	quicGoMaxStreamWindow         = 6 << 20
 	quicGoInitialConnectionWindow = 768 << 10
@@ -71,11 +75,12 @@ func quicEnvKeys() []string {
 
 // quicEnvSet returns the RELAY_QUIC_* settings present in the environment as
 // "NAME=value", for the startup log: a setting that never reached the process
-// fails the same way as one left unset.
+// fails the same way as one left unset. A blank value counts as unset, as it
+// does when the setting is read.
 func quicEnvSet() []string {
 	var set []string
 	for _, key := range quicEnvKeys() {
-		if v := os.Getenv(key); v != "" {
+		if v := strings.TrimSpace(os.Getenv(key)); v != "" {
 			set = append(set, key+"="+sanitizeLog(v))
 		}
 	}
@@ -84,18 +89,32 @@ func quicEnvSet() []string {
 
 // quicConfigFromEnv builds the QUIC configuration of the relay's listener and
 // of its peer dialer from the environment. Unset, a setting keeps the relay's
-// default or, where the relay has none, quic-go's. A value quic-go would
-// reinterpret or clamp without saying so is refused.
+// default or, where the relay has none, quic-go's.
 //
 //	RELAY_QUIC_INITIAL_PACKET_SIZE               - UDP payload bytes a connection starts with, 1200 to 1452 (quic-go: 1280)
 //	RELAY_QUIC_DISABLE_PMTUD                     - a switch; on keeps packets at the initial size (default: off)
-//	RELAY_QUIC_KEEPALIVE_PERIOD                  - keep-alive interval, e.g. "10s"; "0" sends none (default: 10s)
+//	RELAY_QUIC_KEEPALIVE_PERIOD                  - keep-alive interval, e.g. "10s", at most half the idle timeout; "0" sends none over QUIC (default: 10s, or half the idle timeout if less)
 //	RELAY_QUIC_MAX_IDLE_TIMEOUT                  - close a session silent for this long, 1ms or more (default: 60s)
 //	RELAY_QUIC_HANDSHAKE_IDLE_TIMEOUT            - give up a handshake silent for this long, 1ms or more (quic-go: 5s)
 //	RELAY_QUIC_INITIAL_STREAM_RECEIVE_WINDOW     - bytes (quic-go: 512 KB)
 //	RELAY_QUIC_MAX_STREAM_RECEIVE_WINDOW         - bytes, no less than the initial one (quic-go: 6 MB)
 //	RELAY_QUIC_INITIAL_CONNECTION_RECEIVE_WINDOW - bytes (quic-go: 768 KB)
 //	RELAY_QUIC_MAX_CONNECTION_RECEIVE_WINDOW     - bytes, no less than the initial one (quic-go: 15 MB)
+//
+// Refused at startup, because quic-go would take each as something else
+// without saying so: an initial packet size outside its range, which it
+// clamps; a timeout of zero, which it reads as its own default; a window
+// above the largest QUIC varint, which it panics on at the first handshake;
+// a max window below the initial one in effect, which it never shrinks to;
+// and a keep-alive period above half the idle timeout, which it shortens to
+// that half. What quic-go adjusts while a connection runs is not checked: it
+// never times out or pings faster than a few probe timeouts allow, and it
+// shortens the idle timeout and the keep-alive to what the peer announces.
+//
+// WebSocket sessions take part of this configuration too (gomoqt's qmux): the
+// two timeouts, the two initial windows, and the keep-alive period, where
+// zero means gomoqt's 10s default instead of none. The packet size, path MTU
+// discovery and the max windows are QUIC only.
 //
 // The stream limits (MaxIncomingStreams, MaxIncomingUniStreams) are not
 // settings and stay at quic-go's defaults (100). gomoqt's OpenGroup blocks on
@@ -132,17 +151,13 @@ func quicConfigFromEnv() (*quic.Config, error) {
 		return nil, err
 	}
 
-	keepAlive, set, err := envconfig.Duration(envQUICKeepAlivePeriod)
-	if err != nil {
-		return nil, err
-	}
-	if set {
-		cfg.KeepAlivePeriod = keepAlive
-	}
 	if err := setQUICTimeout(envQUICMaxIdleTimeout, &cfg.MaxIdleTimeout); err != nil {
 		return nil, err
 	}
 	if err := setQUICTimeout(envQUICHandshakeIdleTimeout, &cfg.HandshakeIdleTimeout); err != nil {
+		return nil, err
+	}
+	if cfg.KeepAlivePeriod, err = quicKeepAlive(cfg.KeepAlivePeriod, cfg.MaxIdleTimeout); err != nil {
 		return nil, err
 	}
 
@@ -163,7 +178,7 @@ func quicConfigFromEnv() (*quic.Config, error) {
 
 // setQUICTimeout reads key into dst, leaving dst alone when key is unset. It
 // refuses zero, which quic-go reads as "use my default", not "no timeout",
-// and anything under minQUICTimeout.
+// and anything under minQUICDuration.
 func setQUICTimeout(key string, dst *time.Duration) error {
 	v, set, err := envconfig.Duration(key)
 	if err != nil {
@@ -172,18 +187,44 @@ func setQUICTimeout(key string, dst *time.Duration) error {
 	if !set {
 		return nil
 	}
-	if v < minQUICTimeout {
-		return fmt.Errorf("invalid %s %s: want %s or more; unset it for the default", key, v, minQUICTimeout)
+	if v < minQUICDuration {
+		return fmt.Errorf("invalid %s %s: want %s or more; unset it for the default", key, v, minQUICDuration)
 	}
 	*dst = v
 	return nil
+}
+
+// quicKeepAlive reads the keep-alive period. Unset, it is def, or half of
+// idleTimeout when that is less. Zero sends no keep-alives. Otherwise it is
+// minQUICDuration or more and at most half of idleTimeout: quic-go pings no
+// less often than that, whatever is asked.
+func quicKeepAlive(def, idleTimeout time.Duration) (time.Duration, error) {
+	v, set, err := envconfig.Duration(envQUICKeepAlivePeriod)
+	if err != nil {
+		return 0, err
+	}
+	if !set {
+		return min(def, idleTimeout/2), nil
+	}
+	if v == 0 {
+		return 0, nil
+	}
+	if v < minQUICDuration {
+		return 0, fmt.Errorf("invalid %s %s: want 0 for none, or %s or more", envQUICKeepAlivePeriod, v, minQUICDuration)
+	}
+	if v > idleTimeout/2 {
+		return 0, fmt.Errorf("invalid %s %s: more than half the idle timeout %s (%s); a session would be pinged every %s whatever is set here",
+			envQUICKeepAlivePeriod, v, idleTimeout, envQUICMaxIdleTimeout, idleTimeout/2)
+	}
+	return v, nil
 }
 
 // quicWindows reads an initial/max pair of receive windows. Each is zero when
 // unset, which leaves it to quic-go, whose defaults are defInitial and
 // defMax. It refuses a window larger than a QUIC varint holds, which quic-go
 // would panic on at the first handshake, and an initial window above the max
-// one in effect, which quic-go would then ignore.
+// one in effect, which quic-go would then ignore. The error names a variable
+// that is set.
 func quicWindows(initialKey, maxKey string, defInitial, defMax uint64) (initial, maxWindow uint64, err error) {
 	if initial, err = quicWindow(initialKey); err != nil {
 		return 0, 0, err
@@ -191,16 +232,16 @@ func quicWindows(initialKey, maxKey string, defInitial, defMax uint64) (initial,
 	if maxWindow, err = quicWindow(maxKey); err != nil {
 		return 0, 0, err
 	}
-	effInitial, effMax := initial, maxWindow
-	if effInitial == 0 {
-		effInitial = defInitial
-	}
-	if effMax == 0 {
-		effMax = defMax
-	}
-	if effInitial > effMax {
+	switch {
+	case initial != 0 && maxWindow != 0 && initial > maxWindow:
 		return 0, 0, fmt.Errorf("invalid %s %d: less than the initial window %d (%s); the window starts at the initial size and never shrinks",
-			maxKey, effMax, effInitial, initialKey)
+			maxKey, maxWindow, initial, initialKey)
+	case initial != 0 && maxWindow == 0 && initial > defMax:
+		return 0, 0, fmt.Errorf("invalid %s %d: more than the max window %d, quic-go's default; set %s to at least as much",
+			initialKey, initial, defMax, maxKey)
+	case initial == 0 && maxWindow != 0 && maxWindow < defInitial:
+		return 0, 0, fmt.Errorf("invalid %s %d: less than the initial window %d, quic-go's default; set %s to no more, since the window starts at the initial size and never shrinks",
+			maxKey, maxWindow, defInitial, initialKey)
 	}
 	return initial, maxWindow, nil
 }
@@ -221,19 +262,16 @@ func quicWindow(key string) (uint64, error) {
 	return v, nil
 }
 
-// envSwitch reads key as a switch, with the words envBoolDefault takes: "1",
-// "true", "yes" or "on", and "0", "false", "no" or "off", in any case. Unset
-// or empty is def. Unlike envBoolDefault it refuses anything else.
+// envSwitch reads key as a switch, with the words parseSwitch takes. Unset or
+// blank is def. Unlike envBoolDefault it refuses anything else.
 func envSwitch(key string, def bool) (bool, error) {
 	raw := strings.TrimSpace(os.Getenv(key))
 	if raw == "" {
 		return def, nil
 	}
-	switch strings.ToLower(raw) {
-	case "1", "true", "yes", "on":
-		return true, nil
-	case "0", "false", "no", "off":
-		return false, nil
+	v, ok := parseSwitch(raw)
+	if !ok {
+		return false, fmt.Errorf("invalid %s %q: want 1, true, yes or on, or 0, false, no or off", key, raw)
 	}
-	return false, fmt.Errorf("invalid %s %q: want 1, true, yes or on, or 0, false, no or off", key, raw)
+	return v, nil
 }

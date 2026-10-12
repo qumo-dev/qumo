@@ -34,6 +34,7 @@ func TestUint(t *testing.T) {
 		wantErr bool
 	}{
 		"empty is unset":   {value: ""},
+		"blank is unset":   {value: " \t"},
 		"zero":             {value: "0", wantSet: true},
 		"a number":         {value: "1200", want: 1200, wantSet: true},
 		"the largest":      {value: "18446744073709551615", want: 1<<64 - 1, wantSet: true},
@@ -41,7 +42,9 @@ func TestUint(t *testing.T) {
 		"negative":         {value: "-1", wantErr: true},
 		"with a unit":      {value: "6MB", wantErr: true},
 		"with a fraction":  {value: "1.5", wantErr: true},
-		"surrounded space": {value: " 12 ", wantErr: true},
+		"surrounded space": {value: " 12 ", want: 12, wantSet: true},
+		"a CRLF ending":    {value: "12\r", want: 12, wantSet: true},
+		"space inside":     {value: "1 2", wantErr: true},
 	}
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
@@ -71,6 +74,8 @@ func TestDuration(t *testing.T) {
 		wantErr bool
 	}{
 		"empty is unset": {value: ""},
+		"blank is unset": {value: "  "},
+		"padded":         {value: " 10s\r", want: 10 * time.Second, wantSet: true},
 		"zero":           {value: "0", wantSet: true},
 		"seconds":        {value: "10s", want: 10 * time.Second, wantSet: true},
 		"compound":       {value: "1m30s", want: 90 * time.Second, wantSet: true},
