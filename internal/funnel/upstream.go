@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"time"
 
+	"github.com/quic-go/quic-go"
 	"github.com/qumo-dev/gomoqt/moqt"
 
 	"github.com/qumo-dev/qumo/internal/tlsclient"
@@ -26,6 +27,9 @@ type upstream struct {
 	url string
 	// tls is the client TLS configuration for the relay.
 	tls *tls.Config
+	// quic is the QUIC configuration of a native (moqt://) session; nil is
+	// quic-go's defaults.
+	quic *quic.Config
 	// key, when set, signs a credential for each session that grants
 	// publishing at publish, replacing any ?jwt= in url.
 	key     *token.SigningKey
@@ -47,6 +51,9 @@ type RelayConfig struct {
 	// of any ?jwt= in URL.
 	SigningKeyFile string
 	Publish        string
+	// QUIC is the QUIC configuration of a native (moqt://) session; nil is
+	// quic-go's defaults. gomoqt dials https:// with its own.
+	QUIC *quic.Config
 }
 
 // PublishThroughRelay keeps a session to the relay open until ctx ends,
@@ -75,7 +82,7 @@ func newUpstream(cfg RelayConfig) (*upstream, error) {
 	if err := tlsclient.Apply(tc, cfg.CAFile, cfg.Insecure); err != nil {
 		return nil, fmt.Errorf("relay TLS: %w", err)
 	}
-	u := &upstream{url: cfg.URL, tls: tc}
+	u := &upstream{url: cfg.URL, tls: tc, quic: cfg.QUIC}
 	switch {
 	case cfg.SigningKeyFile == "" && cfg.Publish == "":
 	case cfg.SigningKeyFile == "" || cfg.Publish == "":
@@ -134,7 +141,7 @@ func (u *upstream) dial(ctx context.Context, mux *moqt.TrackMux) (*moqt.Session,
 	if err != nil {
 		return nil, err
 	}
-	sess, err := (&moqt.Dialer{TLSConfig: u.tls.Clone()}).Dial(ctx, target, mux)
+	sess, err := (&moqt.Dialer{TLSConfig: u.tls.Clone(), QUICConfig: u.quic}).Dial(ctx, target, mux)
 	if err != nil {
 		return nil, fmt.Errorf("dial relay: %w", err)
 	}

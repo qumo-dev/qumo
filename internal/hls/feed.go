@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"time"
 
+	"github.com/quic-go/quic-go"
 	"github.com/qumo-dev/gomoqt/moqt"
 	"github.com/qumo-dev/gomoqt/msf"
 
@@ -40,6 +41,9 @@ type feedConfig struct {
 	// credential and has no grant to expire, and may only subscribe. Only a
 	// native-QUIC (moqt://) relayURL presents it.
 	certFile, keyFile string
+	// quic is the QUIC configuration of a native-QUIC (moqt://) session; nil
+	// is quic-go's defaults. gomoqt dials https:// with its own.
+	quic *quic.Config
 
 	// liveTimeout is how long the feed waits for a group before deciding the
 	// publisher is gone. It is also how stale a manifest may be before the
@@ -145,7 +149,7 @@ func connect(ctx context.Context, cfg feedConfig) (*moqt.Session, mediaInfo, err
 	if err := tlsclient.ApplyClientCert(tc, cfg.certFile, cfg.keyFile); err != nil {
 		return nil, mediaInfo{}, fmt.Errorf("hls: relay client certificate: %w", err)
 	}
-	session, err := (&moqt.Dialer{TLSConfig: tc}).Dial(ctx, cfg.relayURL, moqt.NewTrackMux(0))
+	session, err := (&moqt.Dialer{TLSConfig: tc, QUICConfig: cfg.quic}).Dial(ctx, cfg.relayURL, moqt.NewTrackMux(0))
 	if err != nil {
 		return nil, mediaInfo{}, fmt.Errorf("hls: dial relay: %w", err)
 	}

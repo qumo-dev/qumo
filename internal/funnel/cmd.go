@@ -42,11 +42,13 @@ import (
 	"github.com/okdaichi/qumo-ledger/ingest"
 	"github.com/okdaichi/qumo-ledger/ledger"
 	"github.com/okdaichi/qumo-ledger/ledger/store"
+	"github.com/quic-go/quic-go"
 	"github.com/qumo-dev/gomoqt/moqt"
 
 	"github.com/qumo-dev/qumo/internal/auth"
 	"github.com/qumo-dev/qumo/internal/cors"
 	"github.com/qumo-dev/qumo/internal/envconfig"
+	"github.com/qumo-dev/qumo/internal/quicconfig"
 )
 
 const (
@@ -76,6 +78,7 @@ const (
 //	QUMO_RELAY_TOKEN     - bearer token sent to a key-set URL
 //	FUNNEL_SENDER_LIMIT  - records each sender may send into a track, as "RATE,BURST": per second, and at once (default: no limit)
 //	FUNNEL_TRACK_LIMIT   - records a track takes from every sender together, as "RATE,BURST" (default: no limit)
+//	QUIC_*               - QUIC transport settings of the MoQT listener and of a moqt:// session to the relay (quicconfig.FromEnv lists them)
 //
 // The HTTP listener is plain HTTP: terminate TLS in front of it.
 func Run(_ []string) error {
@@ -98,6 +101,11 @@ func Run(_ []string) error {
 	if err != nil {
 		return fmt.Errorf("funnel: FUNNEL_TRACK_LIMIT: %w", err)
 	}
+	quicConfig, err := quicconfig.FromEnv(nil)
+	if err != nil {
+		return fmt.Errorf("funnel: %w", err)
+	}
+	quicconfig.LogEnvSet("funnel")
 
 	var up *upstream
 	if relayURL != "" {
@@ -107,6 +115,7 @@ func Run(_ []string) error {
 			Insecure:       envconfig.String("RELAY_TLS_INSECURE", "false") == "true",
 			SigningKeyFile: envconfig.String("RELAY_SIGNING_KEY", ""),
 			Publish:        envconfig.String("RELAY_PUBLISH", ""),
+			QUIC:           quicConfig,
 		})
 		if err != nil {
 			return fmt.Errorf("funnel: %w", err)
@@ -176,7 +185,7 @@ func Run(_ []string) error {
 	}
 	var moqtSrv *moqt.Server
 	if serveAddr != "" {
-		moqtSrv = newMOQTServer(serveAddr, trackMux, allowedOrigins)
+		moqtSrv = newMOQTServer(serveAddr, trackMux, allowedOrigins, quicConfig)
 		go func() {
 			if err := moqtSrv.ListenAndServeTLS(certFile, keyFile); err != nil && ctx.Err() == nil {
 				slog.Error("MoQT server error", "err", err)
@@ -202,7 +211,7 @@ func Run(_ []string) error {
 
 // newMOQTServer returns the funnel's own MoQT listener, serving trackMux to
 // subscribers that dial it directly.
-func newMOQTServer(addr string, trackMux *moqt.TrackMux, allowedOrigins []string) *moqt.Server {
+func newMOQTServer(addr string, trackMux *moqt.TrackMux, allowedOrigins []string, quicConfig *quic.Config) *moqt.Server {
 	wtHandler := &moqt.WebTransportHandler{
 		TrackMux:    trackMux,
 		CheckOrigin: cors.NewChecker(allowedOrigins),
@@ -215,6 +224,7 @@ func newMOQTServer(addr string, trackMux *moqt.TrackMux, allowedOrigins []string
 	mux.Handle("/", wtHandler)
 	return &moqt.Server{
 		Addr:               addr,
+		QUICConfig:         quicConfig,
 		WebTransportServer: moqt.NewWebTransportServer(mux),
 		TrackMux:           trackMux,
 	}

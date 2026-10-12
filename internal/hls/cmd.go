@@ -16,6 +16,7 @@ import (
 
 	"github.com/qumo-dev/qumo/internal/cors"
 	"github.com/qumo-dev/qumo/internal/envconfig"
+	"github.com/qumo-dev/qumo/internal/quicconfig"
 
 	"github.com/okdaichi/qumo-ledger/ledger"
 	"github.com/okdaichi/qumo-ledger/ledger/store/fs"
@@ -63,6 +64,9 @@ import (
 //	                     RELAY_URL, since only native QUIC sessions present a
 //	                     certificate. Re-read on every reconnect, so a renewed
 //	                     certificate is picked up.
+//	QUIC_*               - QUIC transport settings of a moqt:// session to the
+//	                     relay (quicconfig.FromEnv lists them); an https:// one
+//	                     is dialed with gomoqt's own.
 //	CORS_ALLOWED_ORIGINS - comma-separated origins allowed to fetch manifests
 //	                     and segments, or "*" for any. Unset disables CORS.
 //	                     Required when the player is served from another origin,
@@ -81,6 +85,11 @@ func Run(_ []string) error {
 		return fmt.Errorf("invalid HLS_LIVE_TIMEOUT_S: %w", err)
 	}
 	liveTimeout := time.Duration(liveTimeoutSec) * time.Second
+	quicConfig, err := quicconfig.FromEnv(nil)
+	if err != nil {
+		return fmt.Errorf("hls: %w", err)
+	}
+	quicconfig.LogEnvSet("hls")
 
 	cfg := feedConfig{
 		relayURL:  envconfig.String("RELAY_URL", "https://localhost:4433"),
@@ -92,6 +101,7 @@ func Run(_ []string) error {
 		keyFile:   envconfig.String("RELAY_KEY_FILE", ""),
 
 		liveTimeout: liveTimeout,
+		quic:        quicConfig,
 	}
 	if err := cfg.validate(); err != nil {
 		return fmt.Errorf("hls: %w", err)

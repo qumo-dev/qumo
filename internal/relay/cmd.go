@@ -27,6 +27,7 @@ import (
 	"github.com/qumo-dev/qumo/internal/cors"
 	"github.com/qumo-dev/qumo/internal/envconfig"
 	"github.com/qumo-dev/qumo/internal/gctune"
+	"github.com/qumo-dev/qumo/internal/quicconfig"
 )
 
 // sanitizeLog strips CR and LF from s to prevent log injection.
@@ -125,9 +126,7 @@ func Run(args []string) error {
 	if err != nil {
 		return err
 	}
-	if set := quicEnvSet(); len(set) > 0 {
-		slog.Info("relay: QUIC transport settings from the environment", "set", set)
-	}
+	quicconfig.LogEnvSet("relay")
 
 	var peers []Peer
 	for _, p := range splitAddrList(os.Getenv("PEERS")) {

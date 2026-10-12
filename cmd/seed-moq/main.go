@@ -39,6 +39,7 @@ import (
 
 	"github.com/qumo-dev/qumo/internal/cmaf"
 	"github.com/qumo-dev/qumo/internal/envconfig"
+	"github.com/qumo-dev/qumo/internal/quicconfig"
 )
 
 func main() {
@@ -54,6 +55,12 @@ func main() {
 		os.Exit(1)
 	}
 	tlsConfig.NextProtos = []string{"h3", moqt.NextProtoMOQ}
+	quicConfig, err := quicconfig.FromEnv(nil)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "seed-moq:", err)
+		os.Exit(1)
+	}
+	quicconfig.LogEnvSet("seed-moq")
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
@@ -104,6 +111,7 @@ func main() {
 	srv := &moqt.Server{
 		Addr:               addr,
 		TLSConfig:          tlsConfig,
+		QUICConfig:         quicConfig,
 		WebTransportServer: moqt.NewWebTransportServer(httpMux),
 		TrackMux:           mux,
 	}
