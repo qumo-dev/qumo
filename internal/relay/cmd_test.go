@@ -160,11 +160,11 @@ func TestRun_InvalidQUICSetting(t *testing.T) {
 	t.Setenv("RELAY_ADDR", "localhost:4433")
 	t.Setenv("CERT_FILE", "/nonexistent/cert.pem")
 	t.Setenv("KEY_FILE", "/nonexistent/key.pem")
-	t.Setenv("RELAY_QUIC_INITIAL_PACKET_SIZE", "900")
+	t.Setenv("QUIC_INITIAL_PACKET_SIZE", "900")
 
 	err := Run(nil)
 
-	assert.ErrorContains(t, err, "RELAY_QUIC_INITIAL_PACKET_SIZE")
+	assert.ErrorContains(t, err, "QUIC_INITIAL_PACKET_SIZE")
 }
 
 // A relay still pointed at an auth server refuses to start, rather than

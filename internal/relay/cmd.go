@@ -56,7 +56,7 @@ func sanitizeLog(s string) string {
 //	RELAY_NAME                   - node ID (default: "relay-" + hostname)
 //	GROUP_CACHE_SIZE             - completed groups retained per track (default: 8)
 //	FRAME_CAPACITY               - frame buffer size in bytes (default: 1500)
-//	RELAY_QUIC_*                 - QUIC transport settings: initial packet
+//	QUIC_*                 - QUIC transport settings: initial packet
 //	                               size, path MTU discovery, keep-alive, idle
 //	                               timeouts and receive windows
 //	                               (quicConfigFromEnv lists them)

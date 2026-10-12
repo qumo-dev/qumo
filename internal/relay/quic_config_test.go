@@ -9,7 +9,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// clearQUICEnv empties every RELAY_QUIC_* setting for the test, so one left in
+// clearQUICEnv empties every QUIC_* setting for the test, so one left in
 // the developer's or the runner's environment cannot reach it.
 func clearQUICEnv(tb testing.TB) {
 	tb.Helper()
@@ -44,15 +44,15 @@ func TestQUICConfigFromEnv_Defaults(t *testing.T) {
 
 func TestQUICConfigFromEnv_Settings(t *testing.T) {
 	clearQUICEnv(t)
-	t.Setenv("RELAY_QUIC_INITIAL_PACKET_SIZE", "1200")
-	t.Setenv("RELAY_QUIC_DISABLE_PMTUD", "true")
-	t.Setenv("RELAY_QUIC_KEEPALIVE_PERIOD", "0")
-	t.Setenv("RELAY_QUIC_MAX_IDLE_TIMEOUT", "2m")
-	t.Setenv("RELAY_QUIC_HANDSHAKE_IDLE_TIMEOUT", "3s")
-	t.Setenv("RELAY_QUIC_INITIAL_STREAM_RECEIVE_WINDOW", "1048576")
-	t.Setenv("RELAY_QUIC_MAX_STREAM_RECEIVE_WINDOW", "2097152")
-	t.Setenv("RELAY_QUIC_INITIAL_CONNECTION_RECEIVE_WINDOW", "3145728")
-	t.Setenv("RELAY_QUIC_MAX_CONNECTION_RECEIVE_WINDOW", "4194304")
+	t.Setenv("QUIC_INITIAL_PACKET_SIZE", "1200")
+	t.Setenv("QUIC_PMTUD", "off")
+	t.Setenv("QUIC_KEEPALIVE", "0")
+	t.Setenv("QUIC_IDLE_TIMEOUT", "2m")
+	t.Setenv("QUIC_HANDSHAKE_IDLE_TIMEOUT", "3s")
+	t.Setenv("QUIC_STREAM_RECEIVE_WINDOW", "1048576")
+	t.Setenv("QUIC_MAX_STREAM_RECEIVE_WINDOW", "2097152")
+	t.Setenv("QUIC_CONNECTION_RECEIVE_WINDOW", "3145728")
+	t.Setenv("QUIC_MAX_CONNECTION_RECEIVE_WINDOW", "4194304")
 
 	cfg, err := quicConfigFromEnv()
 
@@ -83,12 +83,12 @@ func TestQUICConfigFromEnv_InitialPacketSizeBounds(t *testing.T) {
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
 			clearQUICEnv(t)
-			t.Setenv("RELAY_QUIC_INITIAL_PACKET_SIZE", tt.value)
+			t.Setenv("QUIC_INITIAL_PACKET_SIZE", tt.value)
 
 			cfg, err := quicConfigFromEnv()
 
 			if tt.wantErr {
-				assert.ErrorContains(t, err, "RELAY_QUIC_INITIAL_PACKET_SIZE")
+				assert.ErrorContains(t, err, "QUIC_INITIAL_PACKET_SIZE")
 				return
 			}
 			require.NoError(t, err)
@@ -97,10 +97,10 @@ func TestQUICConfigFromEnv_InitialPacketSizeBounds(t *testing.T) {
 	}
 }
 
-func TestQUICConfigFromEnv_DisablePMTUDWords(t *testing.T) {
+func TestQUICConfigFromEnv_PMTUDWords(t *testing.T) {
 	tests := map[string]struct {
 		value   string
-		want    bool
+		want    bool // whether path MTU discovery stays on
 		wantErr bool
 	}{
 		"true":             {value: "true", want: true},
@@ -111,7 +111,7 @@ func TestQUICConfigFromEnv_DisablePMTUDWords(t *testing.T) {
 		"zero":             {value: "0"},
 		"no":               {value: "no"},
 		"off":              {value: "off"},
-		"only spaces":      {value: "  "},
+		"only spaces":      {value: "  ", want: true},
 		"not a switch":     {value: "maybe", wantErr: true},
 		"a single letter":  {value: "t", wantErr: true},
 		"a number above 1": {value: "2", wantErr: true},
@@ -119,16 +119,16 @@ func TestQUICConfigFromEnv_DisablePMTUDWords(t *testing.T) {
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
 			clearQUICEnv(t)
-			t.Setenv("RELAY_QUIC_DISABLE_PMTUD", tt.value)
+			t.Setenv("QUIC_PMTUD", tt.value)
 
 			cfg, err := quicConfigFromEnv()
 
 			if tt.wantErr {
-				assert.ErrorContains(t, err, "RELAY_QUIC_DISABLE_PMTUD")
+				assert.ErrorContains(t, err, "QUIC_PMTUD")
 				return
 			}
 			require.NoError(t, err)
-			assert.Equal(t, tt.want, cfg.DisablePathMTUDiscovery)
+			assert.Equal(t, tt.want, !cfg.DisablePathMTUDiscovery)
 		})
 	}
 }
@@ -136,7 +136,7 @@ func TestQUICConfigFromEnv_DisablePMTUDWords(t *testing.T) {
 func TestQUICConfigFromEnv_TimeoutBounds(t *testing.T) {
 	// The two timeouts refuse zero, which quic-go would read as "use my
 	// default", and anything a peer would be told is no timeout at all.
-	for _, key := range []string{"RELAY_QUIC_MAX_IDLE_TIMEOUT", "RELAY_QUIC_HANDSHAKE_IDLE_TIMEOUT"} {
+	for _, key := range []string{"QUIC_IDLE_TIMEOUT", "QUIC_HANDSHAKE_IDLE_TIMEOUT"} {
 		tests := map[string]struct {
 			value   string
 			wantErr bool
@@ -167,10 +167,10 @@ func TestQUICConfigFromEnv_TimeoutBounds(t *testing.T) {
 
 func TestQUICConfigFromEnv_WindowBounds(t *testing.T) {
 	const (
-		initialStream = "RELAY_QUIC_INITIAL_STREAM_RECEIVE_WINDOW"
-		maxStream     = "RELAY_QUIC_MAX_STREAM_RECEIVE_WINDOW"
-		initialConn   = "RELAY_QUIC_INITIAL_CONNECTION_RECEIVE_WINDOW"
-		maxConn       = "RELAY_QUIC_MAX_CONNECTION_RECEIVE_WINDOW"
+		initialStream = "QUIC_STREAM_RECEIVE_WINDOW"
+		maxStream     = "QUIC_MAX_STREAM_RECEIVE_WINDOW"
+		initialConn   = "QUIC_CONNECTION_RECEIVE_WINDOW"
+		maxConn       = "QUIC_MAX_CONNECTION_RECEIVE_WINDOW"
 		largestVarint = "4611686018427387903" // 2^62 - 1
 		pastVarint    = "4611686018427387904" // quic-go panics on it at the first handshake
 	)
@@ -214,8 +214,8 @@ func TestQUICConfigFromEnv_WindowBounds(t *testing.T) {
 
 func TestQUICConfigFromEnv_KeepAlive(t *testing.T) {
 	const (
-		keepAlive = "RELAY_QUIC_KEEPALIVE_PERIOD"
-		idle      = "RELAY_QUIC_MAX_IDLE_TIMEOUT"
+		keepAlive = "QUIC_KEEPALIVE"
+		idle      = "QUIC_IDLE_TIMEOUT"
 	)
 	tests := map[string]struct {
 		env     map[string]string
@@ -258,13 +258,13 @@ func TestQUICConfigFromEnv_InvalidValue(t *testing.T) {
 		key   string
 		value string
 	}{
-		"packet size not a number": {key: "RELAY_QUIC_INITIAL_PACKET_SIZE", value: "big"},
-		"packet size negative":     {key: "RELAY_QUIC_INITIAL_PACKET_SIZE", value: "-1200"},
-		"keep-alive without unit":  {key: "RELAY_QUIC_KEEPALIVE_PERIOD", value: "10"},
-		"keep-alive negative":      {key: "RELAY_QUIC_KEEPALIVE_PERIOD", value: "-10s"},
-		"handshake timeout words":  {key: "RELAY_QUIC_HANDSHAKE_IDLE_TIMEOUT", value: "soon"},
-		"window with a unit":       {key: "RELAY_QUIC_MAX_STREAM_RECEIVE_WINDOW", value: "6MB"},
-		"window negative":          {key: "RELAY_QUIC_INITIAL_CONNECTION_RECEIVE_WINDOW", value: "-1"},
+		"packet size not a number": {key: "QUIC_INITIAL_PACKET_SIZE", value: "big"},
+		"packet size negative":     {key: "QUIC_INITIAL_PACKET_SIZE", value: "-1200"},
+		"keep-alive without unit":  {key: "QUIC_KEEPALIVE", value: "10"},
+		"keep-alive negative":      {key: "QUIC_KEEPALIVE", value: "-10s"},
+		"handshake timeout words":  {key: "QUIC_HANDSHAKE_IDLE_TIMEOUT", value: "soon"},
+		"window with a unit":       {key: "QUIC_MAX_STREAM_RECEIVE_WINDOW", value: "6MB"},
+		"window negative":          {key: "QUIC_CONNECTION_RECEIVE_WINDOW", value: "-1"},
 	}
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
@@ -287,18 +287,18 @@ func TestQUICEnvSet_NothingSet(t *testing.T) {
 
 func TestQUICEnvSet(t *testing.T) {
 	clearQUICEnv(t)
-	t.Setenv("RELAY_QUIC_MAX_IDLE_TIMEOUT", "2m")
-	t.Setenv("RELAY_QUIC_INITIAL_PACKET_SIZE", "1200\nforged=line")
+	t.Setenv("QUIC_IDLE_TIMEOUT", "2m")
+	t.Setenv("QUIC_INITIAL_PACKET_SIZE", "1200\nforged=line")
 
-	t.Setenv("RELAY_QUIC_DISABLE_PMTUD", "  ")
+	t.Setenv("QUIC_PMTUD", "  ")
 
 	set := quicEnvSet()
 
 	// In documented order, with line breaks taken out of the value, and
 	// without the blank one, which is read as unset.
 	assert.Equal(t, []string{
-		"RELAY_QUIC_INITIAL_PACKET_SIZE=1200forged=line",
-		"RELAY_QUIC_MAX_IDLE_TIMEOUT=2m",
+		"QUIC_INITIAL_PACKET_SIZE=1200forged=line",
+		"QUIC_IDLE_TIMEOUT=2m",
 	}, set)
 }
 

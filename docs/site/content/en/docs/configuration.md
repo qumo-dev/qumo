@@ -104,21 +104,21 @@ These tune the QUIC connections the relay accepts and the ones it dials to peers
 
 | Variable | Default | Description | WebSocket sessions |
 |---|---|---|---|
-| `RELAY_QUIC_INITIAL_PACKET_SIZE` | `1280` (quic-go) | UDP payload, in bytes, a connection starts with, `1200` to `1452`. With the IP and UDP headers a `1280`-byte payload is a 1308-byte IPv4 packet, sent with "don't fragment", so it does not pass a path whose MTU is 1280: Tailscale and some other VPNs and tunnels, or an IPv6 link at the minimum MTU. The handshake then never completes. Set `1200`, the smallest QUIC allows, on such a path. Path MTU discovery raises the size again once the connection is up. | No |
-| `RELAY_QUIC_DISABLE_PMTUD` | `false` | A switch (`1`, `true`, `yes`, `on`, or `0`, `false`, `no`, `off`). On keeps packets at the initial size for the life of the connection. | No |
-| `RELAY_QUIC_KEEPALIVE_PERIOD` | `10s`, or half the idle timeout if less | How often an idle connection is kept alive: `1ms` or more, and at most half of `RELAY_QUIC_MAX_IDLE_TIMEOUT`, since quic-go pings no less often than that. `0` sends no keep-alives over QUIC. | Yes, but `0` means 10s there, not none |
-| `RELAY_QUIC_MAX_IDLE_TIMEOUT` | `60s` | A connection silent for this long is closed, `1ms` or more. There is no "never": `0` is refused. A peer may announce a shorter timeout, and the shorter one applies. | Yes |
-| `RELAY_QUIC_HANDSHAKE_IDLE_TIMEOUT` | `5s` (quic-go) | A handshake silent for this long is given up, `1ms` or more. | Yes |
-| `RELAY_QUIC_INITIAL_STREAM_RECEIVE_WINDOW` | `524288` (quic-go) | Bytes a peer may send on one stream before the relay has read any. | Yes |
-| `RELAY_QUIC_MAX_STREAM_RECEIVE_WINDOW` | `6291456` (quic-go) | Upper bound the per-stream window grows to. No less than the initial window in effect: the window starts there and never shrinks. | No |
-| `RELAY_QUIC_INITIAL_CONNECTION_RECEIVE_WINDOW` | `786432` (quic-go) | Bytes a peer may send on a whole connection before the relay has read any. | Yes |
-| `RELAY_QUIC_MAX_CONNECTION_RECEIVE_WINDOW` | `15728640` (quic-go) | Upper bound the per-connection window grows to. No less than the initial window in effect. | No |
+| `QUIC_INITIAL_PACKET_SIZE` | `1280` (quic-go) | UDP payload, in bytes, a connection starts with, `1200` to `1452`. With the IP and UDP headers a `1280`-byte payload is a 1308-byte IPv4 packet, sent with "don't fragment", so it does not pass a path whose MTU is 1280: Tailscale and some other VPNs and tunnels, or an IPv6 link at the minimum MTU. The handshake then never completes. Set `1200`, the smallest QUIC allows, on such a path. Path MTU discovery raises the size again once the connection is up. | No |
+| `QUIC_PMTUD` | `on` | A switch (`1`, `true`, `yes`, `on`, or `0`, `false`, `no`, `off`). Off turns path MTU discovery off, which keeps packets at the initial size for the life of the connection. | No |
+| `QUIC_KEEPALIVE` | `10s`, or half the idle timeout if less | How often an idle connection is kept alive: `1ms` or more, and at most half of `QUIC_IDLE_TIMEOUT`, since quic-go pings no less often than that. `0` sends no keep-alives over QUIC. | Yes, but `0` means 10s there, not none |
+| `QUIC_IDLE_TIMEOUT` | `60s` | A connection silent for this long is closed, `1ms` or more. There is no "never": `0` is refused. A peer may announce a shorter timeout, and the shorter one applies. | Yes |
+| `QUIC_HANDSHAKE_IDLE_TIMEOUT` | `5s` (quic-go) | A handshake silent for this long is given up, `1ms` or more. | Yes |
+| `QUIC_STREAM_RECEIVE_WINDOW` | `524288` (quic-go) | Bytes a peer may send on one stream before the relay has read any. | Yes |
+| `QUIC_MAX_STREAM_RECEIVE_WINDOW` | `6291456` (quic-go) | Upper bound the per-stream window grows to. No less than the initial window in effect: the window starts there and never shrinks. | No |
+| `QUIC_CONNECTION_RECEIVE_WINDOW` | `786432` (quic-go) | Bytes a peer may send on a whole connection before the relay has read any. | Yes |
+| `QUIC_MAX_CONNECTION_RECEIVE_WINDOW` | `15728640` (quic-go) | Upper bound the per-connection window grows to. No less than the initial window in effect. | No |
 
 Durations are written as Go durations (`10s`, `2m`); windows as whole numbers of bytes, `1` or more. Space around a value is ignored.
 
 A value outside what is described stops the relay at startup with a message naming the variable, where quic-go would have clamped it, read it as its own default, or panicked on the first handshake. What quic-go adjusts while a connection runs is not checked: it never times out or pings faster than a few probe timeouts allow.
 
-The relay logs the `RELAY_QUIC_*` variables it found at startup, so a setting that did not reach the process shows by its absence.
+The relay logs the `QUIC_*` variables it found at startup, so a setting that did not reach the process shows by its absence.
 
 The number of streams a peer may open is not a setting. The relay relies on quic-go's limit as backpressure, and raising it removes that.
 

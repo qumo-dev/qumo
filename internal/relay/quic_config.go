@@ -42,36 +42,36 @@ const (
 	quicGoMaxConnectionWindow     = 15 << 20
 )
 
-// The RELAY_QUIC_* settings, one variable each.
+// The QUIC_* settings, one variable each.
 const (
-	envQUICInitialPacketSize       = "RELAY_QUIC_INITIAL_PACKET_SIZE"
-	envQUICDisablePMTUD            = "RELAY_QUIC_DISABLE_PMTUD"
-	envQUICKeepAlivePeriod         = "RELAY_QUIC_KEEPALIVE_PERIOD"
-	envQUICMaxIdleTimeout          = "RELAY_QUIC_MAX_IDLE_TIMEOUT"
-	envQUICHandshakeIdleTimeout    = "RELAY_QUIC_HANDSHAKE_IDLE_TIMEOUT"
-	envQUICInitialStreamWindow     = "RELAY_QUIC_INITIAL_STREAM_RECEIVE_WINDOW"
-	envQUICMaxStreamWindow         = "RELAY_QUIC_MAX_STREAM_RECEIVE_WINDOW"
-	envQUICInitialConnectionWindow = "RELAY_QUIC_INITIAL_CONNECTION_RECEIVE_WINDOW"
-	envQUICMaxConnectionWindow     = "RELAY_QUIC_MAX_CONNECTION_RECEIVE_WINDOW"
+	envQUICInitialPacketSize    = "QUIC_INITIAL_PACKET_SIZE"
+	envQUICPMTUD                = "QUIC_PMTUD"
+	envQUICKeepAlive            = "QUIC_KEEPALIVE"
+	envQUICIdleTimeout          = "QUIC_IDLE_TIMEOUT"
+	envQUICHandshakeIdleTimeout = "QUIC_HANDSHAKE_IDLE_TIMEOUT"
+	envQUICStreamWindow         = "QUIC_STREAM_RECEIVE_WINDOW"
+	envQUICMaxStreamWindow      = "QUIC_MAX_STREAM_RECEIVE_WINDOW"
+	envQUICConnectionWindow     = "QUIC_CONNECTION_RECEIVE_WINDOW"
+	envQUICMaxConnectionWindow  = "QUIC_MAX_CONNECTION_RECEIVE_WINDOW"
 )
 
-// quicEnvKeys lists every RELAY_QUIC_* setting, in the order they are
+// quicEnvKeys lists every QUIC_* setting, in the order they are
 // documented.
 func quicEnvKeys() []string {
 	return []string{
 		envQUICInitialPacketSize,
-		envQUICDisablePMTUD,
-		envQUICKeepAlivePeriod,
-		envQUICMaxIdleTimeout,
+		envQUICPMTUD,
+		envQUICKeepAlive,
+		envQUICIdleTimeout,
 		envQUICHandshakeIdleTimeout,
-		envQUICInitialStreamWindow,
+		envQUICStreamWindow,
 		envQUICMaxStreamWindow,
-		envQUICInitialConnectionWindow,
+		envQUICConnectionWindow,
 		envQUICMaxConnectionWindow,
 	}
 }
 
-// quicEnvSet returns the RELAY_QUIC_* settings present in the environment as
+// quicEnvSet returns the QUIC_* settings present in the environment as
 // "NAME=value", for the startup log: a setting that never reached the process
 // fails the same way as one left unset. A blank value counts as unset, as it
 // does when the setting is read.
@@ -89,15 +89,15 @@ func quicEnvSet() []string {
 // of its peer dialer from the environment. Unset, a setting keeps the relay's
 // default or, where the relay has none, quic-go's.
 //
-//	RELAY_QUIC_INITIAL_PACKET_SIZE               - UDP payload bytes a connection starts with, 1200 to 1452 (quic-go: 1280)
-//	RELAY_QUIC_DISABLE_PMTUD                     - a switch; on keeps packets at the initial size (default: off)
-//	RELAY_QUIC_KEEPALIVE_PERIOD                  - keep-alive interval, e.g. "10s", at most half the idle timeout; "0" sends none over QUIC (default: 10s, or half the idle timeout if less)
-//	RELAY_QUIC_MAX_IDLE_TIMEOUT                  - close a session silent for this long, 1ms or more (default: 60s)
-//	RELAY_QUIC_HANDSHAKE_IDLE_TIMEOUT            - give up a handshake silent for this long, 1ms or more (quic-go: 5s)
-//	RELAY_QUIC_INITIAL_STREAM_RECEIVE_WINDOW     - bytes (quic-go: 512 KB)
-//	RELAY_QUIC_MAX_STREAM_RECEIVE_WINDOW         - bytes, no less than the initial one (quic-go: 6 MB)
-//	RELAY_QUIC_INITIAL_CONNECTION_RECEIVE_WINDOW - bytes (quic-go: 768 KB)
-//	RELAY_QUIC_MAX_CONNECTION_RECEIVE_WINDOW     - bytes, no less than the initial one (quic-go: 15 MB)
+//	QUIC_INITIAL_PACKET_SIZE           - UDP payload bytes a connection starts with, 1200 to 1452 (quic-go: 1280)
+//	QUIC_PMTUD                         - a switch; off keeps packets at the initial size (default: on)
+//	QUIC_KEEPALIVE                     - keep-alive interval, e.g. "10s", at most half the idle timeout; "0" sends none over QUIC (default: 10s, or half the idle timeout if less)
+//	QUIC_IDLE_TIMEOUT                  - close a session silent for this long, 1ms or more (default: 60s)
+//	QUIC_HANDSHAKE_IDLE_TIMEOUT        - give up a handshake silent for this long, 1ms or more (quic-go: 5s)
+//	QUIC_STREAM_RECEIVE_WINDOW         - bytes (quic-go: 512 KB)
+//	QUIC_MAX_STREAM_RECEIVE_WINDOW     - bytes, no less than the initial one (quic-go: 6 MB)
+//	QUIC_CONNECTION_RECEIVE_WINDOW     - bytes (quic-go: 768 KB)
+//	QUIC_MAX_CONNECTION_RECEIVE_WINDOW - bytes, no less than the initial one (quic-go: 15 MB)
 //
 // Refused at startup, because quic-go would take each as something else
 // without saying so: an initial packet size outside its range, which it
@@ -145,11 +145,13 @@ func quicConfigFromEnv() (*quic.Config, error) {
 		cfg.InitialPacketSize = uint16(size)
 	}
 
-	if cfg.DisablePathMTUDiscovery, err = envSwitch(envQUICDisablePMTUD, false); err != nil {
+	pmtud, err := envSwitch(envQUICPMTUD, true)
+	if err != nil {
 		return nil, err
 	}
+	cfg.DisablePathMTUDiscovery = !pmtud
 
-	if err := setQUICTimeout(envQUICMaxIdleTimeout, &cfg.MaxIdleTimeout); err != nil {
+	if err := setQUICTimeout(envQUICIdleTimeout, &cfg.MaxIdleTimeout); err != nil {
 		return nil, err
 	}
 	if err := setQUICTimeout(envQUICHandshakeIdleTimeout, &cfg.HandshakeIdleTimeout); err != nil {
@@ -160,13 +162,13 @@ func quicConfigFromEnv() (*quic.Config, error) {
 	}
 
 	if cfg.InitialStreamReceiveWindow, cfg.MaxStreamReceiveWindow, err = quicWindows(
-		envQUICInitialStreamWindow, envQUICMaxStreamWindow,
+		envQUICStreamWindow, envQUICMaxStreamWindow,
 		quicGoInitialStreamWindow, quicGoMaxStreamWindow,
 	); err != nil {
 		return nil, err
 	}
 	if cfg.InitialConnectionReceiveWindow, cfg.MaxConnectionReceiveWindow, err = quicWindows(
-		envQUICInitialConnectionWindow, envQUICMaxConnectionWindow,
+		envQUICConnectionWindow, envQUICMaxConnectionWindow,
 		quicGoInitialConnectionWindow, quicGoMaxConnectionWindow,
 	); err != nil {
 		return nil, err
@@ -197,7 +199,7 @@ func setQUICTimeout(key string, dst *time.Duration) error {
 // minQUICDuration or more and at most half of idleTimeout: quic-go pings no
 // less often than that, whatever is asked.
 func quicKeepAlive(def, idleTimeout time.Duration) (time.Duration, error) {
-	v, set, err := envconfig.Duration(envQUICKeepAlivePeriod)
+	v, set, err := envconfig.Duration(envQUICKeepAlive)
 	if err != nil {
 		return 0, err
 	}
@@ -208,11 +210,11 @@ func quicKeepAlive(def, idleTimeout time.Duration) (time.Duration, error) {
 		return 0, nil
 	}
 	if v < minQUICDuration {
-		return 0, fmt.Errorf("invalid %s %s: want 0 for none, or %s or more", envQUICKeepAlivePeriod, v, minQUICDuration)
+		return 0, fmt.Errorf("invalid %s %s: want 0 for none, or %s or more", envQUICKeepAlive, v, minQUICDuration)
 	}
 	if v > idleTimeout/2 {
 		return 0, fmt.Errorf("invalid %s %s: more than half the idle timeout %s (%s); a session would be pinged every %s whatever is set here",
-			envQUICKeepAlivePeriod, v, idleTimeout, envQUICMaxIdleTimeout, idleTimeout/2)
+			envQUICKeepAlive, v, idleTimeout, envQUICIdleTimeout, idleTimeout/2)
 	}
 	return v, nil
 }
