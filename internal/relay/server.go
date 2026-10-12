@@ -691,7 +691,10 @@ func (s *Server) relayPeer(sess *moqt.Session) {
 	state := sess.ConnectionState().TLS
 	if isSelf(state, s.PeerCertificate) {
 		// This relay dialed itself through a name among its peers; the
-		// dialing side drops the session too.
+		// dialing side drops the session too. Anything else that presents
+		// this relay's own peer certificate is dropped the same way.
+		slog.Info("relay: session dropped: it presented this relay's own peer certificate (a relay that reached itself; anything else needs a certificate of its own)",
+			"remote", sess.RemoteAddr())
 		a.decide(refusedGrant, auth.Request{})
 		_ = sess.CloseWithError(moqt.NoError, "self")
 		return

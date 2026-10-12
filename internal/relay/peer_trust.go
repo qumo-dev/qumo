@@ -152,8 +152,8 @@ func usageName(usage x509.ExtKeyUsage) string {
 // the CA when it does; one that asks for PeeringName is a relay dialing a
 // peer, answered with the peer certificate, and must present one. A client
 // that offers h3 is a browser or another WebTransport client: it is never
-// asked for a certificate, since it could be neither a peer nor an internal
-// client, and a browser holding certificates would prompt its user.
+// asked for a certificate, since it could not be a peer, and a browser
+// holding certificates would prompt its user.
 //
 // Without a peer identity the relay keeps answering PeeringName with its
 // public certificate, which the dialer refuses: a relay never pretends to be

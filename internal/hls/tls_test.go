@@ -9,11 +9,15 @@ import (
 	"crypto/x509/pkix"
 	"encoding/pem"
 	"math/big"
+	"net/url"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
 
+	"github.com/qumo-dev/qumo/internal/devcert"
+	"github.com/qumo-dev/qumo/internal/relay"
+	"github.com/qumo-dev/qumo/token"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -99,20 +103,52 @@ func selfSignedCertPEM(tb testing.TB) []byte {
 }
 
 func TestFeedConfig_Validate(t *testing.T) {
+	ca, err := devcert.NewCA("relay-ca", time.Hour)
+	require.NoError(t, err)
+	peerCert, peerKey := writeLeaf(t, ca, devcert.Leaf{CommonName: "egress-1", DNSNames: []string{relay.PeeringName}, Validity: time.Hour})
+	unnamedCert, unnamedKey := writeLeaf(t, ca, devcert.Leaf{CommonName: "egress-2", Validity: time.Hour})
+	key, err := token.GenerateKey("hls")
+	require.NoError(t, err)
+
 	tests := map[string]struct {
 		cfg     feedConfig
 		wantErr string
 	}{
-		"no client certificate":               {cfg: feedConfig{relayURL: "https://relay:4433"}},
-		"a credential in the query":           {cfg: feedConfig{relayURL: "https://relay:4433/live?jwt=h.p.s"}},
-		"a malformed URL":                     {cfg: feedConfig{relayURL: "moqt://[bad/live"}, wantErr: "invalid URL"},
-		"client certificate over native QUIC": {cfg: feedConfig{relayURL: "moqt://relay:4433", certFile: "c.pem", keyFile: "k.pem"}},
-		"client certificate over WebTransport": {
-			cfg:     feedConfig{relayURL: "https://relay:4433", certFile: "c.pem", keyFile: "k.pem"},
+		"no client certificate":     {cfg: feedConfig{relayURL: "https://relay:4433"}},
+		"a credential in the query": {cfg: feedConfig{relayURL: "https://relay:4433/live?jwt=h.p.s"}},
+		"a malformed URL":           {cfg: feedConfig{relayURL: "moqt://[bad/live"}, wantErr: "invalid URL"},
+		"a peer certificate over native QUIC": {
+			cfg: feedConfig{relayURL: "moqt://relay:4433", certFile: peerCert, keyFile: peerKey},
+		},
+		"a peer certificate over WebTransport": {
+			cfg:     feedConfig{relayURL: "https://relay:4433", certFile: peerCert, keyFile: peerKey},
 			wantErr: "moqt://",
 		},
-		"cert without key": {cfg: feedConfig{relayURL: "moqt://relay:4433", certFile: "c.pem"}, wantErr: "together"},
-		"key without cert": {cfg: feedConfig{relayURL: "moqt://relay:4433", keyFile: "k.pem"}, wantErr: "together"},
+		"cert without key": {cfg: feedConfig{relayURL: "moqt://relay:4433", certFile: peerCert}, wantErr: "together"},
+		"key without cert": {cfg: feedConfig{relayURL: "moqt://relay:4433", keyFile: peerKey}, wantErr: "together"},
+		"a certificate without the peering name": {
+			cfg:     feedConfig{relayURL: "moqt://relay:4433", certFile: unnamedCert, keyFile: unnamedKey},
+			wantErr: "peering name",
+		},
+		"a certificate that doesn't load": {
+			cfg:     feedConfig{relayURL: "moqt://relay:4433", certFile: "absent.pem", keyFile: "absent.key"},
+			wantErr: "RELAY_CERT_FILE",
+		},
+		"a peer certificate beside a credential": {
+			cfg:     feedConfig{relayURL: "moqt://relay:4433/?jwt=h.p.s", certFile: peerCert, keyFile: peerKey},
+			wantErr: "never reads",
+		},
+		"a peer certificate beside a signing key": {
+			cfg:     feedConfig{relayURL: "moqt://relay:4433", certFile: peerCert, keyFile: peerKey, signingKey: &key},
+			wantErr: "set one",
+		},
+		"a signing key that covers the path": {
+			cfg: feedConfig{relayURL: "https://relay:4433", trackPath: "/hls/live", signingKey: &key},
+		},
+		"a signing key confined elsewhere": {
+			cfg:     feedConfig{relayURL: "https://relay:4433", trackPath: "/room/1", signingKey: &key},
+			wantErr: "RELAY_TRACK_PATH",
+		},
 	}
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
@@ -137,4 +173,63 @@ func TestFeedConfig_Validate_MalformedURLHidesCredential(t *testing.T) {
 
 	require.Error(t, err)
 	assert.NotContains(t, err.Error(), "jwt=h.p.s")
+}
+
+// writeLeaf issues leaf from ca and writes it and its key as PEM files.
+func writeLeaf(tb testing.TB, ca *devcert.CA, leaf devcert.Leaf) (certFile, keyFile string) {
+	tb.Helper()
+	cert, err := ca.Issue(leaf)
+	require.NoError(tb, err)
+	certPEM, keyPEM, err := devcert.EncodePEM(cert)
+	require.NoError(tb, err)
+	dir := tb.TempDir()
+	certFile, keyFile = filepath.Join(dir, "leaf.crt"), filepath.Join(dir, "leaf.key")
+	require.NoError(tb, os.WriteFile(certFile, certPEM, 0o600))
+	require.NoError(tb, os.WriteFile(keyFile, keyPEM, 0o600))
+	return certFile, keyFile
+}
+
+func TestFeedConfig_Target(t *testing.T) {
+	key, err := token.GenerateKey("hls")
+	require.NoError(t, err)
+
+	t.Run("without a signing key the URL is dialed as it is", func(t *testing.T) {
+		cfg := feedConfig{relayURL: "https://relay:4433/?jwt=h.p.s", trackPath: "/hls/live"}
+
+		got, err := cfg.target()
+
+		require.NoError(t, err)
+		assert.Equal(t, cfg.relayURL, got)
+	})
+
+	t.Run("a signing key replaces the credential with one for the path alone", func(t *testing.T) {
+		cfg := feedConfig{relayURL: "https://relay:4433/?jwt=h.p.s&x=1", trackPath: "/hls/live", signingKey: &key}
+
+		got, err := cfg.target()
+
+		require.NoError(t, err)
+		u, err := url.Parse(got)
+		require.NoError(t, err)
+		assert.Equal(t, "1", u.Query().Get("x"), "the rest of the query is kept")
+		claims, err := token.Verify(u.Query().Get("jwt"), map[string]token.Key{key.ID: key.Public()}, time.Now())
+		require.NoError(t, err)
+		require.Len(t, claims.Scopes, 1)
+		scope := claims.Scopes[0]
+		assert.True(t, scope.Allows(token.ActionSubscribe, "hls/live", "video"))
+		assert.True(t, scope.Allows(token.ActionFetch, "hls/live", "catalog"))
+		assert.False(t, scope.Allows(token.ActionSubscribe, "hls/other", "video"), "no other broadcast")
+		assert.False(t, scope.Allows(token.ActionSubscribe, "hls/live/deeper", "video"), "nothing beneath it")
+		assert.False(t, scope.Allows(token.ActionPublish, "hls/live", "video"), "it publishes nothing")
+	})
+
+	t.Run("each connect signs a new one", func(t *testing.T) {
+		cfg := feedConfig{relayURL: "https://relay:4433", trackPath: "/hls/live", signingKey: &key}
+
+		first, err := cfg.target()
+		require.NoError(t, err)
+		second, err := cfg.target()
+		require.NoError(t, err)
+
+		assert.NotEqual(t, first, second)
+	})
 }

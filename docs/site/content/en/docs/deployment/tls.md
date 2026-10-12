@@ -56,7 +56,9 @@ Issue one per relay from the relay CA:
 A certificate from the same CA **without** the peering name grants nothing.
 Whatever holds a peer certificate is trusted like a relay, so issue one only
 to what runs under the same control as the relays. The HLS egress can connect
-with one (`RELAY_CERT_FILE`), or with a credential instead.
+with one (`RELAY_CERT_FILE`), or with a signing key instead
+(`RELAY_SIGNING_KEY`). Each holder needs a certificate of its own: a relay
+drops a session that presents the relay's own certificate, as itself.
 
 With OpenSSL:
 

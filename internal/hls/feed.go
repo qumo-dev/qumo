@@ -4,12 +4,15 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
+	"crypto/x509"
 	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"net/url"
+	"slices"
+	"strings"
 	"time"
 
 	"github.com/quic-go/quic-go"
@@ -19,7 +22,9 @@ import (
 	"github.com/okdaichi/qumo-ledger/ledger"
 
 	"github.com/qumo-dev/qumo/internal/cmaf"
+	"github.com/qumo-dev/qumo/internal/relay"
 	"github.com/qumo-dev/qumo/internal/tlsclient"
+	"github.com/qumo-dev/qumo/token"
 )
 
 // feedConfig carries the relay subscription parameters, resolved from
@@ -41,6 +46,12 @@ type feedConfig struct {
 	// credential and has no grant to expire. Only a native-QUIC (moqt://)
 	// relayURL presents it.
 	certFile, keyFile string
+	// signingKey, when set, signs the egress's credential: a fresh one on
+	// every connect, in place of any ?jwt= in relayURL, granting subscribe
+	// and fetch on trackPath alone. A token lives an hour at most, so one
+	// fixed in relayURL stops admitting the egress at its first reconnect
+	// after that.
+	signingKey *token.SigningKey
 	// quic is the QUIC configuration of the session, whether moqt:// or
 	// https://; nil is quic-go's defaults.
 	quic *quic.Config
@@ -97,7 +108,9 @@ func connectWithRetry(ctx context.Context, cfg feedConfig) (*moqt.Session, media
 }
 
 // validate checks the settings that would otherwise fail only at the first
-// dial, or silently: a client certificate the relay would never see.
+// dial, or silently: a client certificate the relay would never see or take
+// for a peer's, a credential beside a certificate that makes the relay
+// ignore it, a signing key that can't grant the egress its path.
 func (c feedConfig) validate() error {
 	u, err := url.Parse(c.relayURL)
 	if err != nil {
@@ -109,6 +122,14 @@ func (c feedConfig) validate() error {
 		return fmt.Errorf("RELAY_URL: invalid URL: %w", err)
 	}
 	if c.certFile == "" && c.keyFile == "" {
+		if c.signingKey == nil {
+			return nil
+		}
+		// Signing one now refuses a path outside the key's prefix at
+		// startup rather than at the first dial.
+		if _, err := token.Sign(*c.signingKey, subscribeGrant(c.trackPath), token.MaxLifetime); err != nil {
+			return fmt.Errorf("RELAY_SIGNING_KEY can't grant RELAY_TRACK_PATH: %w", err)
+		}
 		return nil
 	}
 	if c.certFile == "" || c.keyFile == "" {
@@ -119,7 +140,62 @@ func (c feedConfig) validate() error {
 		// the credential of every one.
 		return fmt.Errorf("RELAY_CERT_FILE needs a native-QUIC RELAY_URL (moqt://), got %q", u.Scheme)
 	}
+	// The relay serves a session with a peer certificate as a peer and
+	// never reads its credential: a credential beside one limits nothing.
+	if c.signingKey != nil {
+		return errors.New("RELAY_SIGNING_KEY and RELAY_CERT_FILE are two ways to connect: set one")
+	}
+	if u.Query().Has("jwt") {
+		return errors.New("RELAY_CERT_FILE makes the egress a relay peer, whose credential the relay never reads: remove ?jwt= from RELAY_URL, or the certificate")
+	}
+	return checkPeerCertificate(c.certFile, c.keyFile)
+}
+
+// checkPeerCertificate reports why the relay would not take the certificate
+// in certFile for a peer's: it doesn't load, or doesn't carry the peering
+// name. Whether the relay's CA issued it is the relay's to say.
+func checkPeerCertificate(certFile, keyFile string) error {
+	cert, err := tls.LoadX509KeyPair(certFile, keyFile)
+	if err != nil {
+		return fmt.Errorf("RELAY_CERT_FILE: %w", err)
+	}
+	leaf, err := x509.ParseCertificate(cert.Certificate[0])
+	if err != nil {
+		return fmt.Errorf("RELAY_CERT_FILE: %w", err)
+	}
+	if !slices.Contains(leaf.DNSNames, relay.PeeringName) {
+		return fmt.Errorf("RELAY_CERT_FILE: the certificate doesn't carry the peering name %q among its DNS names, so the relay would ask the egress for a credential: use a peer certificate, or RELAY_SIGNING_KEY in its place", relay.PeeringName)
+	}
 	return nil
+}
+
+// subscribeGrant grants what the egress does at path: subscribing to and
+// fetching every track of that broadcast, and of no other.
+func subscribeGrant(path string) token.Grant {
+	return token.Grant{Scopes: []token.Scope{{
+		Actions:   []token.Action{token.ActionSubscribe, token.ActionFetch},
+		Broadcast: strings.TrimPrefix(path, "/"),
+	}}}
+}
+
+// target returns the URL to dial, with a freshly signed credential when the
+// egress signs its own.
+func (c feedConfig) target() (string, error) {
+	if c.signingKey == nil {
+		return c.relayURL, nil
+	}
+	credential, err := token.Sign(*c.signingKey, subscribeGrant(c.trackPath), token.MaxLifetime)
+	if err != nil {
+		return "", fmt.Errorf("sign relay credential: %w", err)
+	}
+	u, err := url.Parse(c.relayURL)
+	if err != nil {
+		return "", errors.New("RELAY_URL: invalid URL")
+	}
+	query := u.Query()
+	query.Set("jwt", credential)
+	u.RawQuery = query.Encode()
+	return u.String(), nil
 }
 
 // relayTLSConfig builds the client TLS config for dialing the relay. The egress
@@ -149,7 +225,11 @@ func connect(ctx context.Context, cfg feedConfig) (*moqt.Session, mediaInfo, err
 	if err := tlsclient.ApplyClientCert(tc, cfg.certFile, cfg.keyFile); err != nil {
 		return nil, mediaInfo{}, fmt.Errorf("hls: relay client certificate: %w", err)
 	}
-	session, err := (&moqt.Dialer{TLSConfig: tc, QUICConfig: cfg.quic}).Dial(ctx, cfg.relayURL, moqt.NewTrackMux(0))
+	target, err := cfg.target()
+	if err != nil {
+		return nil, mediaInfo{}, fmt.Errorf("hls: %w", err)
+	}
+	session, err := (&moqt.Dialer{TLSConfig: tc, QUICConfig: cfg.quic}).Dial(ctx, target, moqt.NewTrackMux(0))
 	if err != nil {
 		return nil, mediaInfo{}, fmt.Errorf("hls: dial relay: %w", err)
 	}
@@ -223,7 +303,7 @@ func sessionRefusal(session *moqt.Session, err error) error {
 		return err
 	}
 	if sessErr.SessionErrorCode() == moqt.UnauthorizedSessionErrorCode {
-		return fmt.Errorf("hls: the relay refused the session (%w): connect with a credential (?jwt= in RELAY_URL) or a peer certificate from its CA (RELAY_CERT_FILE)", cause)
+		return fmt.Errorf("hls: the relay refused the session (%w): connect with a signing key from its key set (RELAY_SIGNING_KEY), a credential it still accepts (?jwt= in RELAY_URL), or a peer certificate from its CA (RELAY_CERT_FILE)", cause)
 	}
 	return fmt.Errorf("hls: the relay closed the session: %w", cause)
 }

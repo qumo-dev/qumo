@@ -17,6 +17,7 @@ import (
 	"github.com/qumo-dev/qumo/internal/cors"
 	"github.com/qumo-dev/qumo/internal/envconfig"
 	"github.com/qumo-dev/qumo/internal/quicconfig"
+	"github.com/qumo-dev/qumo/token"
 
 	"github.com/okdaichi/qumo-ledger/ledger"
 	"github.com/okdaichi/qumo-ledger/ledger/store/fs"
@@ -56,13 +57,21 @@ import (
 //	                     verifies the relay's certificate by default). Dominates
 //	                     RELAY_CA_FILE when both are set.
 //	RELAY_CERT_FILE,
-//	RELAY_KEY_FILE      - a peer certificate and key (PEM) for the egress,
-//	                     from the relay CA the relay trusts as CA_FILE, with
-//	                     the peering name. The relay then serves the egress
-//	                     as a relay peer: no credential, no expiry, and
-//	                     nothing it does is checked. A credential in
-//	                     RELAY_URL (?jwt=) limits the egress to what it
-//	                     subscribes to. Set both or neither; they need a moqt://
+//	RELAY_SIGNING_KEY   - a signing key (qumo auth keygen) the relay's key
+//	                     set trusts. The egress signs a fresh credential with
+//	                     it on every connect, in place of any ?jwt= in
+//	                     RELAY_URL, granting subscribe and fetch on
+//	                     RELAY_TRACK_PATH alone. The way to connect to a
+//	                     relay with auth on: a credential fixed in RELAY_URL
+//	                     lives an hour at most.
+//	RELAY_CERT_FILE,
+//	RELAY_KEY_FILE      - instead of a credential, a peer certificate and key
+//	                     (PEM) for the egress, from the relay CA the relay
+//	                     trusts as CA_FILE, with the peering name, and not
+//	                     the relay's own. The relay then serves the egress as
+//	                     a relay peer: no credential, no expiry, and nothing
+//	                     it does is checked. Not with RELAY_SIGNING_KEY or
+//	                     ?jwt=. Set both or neither; they need a moqt://
 //	                     RELAY_URL, since only native QUIC sessions present a
 //	                     certificate. Re-read on every reconnect, so a renewed
 //	                     certificate is picked up.
@@ -103,6 +112,13 @@ func Run(_ []string) error {
 
 		liveTimeout: liveTimeout,
 		quic:        quicConfig,
+	}
+	if keyFile := envconfig.String("RELAY_SIGNING_KEY", ""); keyFile != "" {
+		key, err := token.LoadSigningKey(keyFile)
+		if err != nil {
+			return fmt.Errorf("hls: RELAY_SIGNING_KEY: %w", err)
+		}
+		cfg.signingKey = &key
 	}
 	if err := cfg.validate(); err != nil {
 		return fmt.Errorf("hls: %w", err)

@@ -45,6 +45,9 @@ func TestEgress_PeerCertificateIsPeer(t *testing.T) {
 	}, ca.trust(t, nil))
 	publishOver(t, srv, "https://"+addr+"/?jwt=publisher", "/hls/live")
 
+	// The sessions under test connect at a path of their own, apart from
+	// the relay's readiness probes.
+	const egressPath = "/egress"
 	tests := map[string]struct {
 		certFile, keyFile string
 		wantTrusted       bool
@@ -55,7 +58,7 @@ func TestEgress_PeerCertificateIsPeer(t *testing.T) {
 	}
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
-			asked := len(server.received())
+			asked := askedAt(server, egressPath)
 			authorized := subscribeAuthorizations(t)
 			tc := &tls.Config{
 				InsecureSkipVerify: true, //nolint:gosec // test-only self-signed cert
@@ -63,18 +66,31 @@ func TestEgress_PeerCertificateIsPeer(t *testing.T) {
 			}
 			require.NoError(t, tlsclient.ApplyClientCert(tc, tt.certFile, tt.keyFile))
 
-			err := subscribeWith(t, nativeURL(addr)+"/", tc, "/hls/live")
+			err := subscribeWith(t, nativeURL(addr)+egressPath, tc, "/hls/live")
 
 			if tt.wantTrusted {
 				assert.NoError(t, err, "a peer subscribes outside any grant")
-				assert.Len(t, server.received(), asked, "a peer is never asked about")
+				assert.Equal(t, asked, askedAt(server, egressPath), "a peer is never asked about")
 				assert.Equal(t, authorized, subscribeAuthorizations(t), "its subscription is not counted as checked against a credential")
 				return
 			}
 			assert.Error(t, err)
-			assert.Greater(t, len(server.received()), asked, "a client is asked for its credential")
+			assert.Equal(t, asked+1, askedAt(server, egressPath), "a client is asked for its credential")
 		})
 	}
+}
+
+// askedAt returns how many sessions that connected at path the relay asked
+// auth about. A relay's readiness probes connect at "/", and their requests
+// can land late: counting one path leaves them out.
+func askedAt(auth *fakeAuth, path string) int {
+	n := 0
+	for _, req := range auth.received() {
+		if req.Path == path {
+			n++
+		}
+	}
+	return n
 }
 
 // A session the relay refuses is closed before its subscribes are answered:
