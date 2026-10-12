@@ -46,10 +46,9 @@ func sanitizeLog(s string) string {
 //	KEY_FILE                     - TLS key file (default: "certs/server.key")
 //	CA_FILE                      - PEM CA certificate (optional): the relay CA.
 //	                               A session whose client certificate it
-//	                               verifies is an internal client, or a relay
-//	                               peer when the certificate carries the
-//	                               peering name (peer_trust.go). Unset: no
-//	                               session is either.
+//	                               verifies is a relay peer when the
+//	                               certificate carries the peering name
+//	                               (peer_trust.go). Unset: no session is one.
 //	PEER_CERT_FILE, PEER_KEY_FILE - this relay's peer identity (optional), a
 //	                               certificate CA_FILE issued for the peering
 //	                               name; set together, and only with CA_FILE.
@@ -159,7 +158,7 @@ func Run(args []string) error {
 		slog.Info("relay: peering on: sessions with a certificate from CA_FILE that carries the peering name are peers",
 			"ca_file", os.Getenv("CA_FILE"), "identity", trust.Identity())
 	case trust.HasCA():
-		slog.Info("relay: internal clients on: sessions with a certificate from CA_FILE may subscribe; this relay is no peer (no PEER_CERT_FILE)",
+		slog.Info("relay: peers accepted: sessions with a certificate from CA_FILE that carries the peering name are peers; this relay has no peer certificate of its own (no PEER_CERT_FILE), so it dials none and no relay can dial it",
 			"ca_file", os.Getenv("CA_FILE"))
 	default:
 		slog.Info("relay: peering off (no CA_FILE): every inbound session is admitted like a client")
@@ -340,7 +339,7 @@ func Run(args []string) error {
 	case trust.Identity() != "":
 		log.Printf("\t%-8s: %s, trusting %s\n", "Peering", sanitizeLog(trust.Identity()), sanitizeLog(os.Getenv("CA_FILE")))
 	case trust.HasCA():
-		log.Printf("\t%-8s: internal clients only, trusting %s (no PEER_CERT_FILE)\n", "Peering", sanitizeLog(os.Getenv("CA_FILE")))
+		log.Printf("\t%-8s: inbound only, trusting %s (no PEER_CERT_FILE)\n", "Peering", sanitizeLog(os.Getenv("CA_FILE")))
 	default:
 		log.Printf("\t%-8s: off (no CA_FILE)\n", "Peering")
 	}

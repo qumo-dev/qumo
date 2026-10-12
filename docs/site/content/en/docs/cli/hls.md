@@ -61,13 +61,21 @@ RELAY_TLS_INSECURE=true qumo hls           # dev relay with a self-signed cert
 ### Connecting to a relay with auth on
 
 The egress is an HLS **origin**: viewers are authorized in front of it, by your
-CDN or application, not by the relay. So it doesn't connect with a credential.
-Against a relay with auth on (`QUMO_AUTH_KEYS`), it connects as an
-**internal client** instead. It presents a client certificate from the relay CA
-that the relay trusts as `CA_FILE`, issued **without** the peering name (it is
-not a relay peer), and the relay then never checks the egress for a
-credential, so the session has no grant to expire. It may subscribe to
-anything and announce nothing.
+CDN or application, not by the relay. Against a relay with auth on
+(`QUMO_AUTH_KEYS`), the egress itself connects in one of two ways:
+
+- **With a credential** in `RELAY_URL` (`?jwt=`), like any client. The relay
+  lets it subscribe to what the credential's `subscribe` scopes cover and
+  nothing else, and ends the session when the credential expires.
+- **As a relay peer.** It presents a peer certificate from the relay CA that
+  the relay trusts as `CA_FILE`, one that carries the peering name. The relay
+  then never checks the egress for a credential, so the session has no grant
+  to expire. A peer is trusted with everything: it may subscribe to anything,
+  and the relay would route a broadcast it announced. Issue the egress a peer
+  certificate only where it runs under the same control as the relays.
+
+A certificate from the CA without the peering name grants nothing: the relay
+asks that session for a credential like any other.
 
 ```bash
 RELAY_URL=moqt://relay.example.com:4433 \
@@ -75,8 +83,8 @@ RELAY_CERT_FILE=/secrets/egress.crt RELAY_KEY_FILE=/secrets/egress.key \
 RELAY_CA_FILE=/secrets/relay-ca.crt qumo hls
 ```
 
-- **Native QUIC only:** only a native-QUIC session can be an internal client, so a
-  client certificate needs a `moqt://` `RELAY_URL`. The egress refuses to start
+- **Native QUIC only:** only a native-QUIC session can be a peer, so a
+  peer certificate needs a `moqt://` `RELAY_URL`. The egress refuses to start
   otherwise.
 - **Renewal:** the certificate is read again on every reconnect, so a
   short-lived one renewed on disk is picked up without a restart.
@@ -103,7 +111,7 @@ All configuration is via environment variables:
 | `HLS_LIVE_TIMEOUT_S` | `10` | Seconds of silence after which the publisher is treated as gone; the feed reconnects and manifests answer `503`. |
 | `RELAY_CA_FILE` | _unset_ | PEM cert to trust as the relay's root, overriding the system roots. Unset means verify against the system root store. |
 | `RELAY_TLS_INSECURE` | `false` | Skip relay TLS verification entirely. Dominates `RELAY_CA_FILE` when both are set. |
-| `RELAY_CERT_FILE`, `RELAY_KEY_FILE` | _unset_ | The egress's client certificate and key (PEM), from the private CA the relay trusts as `CA_FILE`. The relay serves the egress as an internal client: no credential, no expiry, subscribe-only. Set both or neither; they need a `moqt://` `RELAY_URL`. |
+| `RELAY_CERT_FILE`, `RELAY_KEY_FILE` | _unset_ | A peer certificate and key (PEM) for the egress, from the private CA the relay trusts as `CA_FILE`, with the peering name. The relay serves the egress as a relay peer: no credential, no expiry, nothing checked. Set both or neither; they need a `moqt://` `RELAY_URL`. |
 | `CORS_ALLOWED_ORIGINS` | _unset_ | Comma-separated origins allowed to fetch manifests and segments, or `*` for any. Unset disables CORS. Required when the player is served from another origin (e.g. `http://localhost:5173` for the playground). |
 
 ## See also

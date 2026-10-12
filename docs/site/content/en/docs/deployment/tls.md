@@ -29,10 +29,10 @@ run. Public certificates such as Let's Encrypt's are for browsers and other
 clients; they play no part in relay identity.
 
 - **Inbound:** a native-QUIC session that presents a certificate `CA_FILE`
-  verifies is an internal client, or a relay peer when the certificate carries
-  the peering name `peer.qumo.internal`. A peer is served without a credential.
-  An internal client (the HLS egress with `RELAY_CERT_FILE`) may subscribe to
-  anything and announce nothing. A browser is never asked for a certificate.
+  verifies is a relay peer when the certificate carries the peering name
+  `peer.qumo.internal`. A peer is served without a credential. A certificate
+  without the name grants nothing: its session needs a credential like any
+  client's. A browser is never asked for a certificate.
 - **Outbound:** a relay dials each address in `PEERS` presenting its own peer
   certificate (`PEER_CERT_FILE`, `PEER_KEY_FILE`), asks for the server name
   `peer.qumo.internal`, and verifies the certificate the peer answers with
@@ -53,8 +53,10 @@ Issue one per relay from the relay CA:
   authentication, since a relay both dials and is dialed;
 - a validity the relay is within; it refuses to start with an expired one.
 
-A certificate from the same CA **without** the peering name authenticates an
-internal client, such as the HLS egress: issue those without it.
+A certificate from the same CA **without** the peering name grants nothing.
+Whatever holds a peer certificate is trusted like a relay, so issue one only
+to what runs under the same control as the relays. The HLS egress can connect
+with one (`RELAY_CERT_FILE`), or with a credential instead.
 
 With OpenSSL:
 

@@ -66,13 +66,13 @@ trust. `PEERS` only says whom to dial; identity comes from the certificates.
 
 | Variable | Default | Description |
 |---|---|---|
-| `CA_FILE` | (empty) | PEM certificate of the relay CA. A native-QUIC session whose client certificate it verifies is an **internal client** (it may subscribe to anything and announce nothing), or a **relay peer** (served without a credential, checked for nothing) when the certificate also carries the peering name. Unset: no session is either. |
+| `CA_FILE` | (empty) | PEM certificate of the relay CA. A native-QUIC session whose client certificate it verifies, and that carries the peering name, is a **relay peer**: served without a credential, checked for nothing. A certificate without the name grants nothing. Unset: no session is a peer. |
 | `PEER_CERT_FILE` / `PEER_KEY_FILE` | (empty) | This relay's peer identity: a certificate `CA_FILE` issued for the peering name, usable for client and server authentication. Set together, and only with `CA_FILE`. It is presented to the relays this one dials and to the relays that dial it. |
 
 The four valid settings:
 
 - nothing: a standalone relay;
-- `CA_FILE` alone: internal clients such as the HLS egress are authenticated, but this relay is no peer;
+- `CA_FILE` alone: a session with a peer certificate from the CA is a peer (the HLS egress can connect that way), but this relay has no peer identity: it dials no peer and no relay can dial it;
 - `CA_FILE` and a peer identity: this relay accepts peers but dials none;
 - all three with `PEERS`: full peering.
 
@@ -194,7 +194,7 @@ Without a key set, auth is off: the relay admits every session unchecked and log
 | `QUMO_RELAY_TOKEN` | (unset) | Sent as a bearer token to a key-set URL and to `QUMO_USAGE_URL`. |
 | `QUMO_USAGE_URL` | (unset: no reports) | Where the relay reports each verified session's usage (below). Needs a key set. |
 
-**Relay peers are never checked:** sessions whose client certificate `CA_FILE` verifies and that carries the peering name, and peers this relay dials (`PEERS`). A session whose certificate `CA_FILE` verifies without the name is an **internal client**: it needs no credential either, and may subscribe to anything and announce nothing ([Peer trust](#peer-trust-optional)).
+**Relay peers are never checked:** sessions whose client certificate `CA_FILE` verifies and that carries the peering name, and peers this relay dials (`PEERS`). A session whose certificate `CA_FILE` verifies without the name is a client like any other, and needs a credential ([Peer trust](#peer-trust-optional)).
 
 ### Verifying against a key set
 A credential is a token your app signs with its own key, using the Go package [`github.com/qumo-dev/qumo/token`](../cli/auth/) (or `qumo auth token` while testing). The relay admits a session when, in order: the token's header carries no `crit`, its `alg` is EdDSA and its `kid` is in the key set; the signature verifies; its claims are one of `scopes` and `path_auth` (never both), `iat`, `nbf`, `exp`, an optional `jti`, and, with `scopes`, an optional `sub`; the times hold, with 60 s leeway and a lifetime of at most an hour; and **every path it grants lies within its key's `prefix`**. A `path_auth` claim, as other MoQ implementations sign it, is read as the scopes it amounts to ([what a token grants](../cli/auth/#what-a-token-grants)). The session may then announce a broadcast a `publish` scope matches on every track, and subscribe to a track a `subscribe` scope matches, for as long as [below](#credential-expiry-and-live-sessions) describes.
@@ -246,7 +246,7 @@ Records go out in batches of at most 500. A failed send, a 401, 403, 408, 413 or
 - **Subscriptions** are served only if a `subscribe` scope of the token matches their broadcast and track. A refused subscription gets the same answer as a path that doesn't exist (`NotFound`).
 - **Expiry** decides only whether a session may start ([above](#credential-expiry-and-live-sessions)): a live session, publisher or subscriber, is not ended by its token's expiry.
 - **Why a session ended** is the `reason` of its usage record: `refused` (its key left the set), `closed` (the client or relay closed it normally), `dropped` (the connection was lost) or `upgrade_failed` (a WebTransport session that was admitted, whose upgrade then failed, so it never started).
-- **Relay peers**, peers this relay dials, and internal clients carry no credential, so nothing above applies to them.
+- **Relay peers** and peers this relay dials carry no credential, so nothing above applies to them.
 - **Not yet enforced:** which paths a session can discover (qumo-dev/qumo#450). Announce interest lists every path under the requested prefix, and a TRACK request returns a track's publisher properties (TRACK_INFO) for any path. Both reveal path names and metadata, never media.
 
 Metrics: `qumo_relay_auth_requests_total{event,result}` (`admitted`, `refused`, `error`, and `unchecked` with auth off), `qumo_relay_announcements_refused_total`, `qumo_relay_subscribe_authorizations_total{result}` (`admitted`, `not_covered`) and `qumo_relay_sessions_ended_total{reason}` (`refused`). `auth_requests_total`'s `event` is `connect`, `revalidate` or `end`; an `end`'s `result` is `ok` or `error`.

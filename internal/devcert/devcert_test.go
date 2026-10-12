@@ -31,7 +31,7 @@ func TestCA_Issue(t *testing.T) {
 	}{
 		"a peer certificate":             {issuer: ca, leaf: Leaf{CommonName: "relay-1", DNSNames: []string{PeeringName}, Validity: time.Hour}, wantChain: 1},
 		"through an intermediate":        {issuer: intermediate, leaf: Leaf{CommonName: "relay-1", DNSNames: []string{PeeringName}, Validity: time.Hour}, wantChain: 2},
-		"an internal client's":           {issuer: ca, leaf: Leaf{CommonName: "egress-1", Validity: time.Hour}, wantChain: 1, wantErrText: "peering name"},
+		"one without the peering name":   {issuer: ca, leaf: Leaf{CommonName: "egress-1", Validity: time.Hour}, wantChain: 1, wantErrText: "peering name"},
 		"expired":                        {issuer: ca, leaf: Leaf{CommonName: "relay-1", DNSNames: []string{PeeringName}, Validity: -time.Minute}, wantChain: 1, wantErrText: "isn't valid now"},
 		"for client authentication only": {issuer: ca, leaf: Leaf{CommonName: "relay-1", DNSNames: []string{PeeringName}, Validity: time.Hour, ExtKeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}}, wantChain: 1, wantErrText: "server authentication"},
 	}

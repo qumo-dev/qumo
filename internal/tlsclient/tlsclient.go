@@ -62,9 +62,9 @@ func loadCAPool(caFile string) (*x509.CertPool, error) {
 }
 
 // ApplyClientCert makes tc present the certificate and key in certFile and
-// keyFile, both PEM, as this client's TLS identity. A relay that verifies it
-// against its CA_FILE serves the session as an internal client (subscribe
-// only), over native QUIC only. With both empty it leaves tc unchanged; one without the other is an
+// keyFile, both PEM, as this client's TLS identity. A relay whose CA_FILE
+// verifies it, and that finds the peering name in it, serves the session as
+// a relay peer, over native QUIC only. With both empty it leaves tc unchanged; one without the other is an
 // error.
 func ApplyClientCert(tc *tls.Config, certFile, keyFile string) error {
 	if certFile == "" && keyFile == "" {

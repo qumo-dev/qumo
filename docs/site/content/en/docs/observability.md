@@ -64,7 +64,7 @@ All metrics are under the `qumo_relay_` prefix.
 | Metric | Type | Description |
 |---|---|---|
 | `qumo_relay_sessions_active` | Gauge | Current number of active MoQT relay sessions. |
-| `qumo_relay_sessions_total{transport,class}` | Counter | Sessions served, by transport (`webtransport`, `websocket` or `quic`) and class: `client` (admitted by its credential, or unchecked with auth off), `internal` (an internal client) or `peer` (a relay peer). Relay peers and internal clients run over `quic`. |
+| `qumo_relay_sessions_total{transport,class}` | Counter | Sessions served, by transport (`webtransport`, `websocket` or `quic`) and class: `client` (admitted by its credential, or unchecked with auth off) or `peer` (a relay peer). Relay peers run over `quic`. |
 | `qumo_relay_sessions_closed_total{transport,class,reason}` | Counter | Ended sessions, by transport, class and reason: `closed`, `dropped` (the connection was lost), or what the session's lease ended it for. |
 | `qumo_relay_session_bytes_total{transport,class,direction}` | Counter | Bytes of ended sessions, by transport, class and direction (`sent`, `received`). Added when a session ends. Traffic between relays is `class="peer"`; what clients sent and received is `class="client"`. |
 | `qumo_relay_subscribers_active` | Gauge | Current number of active MoQT track subscribers. |

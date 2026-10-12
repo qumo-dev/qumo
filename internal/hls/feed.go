@@ -35,11 +35,11 @@ type feedConfig struct {
 	// relay. It dominates caFile when both are set — matching crypto/tls, where
 	// InsecureSkipVerify short-circuits verification regardless of RootCAs.
 	insecure bool
-	// certFile and keyFile, when set, are the egress's client certificate
-	// and key (PEM), from the relay CA the relay trusts as CA_FILE. The
-	// relay then serves the egress as an internal client, which needs no
-	// credential and has no grant to expire, and may only subscribe. Only a
-	// native-QUIC (moqt://) relayURL presents it.
+	// certFile and keyFile, when set, are a peer certificate and key (PEM)
+	// for the egress, from the relay CA the relay trusts as CA_FILE. The
+	// relay then serves the egress as a relay peer, which needs no
+	// credential and has no grant to expire. Only a native-QUIC (moqt://)
+	// relayURL presents it.
 	certFile, keyFile string
 	// quic is the QUIC configuration of the session, whether moqt:// or
 	// https://; nil is quic-go's defaults.
@@ -223,7 +223,7 @@ func sessionRefusal(session *moqt.Session, err error) error {
 		return err
 	}
 	if sessErr.SessionErrorCode() == moqt.UnauthorizedSessionErrorCode {
-		return fmt.Errorf("hls: the relay refused the session (%w): connect with a credential (?jwt= in RELAY_URL) or a client certificate from its CA (RELAY_CERT_FILE)", cause)
+		return fmt.Errorf("hls: the relay refused the session (%w): connect with a credential (?jwt= in RELAY_URL) or a peer certificate from its CA (RELAY_CERT_FILE)", cause)
 	}
 	return fmt.Errorf("hls: the relay closed the session: %w", cause)
 }

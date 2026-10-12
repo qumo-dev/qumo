@@ -18,8 +18,8 @@ var (
 
 	// metricSessionsTotal counts the sessions served, by transport
 	// (webtransport, websocket or quic) and class: client (admitted by its
-	// credential, or unchecked with auth off), internal (an internal
-	// client) or peer (a relay peer, dialed or dialing).
+	// credential, or unchecked with auth off) or peer (a relay peer, dialed
+	// or dialing).
 	metricSessionsTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "qumo",
 		Subsystem: "relay",
@@ -80,8 +80,8 @@ var (
 	})
 
 	// metricSubscribeAuthorizations counts subscriptions checked against the
-	// session's grant. A relay peer's and an internal client's subscriptions
-	// aren't checked against a credential, and aren't counted.
+	// session's grant. A relay peer's subscriptions aren't checked against
+	// a credential, and aren't counted.
 	metricSubscribeAuthorizations = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "qumo",
 		Subsystem: "relay",

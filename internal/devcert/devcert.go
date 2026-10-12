@@ -134,7 +134,7 @@ type Leaf struct {
 	CommonName string
 	// DNSNames are the names the certificate is valid for. PeeringName
 	// among them makes it a relay's peer certificate; without it, a
-	// certificate from a relay's CA is an internal client's.
+	// certificate from a relay's CA grants nothing.
 	DNSNames []string
 	// Validity is how long the certificate is valid from now. Negative
 	// issues one that has already expired, for a test of that refusal.

@@ -78,8 +78,6 @@ func TestSessionStartAttrs(t *testing.T) {
 	browser := decidedAdmission(&auth.Grant{}, auth.Request{ID: "abc", Transport: auth.TransportWebTransport, Path: "/room/1"})
 	browser.client = upgradeClient{offered: `"moq-lite-05"`, userAgent: "Chrome/153", origin: "https://app.example"}
 	silent := decidedAdmission(nil, auth.Request{ID: "def", Transport: auth.TransportWebTransport, Path: "/room/1"})
-	internal := pendingAdmission()
-	internal.decideInternal()
 
 	tests := map[string]struct {
 		admission *admission
@@ -118,10 +116,10 @@ func TestSessionStartAttrs(t *testing.T) {
 				"alpn", moqt.NextProtoMOQ, "tls", "TLS 1.3",
 			},
 		},
-		"an internal client has no id": {
-			admission: internal,
+		"an inbound peer has no id": {
+			admission: decidedAdmission(nil, auth.Request{}),
 			state:     moqt.ConnectionState{Version: moqt.NextProtoMOQ},
-			want:      []any{"class", "internal", "transport", auth.TransportQUIC, "remote", "192.0.2.1:5000", "checked", false, "moq", moqt.NextProtoMOQ},
+			want:      []any{"class", "peer", "transport", auth.TransportQUIC, "remote", "192.0.2.1:5000", "checked", false, "moq", moqt.NextProtoMOQ},
 		},
 		"a peer this relay dialed": {
 			state: moqt.ConnectionState{Version: moqt.NextProtoMOQ},

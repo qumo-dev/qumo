@@ -23,13 +23,10 @@ import (
 // native-QUIC client only, and verifies the client certificate against the
 // CA.
 //
-// What a CA-issued certificate grants depends on what it carries:
-//
-//   - with PeeringName among its DNS names, the session is a relay peer,
-//     served without a credential and checked for nothing;
-//   - without it, the session is an internal client (the HLS egress): it may
-//     subscribe to anything and announce nothing. Only the CA can put the
-//     name into a valid certificate.
+// A CA-issued certificate with PeeringName among its DNS names makes the
+// session a relay peer, served without a credential and checked for nothing.
+// Only the CA can put the name into a valid certificate. One without the name
+// grants nothing: its session is a client's, admitted by its credential.
 //
 // The certificate's subject common name is the relay's identity for logs and
 // metrics; it is never interpreted. A relay that reaches itself among the
@@ -50,33 +47,17 @@ const PeeringName = "peer.qumo.internal"
 type sessionClass int
 
 const (
-	// classClient presented no certificate the relay verified: it is admitted
-	// by its credential like any client.
+	// classClient presented no certificate the CA verified that carries
+	// PeeringName: it is admitted by its credential like any client.
 	classClient sessionClass = iota
-	// classInternal presented a certificate the CA verified, without
-	// PeeringName: an internal client, subscribe-only.
-	classInternal
 	// classPeer presented a certificate the CA verified that carries
 	// PeeringName: a relay peer.
 	classPeer
 )
 
+// String is the class as it is logged and as a metric label.
 func (c sessionClass) String() string {
-	switch c {
-	case classInternal:
-		return "internal client"
-	case classPeer:
-		return "peer"
-	}
-	return "client"
-}
-
-// label is the class as a metric label and a log attribute.
-func (c sessionClass) label() string {
-	switch c {
-	case classInternal:
-		return "internal"
-	case classPeer:
+	if c == classPeer {
 		return "peer"
 	}
 	return "client"
@@ -219,8 +200,7 @@ func (t *PeerTrust) DialerTLS() *tls.Config {
 	}
 }
 
-// HasCA reports whether there is a CA: without one no session is a peer or
-// an internal client.
+// HasCA reports whether there is a CA: without one no session is a peer.
 func (t *PeerTrust) HasCA() bool { return t.ca != nil }
 
 // Identity returns the subject common name of the relay's peer certificate,
@@ -246,7 +226,7 @@ func classify(state *tls.ConnectionState) (sessionClass, string) {
 	if slices.Contains(leaf.DNSNames, PeeringName) {
 		return classPeer, leaf.Subject.CommonName
 	}
-	return classInternal, leaf.Subject.CommonName
+	return classClient, ""
 }
 
 // isSelf reports whether the session's peer presented this relay's own peer
