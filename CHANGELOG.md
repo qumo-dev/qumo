@@ -33,6 +33,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **The Go binary is cross-compiled** on the machine that builds (`FROM --platform=$BUILDPLATFORM`, `GOARCH=$TARGETARCH`), with the module and build caches kept between steps. Only the runtime stage's package commands run under QEMU.
   - **Pull requests build the arm64 image too (`docker.yml`),** so a Dockerfile that builds only for the runner's platform is found before a tag is pushed.
 
+### Fixed
+
+- **The relay delivers a track whose groups are not numbered 1, 2, 3, … (`internal/relay`).** The relay's group cache looked a group up by its sequence where it had stored it by arrival order, so the two had to match. A track whose first group reached the relay with another sequence, or whose sequences had a gap, was never delivered: the subscription got no answer and no group. The funnel is such a publisher, since it answers a subscription with the track's latest record under that record's sequence, so a track holding more than one record could not be subscribed to through the relay. A relay behind another relay that skipped groups for a slow subscriber was another. Groups are now looked up by arrival order and keep the sequence their publisher gave them.
+
 ## [v0.14.261010] - 2026-10-10
 
 > **For operators.** `RELAY_ADDR`'s TCP port now takes WebSocket with TLS next to its plain HTTP, for browsers whose WebTransport does not work (WebKit). Open that port for TCP wherever it is open for UDP, or set `WS_ENABLE=0`. See **Added** below.

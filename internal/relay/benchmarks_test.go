@@ -476,7 +476,7 @@ func BenchmarkGroupRing_ConcurrentReserveAndGet(b *testing.B) {
 				go func(id int) {
 					defer wg.Done()
 					for i := 0; i < b.N/tt.readers; i++ {
-						cache := ring.get(moqt.GroupSequence(i % ring.size))
+						cache := ring.get(ringPosition(i % ring.size))
 						if cache != nil {
 							ring.decrRef(cache)
 						}

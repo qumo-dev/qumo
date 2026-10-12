@@ -640,9 +640,9 @@ func (d *trackDistributor) egress(tw *moqt.TrackWriter) {
 
 			if earliest := d.ring.earliestAvailable(); last < earliest {
 				slog.Debug("subscriber fell behind; skipping groups",
-					"requested_group", last,
-					"earliest_available", earliest,
-					"latest_available", latest,
+					"requested_position", last,
+					"earliest_position", earliest,
+					"latest_position", latest,
 				)
 				metricSubscriberSkipsTotal.Inc()
 				last = latest

@@ -53,7 +53,12 @@ type groupCache struct {
 	// len(slots).
 	count atomic.Int32
 
+	// seq is the group's sequence as its publisher numbered it, and pos its
+	// place in the ring: the count of groups reserved up to and including it.
+	// The two differ whenever the publisher's first group is not 1 or its
+	// sequences have gaps, so the ring is addressed by pos alone.
 	seq      moqt.GroupSequence
+	pos      ringPosition
 	complete atomic.Bool // True when all frames have been added
 	refCount atomic.Int32
 	evicted  atomic.Bool
@@ -208,6 +213,13 @@ func newGroupRing(size int, pool *FramePool) *groupRing {
 	return ring
 }
 
+// ringPosition is a group's place in a groupRing: 1 for the first group
+// reserved, 2 for the next, in arrival order. It is not the group's sequence.
+// Subscribers are served by position, so groups that arrive out of sequence
+// order leave in the order they arrived, and a new subscriber starts at the
+// group that arrived last.
+type ringPosition uint64
+
 type groupRing struct {
 	mu     sync.RWMutex
 	caches []atomic.Pointer[groupCache]
@@ -240,7 +252,9 @@ func (ring *groupRing) reserve(seq moqt.GroupSequence) *groupCache {
 	// instrument-only field; the instrument build re-stamps in processGroup).
 	ring.stages.clearArrival(cache)
 
-	idx := int(ring.pos.Add(1) % uint64(ring.size))
+	pos := ring.pos.Add(1)
+	cache.pos = ringPosition(pos)
+	idx := int(pos % uint64(ring.size))
 
 	ring.mu.Lock()
 	old := ring.caches[idx].Swap(cache)
@@ -293,13 +307,15 @@ func (ring *groupRing) fill(group frameSource, cache *groupCache, onFrame func(n
 	}
 }
 
-func (ring *groupRing) get(seq moqt.GroupSequence) *groupCache {
+// get returns the group reserved at pos with a reference held, or nil when the
+// ring no longer holds it.
+func (ring *groupRing) get(pos ringPosition) *groupCache {
 	ring.mu.RLock()
 	defer ring.mu.RUnlock()
 
-	idx := uint64(seq) % uint64(ring.size)
+	idx := uint64(pos) % uint64(ring.size)
 	cache := ring.caches[idx].Load()
-	if cache != nil && cache.seq == seq && !cache.released.Load() {
+	if cache != nil && cache.pos == pos && !cache.released.Load() {
 		cache.incrRef()
 		return cache
 	}
@@ -346,14 +362,16 @@ func (ring *groupRing) releaseCache(gc *groupCache) {
 	ring.gcPool.Put(gc)
 }
 
-func (ring *groupRing) head() moqt.GroupSequence {
-	return moqt.GroupSequence(ring.pos.Load())
+// head returns the position of the latest group reserved, 0 before any.
+func (ring *groupRing) head() ringPosition {
+	return ringPosition(ring.pos.Load())
 }
 
-func (ring *groupRing) earliestAvailable() moqt.GroupSequence {
+// earliestAvailable returns the position of the oldest group the ring holds.
+func (ring *groupRing) earliestAvailable() ringPosition {
 	head := ring.head()
-	if head <= moqt.GroupSequence(ring.size) {
+	if head <= ringPosition(ring.size) {
 		return 1
 	}
-	return head - moqt.GroupSequence(ring.size) + 1
+	return head - ringPosition(ring.size) + 1
 }

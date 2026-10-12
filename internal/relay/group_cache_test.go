@@ -134,22 +134,22 @@ func TestGroupCache_IsComplete(t *testing.T) {
 
 func TestGroupRing_Head_Initial(t *testing.T) {
 	ring := newGroupRing(DefaultGroupCacheSize, DefaultFramePool)
-	assert.Equal(t, moqt.GroupSequence(0), ring.head())
+	assert.Equal(t, ringPosition(0), ring.head())
 }
 
 func TestGroupRing_Head_AfterPositionSet(t *testing.T) {
 	ring := newGroupRing(DefaultGroupCacheSize, DefaultFramePool)
 	ring.pos.Store(10)
-	assert.Equal(t, moqt.GroupSequence(10), ring.head())
+	assert.Equal(t, ringPosition(10), ring.head())
 }
 
 func TestGroupRing_EarliestAvailable(t *testing.T) {
 	ring := newGroupRing(DefaultGroupCacheSize, DefaultFramePool)
-	size := moqt.GroupSequence(ring.size)
+	size := ringPosition(ring.size)
 
 	tests := map[string]struct {
-		head     moqt.GroupSequence
-		expected moqt.GroupSequence
+		head     ringPosition
+		expected ringPosition
 	}{
 		"zero":            {head: 0, expected: 1},
 		"one":             {head: 1, expected: 1},
@@ -172,22 +172,54 @@ func TestGroupRing_EarliestAvailable_AtBoundary(t *testing.T) {
 	ring := newGroupRing(DefaultGroupCacheSize, DefaultFramePool)
 
 	ring.pos.Store(uint64(ring.size))
-	assert.Equal(t, moqt.GroupSequence(1), ring.earliestAvailable())
+	assert.Equal(t, ringPosition(1), ring.earliestAvailable())
 
 	ring.pos.Store(uint64(ring.size + 1))
-	assert.Equal(t, moqt.GroupSequence(2), ring.earliestAvailable())
+	assert.Equal(t, ringPosition(2), ring.earliestAvailable())
 }
 
 func TestGroupRing_Get(t *testing.T) {
 	ring := newGroupRing(DefaultGroupCacheSize, DefaultFramePool)
 
 	testCache := newGroupCache(5)
+	testCache.pos = 5
 	idx := uint64(5) % uint64(ring.size)
 	ring.caches[idx].Store(testCache)
 
 	got := ring.get(5)
 	require.NotNil(t, got)
 	assert.Equal(t, moqt.GroupSequence(5), got.seq)
+}
+
+// A publisher numbers its groups as it likes: a track joined late starts past
+// 1, and one that dropped groups has gaps. The ring hands groups out by the
+// order they arrived in, each keeping its own sequence.
+func TestGroupRing_Get_SequencesNotStartingAtOneOrDense(t *testing.T) {
+	tests := map[string][]moqt.GroupSequence{
+		"starting past one": {3, 4, 5},
+		"with gaps":         {1, 5, 9},
+		"a single late one": {7},
+		"wrapping the ring": {10, 20, 30, 40, 50, 60},
+		"out of order":      {5, 4, 6},
+	}
+	for name, seqs := range tests {
+		t.Run(name, func(t *testing.T) {
+			const size = 4
+			ring := newGroupRing(size, DefaultFramePool)
+
+			for _, seq := range seqs {
+				ring.reserve(seq)
+			}
+
+			require.Equal(t, ringPosition(len(seqs)), ring.head())
+			for pos := ring.earliestAvailable(); pos <= ring.head(); pos++ {
+				got := ring.get(pos)
+				require.NotNil(t, got, "position %d", pos)
+				assert.Equal(t, seqs[pos-1], got.seq, "position %d", pos)
+				ring.decrRef(got)
+			}
+		})
+	}
 }
 
 func TestGroupRing_Get_BeforeAnyAdd(t *testing.T) {
@@ -234,7 +266,7 @@ func TestGroupRing_ConcurrentAccess(t *testing.T) {
 			for j := range 100 {
 				_ = ring.head()
 				_ = ring.earliestAvailable()
-				_ = ring.get(moqt.GroupSequence(j))
+				_ = ring.get(ringPosition(j))
 			}
 			done <- true
 		}()
@@ -255,7 +287,7 @@ func TestGroupRing_Reserve_SlotAllocated(t *testing.T) {
 
 	require.NotNil(t, cache)
 	assert.Equal(t, moqt.GroupSequence(1), cache.seq)
-	assert.Equal(t, moqt.GroupSequence(1), ring.head())
+	assert.Equal(t, ringPosition(1), ring.head())
 }
 
 func TestGroupRing_Reserve_AdvancesHead(t *testing.T) {
@@ -265,18 +297,16 @@ func TestGroupRing_Reserve_AdvancesHead(t *testing.T) {
 		ring.reserve(moqt.GroupSequence(i + 1))
 	}
 
-	assert.Equal(t, moqt.GroupSequence(5), ring.head())
+	assert.Equal(t, ringPosition(5), ring.head())
 }
 
 func TestGroupRing_Reserve_SlotVisibleBeforeFill(t *testing.T) {
 	ring := newGroupRing(DefaultGroupCacheSize, DefaultFramePool)
 
-	// reserve increments pos and stores at slot (pos % size).
-	// get(seq) looks up slot (seq % size).
-	// Both align when seq == post-increment pos (normal sequential arrival).
+	// reserve stores the cache at its position before any frame is read.
 	cache := ring.reserve(moqt.GroupSequence(1))
 
-	got := ring.get(moqt.GroupSequence(1))
+	got := ring.get(ringPosition(1))
 	require.NotNil(t, got)
 	assert.Same(t, cache, got)
 	assert.False(t, cache.isComplete(), "should not be complete before fill")
@@ -289,9 +319,9 @@ func TestGroupRing_Reserve_WrapAround(t *testing.T) {
 		ring.reserve(moqt.GroupSequence(i + 1))
 	}
 
-	assert.Equal(t, moqt.GroupSequence(8), ring.head())
+	assert.Equal(t, ringPosition(8), ring.head())
 	// seq=5 overwrote seq=1 at the same slot (mod 4).
-	got := ring.get(moqt.GroupSequence(5))
+	got := ring.get(ringPosition(5))
 	require.NotNil(t, got)
 	assert.Equal(t, moqt.GroupSequence(5), got.seq)
 }
@@ -591,7 +621,7 @@ func BenchmarkGroupRing_Get(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_ = ring.get(moqt.GroupSequence(i % ring.size))
+		_ = ring.get(ringPosition(i % ring.size))
 	}
 }
 
@@ -631,7 +661,7 @@ func TestGroupRing_Stress(t *testing.T) {
 				// Sleep to simulate processing lag
 				time.Sleep(time.Duration(g%3) * time.Microsecond)
 
-				cache := ring.get(moqt.GroupSequence(g))
+				cache := ring.get(ringPosition(g))
 				if cache != nil {
 					// Read frame
 					_ = cache.next(0)
