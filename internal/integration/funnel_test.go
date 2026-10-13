@@ -474,6 +474,53 @@ func TestFunnel_RelaySubscriberJoinsAfterSeveralRecords(t *testing.T) {
 	assert.Equal(t, `{"payload":"fourth"}`, got)
 }
 
+// quietTrackWait is how long the subscriber of a track with no record waits
+// before the first record arrives. It is past the 30 seconds after which an
+// unanswered subscription used to be given up.
+const quietTrackWait = 35 * time.Second
+
+// TestFunnel_RelaySubscriberOutwaitsAQuietTrack subscribes through the relay
+// to a track that exists and holds nothing. A publisher answers a subscription
+// with its first group, so the subscription stays pending, on the subscriber's
+// session and on the relay's upstream one, until the first record is recorded.
+func TestFunnel_RelaySubscriberOutwaitsAQuietTrack(t *testing.T) {
+	ingestURL, relayAddr, relaySrv, key := startFunnelBehindRelay(t)
+	require.Equal(t, http.StatusCreated, createChat(t, ingestURL, ""))
+	require.Eventually(t, routed(relaySrv, "/room/123"), 5*time.Second, 25*time.Millisecond,
+		"the relay routes the broadcast to the funnel")
+
+	viewer, err := token.Sign(key, token.Grant{Scopes: []token.Scope{
+		{Actions: []token.Action{token.ActionSubscribe}, Broadcast: "room/123", Prefix: true},
+	}}, token.MaxLifetime)
+	require.NoError(t, err)
+	sess := dialOver(t, nativeURL(relayAddr)+"?jwt="+viewer, nil, moqt.NewTrackMux(0))
+	ctx, cancel := context.WithTimeout(context.Background(), 2*quietTrackWait)
+	defer cancel()
+	type subscription struct {
+		tr  *moqt.TrackReader
+		err error
+	}
+	subscribed := make(chan subscription, 1)
+	go func() {
+		tr, err := sess.Subscribe(ctx, "/room/123", "chat", nil)
+		subscribed <- subscription{tr: tr, err: err}
+	}()
+
+	select {
+	case sub := <-subscribed:
+		t.Fatalf("the subscription ended before the track had a record: %v", sub.err)
+	case <-time.After(quietTrackWait):
+	}
+
+	require.Equal(t, http.StatusCreated, record(t, ingestURL, "", `"first"`))
+	sub := <-subscribed
+	require.NoError(t, sub.err)
+	t.Cleanup(func() { _ = sub.tr.Close() })
+	seq, got := nextRecord(t, sub.tr)
+	assert.Equal(t, moqt.GroupSequence(1), seq)
+	assert.Equal(t, `{"payload":"first"}`, got)
+}
+
 // TestFunnel_RedialsWhenTheRelayEndsTheSession refuses the funnel's session
 // at its first revalidate: the relay ends it, the funnel dials again, and a
 // subscriber that arrives afterwards still reaches the track through the
