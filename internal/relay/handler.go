@@ -812,10 +812,14 @@ func (d *trackDistributor) ingest(ctx context.Context, src *moqt.TrackReader) {
 	// Workers must complete before egress is signalled to stop: a single
 	// deferred closure enforces close(fillJobs) → fillWg.Wait() → close(done),
 	// so every reserved cache is filled before any egress goroutine sees done.
+	// The upstream subscription is closed last, once no worker reads from it:
+	// otherwise a distributor that stops (its handler drained) leaves the
+	// publisher sending groups that nothing accepts.
 	defer func() {
 		close(d.fillJobs) // signal workers to exit once in-flight jobs drain
 		d.fillWg.Wait()
 		close(d.done)
+		_ = src.Close() // not actionable: the subscription is ending either way
 	}()
 
 	for {
