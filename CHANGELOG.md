@@ -29,6 +29,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **gomoqt v0.25.0.** Closing an announce stream no longer sends ANNOUNCE_BROADCAST ENDED for each announcement on it: the peer ends them all when the stream ends, as moq-lite-05 says. A client that opens an Auth Stream to the relay gets AUTH_ERROR NOT_SUPPORTED, since the relay verifies no tokens on it yet.
 - **Session metrics separate what a session runs over from whom it is (`internal/relay`).** `qumo_relay_sessions_total`, `qumo_relay_sessions_closed_total` and `qumo_relay_session_bytes_total` gain a `class` label: `client` or `peer`. Their `transport` label is now only a transport: `webtransport`, `websocket` or `quic`. It used to say `peer` for a relay peer's session, which runs over native QUIC and is now `transport="quic"` with `class="peer"`. A query on `transport="quic"` used to select native-QUIC clients alone; add `class="client"` to keep that. A query on `transport="peer"` becomes `class="peer"`, and `transport="internal"` selects nothing any more (see **Removed**).
 - **gomoqt v0.24.0 (`go.mod`).** Two things it changes show in qumo.
   - **A WebTransport session a command dials takes its QUIC configuration.** Before, gomoqt opened an `https://` session with the library's defaults, so the `QUIC_*` settings reached a `moqt://` session only.
