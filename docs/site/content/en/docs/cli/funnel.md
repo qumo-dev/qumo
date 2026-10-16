@@ -136,6 +136,10 @@ the key set, it is refused. A key paused with `"pause": ["publish"]` creates no
 track, and its credentials still post, read and redact. A missing or invalid credential answers `401` with
 `WWW-Authenticate: Bearer`, and one that does not cover the broadcast `403`.
 
+### Separating funnel and relay credentials
+
+If your app runs both a funnel and a relay, sign credentials with **dedicated keys per service** rather than sharing a single signing key. A sender's `post` token signed with a funnel-only key will then be cryptographically refused if presented to the relay, and live `subscribe` credentials can be separated from REST history queries. See [Separating credentials across services](../auth/#separating-credentials-across-services) for key set setup and configuration examples.
+
 ## Publishing through a relay
 
 With `RELAY_URL`, the funnel dials the relay as a client and announces its

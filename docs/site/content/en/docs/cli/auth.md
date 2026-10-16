@@ -95,6 +95,49 @@ A session holds at most 33 credentials at once, its connection's own among them.
 
 **A session may connect with no token** (no `jwt` in its URL; an empty `jwt=` is a token that doesn't verify, and is refused). It is admitted granted nothing, and an Auth Stream carrying no token is answered with that empty grant. Its first ticket may be signed by any key in the set, and binds the session to that key: every later ticket must be signed by it, as one of a session that connected with a token must be signed by that token's key, and the session's usage is reported under it from then on. **Such a session must hold a grant:** whenever no ticket in force grants it something to publish or subscribe to, from its start or once its tickets have lapsed, been withdrawn or revoked (as when its key leaves the set), it is closed after 10 s with `UNAUTHORIZED` ("no credential presented in time") unless one is granted meanwhile, and its end is reported as `no_credential`. A ticket that grants only funnel actions holds nothing here. At most 1024 such sessions that hold no grant yet are open at once; past that the relay refuses another as unavailable (`503` for WebTransport), so a crowd that connects and presents nothing can't fill it. A session that connected with a token is not counted, and is not closed for holding nothing.
 
+## Separating credentials across services
+
+An app that runs both a relay and a funnel can separate the credentials it issues by **signing with one key per service** and configuring each service's key set (`QUMO_AUTH_KEYS`) with only the public keys it should trust.
+
+```
+app signing keys:
+  R: credentials for the relay (live publishers, live subscribers)
+  C: credentials for funnel senders (post) and moderators (redact)
+
+relay  QUMO_AUTH_KEYS = {R}      → accepts R; refuses any credential signed with C
+funnel QUMO_AUTH_KEYS = {C, R}   → accepts C for senders/moderators, accepts R for viewers reading history
+```
+
+### Why sign with separate keys
+
+Every service verifies incoming credentials against its key set, and qumo tokens intentionally omit an audience claim (`aud`) to stay compatible with `@moq/token` and plain `moqt.Grant`. Action names distinguish roles, but separate signing keys enforce boundaries cryptographically:
+
+- **Shared actions:** A viewer's credential with `subscribe` grants both watching live on a relay and reading historical records over HTTP from a funnel (`GET /history`). To let users watch live broadcasts without allowing them to query funnel history (or vice versa), sign each with a distinct key trusted only by that service.
+- **Blast radius:** A leaked or compromised signing key can only forge credentials for the services whose key sets contain it. A funnel sender key cannot be used to announce broadcasts on the relay.
+- **Path confinement:** Confining each key to a directory (`qumo auth keygen -prefix ...`) ensures credentials signed by one service's key cannot reach broadcasts in another's path hierarchy.
+
+### How services enforce the separation
+
+1. **Service-dedicated keys:** Generate separate key pairs for each service, confining each key's prefix to the directory of broadcasts it reaches:
+   ```console
+   # Key for the relay (room live streams)
+   $ qumo auth keygen -prefix /acme/app/rooms/ -out relay-key.jwk -keys relay-keys.json
+
+   # Key for the funnel (comments and chat senders)
+   $ qumo auth keygen -prefix /acme/app/rooms/ -out funnel-key.jwk -keys funnel-keys.json
+   ```
+2. **Key set configuration:**
+   - Configure `QUMO_AUTH_KEYS` on the relay with `relay-keys.json`. Any token signed with `funnel-key.jwk` (such as a sender's `post` token) is refused at connect or upgrade (`401 Unauthorized`), because its `kid` is missing from the relay's key set.
+   - Configure `QUMO_AUTH_KEYS` on the funnel with both `funnel-keys.json` and `relay-keys.json` if live viewers may also read chat history, or only `funnel-keys.json` if funnel access is separate.
+3. **Tickets on the relay:**
+   - A relay session binds to the key that signed its initial credential (or the key of the first ticket presented to a session connected with no token).
+   - Every later ticket presented on an Auth Stream must be signed by that **same key**. A ticket signed by the funnel key `C` presented to an `R`-bound relay session is rejected with `UNAUTHORIZED`.
+   - An unauthenticated session that only presents tickets granting funnel actions (`post`, `create`, `redact`) holds no relay grants, and is closed after 10 s (`UNAUTHORIZED`, "no credential presented in time").
+
+### Trade-offs
+
+- **Security vs. operational overhead:** Per-service keys provide strict service-level isolation without requiring custom token claims or protocol extensions. The trade-off is managing more keys, keeping per-service key sets synchronized, and coordinating key rotation independently per service. A misconfigured key set that includes a key it should not silently loses the separation.
+
 ## Signing in your app (Go)
 
 ```go
