@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/qumo-dev/gomoqt/moqt"
 	"github.com/stretchr/testify/assert"
@@ -161,6 +162,24 @@ func TestRunToken_NoPatterns(t *testing.T) {
 
 	assert.Equal(t, 2, strings.Count(strings.TrimSpace(out.String()), "."))
 	assert.Contains(t, info.String(), "nothing: the token names its key's tenant alone")
+}
+
+// -ticket signs a ticket, and says where it is presented.
+func TestRunToken_Ticket(t *testing.T) {
+	dir := t.TempDir()
+	priv := filepath.Join(dir, "signing-key.jwk")
+	require.NoError(t, runKeygen([]string{"-prefix", "acme", "-out", priv, "-keys", filepath.Join(dir, "keys.json")}, &bytes.Buffer{}))
+	key, err := token.LoadSigningKey(priv)
+	require.NoError(t, err)
+	var out, info bytes.Buffer
+
+	require.NoError(t, runToken([]string{"-key", priv, "-ticket", "-root", "acme/room/1", "-subscribe", "/"}, &out, &info))
+
+	c, err := token.Verify(strings.TrimSpace(out.String()), map[string]token.Key{key.ID: key.Public()}, time.Now())
+	require.NoError(t, err)
+	assert.True(t, c.Ticket)
+	assert.Contains(t, info.String(), "Auth Stream")
+	assert.NotContains(t, info.String(), "?jwt=<token>")
 }
 
 func TestRunKeygen_SaysWhatTheKeyGrants(t *testing.T) {

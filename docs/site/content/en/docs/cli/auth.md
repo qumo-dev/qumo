@@ -40,7 +40,7 @@ It prints the key's `kid` (its RFC 7638 thumbprint), the roots it may sign ("a r
 ### token
 
 ```
-qumo auth token [-key signing-key.jwk] [-root PATH] [-publish PATTERN ...] [-subscribe PATTERN ...] [-create PATTERN ...] [-post PATTERN ...] [-redact PATTERN ...] [-sub SUBJECT] [-ttl 1h]
+qumo auth token [-key signing-key.jwk] [-root PATH] [-publish PATTERN ...] [-subscribe PATTERN ...] [-create PATTERN ...] [-post PATTERN ...] [-redact PATTERN ...] [-sub SUBJECT] [-ttl 1h] [-ticket]
 ```
 
 Signs a token granting, beneath `-root`, each action on the path patterns its flag names, valid for `-ttl`, at most one hour. Each action's flag may be repeated, and its patterns are relative to the root ([below](#what-a-token-grants)): `/x` is that path, `/x/` every path beneath it, `/` everything beneath the root, and a segment may be a `{name}` wildcard. With no pattern at all, the token names its key's tenant alone, as a [relay session's credential](#tickets-on-the-relay) may. `-sub` names the bearer. For example, `qumo auth token -root room/123 -sub alice -post /comments -subscribe /`. The token alone goes to stdout, so `T=$(qumo auth token …)` captures it; its root, each action's patterns and when it expires go to stderr. A root outside the key's prefix, or a pattern that doesn't parse, is refused here, as the relay would refuse the token; `token.Sign` does the same.
@@ -80,7 +80,7 @@ grants what `{"root": "acme/app/rooms/42", "publish": ["/alice", "/alice/"], "su
 
 A session holds more than the credential it connected with: a client presents further tokens, *tickets*, on MoQ Auth Streams, and the relay adds what each grants to the session's while it is in force. An app can then keep one long-lived session per client, connected with a token of **no patterns**, which names the app's key alone, and grant each room as the client joins it, with a ticket per room. A ticket:
 
-- is signed with **`token.SignTicket`**, which marks it with the header `typ: "ticket+jwt"` (RFC 8725's explicit typing). The relay refuses a ticket as the credential a session connects with, where its grant would last as long as the session rather than until the ticket's `exp`;
+- is signed with **`token.SignTicket`** (or `qumo auth token -ticket`), which marks it with the header `typ: "ticket+jwt"` (RFC 8725's explicit typing; `application/ticket+jwt` and any case too). The relay refuses a ticket as the credential a session connects with, where its grant would last as long as the session rather than until the ticket's `exp`. The mark is the issuer's to set: a token signed with `token.Sign` connects whatever it grants, so sign every ticket with `SignTicket`;
 - must be signed by **the same key** as the session's credential, so everything a session may do is one tenant's;
 - is verified as a credential is at connect, and a key paused with `"pause": ["publish"]` refuses one that may publish;
 - **expires** at its `exp` (with the 60 s leeway), unlike a session's credential. The `AUTH_OK` granting it says when (its max age), so the client presents a fresh one in time; at expiry its grant is revoked with `AUTH_ERROR` ("grant expired"). A key that leaves the set, or whose prefix no longer holds the ticket's root, revokes it too, at the next 30 s check;

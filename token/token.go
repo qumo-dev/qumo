@@ -89,6 +89,9 @@ type Claims struct {
 // session, so a relay refuses one presented at connect.
 const TicketType = "ticket+jwt"
 
+// jwtType is the typ header of every other token Sign writes.
+const jwtType = "JWT"
+
 // pathAuth is the capability claim of other MoQ implementations, per the
 // @moq/token convention: root plus pub or sub. A nil Pub or Sub grants
 // nothing for that role. Verify reads it; Sign never writes it.
@@ -129,7 +132,7 @@ func (c claims) grant() Grant {
 // as a root outside key's prefix or a pattern that doesn't parse, is refused
 // here. A grant of no patterns names the key's tenant alone.
 func Sign(key SigningKey, g Grant, ttl time.Duration) (string, error) {
-	return signAt(key, g, ttl, time.Now(), "JWT")
+	return signAt(key, g, ttl, time.Now(), jwtType)
 }
 
 // SignTicket signs g as Sign does, as a ticket: a token a client presents on
@@ -262,9 +265,7 @@ func verify(token string, keys map[string]Key, now time.Time, expiry bool) (Clai
 	if err != nil {
 		return Claims{}, err
 	}
-	// RFC 7515 4.1.9 compares typ ignoring case.
-	ticket := strings.EqualFold(header.Typ, TicketType)
-	return Claims{Grant: g, ExpiresAt: exp, ID: c.ID, Key: key, Ticket: ticket}, nil
+	return Claims{Grant: g, ExpiresAt: exp, ID: c.ID, Key: key, Ticket: isTicket(header.Typ)}, nil
 }
 
 // grantOf reads path_auth as a grant: its root as the root, pub as publish,
@@ -338,4 +339,14 @@ func decodeSegment(seg string, v any) error {
 		return fmt.Errorf("not base64url: %w", err)
 	}
 	return json.UnmarshalRead(bytes.NewReader(raw), v)
+}
+
+// isTicket reports whether typ marks a ticket. RFC 7515 4.1.9 compares a typ
+// ignoring case, and with or without its "application/" prefix.
+func isTicket(typ string) bool {
+	const prefix = "application/"
+	if len(typ) > len(prefix) && strings.EqualFold(typ[:len(prefix)], prefix) {
+		typ = typ[len(prefix):]
+	}
+	return strings.EqualFold(typ, TicketType)
 }

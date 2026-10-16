@@ -21,8 +21,6 @@ type Grant struct {
 	keyID string
 	// expires is when the credential expires, or zero.
 	expires time.Time
-	// ticket is a credential signed as a ticket (token.SignTicket).
-	ticket bool
 }
 
 // NewGrant returns a grant of g, checked again every revalidate (zero:

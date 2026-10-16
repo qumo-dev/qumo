@@ -122,12 +122,7 @@ func refuse(status int, format string, args ...any) error {
 func (v *Verifier) Authorize(_ context.Context, req Request) (*Grant, error) {
 	connect := req.Event == EventConnect
 	credential, credErr := credentialOf(req.Query)
-	g, s, err := v.decide(credential, credErr, connect, func(g *Grant) bool { return connect && publishesBroadcast(g.grant) })
-	if err == nil && g.ticket {
-		// A session's credential lives as long as its key: a ticket's grant
-		// would outlive the ticket's expiry there.
-		g, err = nil, refuse(http.StatusUnauthorized, "a ticket is presented on a live session, not as its credential")
-	}
+	g, s, err := v.decide(credential, credErr, connect, func(g *Grant) bool { return connect && publishesBroadcast(g.grant) }, true)
 	if v.usage != nil {
 		// A session is learned only when it is admitted at connect. A
 		// revalidate never adds one: it can finish after the session's end
@@ -154,7 +149,7 @@ func (v *Verifier) Authorize(_ context.Context, req Request) (*Grant, error) {
 func (v *Verifier) Check(credential string, action token.Action, path moqt.BroadcastPath) (*Grant, error) {
 	g, _, err := v.decide(credential, nil, true, func(g *Grant) bool {
 		return action == token.ActionCreate && g.Allows(token.ActionCreate, path)
-	})
+	}, false)
 	return g, err
 }
 
@@ -164,7 +159,7 @@ func (v *Verifier) Check(credential string, action token.Action, path moqt.Broad
 // key's tenant's to grant and is reported under it. A key paused for
 // publishing refuses one that may publish.
 func (v *Verifier) Ticket(credential, keyID string) (*Grant, error) {
-	g, _, err := v.decide(credential, nil, true, func(g *Grant) bool { return publishesBroadcast(g.grant) })
+	g, _, err := v.decide(credential, nil, true, func(g *Grant) bool { return publishesBroadcast(g.grant) }, false)
 	if err != nil {
 		return nil, err
 	}
@@ -212,7 +207,10 @@ func credentialOf(rawQuery string) (string, error) {
 // decide verifies credential, at connect or for a live session; credErr is
 // why there is none, answered once the key set is known to be usable. A key
 // paused for publishing refuses it when paused reports true for its grant.
-func (v *Verifier) decide(credential string, credErr error, connect bool, paused func(*Grant) bool) (*Grant, usageSession, error) {
+// When sessionCredential is set, it is the credential a session connects
+// with, which a ticket may not be: a session's credential lives as long as
+// its key, so a ticket's grant would outlive the ticket's expiry there.
+func (v *Verifier) decide(credential string, credErr error, connect bool, paused func(*Grant) bool, sessionCredential bool) (*Grant, usageSession, error) {
 	now := v.now()
 	set, fresh := v.store.current(now)
 	switch {
@@ -239,7 +237,10 @@ func (v *Verifier) decide(credential string, credErr error, connect bool, paused
 		}
 		return nil, usageSession{}, refuse(status, "%v", err)
 	}
-	g := &Grant{grant: c.Grant, revalidate: revalidateEvery, keyID: c.Key.ID, expires: c.ExpiresAt, ticket: c.Ticket}
+	if sessionCredential && c.Ticket {
+		return nil, usageSession{}, refuse(http.StatusUnauthorized, "a ticket is presented on a live session, not as its credential")
+	}
+	g := &Grant{grant: c.Grant, revalidate: revalidateEvery, keyID: c.Key.ID, expires: c.ExpiresAt}
 	if c.Key.Pauses(token.ActionPublish) && paused(g) {
 		return nil, usageSession{}, refuse(http.StatusForbidden,
 			"signing key %s starts nothing new that publishes", c.Key.ID)

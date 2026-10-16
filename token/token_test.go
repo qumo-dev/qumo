@@ -320,3 +320,31 @@ func TestSignTicket(t *testing.T) {
 	require.NoError(t, err)
 	assert.False(t, c.Ticket)
 }
+
+// A typ marks a ticket ignoring case, with or without "application/".
+func TestVerify_TicketType(t *testing.T) {
+	now := time.Unix(1_800_000_000, 0)
+	signer := &rawSigner{}
+	for typ, want := range map[string]bool{
+		"ticket+jwt":             true,
+		"Ticket+JWT":             true,
+		"application/ticket+jwt": true,
+		"Application/Ticket+JWT": true,
+		"JWT":                    false,
+		"":                       false,
+		"application/jwt":        false,
+		"xticket+jwt":            false,
+	} {
+		t.Run(typ, func(t *testing.T) {
+			header := map[string]any{"alg": "EdDSA", "kid": signer.trusted(t).ID}
+			if typ != "" {
+				header["typ"] = typ
+			}
+
+			c, err := Verify(signer.signWithHeader(t, header, validClaims(now)), signer.keys(t), now)
+
+			require.NoError(t, err)
+			assert.Equal(t, want, c.Ticket)
+		})
+	}
+}

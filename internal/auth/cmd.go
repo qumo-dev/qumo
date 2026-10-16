@@ -173,6 +173,7 @@ func runToken(args []string, out, info io.Writer) error {
 	}
 	subject := fs.String("sub", "", "who the bearer is (the sub claim)")
 	ttl := fs.Duration("ttl", time.Hour, "how long the token is valid (at most 1h)")
+	ticket := fs.Bool("ticket", false, "sign a ticket, presented on a live session's Auth Stream and refused as the credential it connects with")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -181,7 +182,11 @@ func runToken(args []string, out, info io.Writer) error {
 		return err
 	}
 	g.Root, g.Subject = *root, *subject
-	tok, err := token.Sign(key, g, *ttl)
+	sign := token.Sign
+	if *ticket {
+		sign = token.SignTicket
+	}
+	tok, err := sign(key, g, *ttl)
 	if err != nil {
 		return err
 	}
@@ -209,7 +214,11 @@ func runToken(args []string, out, info io.Writer) error {
 	fmt.Fprintf(&b, "  %-11s %s\n", "Subject:", cmp.Or(c.Subject, "-"))
 	fmt.Fprintf(&b, "  %-11s %s (in %s)\n", "Expires:", c.ExpiresAt.Format(time.DateTime), time.Until(c.ExpiresAt).Round(time.Second))
 	fmt.Fprintf(&b, "  %-11s %s\n", "Key:", key.ID)
-	fmt.Fprintf(&b, "  %-11s https://<relay>/?jwt=<token>\n", "Connect:")
+	if *ticket {
+		fmt.Fprintf(&b, "  %-11s on a live session's Auth Stream, not as ?jwt=\n", "Present:")
+	} else {
+		fmt.Fprintf(&b, "  %-11s https://<relay>/?jwt=<token>\n", "Connect:")
+	}
 	_, err = io.WriteString(info, b.String())
 	return err
 }
