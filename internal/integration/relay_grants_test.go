@@ -7,6 +7,7 @@ package integration
 
 import (
 	"context"
+	"crypto/tls"
 	"testing"
 	"time"
 
@@ -69,9 +70,19 @@ func TestRelay_PatternCredentials(t *testing.T) {
 			"root": "acme", "subscribe": []string{"/"}, "fetch": []string{"/"},
 		})
 
-		err := subscribeTrack(t, "https://"+addr+"/?jwt="+stale, "/acme/live", "video")
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		dialer := &moqt.Dialer{TLSConfig: &tls.Config{
+			InsecureSkipVerify: true, //nolint:gosec // test-only self-signed cert
+			MinVersion:         tls.VersionTLS13,
+		}}
 
-		assert.Error(t, err, "fetch is no claim the relay knows, so the session is not admitted")
+		sess, err := dialer.Dial(ctx, "https://"+addr+"/?jwt="+stale, moqt.NewTrackMux(0))
+
+		if sess != nil {
+			_ = sess.CloseWithError(moqt.NoError, "test done")
+		}
+		assert.ErrorContains(t, err, "401", "fetch is no claim the relay knows, so the session is not admitted")
 	})
 	t.Run("a viewer granted the exact broadcast", func(t *testing.T) {
 		err := subscribeTrack(t, url(exactly("acme/live", token.ActionSubscribe)), "/acme/live", "video")
