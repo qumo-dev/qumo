@@ -137,9 +137,7 @@ func TestNewHandler_HistoryNeedsASubscriber(t *testing.T) {
 	require.Equal(t, http.StatusCreated,
 		serve(h, http.MethodPost, chatURL, `"hello"`, sign(t, key, postAs("user-42", "room/123"))).Code)
 
-	viewer := serve(h, http.MethodGet, chatURL, "", sign(t, key, token.Grant{Scopes: []token.Scope{
-		{Actions: []token.Action{token.ActionFetch}, Broadcast: "room/123", Prefix: true},
-	}}))
+	viewer := serve(h, http.MethodGet, chatURL, "", sign(t, key, token.Grant{Scopes: token.PathAndBeneath("room/123", token.ActionFetch)}))
 	sender := serve(h, http.MethodGet, chatURL, "", sign(t, key, postAs("user-42", "room/123")))
 
 	require.Equal(t, http.StatusOK, viewer.Code)

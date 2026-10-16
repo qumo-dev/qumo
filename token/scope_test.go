@@ -3,6 +3,7 @@ package token
 import (
 	"encoding/base64"
 	"encoding/json/v2"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -82,8 +83,10 @@ func TestVerify_Scopes(t *testing.T) {
 			edit:    func(c map[string]any) { c["scopes"] = []any{publishChat, scopeOn("other", "exact")} },
 			wantErr: ErrForbidden, reason: "scope 1",
 		},
-		"empty scopes":  {edit: func(c map[string]any) { c["scopes"] = []any{} }, wantErr: ErrForbidden, reason: "nothing"},
-		"null scopes":   {edit: func(c map[string]any) { c["scopes"] = nil }, wantErr: ErrForbidden, reason: "nothing"},
+		// No scopes name the key's tenant alone, as a session's credential
+		// does when its grants come later.
+		"empty scopes":  {edit: func(c map[string]any) { c["scopes"] = []any{} }, want: Grant{Scopes: []Scope{}}},
+		"null scopes":   {edit: func(c map[string]any) { c["scopes"] = nil }, want: Grant{Scopes: []Scope{}}},
 		"both claims":   {edit: func(c map[string]any) { c["path_auth"] = map[string]any{"root": "acme", "pub": ""} }, wantErr: ErrInvalid, reason: "not both"},
 		"neither claim": {edit: func(c map[string]any) { delete(c, "scopes") }, wantErr: ErrInvalid, reason: "required"},
 		"scopes is not a list": {
@@ -139,6 +142,14 @@ func TestVerify_Scopes(t *testing.T) {
 		"a wildcard broadcast": {
 			edit:    func(c map[string]any) { c["scopes"] = []any{scopeOn("acme/*", "prefix")} },
 			wantErr: ErrInvalid, reason: "*",
+		},
+		"a brace in the broadcast": {
+			edit:    func(c map[string]any) { c["scopes"] = []any{scopeOn("acme/{room}", "exact")} },
+			wantErr: ErrInvalid, reason: "{",
+		},
+		"a closing brace in a prefix": {
+			edit:    func(c map[string]any) { c["scopes"] = []any{scopeOn("acme/room}", "prefix")} },
+			wantErr: ErrInvalid, reason: "}",
 		},
 		// A track match is refused rather than ignored: ignoring it would
 		// widen a scope meant for one track to every track.
@@ -223,6 +234,59 @@ func TestSign_ScopesRoundTrip(t *testing.T) {
 	}}, c.Grant)
 }
 
+// A grant of no scopes, with or without a subject, is signed and verified as
+// naming the key's tenant alone.
+func TestSign_NoScopesRoundTrip(t *testing.T) {
+	tests := map[string]struct {
+		grant Grant
+	}{
+		"nothing":         {grant: Grant{}},
+		"a subject alone": {grant: Grant{Subject: "42"}},
+	}
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			key, err := GenerateKey("acme/app")
+			require.NoError(t, err)
+			now := time.Unix(1_800_000_000, 0)
+
+			tok, err := signAt(key, tt.grant, time.Minute, now)
+			require.NoError(t, err)
+			c, err := Verify(tok, map[string]Key{key.ID: key.Public()}, now)
+
+			require.NoError(t, err)
+			assert.Empty(t, c.Scopes)
+			assert.Equal(t, tt.grant.Subject, c.Subject)
+			assert.Equal(t, key.ID, c.Key.ID)
+		})
+	}
+}
+
+func TestPathAndBeneath(t *testing.T) {
+	scopes := PathAndBeneath("room/42", ActionSubscribe, ActionFetch)
+
+	assert.Equal(t, []Scope{
+		{Actions: []Action{ActionSubscribe, ActionFetch}, Broadcast: "room/42"},
+		{Actions: []Action{ActionSubscribe, ActionFetch}, Broadcast: "room/42", Prefix: true},
+	}, scopes)
+	tests := map[string]struct {
+		broadcast string
+		want      bool
+	}{
+		"the path itself":                   {broadcast: "/room/42", want: true},
+		"beneath the path":                  {broadcast: "/room/42/7", want: true},
+		"deep beneath the path":             {broadcast: "/room/42/7/audio", want: true},
+		"a sibling sharing a string prefix": {broadcast: "/room/420"},
+		"above the path":                    {broadcast: "/room"},
+	}
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			allowed := slices.ContainsFunc(scopes, func(s Scope) bool { return s.Allows(ActionSubscribe, tt.broadcast) })
+
+			assert.Equal(t, tt.want, allowed)
+		})
+	}
+}
+
 func TestSign_ScopesClaimShape(t *testing.T) {
 	key, err := GenerateKey("")
 	require.NoError(t, err)
@@ -251,13 +315,13 @@ func TestSign_ScopeRefusals(t *testing.T) {
 		grant       Grant
 		wantErrText string
 	}{
-		"a subject alone":          {grant: Grant{Subject: "42"}, wantErrText: "no scope"},
 		"announce":                 {grant: Grant{Scopes: []Scope{{Actions: []Action{"announce"}, Broadcast: "acme/app/room"}}}, wantErrText: "unknown action"},
 		"a prefix of everything":   {grant: Grant{Scopes: []Scope{{Actions: []Action{ActionFetch}, Prefix: true}}}, wantErrText: "segments"},
 		"no actions":               {grant: Grant{Scopes: []Scope{{Broadcast: "acme/app/room"}}}, wantErrText: "no actions"},
 		"an unknown action":        {grant: Grant{Scopes: []Scope{{Actions: []Action{"delete"}, Broadcast: "acme/app/room"}}}, wantErrText: "unknown action"},
 		"no broadcast":             {grant: Grant{Scopes: []Scope{{Actions: []Action{ActionFetch}}}}, wantErrText: "segments"},
 		"a wildcard broadcast":     {grant: Grant{Scopes: []Scope{{Actions: []Action{ActionFetch}, Broadcast: "acme/app/*"}}}, wantErrText: "segments"},
+		"a braced broadcast":       {grant: Grant{Scopes: []Scope{{Actions: []Action{ActionFetch}, Broadcast: "acme/app/{x}"}}}, wantErrText: "segments"},
 		"outside the key's prefix": {grant: Grant{Scopes: []Scope{{Actions: []Action{ActionFetch}, Broadcast: "acme/apple"}}}, wantErrText: "outside"},
 		"a later scope escapes":    {grant: Grant{Scopes: []Scope{chat, {Actions: []Action{ActionFetch}, Broadcast: "other"}}}, wantErrText: "scope 1"},
 		"a prefix above the key's": {grant: Grant{Scopes: []Scope{{Actions: []Action{ActionFetch}, Broadcast: "acme", Prefix: true}}}, wantErrText: "outside"},
@@ -290,7 +354,8 @@ func TestScope_Allows(t *testing.T) {
 		"an unknown action":                 {scope: exact, action: "delete", broadcast: "/room/123/comments"},
 		"beneath an exact broadcast":        {scope: exact, action: ActionPublish, broadcast: "/room/123/comments/user-42"},
 		"above an exact broadcast":          {scope: exact, action: ActionPublish, broadcast: "/room/123"},
-		"the prefix itself":                 {scope: prefix, action: ActionFetch, broadcast: "/room/123", want: true},
+		"the prefix itself":                 {scope: prefix, action: ActionFetch, broadcast: "/room/123"},
+		"the prefix itself, respelled":      {scope: prefix, action: ActionFetch, broadcast: "/room/123/"},
 		"beneath the prefix":                {scope: prefix, action: ActionSubscribe, broadcast: "/room/123/comments", want: true},
 		"a sibling sharing a string prefix": {scope: prefix, action: ActionSubscribe, broadcast: "/room/1234"},
 		"above the prefix":                  {scope: prefix, action: ActionSubscribe, broadcast: "/room"},

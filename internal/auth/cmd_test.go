@@ -39,6 +39,8 @@ func TestRunKeygen_TokenAndVerifierAgree(t *testing.T) {
 	assert.False(t, g.Allows(token.ActionPublish, moqt.BroadcastPath("/acme/app/bob")))
 	assert.True(t, g.Allows(token.ActionSubscribe, moqt.BroadcastPath("/acme/app/bob")))
 	assert.True(t, g.Allows(token.ActionFetch, moqt.BroadcastPath("/acme/app/bob")))
+	assert.True(t, g.Allows(token.ActionPublish, moqt.BroadcastPath("/acme/app/alice")), "-publish covers the path itself")
+	assert.True(t, g.Allows(token.ActionSubscribe, moqt.BroadcastPath("/acme/app")), "-subscribe covers the path itself")
 }
 
 func TestRun_NoCommand(t *testing.T) {
@@ -97,6 +99,7 @@ func TestRunToken_Scopes(t *testing.T) {
 	assert.True(t, g.Allows("publish", "/acme/app/room/1/comments"))
 	assert.False(t, g.Allows("publish", "/acme/app/room/1/comments/x"))
 	assert.True(t, g.Allows("fetch", "/acme/app/room/1/comments"))
+	assert.False(t, g.Allows("fetch", "/acme/app/room/1"), "a/b/** is every path beneath a/b, not a/b itself")
 }
 
 func TestParseScope(t *testing.T) {
@@ -142,7 +145,8 @@ func TestParseScope(t *testing.T) {
 	}
 }
 
-// -publish and -subscribe are short for prefix scopes, and add to -scope.
+// -publish and -subscribe are short for the scopes of a path and every path
+// beneath it, and add to -scope.
 func TestRunToken_PathFlagsAreScopes(t *testing.T) {
 	dir := t.TempDir()
 	priv := filepath.Join(dir, "signing-key.jwk")
@@ -153,7 +157,22 @@ func TestRunToken_PathFlagsAreScopes(t *testing.T) {
 		"-publish", "room/1/alice", "-subscribe", "room/1", "-scope", "fetch:room/9"}, &out, &info))
 
 	assert.Contains(t, info.String(), "fetch room/9\n")
+	assert.Contains(t, info.String(), "publish room/1/alice\n")
 	assert.Contains(t, info.String(), "publish room/1/alice/**\n")
+	assert.Contains(t, info.String(), "subscribe,fetch room/1\n")
 	assert.Contains(t, info.String(), "subscribe,fetch room/1/**\n")
 	assert.Contains(t, info.String(), "42")
+}
+
+// A token of no scopes says so in the summary.
+func TestRunToken_NoScopes(t *testing.T) {
+	dir := t.TempDir()
+	priv := filepath.Join(dir, "signing-key.jwk")
+	require.NoError(t, runKeygen([]string{"-prefix", "acme", "-out", priv, "-keys", filepath.Join(dir, "keys.json")}, &bytes.Buffer{}))
+	var out, info bytes.Buffer
+
+	require.NoError(t, runToken([]string{"-key", priv}, &out, &info))
+
+	assert.Equal(t, 2, strings.Count(strings.TrimSpace(out.String()), "."))
+	assert.Contains(t, info.String(), "none: the token names its key's tenant alone")
 }

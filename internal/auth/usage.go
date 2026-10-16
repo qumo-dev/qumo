@@ -45,7 +45,8 @@ type usageSession struct {
 	// revalidated.
 	seen time.Time
 	// counted is how much of a viewer session's bytes its key's viewer total
-	// already holds.
+	// already holds. A viewer that became a publisher keeps it, and its
+	// usage records carry only what it moved beyond it.
 	counted Bytes
 }
 
@@ -113,6 +114,23 @@ func (r *usageReporter) open(id string, s usageSession) {
 	}
 }
 
+// publishing records that a viewer session may now publish, such as by a
+// ticket it presented: it is reported by itself from now on, opening with a
+// session_open. What it moved as a viewer up to its last revalidate stays in
+// its key's viewer total; what it moved since is reported as its usage. A session it doesn't know, or that publishes already, is left as it
+// is.
+func (r *usageReporter) publishing(id string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	s, ok := r.sessions[id]
+	if !ok || s.publishes {
+		return
+	}
+	s.publishes = true
+	r.sessions[id] = s
+	r.appendEvent(r.record(usage.SessionOpen, id, s))
+}
+
 // revalidated records a session's cumulative bytes at a revalidate and, when
 // live is set, that the session is still live. A session it doesn't know is
 // left unknown.
@@ -129,9 +147,9 @@ func (r *usageReporter) revalidated(id string, b Bytes, live bool) {
 	switch {
 	case !s.publishes:
 		s = r.countViewer(s, b)
-	case b.Sent > 0 || b.Received > 0:
+	case b.Sent > s.counted.Sent || b.Received > s.counted.Received:
 		rec := r.record(usage.Usage, id, s)
-		rec.Metrics = usageMetrics(b)
+		rec.Metrics = usageMetrics(b.since(s.counted))
 		r.latest[id] = rec
 	}
 	r.sessions[id] = s
@@ -153,7 +171,7 @@ func (r *usageReporter) close(id string, b Bytes, reason string) bool {
 	}
 	delete(r.latest, id) // the close carries totals at least as large
 	rec := r.record(usage.SessionClose, id, s)
-	rec.Metrics = usageMetrics(b)
+	rec.Metrics = usageMetrics(b.since(s.counted))
 	rec.Reason = reason
 	r.appendEvent(rec)
 	return true
@@ -401,4 +419,9 @@ func (r *usageReporter) send(ctx context.Context, batch []usage.Record) error {
 	default:
 		return fmt.Errorf("status %d", resp.StatusCode)
 	}
+}
+
+// since returns what b moved beyond base, each total at least zero.
+func (b Bytes) since(base Bytes) Bytes {
+	return Bytes{Sent: b.Sent - min(b.Sent, base.Sent), Received: b.Received - min(b.Received, base.Received)}
 }

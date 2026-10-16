@@ -67,32 +67,135 @@ func TestGrant_Allows(t *testing.T) {
 	}
 }
 
-func TestGrant_Announces(t *testing.T) {
-	paths := NewGrant([]token.Scope{publishPrefix("room/123"), readEverything}, 0)
-	comments := &Grant{scopes: []token.Scope{
-		{Actions: []token.Action{token.ActionPublish}, Broadcast: "room/123/comments"},
-		{Actions: []token.Action{token.ActionSubscribe, token.ActionFetch}, Broadcast: "room", Prefix: true},
-	}}
-	posting := &Grant{scopes: []token.Scope{
-		{Actions: []token.Action{token.ActionPost}, Broadcast: "room", Prefix: true},
-	}}
+func TestGrant_MoQ(t *testing.T) {
+	subscribe := []token.Action{token.ActionSubscribe, token.ActionFetch}
+	publish := []token.Action{token.ActionPublish}
 	tests := map[string]struct {
-		grant *Grant
-		path  moqt.BroadcastPath
-		want  bool
+		scopes    []token.Scope
+		keyPrefix string
+		want      moqt.Grant
 	}{
-		"a publish prefix":                  {grant: paths, path: "/room/123/live", want: true},
-		"outside the publish prefix":        {grant: paths, path: "/room/9", want: false},
-		"an exact publish scope":            {grant: comments, path: "/room/123/comments", want: true},
-		"beneath an exact publish scope":    {grant: comments, path: "/room/123/comments/x", want: false},
-		"a subscribe and fetch scope only":  {grant: comments, path: "/room/9", want: false},
-		"another spelling of the broadcast": {grant: comments, path: "/room/123/comments/", want: false},
-		"nothing granted":                   {grant: &Grant{}, path: "/room", want: false},
-		"post, never relayed":               {grant: posting, path: "/room/123/comments", want: false},
+		"a voice room: subscribe beneath the room, publish one broadcast": {
+			scopes: []token.Scope{
+				{Actions: subscribe, Broadcast: "room/42", Prefix: true},
+				{Actions: publish, Broadcast: "room/42/7"},
+			},
+			want: moqt.Grant{Root: "/room/42/", Publish: []string{"/7"}, Subscribe: []string{"/"}},
+		},
+		"a single exact broadcast": {
+			scopes: []token.Scope{{Actions: subscribe, Broadcast: "room/42/7"}},
+			want:   moqt.Grant{Root: "/room/42/", Subscribe: []string{"/7"}},
+		},
+		"a single broadcast at the top": {
+			scopes: []token.Scope{{Actions: publish, Broadcast: "live"}},
+			want:   moqt.Grant{Root: "/", Publish: []string{"/live"}},
+		},
+		"a prefix alone": {
+			scopes: []token.Scope{{Actions: publish, Broadcast: "room/42", Prefix: true}},
+			want:   moqt.Grant{Root: "/room/42/", Publish: []string{"/"}},
+		},
+		"publish and subscribe in one scope": {
+			scopes: []token.Scope{{Actions: []token.Action{token.ActionPublish, token.ActionSubscribe}, Broadcast: "room/42", Prefix: true}},
+			want:   moqt.Grant{Root: "/room/42/", Publish: []string{"/"}, Subscribe: []string{"/"}},
+		},
+		"disjoint trees share only the root": {
+			scopes: []token.Scope{
+				{Actions: publish, Broadcast: "a/b", Prefix: true},
+				{Actions: subscribe, Broadcast: "c/d"},
+			},
+			want: moqt.Grant{Root: "/", Publish: []string{"/a/b/"}, Subscribe: []string{"/c/d"}},
+		},
+		"siblings sharing a string prefix share their parent": {
+			scopes: []token.Scope{
+				{Actions: subscribe, Broadcast: "room/4", Prefix: true},
+				{Actions: subscribe, Broadcast: "room/42", Prefix: true},
+			},
+			want: moqt.Grant{Root: "/room/", Subscribe: []string{"/4/", "/42/"}},
+		},
+		"a path and everything beneath it": {
+			scopes: token.PathAndBeneath("room/42", token.ActionSubscribe, token.ActionFetch),
+			want:   moqt.Grant{Root: "/room/", Subscribe: []string{"/42", "/42/"}},
+		},
+		"duplicates are granted once": {
+			scopes: []token.Scope{
+				{Actions: subscribe, Broadcast: "room/42", Prefix: true},
+				{Actions: []token.Action{token.ActionSubscribe}, Broadcast: "room/42", Prefix: true},
+				{Actions: publish, Broadcast: "room/42/7"},
+				{Actions: publish, Broadcast: "room/42/7"},
+			},
+			want: moqt.Grant{Root: "/room/42/", Publish: []string{"/7"}, Subscribe: []string{"/"}},
+		},
+		"a funnel's actions alone grant nothing": {
+			scopes: []token.Scope{
+				{Actions: []token.Action{token.ActionCreate, token.ActionPost, token.ActionRedact}, Broadcast: "room/42/comments"},
+				{Actions: []token.Action{token.ActionFetch}, Broadcast: "room", Prefix: true},
+			},
+			want: moqt.Grant{},
+		},
+		"a funnel's scope doesn't widen the root": {
+			scopes: []token.Scope{
+				{Actions: []token.Action{token.ActionFetch}, Broadcast: "other", Prefix: true},
+				{Actions: publish, Broadcast: "room/42/7"},
+			},
+			want: moqt.Grant{Root: "/room/42/", Publish: []string{"/7"}},
+		},
+		"every broadcast": {
+			scopes: []token.Scope{readEverything},
+			want:   moqt.Grant{Root: "/", Subscribe: []string{"/"}},
+		},
+		"no scopes": {want: moqt.Grant{}},
+		// The root never lies above the signing key's prefix, so a session
+		// lists nothing of another tenant.
+		"beneath the key's prefix": {
+			scopes:    []token.Scope{{Actions: subscribe, Broadcast: "acme/room/42", Prefix: true}, {Actions: publish, Broadcast: "acme/live"}},
+			keyPrefix: "acme",
+			want:      moqt.Grant{Root: "/acme/", Publish: []string{"/live"}, Subscribe: []string{"/room/42/"}},
+		},
+		"the key's prefix and beneath it": {
+			scopes:    token.PathAndBeneath("acme", token.ActionSubscribe, token.ActionFetch),
+			keyPrefix: "acme",
+			want:      moqt.Grant{Root: "/acme/", Subscribe: []string{"/"}},
+		},
+		"an exact scope on the key's prefix is left out": {
+			scopes:    []token.Scope{{Actions: publish, Broadcast: "acme"}},
+			keyPrefix: "acme",
+			want:      moqt.Grant{},
+		},
+		"a deep key prefix": {
+			scopes:    token.PathAndBeneath("acme/app", token.ActionPublish),
+			keyPrefix: "acme/app",
+			want:      moqt.Grant{Root: "/acme/app/", Publish: []string{"/"}},
+		},
+		"the same exact scope without a key prefix": {
+			scopes: []token.Scope{{Actions: publish, Broadcast: "acme"}},
+			want:   moqt.Grant{Root: "/", Publish: []string{"/acme"}},
+		},
 	}
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
-			assert.Equal(t, tt.want, tt.grant.Announces(tt.path))
+			g := &Grant{scopes: tt.scopes, keyPrefix: tt.keyPrefix}
+
+			assert.Equal(t, tt.want, g.MoQ())
+		})
+	}
+}
+
+func TestCommonDir(t *testing.T) {
+	tests := map[string]struct {
+		a, b string
+		want string
+	}{
+		"the same directory":               {a: "/room/42/", b: "/room/42/", want: "/room/42/"},
+		"b beneath a":                      {a: "/room/", b: "/room/42/", want: "/room/"},
+		"a beneath b":                      {a: "/room/42/", b: "/room/", want: "/room/"},
+		"siblings":                         {a: "/room/42/", b: "/room/43/", want: "/room/"},
+		"siblings sharing a string prefix": {a: "/room/4/", b: "/room/42/", want: "/room/"},
+		"disjoint":                         {a: "/a/b/", b: "/c/d/", want: "/"},
+		"the root":                         {a: "/", b: "/c/", want: "/"},
+	}
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			assert.Equal(t, tt.want, commonDir(tt.a, tt.b))
 		})
 	}
 }

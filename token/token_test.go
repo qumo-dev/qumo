@@ -18,7 +18,7 @@ func TestVerify_AcceptsAValidToken(t *testing.T) {
 
 	require.NoError(t, err)
 	assert.Equal(t, signer.trusted(t).ID, c.Key.ID)
-	assert.Equal(t, Grant{Scopes: []Scope{pubScope("acme/app/alice"), subScope("acme/app")}}, c.Grant)
+	assert.Equal(t, grantOfScopes(pubScopes("acme/app/alice"), subScopes("acme/app")), c.Grant)
 	assert.Equal(t, now.Add(10*time.Minute), c.ExpiresAt)
 	assert.Equal(t, "j-1", c.ID)
 }
@@ -197,11 +197,11 @@ func TestVerify_PathConfinement(t *testing.T) {
 	}{
 		"publish and subscribe": {
 			pathAuth: map[string]any{"root": "acme/app", "pub": "alice", "sub": ""},
-			want:     Grant{Scopes: []Scope{pubScope("acme/app/alice"), subScope("acme/app")}},
+			want:     grantOfScopes(pubScopes("acme/app/alice"), subScopes("acme/app")),
 		},
 		"subscribe only": {
 			pathAuth: map[string]any{"root": "acme/app", "sub": "live"},
-			want:     Grant{Scopes: []Scope{subScope("acme/app/live")}},
+			want:     grantOfScopes(subScopes("acme/app/live")),
 		},
 		"slashes normalized": {
 			pathAuth: map[string]any{"root": "/acme//app/", "pub": "/alice/"},
@@ -223,6 +223,7 @@ func TestVerify_PathConfinement(t *testing.T) {
 		"only sub escapes the prefix":       {prefix: "acme/app", pathAuth: map[string]any{"root": "acme/app", "pub": "alice", "sub": "../../other"}, wantErr: ErrInvalid},
 		"dot-dot in root":                   {pathAuth: map[string]any{"root": "acme/app/../../other", "pub": ""}, wantErr: ErrInvalid},
 		"a wildcard segment":                {pathAuth: map[string]any{"root": "acme/*", "pub": ""}, wantErr: ErrInvalid},
+		"a braced segment":                  {pathAuth: map[string]any{"root": "acme/{id}", "pub": ""}, wantErr: ErrInvalid},
 		"names no path":                     {pathAuth: map[string]any{"root": "", "pub": ""}, wantErr: ErrInvalid},
 		"grants nothing":                    {pathAuth: map[string]any{"root": "acme/app"}, wantErr: ErrForbidden},
 	}
@@ -274,7 +275,7 @@ func TestVerifyLive(t *testing.T) {
 				return
 			}
 			require.NoError(t, err)
-			assert.Equal(t, Grant{Scopes: []Scope{pubScope("acme/app/alice"), subScope("acme/app")}}, got.Grant)
+			assert.Equal(t, grantOfScopes(pubScopes("acme/app/alice"), subScopes("acme/app")), got.Grant)
 		})
 	}
 }
@@ -284,12 +285,12 @@ func TestSign_RoundTrip(t *testing.T) {
 	require.NoError(t, err)
 	now := time.Unix(1_800_000_000, 0)
 
-	tok, err := signAt(key, Grant{Scopes: []Scope{pubScope("/acme/app/rooms/42/alice/"), subScope("acme/app/rooms/42")}}, 30*time.Minute, now)
+	tok, err := signAt(key, grantOfScopes(pubScopes("/acme/app/rooms/42/alice/"), subScopes("acme/app/rooms/42")), 30*time.Minute, now)
 	require.NoError(t, err)
 	c, err := Verify(tok, map[string]Key{key.ID: key.Public()}, now)
 
 	require.NoError(t, err)
-	assert.Equal(t, Grant{Scopes: []Scope{pubScope("acme/app/rooms/42/alice"), subScope("acme/app/rooms/42")}}, c.Grant)
+	assert.Equal(t, grantOfScopes(pubScopes("acme/app/rooms/42/alice"), subScopes("acme/app/rooms/42")), c.Grant)
 	assert.Equal(t, now.Add(30*time.Minute), c.ExpiresAt)
 	assert.Len(t, c.ID, 26, "a random jti (rand.Text)")
 }
@@ -303,13 +304,12 @@ func TestSign_Refusals(t *testing.T) {
 	}{
 		"zero ttl":        {grant: pubGrant("a"), ttl: 0, wantErrText: "ttl"},
 		"ttl over 1 h":    {grant: pubGrant("a"), ttl: 61 * time.Minute, wantErrText: "ttl"},
-		"grants nothing":  {grant: Grant{}, ttl: time.Minute, wantErrText: "no scope"},
 		"dot-dot path":    {grant: pubGrant("a/../b"), ttl: time.Minute, wantErrText: "segments"},
-		"wildcard path":   {grant: Grant{Scopes: []Scope{subScope("a/*")}}, ttl: time.Minute, wantErrText: "segments"},
+		"wildcard path":   {grant: grantOfScopes(subScopes("a/*")), ttl: time.Minute, wantErrText: "segments"},
 		"path of slashes": {grant: pubGrant("//"), ttl: time.Minute, wantErrText: "segments"},
 		// A verifier would refuse it, so it is never signed.
 		"publish outside the key's prefix":   {prefix: "acme/app", grant: pubGrant("other/app"), ttl: time.Minute, wantErrText: "outside"},
-		"subscribe outside the key's prefix": {prefix: "acme/app", grant: Grant{Scopes: []Scope{subScope("acme/application")}}, ttl: time.Minute, wantErrText: "outside"},
+		"subscribe outside the key's prefix": {prefix: "acme/app", grant: grantOfScopes(subScopes("acme/application")), ttl: time.Minute, wantErrText: "outside"},
 	}
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
@@ -323,16 +323,25 @@ func TestSign_Refusals(t *testing.T) {
 	}
 }
 
-// pubScope is the scope a path_auth pub of path amounts to.
-func pubScope(path string) Scope {
-	return Scope{Actions: []Action{ActionPublish}, Broadcast: path, Prefix: true}
+// pubScopes are the scopes a path_auth pub of path amounts to.
+func pubScopes(path string) []Scope {
+	return PathAndBeneath(path, ActionPublish)
 }
 
-// subScope is the scope a path_auth sub of path amounts to.
-func subScope(path string) Scope {
-	return Scope{Actions: []Action{ActionSubscribe, ActionFetch}, Broadcast: path, Prefix: true}
+// subScopes are the scopes a path_auth sub of path amounts to.
+func subScopes(path string) []Scope {
+	return PathAndBeneath(path, ActionSubscribe, ActionFetch)
+}
+
+// grantOfScopes is the grant of every scope of each list, in order.
+func grantOfScopes(lists ...[]Scope) Grant {
+	var g Grant
+	for _, l := range lists {
+		g.Scopes = append(g.Scopes, l...)
+	}
+	return g
 }
 
 func pubGrant(path string) Grant {
-	return Grant{Scopes: []Scope{pubScope(path)}}
+	return grantOfScopes(pubScopes(path))
 }

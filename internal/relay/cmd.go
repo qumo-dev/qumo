@@ -175,6 +175,7 @@ func Run(args []string) error {
 	}
 	authorize := admitUnchecked
 	var reportEnd func(context.Context, auth.Request) error // nil: auth off reports nothing
+	var tickets TicketVerifier                              // nil: auth off verifies no tickets
 	var verifier *auth.Verifier
 	if verifierCfg.Keys != "" {
 		v, err := auth.NewVerifier(verifierCfg)
@@ -184,6 +185,7 @@ func Run(args []string) error {
 		verifier = v
 		authorize = v.Authorize
 		reportEnd = v.End
+		tickets = v
 	} else {
 		slog.Warn("relay: auth is off: no key set (QUMO_AUTH_KEYS), so every session is admitted unchecked")
 	}
@@ -247,6 +249,7 @@ func Run(args []string) error {
 		AllowedOrigins:  cors.LoadAllowed(),
 		Authorize:       authorize,
 		End:             reportEnd,
+		Tickets:         tickets,
 		PeerCertificate: trust.OwnCertificate(),
 	}
 

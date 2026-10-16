@@ -436,9 +436,7 @@ func startFunnelBehindRelay(t *testing.T) (ingestURL, relayAddr string, relaySrv
 // relay at relayAddr, with a credential key signs for subscribing to it.
 func subscribeChatAsViewer(t *testing.T, relayAddr string, key token.SigningKey) *moqt.TrackReader {
 	t.Helper()
-	viewer, err := token.Sign(key, token.Grant{Scopes: []token.Scope{
-		{Actions: []token.Action{token.ActionSubscribe}, Broadcast: "room/123", Prefix: true},
-	}}, time.Minute)
+	viewer, err := token.Sign(key, token.Grant{Scopes: token.PathAndBeneath("room/123", token.ActionSubscribe)}, time.Minute)
 	require.NoError(t, err)
 	return subscribeChat(t, nativeURL(relayAddr)+"?jwt="+viewer)
 }
@@ -506,9 +504,7 @@ func TestFunnel_RelaySubscriberOutwaitsAQuietTrack(t *testing.T) {
 	require.Eventually(t, routed(relaySrv, "/room/123"), 5*time.Second, 25*time.Millisecond,
 		"the relay routes the broadcast to the funnel")
 
-	viewer, err := token.Sign(key, token.Grant{Scopes: []token.Scope{
-		{Actions: []token.Action{token.ActionSubscribe}, Broadcast: "room/123", Prefix: true},
-	}}, token.MaxLifetime)
+	viewer, err := token.Sign(key, token.Grant{Scopes: token.PathAndBeneath("room/123", token.ActionSubscribe)}, token.MaxLifetime)
 	require.NoError(t, err)
 	sess := dialOver(t, nativeURL(relayAddr)+"?jwt="+viewer, nil, moqt.NewTrackMux(0))
 	ctx, cancel := context.WithTimeout(context.Background(), 2*quietTrackWait)

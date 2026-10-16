@@ -119,12 +119,12 @@ each reaches every track of them:
 ```json
 {"sub": "alice",
  "scopes": [{"actions": ["post"], "broadcast": {"exact": "room/123/comments"}},
-            {"actions": ["fetch"], "broadcast": {"prefix": "room/123"}}],
+            {"actions": ["fetch"], "broadcast": {"prefix": "room"}}],
  "iat": 1791370000, "nbf": 1791370000, "exp": 1791370600}
 ```
 
 posts as `alice` into the tracks the app made of `/room/123/comments`, and
-reads any track of `/room/123` and the broadcasts beneath it.
+reads any track of every broadcast beneath `/room`.
 
 A `path_auth` credential is read as the scopes it amounts to: its `sub` reads
 any track at or beneath its path. Its `pub` is publishing, so it creates

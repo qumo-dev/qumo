@@ -52,11 +52,12 @@ type Scope struct {
 	// Actions are what the scope permits. At least one is required.
 	Actions []Action
 	// Broadcast is the broadcast path the scope reaches: that path alone,
-	// or, with Prefix, it and every path beneath it on "/" boundaries. In a
-	// token it names a path within the signing key's prefix. An empty
-	// Broadcast with Prefix reaches every broadcast; Sign and Verify refuse
-	// it, so only a grant made by the verifier itself holds one. An empty
-	// Broadcast without Prefix reaches none.
+	// or, with Prefix, every path beneath it on "/" boundaries but not the
+	// path itself, as a MoQ path pattern ending in "/" matches (PathAndBeneath
+	// reaches both). In a token it names a path within the signing key's
+	// prefix. An empty Broadcast with Prefix reaches every broadcast; Sign and
+	// Verify refuse it, so only a grant made by the verifier itself holds
+	// one. An empty Broadcast without Prefix reaches none.
 	Broadcast string
 	Prefix    bool
 }
@@ -76,7 +77,7 @@ func (s Scope) Allows(action Action, broadcast string) bool {
 		return false
 	}
 	if s.Prefix {
-		return within(path, s.Broadcast)
+		return beneath(path, s.Broadcast)
 	}
 	return s.Broadcast != "" && path == s.Broadcast
 }
@@ -129,14 +130,12 @@ func encodeScopes(scopes []Scope, keyPrefix string) (jsontext.Value, error) {
 // scopesOf decodes the scopes claim into the scopes it grants, each confined
 // to prefix at a "/" boundary. A member it doesn't know, such as a track
 // match, is refused rather than ignored, since it might be meant to narrow
-// the scope. No scopes grant nothing, which is forbidden.
+// the scope. No scopes grant nothing, which a token may: it names its key's
+// tenant alone, as a session's credential does when its grants come later.
 func scopesOf(raw jsontext.Value, prefix string) ([]Scope, error) {
 	var encoded []scopeJSON
 	if err := json.Unmarshal(raw, &encoded, json.RejectUnknownMembers(true)); err != nil {
 		return nil, invalid("scopes: %v", err)
-	}
-	if len(encoded) == 0 {
-		return nil, forbidden("scopes grant nothing")
 	}
 	scopes := make([]Scope, len(encoded))
 	for i, sj := range encoded {
@@ -182,4 +181,13 @@ func (sj scopeJSON) scope() (Scope, error) {
 	s.Broadcast = path
 	s.Actions = sj.Actions
 	return s, nil
+}
+
+// PathAndBeneath returns the scopes permitting actions on the broadcast at
+// path and on every broadcast beneath it.
+func PathAndBeneath(path string, actions ...Action) []Scope {
+	return []Scope{
+		{Actions: actions, Broadcast: path},
+		{Actions: actions, Broadcast: path, Prefix: true},
+	}
 }

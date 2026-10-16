@@ -61,6 +61,11 @@ type Server struct {
 	// called after the session has closed, so it can't hold a session open.
 	End func(ctx context.Context, req auth.Request) error
 
+	// Tickets verifies the tickets client sessions present on Auth Streams
+	// (admit.go): the Verifier's Ticket. Nil refuses every ticket with
+	// NOT_SUPPORTED, as with auth off.
+	Tickets TicketVerifier
+
 	// framePool recycles frame buffers for track distributors; sized from Config.FrameCapacity in init() (falling back to
 	// DefaultFramePool when unset, so a minimally-constructed Server still works).
 	framePool *FramePool
@@ -249,10 +254,14 @@ func (s *Server) init() {
 			slog.Warn("relay.Server: overriding MOQServer.TrackMux set by caller")
 		}
 		s.MOQServer.TrackMux = s.TrackMux
+		// Every session's requests are held to what its credentials grant:
+		// a relay peer's and, with auth off, every session's grant everything.
+		s.MOQServer.AuthHandler = moqt.AuthHandlerFunc(s.ServeAuth)
 
 		s.webtransportHandler = &moqt.WebTransportHandler{
 			TrackMux:    s.TrackMux,
 			Handler:     moqt.HandleFunc(s.Relay),
+			AuthHandler: moqt.AuthHandlerFunc(s.ServeAuth),
 			Logger:      s.MOQServer.Logger,
 			CheckOrigin: cors.NewChecker(s.AllowedOrigins),
 		}
@@ -263,6 +272,7 @@ func (s *Server) init() {
 			s.websocketHandler = &moqt.WebSocketHandler{
 				TrackMux:    s.TrackMux,
 				Handler:     moqt.HandleFunc(s.Relay),
+				AuthHandler: moqt.AuthHandlerFunc(s.ServeAuth),
 				Logger:      s.MOQServer.Logger,
 				CheckOrigin: cors.NewChecker(s.AllowedOrigins),
 				Server:      s.MOQServer,
@@ -719,12 +729,12 @@ func (s *Server) relayPeer(sess *moqt.Session) {
 	s.serveSession(sess)
 }
 
-// serveSession is the shared core for Relay, relayPeer and maintainPeer. The
-// session's announcements are checked against its admitted grant.
+// serveSession is the shared core for Relay, relayPeer and maintainPeer.
+// gomoqt holds the session to what its credentials grant (ServeAuth): the
+// announcements it reads from the session are the ones it may publish.
 func (s *Server) serveSession(sess *moqt.Session) {
 	s.init()
-	g, err := sessionGrant(sess.Context())
-	if err != nil {
+	if _, err := sessionGrant(sess.Context()); err != nil {
 		return
 	}
 	a := admissionFrom(sess.Context())
@@ -793,18 +803,6 @@ func (s *Server) serveSession(sess *moqt.Session) {
 			"hops", len(ann.HopIDs()),
 			"remote", sess.RemoteAddr(),
 		)
-
-		if g != nil && !g.Announces(ann.BroadcastPath()) {
-			// MoQ has no per-announcement error response, so the publisher
-			// receives no explicit rejection: the ANNOUNCE is simply not
-			// mirrored into the TrackMux, and the session's other broadcasts
-			// continue.
-			metricAnnouncementsRefused.Inc()
-			slog.Warn("relay: announcement refused: not covered by the session's grant",
-				"broadcast_path", ann.BroadcastPath(),
-				"remote", addr)
-			continue
-		}
 
 		handler := newRelayHandler(ann, sess, s.Config.NodeID,
 			s.Config.GroupCacheSize, s.framePool, s.sampler)

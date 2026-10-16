@@ -2,14 +2,17 @@
 
 // Black-box tests of the relay's subscribe authorization (#418) and auth off,
 // through its public API on a real QUIC/MOQT relay: a subscription is served
-// only when the session's grant covers its path, and a refusal answers like a
-// missing path.
+// only when the session's grant covers its path, and refused as unauthorized
+// otherwise.
 package integration
 
 import (
 	"context"
 	"crypto/tls"
+	"errors"
+	"fmt"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -114,15 +117,12 @@ func TestRelay_SubscribeAuth(t *testing.T) {
 
 			assert.NoError(t, err)
 		})
-		t.Run(transport+", outside the grant looks like a missing path", func(t *testing.T) {
+		t.Run(transport+", outside the grant is unauthorized", func(t *testing.T) {
 			// acme/apple shares a string prefix with acme/app but lies outside
 			// it, and it is published.
-			refused := subscribe(t, url, nil, "/acme/apple/live")
-			missing := subscribe(t, url, nil, "/acme/app/none")
+			err := subscribe(t, url, nil, "/acme/apple/live")
 
-			require.Error(t, refused)
-			require.Error(t, missing)
-			assert.Equal(t, missing.Error(), refused.Error())
+			assertSubscribeRefused(t, err, moqt.SubscribeErrorCodeUnauthorized)
 		})
 	}
 }
@@ -225,4 +225,21 @@ func TestRelay_PeersItself(t *testing.T) {
 		5*time.Second, 25*time.Millisecond, "the session to itself is dropped and not counted")
 	assert.Never(t, func() bool { return slices.Contains(a.ConnectedPeers(), aAddr) },
 		1500*time.Millisecond, 100*time.Millisecond, "and not retried")
+}
+
+// assertSubscribeRefused asserts that err is a SUBSCRIBE refused with code.
+func assertSubscribeRefused(t *testing.T, err error, code moqt.SubscribeErrorCode) {
+	t.Helper()
+	assert.True(t, isSubscribeRefused(err, code), "a SUBSCRIBE refused with %v, not %v", code, err)
+}
+
+// isSubscribeRefused reports whether err is a SUBSCRIBE refused with code.
+// Over WebTransport, gomoqt returns the stream's reset as webtransport-go
+// reports it rather than as a *moqt.SubscribeError, so its code is read from
+// the message there.
+func isSubscribeRefused(err error, code moqt.SubscribeErrorCode) bool {
+	if subErr, ok := errors.AsType[*moqt.SubscribeError](err); ok {
+		return subErr.SubscribeErrorCode() == code
+	}
+	return err != nil && strings.HasSuffix(err.Error(), fmt.Sprintf("stream canceled with error code %d", code))
 }

@@ -154,6 +154,28 @@ func (v *Verifier) Check(credential string, action token.Action, path moqt.Broad
 	return g, err
 }
 
+// Ticket verifies credential, a ticket presented on an Auth Stream of the
+// session id, whose own credential keyID signed. The ticket must be signed by
+// that same key, so that everything a session may do is its key's tenant's
+// to grant and is reported under it. A new ticket is verified as a connect
+// is; a live one, checked again while its grant is in force, as a live
+// session is (token.VerifyLive), so a key that left the set ends it. A key
+// paused for publishing refuses a new ticket that may publish, and one that
+// may makes its session a publisher in the usage reported.
+func (v *Verifier) Ticket(id, credential, keyID string, live bool) (*Grant, error) {
+	g, s, err := v.decide(credential, nil, !live, func(g *Grant) bool { return !live && publishesBroadcast(g.scopes) })
+	if err != nil {
+		return nil, err
+	}
+	if g.keyID != keyID {
+		return nil, refuse(http.StatusForbidden, "the ticket is signed by key %s, not by the session's", g.keyID)
+	}
+	if !live && s.publishes && v.usage != nil {
+		v.usage.publishing(id)
+	}
+	return g, nil
+}
+
 // credentialOf returns the credential a connect URL's raw query carries as
 // jwt.
 func credentialOf(rawQuery string) (string, error) {
@@ -197,7 +219,10 @@ func (v *Verifier) decide(credential string, credErr error, connect bool, paused
 		}
 		return nil, usageSession{}, refuse(status, "%v", err)
 	}
-	g := &Grant{scopes: c.Scopes, subject: c.Subject, revalidate: revalidateEvery}
+	g := &Grant{
+		scopes: c.Scopes, subject: c.Subject, revalidate: revalidateEvery,
+		keyID: c.Key.ID, expires: c.ExpiresAt, keyPrefix: c.Key.Prefix,
+	}
 	if c.Key.Pauses(token.ActionPublish) && paused(g) {
 		return nil, usageSession{}, refuse(http.StatusForbidden,
 			"signing key %s starts nothing new that publishes", c.Key.ID)

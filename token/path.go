@@ -8,7 +8,8 @@ import (
 
 // normalizePath trims surrounding slashes and collapses repeated ones, as MoQ
 // paths are compared. It refuses "." and ".." segments, which would let a
-// path escape its prefix, and "*", which a relay reads as a pattern.
+// path escape its prefix, and "*", "{" and "}", which a relay reads as a
+// pattern.
 func normalizePath(p string) (string, error) {
 	var kept []string
 	for seg := range strings.SplitSeq(p, "/") {
@@ -17,8 +18,8 @@ func normalizePath(p string) (string, error) {
 			continue
 		case seg == "." || seg == "..":
 			return "", fmt.Errorf("segment %q is not allowed", seg)
-		case strings.Contains(seg, "*"):
-			return "", fmt.Errorf("segment %q contains *", seg)
+		case strings.ContainsAny(seg, "*{}"):
+			return "", fmt.Errorf("segment %q contains *, { or }", seg)
 		}
 		kept = append(kept, seg)
 	}
@@ -43,8 +44,14 @@ func scopeOf(root, suffix string) (string, error) {
 	return scope, nil
 }
 
+// beneath reports whether path lies beneath prefix at a "/" boundary, not at
+// it; an empty prefix contains everything.
+func beneath(path, prefix string) bool {
+	return prefix == "" || strings.HasPrefix(path, prefix+"/")
+}
+
 // within reports whether path lies at or beneath prefix at a "/" boundary; an
-// empty prefix contains everything.
+// empty prefix contains everything. A key's prefix confines paths this way.
 func within(path, prefix string) bool {
 	return prefix == "" || path == prefix || strings.HasPrefix(path, prefix+"/")
 }

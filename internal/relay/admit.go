@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"sync/atomic"
+	"time"
 
 	"github.com/qumo-dev/gomoqt/moqt"
 	"github.com/qumo-dev/qumo/internal/auth"
@@ -16,11 +17,10 @@ import (
 )
 
 // admission is a session's grant, carried in the session's context so that
-// both checks find it: announcements (serveSession) and subscriptions
-// (authorizeSubscribe), whose TrackWriter context derives from the session's.
-// A WebTransport session's is decided at the upgrade. A native-QUIC session's
-// is pending from ConnContext until relayPeer decides it, and a subscription
-// arriving before then waits.
+// its credentials' answers find it (ServeAuth): gomoqt enforces what they
+// grant. A WebTransport session's is decided at the upgrade. A native-QUIC
+// session's is pending from ConnContext until relayPeer decides it, and the
+// session serves no request before then.
 type admission struct {
 	decided chan struct{}
 	// grant is set before decided closes. nil is unchecked: a relay peer, or
@@ -39,6 +39,11 @@ type admission struct {
 	// client is what the upgrade request said about its client, set before
 	// the session starts. Zero for a native-QUIC session.
 	client upgradeClient
+	// tickets counts the tickets the session holds (serveTicket).
+	tickets atomic.Int32
+	// connAnswered is set once the connection's own credential, the one
+	// presented with no token, has been answered (ServeAuth).
+	connAnswered atomic.Bool
 }
 
 type admissionKey struct{}
@@ -87,30 +92,6 @@ func sessionGrant(ctx context.Context) (*auth.Grant, error) {
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	}
-}
-
-// authorizeSubscribe reports whether tw's session may subscribe to its track.
-// A refusal closes tw with NotFound, the mux's answer for a path that doesn't
-// exist, so a SUBSCRIBE alone doesn't tell a client which paths exist. Path
-// names still reach it through announce interest and TRACK_INFO, which gomoqt
-// answers inside the shared TrackMux (#418).
-func authorizeSubscribe(tw *moqt.TrackWriter) bool {
-	g, err := sessionGrant(tw.Context())
-	switch {
-	case err != nil:
-		// The subscription ended before its session was admitted.
-		return false
-	case g == nil:
-		return true
-	case g.Allows(token.ActionSubscribe, tw.BroadcastPath):
-		metricSubscribeAuthorizations.WithLabelValues("admitted").Inc()
-		return true
-	}
-	metricSubscribeAuthorizations.WithLabelValues("not_covered").Inc()
-	slog.Info("relay: subscription refused: not covered by the session's grant",
-		"broadcast_path", tw.BroadcastPath, "track_name", tw.TrackName)
-	tw.CloseWithError(moqt.SubscribeErrorCodeNotFound)
-	return false
 }
 
 // newSessionID returns a random 128-bit hex id, unique per session.
@@ -264,4 +245,151 @@ func refusalReason(err error) string {
 		return refusalRefused
 	}
 	return refusalUnavailable
+}
+
+// TicketVerifier verifies the tickets a session presents on Auth Streams
+// (auth.Verifier.Ticket): signed by the key that signed the session's own
+// credential, verified as new when presented and as live after.
+type TicketVerifier interface {
+	Ticket(id, credential, keyID string, live bool) (*auth.Grant, error)
+}
+
+const (
+	// maxTickets bounds the tickets one session may hold at once, so a
+	// client can't make the relay keep any number of them.
+	maxTickets = 32
+	// ticketRevalidateEvery is how often a ticket in force is checked again,
+	// so that a key leaving the set ends it, as it ends a session.
+	ticketRevalidateEvery = 30 * time.Second
+)
+
+// everything is the grant of a session the relay checks nothing for: a relay
+// peer, or any session with auth off.
+var everything = moqt.Grant{Root: "/", Publish: []string{"/"}, Subscribe: []string{"/"}}
+
+// ServeAuth answers a session's credentials (moqt.AuthHandler). The one its
+// connection carried, presented with no token, is granted what the session
+// was admitted with (admit.go), and a session checked for nothing is granted
+// everything. A ticket presented on an Auth Stream adds its grant to the
+// session's, while it is in force (serveTicket).
+func (s *Server) ServeAuth(w *moqt.AuthWriter, r *moqt.AuthRequest) {
+	if len(r.Token) > 0 {
+		s.serveTicket(w, r)
+		return
+	}
+	// gomoqt presents the connection's credential once, with no token; an
+	// Auth Stream carrying none is a ticket of nothing.
+	if a := admissionFrom(r.Context()); a != nil && a.connAnswered.Swap(true) {
+		metricTickets.WithLabelValues(ticketRefused).Inc()
+		_ = w.Refuse(moqt.UnauthorizedSessionErrorCode, "empty ticket")
+		return
+	}
+	g, err := sessionGrant(r.Context())
+	if err != nil {
+		return // the session ended before its admission was decided
+	}
+	if err := w.Grant(connectionGrant(g)); err != nil {
+		id := ""
+		if a := admissionFrom(r.Context()); a != nil {
+			id = a.req.ID
+		}
+		slog.Error("relay: the session's grant could not be applied; it may do nothing", "id", id, "error", err)
+		return
+	}
+	<-r.Context().Done()
+}
+
+// connectionGrant is what a session admitted with g may do: what g grants,
+// or everything for a session checked for nothing (nil).
+func connectionGrant(g *auth.Grant) moqt.Grant {
+	if g == nil {
+		return everything
+	}
+	return g.MoQ()
+}
+
+// serveTicket verifies a ticket and grants it until it expires, its presenter
+// withdraws it or its key leaves the set. Only a session admitted with a
+// credential the relay verified may present one, and it must be signed by
+// the same key.
+func (s *Server) serveTicket(w *moqt.AuthWriter, r *moqt.AuthRequest) {
+	ctx := r.Context()
+	a := admissionFrom(ctx)
+	g, err := sessionGrant(ctx)
+	if err != nil {
+		return
+	}
+	if s.Tickets == nil || g == nil || g.KeyID() == "" {
+		metricTickets.WithLabelValues(ticketNotSupported).Inc()
+		_ = w.Refuse(moqt.NotSupportedErrorCode, "this relay verifies no tickets for the session")
+		return
+	}
+	if a.tickets.Add(1) > maxTickets {
+		defer a.tickets.Add(-1)
+		metricTickets.WithLabelValues(ticketRefused).Inc()
+		_ = w.Refuse(moqt.UnauthorizedSessionErrorCode, "too many tickets")
+		return
+	}
+	defer a.tickets.Add(-1)
+
+	credential := string(r.Token)
+	tg, err := s.Tickets.Ticket(a.req.ID, credential, g.KeyID(), false)
+	if err != nil {
+		metricTickets.WithLabelValues(ticketOutcome(err)).Inc()
+		slog.Info("relay: ticket refused", "id", a.req.ID, "reason", err)
+		_ = w.Refuse(moqt.UnauthorizedSessionErrorCode, "ticket refused")
+		return
+	}
+	// Judged with the leeway, as token.Verify judges exp. The handler revokes
+	// it itself, so the presenter is told why.
+	expires := tg.Expires().Add(token.Leeway)
+	if err := w.Grant(tg.MoQ()); err != nil {
+		metricTickets.WithLabelValues(ticketRefused).Inc()
+		slog.Info("relay: ticket not granted", "id", a.req.ID, "error", err)
+		return
+	}
+	metricTickets.WithLabelValues(ticketGranted).Inc()
+
+	lapse := time.NewTimer(time.Until(expires))
+	defer lapse.Stop()
+	revalidate := time.NewTicker(ticketRevalidateEvery)
+	defer revalidate.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-lapse.C:
+			metricTickets.WithLabelValues(ticketExpired).Inc()
+			_ = w.Refuse(moqt.UnauthorizedSessionErrorCode, "ticket expired")
+			return
+		case <-revalidate.C:
+			_, err := s.Tickets.Ticket(a.req.ID, credential, g.KeyID(), true)
+			if _, refused := errors.AsType[auth.RefusedError](err); refused {
+				metricTickets.WithLabelValues(ticketRevoked).Inc()
+				slog.Info("relay: ticket revoked", "id", a.req.ID, "reason", err)
+				_ = w.Refuse(moqt.UnauthorizedSessionErrorCode, "ticket revoked")
+				return
+			}
+			// A ticket that could not be checked just now stays in force, as
+			// a session does, and is checked again.
+		}
+	}
+}
+
+// Outcomes of a ticket, the result label of metricTickets.
+const (
+	ticketGranted      = "granted"
+	ticketRefused      = "refused"
+	ticketRevoked      = "revoked"
+	ticketExpired      = "expired"
+	ticketError        = "error"
+	ticketNotSupported = "not_supported"
+)
+
+// ticketOutcome classifies a refused ticket's error.
+func ticketOutcome(err error) string {
+	if _, refused := errors.AsType[auth.RefusedError](err); refused {
+		return ticketRefused
+	}
+	return ticketError
 }

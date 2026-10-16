@@ -53,7 +53,7 @@ func prefixLabel(prefix string) string {
 	if prefix == "" {
 		return "any path (no prefix)"
 	}
-	return prefix + "/**"
+	return prefix + " and " + prefix + "/**"
 }
 
 // runKeygen writes a new signing key pair: the private key, for the app that
@@ -150,12 +150,12 @@ func removeFile(path string) error {
 func runToken(args []string, out, info io.Writer) error {
 	fs := flag.NewFlagSet("qumo auth token", flag.ContinueOnError)
 	keyPath := fs.String("key", "signing-key.jwk", "the private signing key (qumo auth keygen)")
-	publish := fs.String("publish", "", "the path the bearer may publish at or beneath: short for -scope publish:PATH/**")
-	subscribe := fs.String("subscribe", "", "the path the bearer may subscribe at or beneath: short for -scope subscribe,fetch:PATH/**")
+	publish := fs.String("publish", "", "the path the bearer may publish at or beneath: short for -scope publish:PATH -scope publish:PATH/**")
+	subscribe := fs.String("subscribe", "", "the path the bearer may subscribe at or beneath: short for -scope subscribe,fetch:PATH -scope subscribe,fetch:PATH/**")
 	var scopes []token.Scope
 	fs.Func("scope", "a scope, `ACTIONS:BROADCAST` (repeatable):\n"+
 		"ACTIONS is a comma-separated list of publish, subscribe, fetch, create, post and redact;\n"+
-		"BROADCAST is a path, or a/b/** for it and every path beneath it",
+		"BROADCAST is a path, or a/b/** for every path beneath it (not a/b itself)",
 		func(v string) error {
 			s, err := parseScope(v)
 			if err != nil {
@@ -174,10 +174,10 @@ func runToken(args []string, out, info io.Writer) error {
 		return err
 	}
 	if *publish != "" {
-		scopes = append(scopes, token.Scope{Actions: []token.Action{token.ActionPublish}, Broadcast: *publish, Prefix: true})
+		scopes = append(scopes, token.PathAndBeneath(*publish, token.ActionPublish)...)
 	}
 	if *subscribe != "" {
-		scopes = append(scopes, token.Scope{Actions: []token.Action{token.ActionSubscribe, token.ActionFetch}, Broadcast: *subscribe, Prefix: true})
+		scopes = append(scopes, token.PathAndBeneath(*subscribe, token.ActionSubscribe, token.ActionFetch)...)
 	}
 	grant := token.Grant{Scopes: scopes, Subject: *subject}
 	tok, err := token.Sign(key, grant, *ttl)
@@ -197,6 +197,9 @@ func runToken(args []string, out, info io.Writer) error {
 	for _, s := range c.Scopes {
 		fmt.Fprintf(&b, "  %-11s %s\n", "Scope:", scopeLabel(s))
 	}
+	if len(c.Scopes) == 0 {
+		fmt.Fprintf(&b, "  %-11s none: the token names its key's tenant alone, for a relay session's tickets to grant to\n", "Scope:")
+	}
 	fmt.Fprintf(&b, "  %-11s %s\n", "Subject:", cmp.Or(c.Subject, "-"))
 	fmt.Fprintf(&b, "  %-11s %s (in %s)\n", "Expires:", c.ExpiresAt.Format(time.DateTime), time.Until(c.ExpiresAt).Round(time.Second))
 	fmt.Fprintf(&b, "  %-11s %s\n", "Key:", key.ID)
@@ -206,7 +209,7 @@ func runToken(args []string, out, info io.Writer) error {
 }
 
 // parseScope reads a -scope value, ACTIONS:BROADCAST. A broadcast ending in
-// "/**" matches it and every path beneath it. A second ":" is refused, so a
+// "/**" matches every path beneath it, not the path itself. A second ":" is refused, so a
 // value naming a track, which a scope can't, fails rather than signing for a
 // broadcast whose path holds it. token.Sign checks the rest.
 func parseScope(v string) (token.Scope, error) {

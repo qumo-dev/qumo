@@ -70,23 +70,15 @@ var (
 		Help:      "Checked sessions the relay ended because of their grant, by reason.",
 	}, []string{"reason"})
 
-	// metricAnnouncementsRefused counts announcements not routed because the
-	// session's grant doesn't cover their path.
-	metricAnnouncementsRefused = promauto.NewCounter(prometheus.CounterOpts{
+	// metricTickets counts the tickets sessions present on Auth Streams, by
+	// result: granted, refused (at once, or for too many), revoked (by a
+	// later check), expired, error (could not be checked) or not_supported
+	// (a session that may present none).
+	metricTickets = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "qumo",
 		Subsystem: "relay",
-		Name:      "announcements_refused_total",
-		Help:      "Announcements not routed because the session's grant doesn't cover the path.",
-	})
-
-	// metricSubscribeAuthorizations counts subscriptions checked against the
-	// session's grant. A relay peer's subscriptions aren't checked against
-	// a credential, and aren't counted.
-	metricSubscribeAuthorizations = promauto.NewCounterVec(prometheus.CounterOpts{
-		Namespace: "qumo",
-		Subsystem: "relay",
-		Name:      "subscribe_authorizations_total",
-		Help:      "Subscriptions checked against the session's grant, by result (admitted, not_covered).",
+		Name:      "tickets_total",
+		Help:      "Tickets presented on Auth Streams, by result (granted, refused, revoked, expired, error, not_supported).",
 	}, []string{"result"})
 
 	// metricPeersConnected tracks the number of active outbound relay peer

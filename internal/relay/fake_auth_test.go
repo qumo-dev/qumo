@@ -85,9 +85,13 @@ func testGrant(tb testing.TB, publish, subscribe string, revalidate time.Duratio
 		if role.pattern == "" {
 			continue
 		}
-		base, ok := strings.CutSuffix("/"+role.pattern, "/**")
+		base, ok := strings.CutSuffix(role.pattern, "**")
 		require.True(tb, ok, "pattern %q is not a subtree", role.pattern)
-		scopes = append(scopes, token.Scope{Actions: role.actions, Broadcast: strings.TrimPrefix(base, "/"), Prefix: true})
+		if base == "" {
+			scopes = append(scopes, token.Scope{Actions: role.actions, Prefix: true})
+			continue
+		}
+		scopes = append(scopes, token.PathAndBeneath(strings.TrimSuffix(base, "/"), role.actions...)...)
 	}
 	return auth.NewGrant(scopes, revalidate)
 }

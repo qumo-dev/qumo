@@ -105,8 +105,8 @@ type claims struct {
 
 // Sign returns a token signed by key that grants g for ttl from now, at most
 // MaxLifetime, as a scopes claim with sub when g names a subject. It carries a
-// random jti. A grant outside key's prefix, or one granting nothing, is
-// refused here, since a verifier would refuse the token.
+// random jti. A grant outside key's prefix is refused here, since a verifier
+// would refuse the token. A grant of no scopes names the key's tenant alone.
 func Sign(key SigningKey, g Grant, ttl time.Duration) (string, error) {
 	return signAt(key, g, ttl, time.Now())
 }
@@ -114,9 +114,6 @@ func Sign(key SigningKey, g Grant, ttl time.Duration) (string, error) {
 func signAt(key SigningKey, g Grant, ttl time.Duration, now time.Time) (string, error) {
 	if ttl <= 0 || ttl > MaxLifetime {
 		return "", fmt.Errorf("token: ttl %s must be positive and at most %s", ttl, MaxLifetime)
-	}
-	if len(g.Scopes) == 0 {
-		return "", errors.New("token: the grant names no scope")
 	}
 	raw, err := encodeScopes(g.Scopes, key.Prefix)
 	if err != nil {
@@ -236,7 +233,7 @@ func verify(token string, keys map[string]Key, now time.Time, expiry bool) (Clai
 }
 
 // grantOf reads path_auth as scopes: pub as publish, and sub as subscribe
-// and fetch, each on its path and every path beneath it. Each path must lie
+// and fetch, each on its path and every path beneath it (PathAndBeneath). Each path must lie
 // within prefix at a "/" boundary: the rule that stops a key from signing for
 // another tenant's paths.
 func grantOf(pa pathAuth, prefix string) (Grant, error) {
@@ -259,7 +256,7 @@ func grantOf(pa pathAuth, prefix string) (Grant, error) {
 		if !within(path, prefix) {
 			return Grant{}, forbidden("path_auth %s %q lies outside the signing key's prefix %q", role.name, path, prefix)
 		}
-		g.Scopes = append(g.Scopes, Scope{Actions: role.actions, Broadcast: path, Prefix: true})
+		g.Scopes = append(g.Scopes, PathAndBeneath(path, role.actions...)...)
 	}
 	if len(g.Scopes) == 0 {
 		return Grant{}, forbidden("path_auth grants neither pub nor sub")

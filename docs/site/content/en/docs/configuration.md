@@ -197,7 +197,7 @@ Without a key set, auth is off: the relay admits every session unchecked and log
 **Relay peers are never checked:** sessions whose client certificate `CA_FILE` verifies and that carries the peering name, and peers this relay dials (`PEERS`). A session whose certificate `CA_FILE` verifies without the name is a client like any other, and needs a credential ([Peer trust](#peer-trust-optional)).
 
 ### Verifying against a key set
-A credential is a token your app signs with its own key, using the Go package [`github.com/qumo-dev/qumo/token`](../cli/auth/) (or `qumo auth token` while testing). The relay admits a session when, in order: the token's header carries no `crit`, its `alg` is EdDSA and its `kid` is in the key set; the signature verifies; its claims are one of `scopes` and `path_auth` (never both), `iat`, `nbf`, `exp`, an optional `jti`, and, with `scopes`, an optional `sub`; the times hold, with 60 s leeway and a lifetime of at most an hour; and **every path it grants lies within its key's `prefix`**. A `path_auth` claim, as other MoQ implementations sign it, is read as the scopes it amounts to ([what a token grants](../cli/auth/#what-a-token-grants)). The session may then announce a broadcast a `publish` scope matches, and subscribe to any track of a broadcast a `subscribe` scope matches, for as long as [below](#credential-expiry-and-live-sessions) describes.
+A credential is a token your app signs with its own key, using the Go package [`github.com/qumo-dev/qumo/token`](../cli/auth/) (or `qumo auth token` while testing). The relay admits a session when, in order: the token's header carries no `crit`, its `alg` is EdDSA and its `kid` is in the key set; the signature verifies; its claims are one of `scopes` and `path_auth` (never both), `iat`, `nbf`, `exp`, an optional `jti`, and, with `scopes`, an optional `sub`; the times hold, with 60 s leeway and a lifetime of at most an hour; and **every path it grants lies within its key's `prefix`**. A `path_auth` claim, as other MoQ implementations sign it, is read as the scopes it amounts to ([what a token grants](../cli/auth/#what-a-token-grants)). The session may then announce a broadcast a `publish` scope matches, and subscribe to any track of a broadcast a `subscribe` scope matches, for as long as [below](#credential-expiry-and-live-sessions) describes, and add what [tickets](../cli/auth/#tickets-on-the-relay) signed by the same key grant. A token of no scopes admits a session that may do nothing until a ticket grants it.
 
 Besides the standard JWK members, the relay reads `prefix` and `pause` on each key. A server writes them with Go's `token.MarshalKeySet` (a `token.Key` with its `Prefix` and `Pause`) rather than by hand:
 
@@ -216,7 +216,7 @@ A token's `exp`, `nbf` and `iat` are checked **when a session starts**: they dec
 
 - **Your app ends access** by withholding the next token: a client whose session ends can't start another. What a live session may do is your app's to decide on top, for example which publishers its clients play.
 - **The key set ends sessions.** A key that leaves the set ends every session it admitted at the next re-check, about 30 s on average.
-- **A token can't be replaced in a live session.** A session keeps the grant it started with, so give a client the widest grant it may need for the session's life.
+- **A session's credential can't be replaced, but tickets add to it.** A session keeps the grant it started with; what it may do beyond that comes from [tickets](../cli/auth/#tickets-on-the-relay), which expire at their `exp` and are presented again to keep their grant.
 - **`reval` is refused.** CAT's `moqt-reval` asks for a live session to be revalidated against its token's expiry, which this relay never does, so a token carrying it is refused like any claim the relay doesn't know.
 
 ### Usage reports
@@ -234,7 +234,7 @@ With `QUMO_USAGE_URL` set, the relay POSTs a JSON array of records to it every 1
 
 Byte counts are cumulative and from the relay's point of view (what it received is ingress), so a receiver can take a resent record without counting it twice.
 
-**Sessions that publish a broadcast are reported one by one,** as the first three records: an open, usage every 30 s, and a close. A session publishes when its token has a `publish` scope.
+**Sessions that publish a broadcast are reported one by one,** as the first three records: an open, usage every 30 s, and a close. A session publishes when its token has a `publish` scope, or from when it is granted a ticket that has one: its open comes then, and what it moved as a viewer up to its last 30 s check stays in its key's viewer total, the rest counting as its usage.
 
 **Every other session is a viewer, and viewers are reported together.** Viewers outnumber publishers by orders of magnitude, and a record per viewer would make the receiver's load grow with the audience. Their bytes are added up per key into one running total since the relay started, sent as a `viewers` record naming the key and the relay's `run`. The `run` is new each time the relay starts, so a restart begins new totals rather than lowering old ones. There is no open or close for viewers, and a total is sent only when it has changed.
 
@@ -242,11 +242,12 @@ Records go out in batches of at most 500. A failed send, a 401, 403, 408, 413 or
 
 ### What a session may do
 - **Refusal:** a WebTransport client gets the HTTP status before the upgrade: 401 for a credential that can't be accepted, 403 for a valid one that may not do what it asks, or 503 while the relay has no usable key set. A native-QUIC session is closed with `0x2` (Unauthorized).
-- **Announcements** are routed only if a `publish` scope of the token matches their broadcast.
-- **Subscriptions** are served only if a `subscribe` scope of the token matches their broadcast. A refused subscription gets the same answer as a path that doesn't exist (`NotFound`).
+- **Announcements** are routed only if a `publish` scope of the session's credential or of a ticket in force matches their broadcast; the others are dropped.
+- **Subscriptions, track info and fetches** are served only if a `subscribe` scope matches their broadcast. A refused one is answered `UNAUTHORIZED`.
+- **Announce interest** is answered only for a prefix within a grant's root ([what a session may list](../cli/auth/#what-a-token-grants)); for another, the announce stream is reset with `UNAUTHORIZED`.
+- **When a ticket is revoked or withdrawn,** what no grant covers any more ends: its subscriptions are cancelled with `UNAUTHORIZED`, and its announce streams outside every root are reset.
 - **Expiry** decides only whether a session may start ([above](#credential-expiry-and-live-sessions)): a live session, publisher or subscriber, is not ended by its token's expiry.
 - **Why a session ended** is the `reason` of its usage record: `refused` (its key left the set), `closed` (the client or relay closed it normally), `dropped` (the connection was lost) or `upgrade_failed` (a WebTransport session that was admitted, whose upgrade then failed, so it never started).
-- **Relay peers** and peers this relay dials carry no credential, so nothing above applies to them.
-- **Not yet enforced:** which paths a session can discover (qumo-dev/qumo#450). Announce interest lists every path under the requested prefix, and a TRACK request returns a track's publisher properties (TRACK_INFO) for any path. Both reveal path names and metadata, never media.
+- **Relay peers** and peers this relay dials carry no credential, so nothing above applies to them, and neither does it with auth off.
 
-Metrics: `qumo_relay_auth_requests_total{event,result}` (`admitted`, `refused`, `error`, and `unchecked` with auth off), `qumo_relay_announcements_refused_total`, `qumo_relay_subscribe_authorizations_total{result}` (`admitted`, `not_covered`) and `qumo_relay_sessions_ended_total{reason}` (`refused`). `auth_requests_total`'s `event` is `connect`, `revalidate` or `end`; an `end`'s `result` is `ok` or `error`.
+Metrics: `qumo_relay_auth_requests_total{event,result}` (`admitted`, `refused`, `error`, and `unchecked` with auth off), `qumo_relay_tickets_total{result}` (`granted`, `refused`, `revoked`, `expired`, `error`, `not_supported`) and `qumo_relay_sessions_ended_total{reason}` (`refused`). `auth_requests_total`'s `event` is `connect`, `revalidate` or `end`; an `end`'s `result` is `ok` or `error`.

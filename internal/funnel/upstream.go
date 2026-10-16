@@ -105,7 +105,7 @@ func newUpstream(cfg RelayConfig) (*upstream, error) {
 // publishGrant grants publishing every track of the broadcast at path and of
 // every broadcast beneath it.
 func publishGrant(path string) token.Grant {
-	return token.Grant{Scopes: []token.Scope{{Actions: []token.Action{token.ActionPublish}, Broadcast: path, Prefix: true}}}
+	return token.Grant{Scopes: token.PathAndBeneath(path, token.ActionPublish)}
 }
 
 // run keeps a session to the relay open until ctx ends, dialing again after
