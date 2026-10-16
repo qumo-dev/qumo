@@ -80,6 +80,18 @@ type Expectations struct {
 	MaxCTSWindowUS int64
 }
 
+// TrackNames returns the catalog tracks exp wants, for [Collector.WantTracks].
+func (exp Expectations) TrackNames() []string {
+	var names []string
+	if exp.WantVideo {
+		names = append(names, "video")
+	}
+	if exp.WantAudio {
+		names = append(names, "audio")
+	}
+	return names
+}
+
 // Verdict is the gate result.
 type Verdict struct {
 	Pass     bool
