@@ -72,9 +72,13 @@ func exactly(path string, actions ...token.Action) token.Grant {
 	return grantOn(root, []string{"/" + base}, actions...)
 }
 
-// grantOn grants actions on patterns beneath root.
+// grantOn grants actions on patterns beneath root, a path such as "room/1".
 func grantOn(root string, patterns []string, actions ...token.Action) token.Grant {
-	g := token.Grant{Root: root}
+	dir, err := token.Directory(root)
+	if err != nil {
+		panic(err)
+	}
+	g := token.Grant{Root: dir}
 	for _, a := range actions {
 		switch a {
 		case token.ActionPublish:

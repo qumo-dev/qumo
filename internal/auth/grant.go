@@ -47,10 +47,10 @@ func (g *Grant) Expires() time.Time {
 	return g.expires
 }
 
-// MoQ returns what the grant lets a relay session do, as a MoQ grant: its
-// root, and its publish and subscribe patterns (token.Grant.MoQ).
-func (g *Grant) MoQ() moqt.Grant {
-	return g.grant.MoQ()
+// Token returns the token grant: the MoQ grant a relay applies to a session
+// (its embedded moqt.Grant), and the actions a funnel reads.
+func (g *Grant) Token() token.Grant {
+	return g.grant
 }
 
 // Allows reports whether a pattern of the grant for action matches the

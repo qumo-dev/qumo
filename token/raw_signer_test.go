@@ -10,7 +10,8 @@ import (
 
 // rawSigner mints tokens whose header and claims a test sets freely, to
 // exercise Verify's refusals. The zero value is usable: its key pair is
-// generated on first use, and prefix is what the trusted key is confined to.
+// generated on first use, and prefix is what the trusted key is confined to,
+// read as Directory reads it.
 type rawSigner struct {
 	prefix  string
 	private ed25519.PrivateKey
@@ -27,7 +28,11 @@ func (s *rawSigner) trusted(tb testing.TB) Key {
 		s.private = priv
 	}
 	pub := s.private.Public().(ed25519.PublicKey)
-	return Key{ID: thumbprint(pub), Public: pub, Prefix: s.prefix}
+	prefix, err := Directory(s.prefix)
+	if err != nil {
+		tb.Fatalf("prefix: %v", err)
+	}
+	return Key{ID: thumbprint(pub), Public: pub, Prefix: prefix}
 }
 
 // keys is a trusted key set holding only this signer's key.

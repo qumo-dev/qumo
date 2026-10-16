@@ -40,9 +40,11 @@ type VerifierConfig struct {
 //
 // A session's credential (the jwt query parameter of its connect URL) must be
 // signed by a key in the set, have its root within the key's prefix, and be
-// within its validity (token.Verify). A live session is re-checked every 30 s
-// (token.VerifyLive): a key that has left the set ends its sessions. The
-// credential's expiry decides only whether the session may start. A key
+// within its validity (token.Verify). Its grant lasts until it expires, as a
+// ticket's does: the relay applies the expiry to the grant, not to the
+// session, which a client keeps by presenting fresh tickets. A live session
+// is re-checked every 30 s (token.VerifyLive): a key that has left the set
+// ends its sessions. A key
 // marked "pause": ["publish"] starts no new sessions that may publish (a
 // credential with a publish pattern), and a funnel creates no track with it
 // (Check); it
@@ -122,7 +124,7 @@ func refuse(status int, format string, args ...any) error {
 func (v *Verifier) Authorize(_ context.Context, req Request) (*Grant, error) {
 	connect := req.Event == EventConnect
 	credential, credErr := credentialOf(req.Query)
-	g, s, err := v.decide(credential, credErr, connect, func(g *Grant) bool { return connect && publishesBroadcast(g.grant) }, true)
+	g, s, err := v.decide(credential, credErr, connect, func(g *Grant) bool { return connect && publishesBroadcast(g.grant) })
 	if v.usage != nil {
 		// A session is learned only when it is admitted at connect. A
 		// revalidate never adds one: it can finish after the session's end
@@ -149,7 +151,7 @@ func (v *Verifier) Authorize(_ context.Context, req Request) (*Grant, error) {
 func (v *Verifier) Check(credential string, action token.Action, path moqt.BroadcastPath) (*Grant, error) {
 	g, _, err := v.decide(credential, nil, true, func(g *Grant) bool {
 		return action == token.ActionCreate && g.Allows(token.ActionCreate, path)
-	}, false)
+	})
 	return g, err
 }
 
@@ -157,9 +159,11 @@ func (v *Verifier) Check(credential string, action token.Action, path moqt.Broad
 // session whose own credential keyID signed, as a connect is. The ticket must
 // be signed by that same key, so that everything a session may do is its
 // key's tenant's to grant and is reported under it. A key paused for
-// publishing refuses one that may publish.
-func (v *Verifier) Ticket(credential, keyID string) (*Grant, error) {
-	g, _, err := v.decide(credential, nil, true, func(g *Grant) bool { return publishesBroadcast(g.grant) }, false)
+// publishing refuses one that may publish, unless the session has published
+// already (published): a pause stops what is new, and a publisher on air
+// renews its grant.
+func (v *Verifier) Ticket(credential, keyID string, published bool) (*Grant, error) {
+	g, _, err := v.decide(credential, nil, true, func(g *Grant) bool { return !published && publishesBroadcast(g.grant) })
 	if err != nil {
 		return nil, err
 	}
@@ -207,10 +211,7 @@ func credentialOf(rawQuery string) (string, error) {
 // decide verifies credential, at connect or for a live session; credErr is
 // why there is none, answered once the key set is known to be usable. A key
 // paused for publishing refuses it when paused reports true for its grant.
-// When sessionCredential is set, it is the credential a session connects
-// with, which a ticket may not be: a session's credential lives as long as
-// its key, so a ticket's grant would outlive the ticket's expiry there.
-func (v *Verifier) decide(credential string, credErr error, connect bool, paused func(*Grant) bool, sessionCredential bool) (*Grant, usageSession, error) {
+func (v *Verifier) decide(credential string, credErr error, connect bool, paused func(*Grant) bool) (*Grant, usageSession, error) {
 	now := v.now()
 	set, fresh := v.store.current(now)
 	switch {
@@ -236,9 +237,6 @@ func (v *Verifier) decide(credential string, credErr error, connect bool, paused
 			status = http.StatusForbidden
 		}
 		return nil, usageSession{}, refuse(status, "%v", err)
-	}
-	if sessionCredential && c.Ticket {
-		return nil, usageSession{}, refuse(http.StatusUnauthorized, "a ticket is presented on a live session, not as its credential")
 	}
 	g := &Grant{grant: c.Grant, revalidate: revalidateEvery, keyID: c.Key.ID, expires: c.ExpiresAt}
 	if c.Key.Pauses(token.ActionPublish) && paused(g) {

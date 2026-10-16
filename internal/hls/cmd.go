@@ -61,9 +61,10 @@ import (
 //	                     set trusts. The egress signs a fresh credential with
 //	                     it on every connect, in place of any ?jwt= in
 //	                     RELAY_URL, granting subscribe on RELAY_TRACK_PATH
-//	                     alone. The way to connect to a relay with auth on:
-//	                     a credential fixed in RELAY_URL lives an hour at
-//	                     most.
+//	                     alone, and presents a fresh one on the session
+//	                     before its grant lapses. The way to connect to a
+//	                     relay with auth on: a credential fixed in RELAY_URL
+//	                     grants for an hour at most.
 //	RELAY_CERT_FILE,
 //	RELAY_KEY_FILE      - instead of a credential, a peer certificate and key
 //	                     (PEM) for the egress, from the relay CA the relay

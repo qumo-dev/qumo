@@ -23,6 +23,7 @@ import (
 
 	"github.com/qumo-dev/qumo/internal/cmaf"
 	"github.com/qumo-dev/qumo/internal/relay"
+	"github.com/qumo-dev/qumo/internal/relaycred"
 	"github.com/qumo-dev/qumo/internal/tlsclient"
 	"github.com/qumo-dev/qumo/token"
 )
@@ -48,8 +49,9 @@ type feedConfig struct {
 	certFile, keyFile string
 	// signingKey, when set, signs the egress's credential: a fresh one on
 	// every connect, in place of any ?jwt= in relayURL, granting subscribe
-	// on trackPath alone. A token lives an hour at most, so one fixed in
-	// relayURL stops admitting the egress at its first reconnect after that.
+	// on trackPath alone, and a fresh one on the session before its grant
+	// lapses. A token lives an hour at most, and its grant with it, so one
+	// fixed in relayURL lets the egress subscribe for that hour alone.
 	signingKey *token.SigningKey
 	// quic is the QUIC configuration of the session, whether moqt:// or
 	// https://; nil is quic-go's defaults.
@@ -176,34 +178,37 @@ func checkPeerCertificate(certFile, keyFile string) error {
 
 // subscribeGrant grants what the egress does at path: subscribing to every
 // track of that broadcast, and of no other.
-// The grant's root is the directory path lies in, the empty root for a path
-// of one segment.
+// The grant's root is the directory path lies in, "/" for a path of one
+// segment.
 func subscribeGrant(path string) token.Grant {
-	root, base := "", strings.Trim(path, "/")
+	dir, base := "", strings.Trim(path, "/")
 	if i := strings.LastIndex(base, "/"); i >= 0 {
-		root, base = base[:i], base[i+1:]
+		dir, base = base[:i], base[i+1:]
 	}
+	// A path that isn't one, which a token would refuse, roots nowhere: the
+	// grant is refused when signed.
+	root, _ := token.Directory(dir)
 	return token.Grant{Root: root, Subscribe: []string{"/" + base}}
 }
 
 // target returns the URL to dial, with a freshly signed credential when the
-// egress signs its own.
-func (c feedConfig) target() (string, error) {
+// egress signs its own, and when that credential's grant lapses.
+func (c feedConfig) target() (string, time.Time, error) {
 	if c.signingKey == nil {
-		return c.relayURL, nil
+		return c.relayURL, time.Time{}, nil
 	}
-	credential, err := token.Sign(*c.signingKey, subscribeGrant(c.trackPath), token.MaxLifetime)
+	credential, lapses, err := relaycred.Sign(*c.signingKey, subscribeGrant(c.trackPath))
 	if err != nil {
-		return "", fmt.Errorf("sign relay credential: %w", err)
+		return "", time.Time{}, err
 	}
 	u, err := url.Parse(c.relayURL)
 	if err != nil {
-		return "", errors.New("RELAY_URL: invalid URL")
+		return "", time.Time{}, errors.New("RELAY_URL: invalid URL")
 	}
 	query := u.Query()
 	query.Set("jwt", credential)
 	u.RawQuery = query.Encode()
-	return u.String(), nil
+	return u.String(), lapses, nil
 }
 
 // relayTLSConfig builds the client TLS config for dialing the relay. The egress
@@ -233,7 +238,7 @@ func connect(ctx context.Context, cfg feedConfig) (*moqt.Session, mediaInfo, err
 	if err := tlsclient.ApplyClientCert(tc, cfg.certFile, cfg.keyFile); err != nil {
 		return nil, mediaInfo{}, fmt.Errorf("hls: relay client certificate: %w", err)
 	}
-	target, err := cfg.target()
+	target, lapses, err := cfg.target()
 	if err != nil {
 		return nil, mediaInfo{}, fmt.Errorf("hls: %w", err)
 	}
@@ -268,6 +273,10 @@ func connect(ctx context.Context, cfg feedConfig) (*moqt.Session, mediaInfo, err
 		// not actionable: the close outcome is irrelevant once the catalog could not describe the track.
 		_ = session.CloseWithError(moqt.NoError, "catalog cannot describe the track")
 		return nil, mediaInfo{}, err
+	}
+
+	if cfg.signingKey != nil {
+		go relaycred.Keep(session, *cfg.signingKey, subscribeGrant(cfg.trackPath), lapses)
 	}
 
 	slog.Info("hls: catalog loaded",

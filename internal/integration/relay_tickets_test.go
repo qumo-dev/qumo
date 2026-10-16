@@ -78,7 +78,7 @@ func TestRelay_Tickets(t *testing.T) {
 		"/acme/room/42/host")
 	// A room: listen to everything in it, and speak as one member.
 	ticket := sign(session, token.Grant{
-		Root:      "acme/room/42",
+		Root:      "/acme/room/42/",
 		Publish:   []string{"/7"},
 		Subscribe: []string{"/"},
 	})
@@ -97,7 +97,7 @@ func TestRelay_Tickets(t *testing.T) {
 	assert.Never(t, routed(srv, "/acme/room/42/7"), 500*time.Millisecond, 25*time.Millisecond, "no announcement before a ticket")
 	endEarly()
 
-	_, err := present(sign(other, token.Grant{Root: "acme/room/42", Subscribe: []string{"/"}}))
+	_, err := present(sign(other, token.Grant{Root: "/acme/room/42/", Subscribe: []string{"/"}}))
 	authErr, ok := errors.AsType[*moqt.AuthError](err)
 	require.True(t, ok, "a ticket of another trusted key is refused with AUTH_ERROR, not %v", err)
 	assert.Equal(t, moqt.UnauthorizedSessionErrorCode, authErr.Code)

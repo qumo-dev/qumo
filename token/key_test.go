@@ -1,6 +1,7 @@
 package token
 
 import (
+	"cmp"
 	"encoding/base64"
 	"os"
 	"path/filepath"
@@ -52,7 +53,13 @@ func TestParseKeySet(t *testing.T) {
 		"prefix normalized": {
 			raw:        `{"keys":[{"kty":"OKP","crv":"Ed25519","x":"` + rfc8037X + `","prefix":"/acme//app/"}]}`,
 			wantKid:    rfc8037Kid,
-			wantPrefix: "acme/app",
+			wantPrefix: "/acme/app/",
+		},
+		// A bare prefix reads as the directory it names.
+		"a bare prefix": {
+			raw:        `{"keys":[{"kty":"OKP","crv":"Ed25519","x":"` + rfc8037X + `","prefix":"acme/app"}]}`,
+			wantKid:    rfc8037Kid,
+			wantPrefix: "/acme/app/",
 		},
 		"publishing paused": {
 			raw:       `{"keys":[{"kty":"OKP","crv":"Ed25519","x":"` + rfc8037X + `","pause":["publish"]}]}`,
@@ -121,7 +128,7 @@ func TestParseKeySet(t *testing.T) {
 			default:
 				require.NoError(t, err)
 				require.Contains(t, keys, tt.wantKid)
-				assert.Equal(t, tt.wantPrefix, keys[tt.wantKid].Prefix)
+				assert.Equal(t, cmp.Or(tt.wantPrefix, "/"), keys[tt.wantKid].Prefix, "no prefix confines nothing")
 				assert.Equal(t, tt.wantPause, keys[tt.wantKid].Pause)
 			}
 		})
@@ -179,7 +186,7 @@ func TestSigningKey_MarshalJWK_RoundTrip(t *testing.T) {
 	signing, err := LoadSigningKey(filepath.Join(dir, "signing-key.jwk"))
 	require.NoError(t, err)
 
-	assert.Equal(t, "acme/app", key.Prefix)
+	assert.Equal(t, "/acme/app/", key.Prefix)
 	assert.Equal(t, key.Public(), keys[key.ID])
 	assert.Equal(t, key, signing)
 }

@@ -67,7 +67,7 @@ func TestRelay_PatternCredentials(t *testing.T) {
 	})
 	t.Run("a credential carrying fetch is refused", func(t *testing.T) {
 		stale := signClaims(t, key, map[string]any{
-			"root": "acme", "subscribe": []string{"/"}, "fetch": []string{"/"},
+			"root": "/acme/", "subscribe": []string{"/"}, "fetch": []string{"/"},
 		})
 
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)

@@ -7,6 +7,8 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"path/filepath"
+	"slices"
+	"sync"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -318,45 +320,107 @@ func authTest(t *testing.T, sess *moqt.Session, tok string) (*moqt.Credential, e
 
 var (
 	// listenRoom subscribes beneath a room.
-	listenRoom = token.Grant{Root: "acme/room/42", Subscribe: []string{"/"}}
+	listenRoom = token.Grant{Root: "/acme/room/42/", Subscribe: []string{"/"}}
 	// listenAndSpeak subscribes beneath a room and publishes one broadcast in
 	// it.
-	listenAndSpeak = token.Grant{Root: "acme/room/42", Publish: []string{"/7"}, Subscribe: []string{"/"}}
+	listenAndSpeak = token.Grant{Root: "/acme/room/42/", Publish: []string{"/7"}, Subscribe: []string{"/"}}
 )
 
 // The credential a session connected with, presented again with no token, is
-// granted what the session was admitted with: what a verified credential
-// grants, nothing for one of no patterns, and everything when nothing is checked.
+// granted what the session was admitted with, until its token expires: what
+// a verified credential grants, nothing for one of no patterns, and
+// everything, for good, when nothing is checked.
 func TestServer_ServeAuth_ConnectionCredential(t *testing.T) {
 	keys := newTicketTestKeys(t)
 	tests := map[string]struct {
 		credential string
 		unchecked  bool
 		want       moqt.Grant
+		wantLapse  bool
 	}{
 		"a verified credential": {
 			credential: signTest(t, keys.session, listenAndSpeak),
 			want:       moqt.Grant{Root: "/acme/room/42/", Publish: []string{"/7"}, Subscribe: []string{"/"}},
+			wantLapse:  true,
 		},
-		"a credential of no patterns":   {credential: signTest(t, keys.session, token.Grant{}), want: moqt.Grant{}},
+		"a credential of no patterns": {credential: signTest(t, keys.session, token.Grant{}), want: moqt.Grant{}, wantLapse: true},
+		// A root alone would still let the session list announcements
+		// within it.
+		"a root and no relay patterns": {
+			credential: signTest(t, keys.session, token.Grant{Root: "/acme/room/42/", Post: []string{"/comments"}}),
+			want:       moqt.Grant{}, wantLapse: true,
+		},
 		"a session checked for nothing": {unchecked: true, want: everything},
 	}
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
-			var g *auth.Grant
-			if !tt.unchecked {
-				var err error
-				g, err = keys.verifier.Authorize(t.Context(), auth.Request{
-					Event: auth.EventConnect, Query: url.Values{"jwt": {tt.credential}}.Encode(),
-				})
-				require.NoError(t, err)
+			srv := newWebSocketTestServer(t, &fakeAuth{})
+			srv.Authorize = keys.verifier.Authorize
+			if tt.unchecked {
+				srv.Authorize = admitUnchecked
 			}
+			sess := dialTest(t, srv, tt.credential)
 
-			got := connectionGrant(g)
+			c, err := authTest(t, sess, "")
 
+			require.NoError(t, err)
+			got := c.Grant()
 			assert.Equal(t, tt.want.Root, got.Root)
 			assert.ElementsMatch(t, tt.want.Publish, got.Publish)
 			assert.ElementsMatch(t, tt.want.Subscribe, got.Subscribe)
+			if !tt.wantLapse {
+				assert.Zero(t, got.MaxAge, "a grant checked for nothing never lapses")
+				return
+			}
+			assert.Positive(t, got.MaxAge, "it lapses when its token expires")
+			assert.LessOrEqual(t, got.MaxAge, credentialTTL+token.Leeway)
+		})
+	}
+}
+
+// hold keeps a grant until its session or presenter ends it, until a margin
+// after it lapses, so that gomoqt revokes it first, or until it is no longer
+// trusted.
+func TestHold(t *testing.T) {
+	tests := map[string]struct {
+		lapsesIn   time.Duration
+		revalidate func() bool
+		cancelIn   time.Duration
+		want       heldOutcome
+		wantAfter  time.Duration
+	}{
+		"lapses": {lapsesIn: time.Minute, want: heldLapsed, wantAfter: time.Minute + revokeMargin},
+		"never lapses, ended": {
+			cancelIn: time.Hour, want: heldEnded, wantAfter: time.Hour,
+		},
+		"revoked at a recheck": {
+			lapsesIn: time.Hour, revalidate: func() bool { return false },
+			want: heldRevoked, wantAfter: ticketRevalidateEvery,
+		},
+		"trusted, then lapses": {
+			lapsesIn: time.Minute, revalidate: func() bool { return true },
+			want: heldLapsed, wantAfter: time.Minute + revokeMargin,
+		},
+	}
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				ctx, cancel := context.WithCancel(t.Context())
+				defer cancel()
+				if tt.cancelIn > 0 {
+					time.AfterFunc(tt.cancelIn, cancel)
+				}
+				var lapses time.Time
+				if tt.lapsesIn > 0 {
+					lapses = time.Now().Add(tt.lapsesIn)
+				}
+				start := time.Now()
+
+				got := hold(ctx, lapses, tt.revalidate)
+
+				assert.Equal(t, tt.want, got)
+				assert.Equal(t, tt.wantAfter, time.Since(start))
+			})
 		})
 	}
 }
@@ -443,7 +507,8 @@ func TestServer_ServeAuth_Ticket(t *testing.T) {
 	}
 }
 
-// A session holds at most maxTickets at once; withdrawing one makes room.
+// A session holds at most maxCredentials at once, its connection's own among
+// them; withdrawing one makes room.
 func TestServer_ServeAuth_TooManyTickets(t *testing.T) {
 	keys := newTicketTestKeys(t)
 	srv := newWebSocketTestServer(t, &fakeAuth{})
@@ -451,7 +516,7 @@ func TestServer_ServeAuth_TooManyTickets(t *testing.T) {
 	srv.Tickets = keys.verifier
 	sess := dialTest(t, srv, signTest(t, keys.session, token.Grant{}))
 	ticket := signTest(t, keys.session, listenRoom)
-	held := make([]*moqt.Credential, maxTickets)
+	held := make([]*moqt.Credential, maxCredentials-1)
 	for i := range held {
 		c, err := authTest(t, sess, ticket)
 		require.NoError(t, err, "ticket %d", i)
@@ -486,11 +551,91 @@ func TestServer_ServeAuth_TicketMaxAge(t *testing.T) {
 	assert.LessOrEqual(t, c.Grant().MaxAge, token.MaxLifetime+token.Leeway)
 }
 
+// A ticket of a root and no relay patterns grants nothing, not even listing
+// announcements within its root.
+func TestServer_ServeAuth_TicketOfARootAlone(t *testing.T) {
+	keys := newTicketTestKeys(t)
+	srv := newWebSocketTestServer(t, &fakeAuth{})
+	srv.Authorize = keys.verifier.Authorize
+	srv.Tickets = keys.verifier
+	sess := dialTest(t, srv, signTest(t, keys.session, token.Grant{}))
+
+	c, err := authTest(t, sess, signTest(t, keys.session, token.Grant{Root: "/acme/room/42/", Post: []string{"/comments"}}))
+
+	require.NoError(t, err)
+	assert.Empty(t, c.Grant().Root)
+	assert.Empty(t, c.Grant().Publish)
+	assert.Empty(t, c.Grant().Subscribe)
+}
+
+// recordingTickets verifies with the Verifier and records whether each
+// ticket came from a session that had been granted what may publish.
+type recordingTickets struct {
+	*auth.Verifier
+	mu        sync.Mutex
+	published []bool
+}
+
+func (r *recordingTickets) Ticket(credential, keyID string, published bool) (*auth.Grant, error) {
+	r.mu.Lock()
+	r.published = append(r.published, published)
+	r.mu.Unlock()
+	return r.Verifier.Ticket(credential, keyID, published)
+}
+
+func (r *recordingTickets) seen() []bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return slices.Clone(r.published)
+}
+
+// A session has published once its connection's credential, or a ticket it
+// was granted, may publish; a key paused for publishing still renews its
+// grant then.
+func TestServer_ServeAuth_TicketKnowsAPublisher(t *testing.T) {
+	keys := newTicketTestKeys(t)
+	tests := map[string]struct {
+		credential token.Grant
+		tickets    []token.Grant
+		want       []bool
+	}{
+		"connected to publish": {
+			credential: listenAndSpeak, tickets: []token.Grant{listenRoom}, want: []bool{true},
+		},
+		"connected to listen, then granted a ticket to publish": {
+			credential: listenRoom, tickets: []token.Grant{listenAndSpeak, listenRoom}, want: []bool{false, true},
+		},
+		"never published": {
+			credential: token.Grant{}, tickets: []token.Grant{listenRoom, listenRoom}, want: []bool{false, false},
+		},
+	}
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			tickets := &recordingTickets{Verifier: keys.verifier}
+			srv := newWebSocketTestServer(t, &fakeAuth{})
+			srv.Authorize = keys.verifier.Authorize
+			srv.Tickets = tickets
+			sess := dialTest(t, srv, signTest(t, keys.session, tt.credential))
+			// The connection's own credential is granted as the session
+			// starts; presenting it again waits for that.
+			_, err := authTest(t, sess, "")
+			require.NoError(t, err)
+
+			for _, g := range tt.tickets {
+				_, err := authTest(t, sess, signTest(t, keys.session, g))
+				require.NoError(t, err)
+			}
+
+			assert.Equal(t, tt.want, tickets.seen())
+		})
+	}
+}
+
 // uncheckableTickets can check no ticket just now, as a relay whose key set
 // is not usable.
 type uncheckableTickets struct{}
 
-func (uncheckableTickets) Ticket(string, string) (*auth.Grant, error) {
+func (uncheckableTickets) Ticket(string, string, bool) (*auth.Grant, error) {
 	return nil, errors.New("auth: no key set loaded yet")
 }
 func (uncheckableTickets) Trusts(*auth.Grant) (bool, error) { return false, errors.New("no set") }

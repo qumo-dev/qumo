@@ -118,7 +118,7 @@ func TestVerifier_PublishLimit(t *testing.T) {
 		// Posting into a funnel's track, as a viewer who may chat does,
 		// publishes nothing: posting never creates a track.
 		"limited key, post and subscribe": {
-			jwt:         sign(t, limited, token.Grant{Root: "acme/app", Post: []string{"/live"}, Subscribe: []string{"/live"}}),
+			jwt:         sign(t, limited, token.Grant{Root: "/acme/app/", Post: []string{"/live"}, Subscribe: []string{"/live"}}),
 			wantConnect: 200, wantRevalidate: 200,
 		},
 		// A relay ignores create, which a funnel checks itself.
@@ -146,7 +146,7 @@ func TestVerifier_PublishLimit(t *testing.T) {
 
 // beneathLive is a grant of actions on every broadcast beneath acme/app/live.
 func beneathLive(actions ...token.Action) token.Grant {
-	g := token.Grant{Root: "acme/app/live"}
+	g := token.Grant{Root: "/acme/app/live/"}
 	for _, a := range actions {
 		patterns := map[token.Action]*[]string{
 			token.ActionPublish: &g.Publish, token.ActionSubscribe: &g.Subscribe,

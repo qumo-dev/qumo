@@ -87,8 +87,11 @@ func publishedBeneath(path string, authorize func(*http.Request, ingest.Track, i
 	if path == "" {
 		return authorize
 	}
-	root := "/" + strings.Trim(path, "/") + "/"
+	root, rootErr := token.Directory(path)
 	return func(r *http.Request, t ingest.Track, access ingest.Access) (string, error) {
+		if access == ingest.Create && rootErr != nil {
+			return "", fmt.Errorf("funnel: RELAY_PUBLISH: %w", rootErr)
+		}
 		if access == ingest.Create && !strings.HasPrefix(t.BroadcastPath, root) {
 			return "", fmt.Errorf("funnel: %s lies outside %s, beneath which the relay takes the funnel's broadcasts (RELAY_PUBLISH)", t.BroadcastPath, root)
 		}

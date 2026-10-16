@@ -18,7 +18,8 @@ const cmdUsage = `Usage: qumo auth <command>
 
 Sets up the credentials a relay verifies (QUMO_AUTH_KEYS). An app signs a
 capability token per client with its own Ed25519 key; the client connects
-with it (?jwt=…); the relay verifies it against the key set.
+with it (?jwt=…) or presents it on a session's Auth Stream; the relay
+verifies it against the key set and grants it until it expires.
 
 Commands:
   keygen   Generate a signing key pair: the app's private key, and the public
@@ -50,7 +51,7 @@ func Run(args []string) error {
 
 // prefixLabel describes what a key with prefix may grant, for the terminal.
 func prefixLabel(prefix string) string {
-	if prefix == "" {
+	if prefix == "/" {
 		return "any root (no prefix)"
 	}
 	return "a root at or beneath " + prefix
@@ -60,7 +61,7 @@ func prefixLabel(prefix string) string {
 // signs tokens, and a key set holding its public key, for the relay.
 func runKeygen(args []string, out io.Writer) error {
 	fs := flag.NewFlagSet("qumo auth keygen", flag.ContinueOnError)
-	prefix := fs.String("prefix", "", "confine the key to this path prefix (e.g. acme/app); empty for none")
+	prefix := fs.String("prefix", "/", "confine the key to this directory (e.g. /acme/app/); / for none")
 	privPath := fs.String("out", "signing-key.jwk", "where to write the private signing key (keep it on the app's server)")
 	pubPath := fs.String("keys", "keys.json", "where to write the public key set (QUMO_AUTH_KEYS)")
 	if err := fs.Parse(args); err != nil {
@@ -104,9 +105,6 @@ func runKeygen(args []string, out io.Writer) error {
 // exampleGrant is the flags of a grant a key with prefix may sign, for a
 // usage example.
 func exampleGrant(prefix string) string {
-	if prefix == "" {
-		return "-publish /demo"
-	}
 	return "-root " + prefix + " -publish /demo"
 }
 
@@ -151,7 +149,7 @@ func removeFile(path string) error {
 func runToken(args []string, out, info io.Writer) error {
 	fs := flag.NewFlagSet("qumo auth token", flag.ContinueOnError)
 	keyPath := fs.String("key", "signing-key.jwk", "the private signing key (qumo auth keygen)")
-	root := fs.String("root", "", "the root the patterns are relative to, at or beneath the key's prefix (e.g. acme/room/42)")
+	root := fs.String("root", "", "the directory the patterns are relative to, at or beneath the key's prefix (e.g. /acme/room/42/); empty, with no patterns, grants nothing")
 	var g token.Grant
 	for _, f := range []struct {
 		action   token.Action
@@ -173,7 +171,6 @@ func runToken(args []string, out, info io.Writer) error {
 	}
 	subject := fs.String("sub", "", "who the bearer is (the sub claim)")
 	ttl := fs.Duration("ttl", time.Hour, "how long the token is valid (at most 1h)")
-	ticket := fs.Bool("ticket", false, "sign a ticket, presented on a live session's Auth Stream and refused as the credential it connects with")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -181,12 +178,13 @@ func runToken(args []string, out, info io.Writer) error {
 	if err != nil {
 		return err
 	}
-	g.Root, g.Subject = *root, *subject
-	sign := token.Sign
-	if *ticket {
-		sign = token.SignTicket
+	if *root != "" {
+		if g.Root, err = token.Directory(*root); err != nil {
+			return fmt.Errorf("-root: %w", err)
+		}
 	}
-	tok, err := sign(key, g, *ttl)
+	g.Subject = *subject
+	tok, err := token.Sign(key, g, *ttl)
 	if err != nil {
 		return err
 	}
@@ -200,7 +198,7 @@ func runToken(args []string, out, info io.Writer) error {
 	}
 	var b strings.Builder
 	b.WriteString("\n")
-	fmt.Fprintf(&b, "  %-11s %s\n", "Root:", cmp.Or(c.Root, "- (every path)"))
+	fmt.Fprintf(&b, "  %-11s %s\n", "Root:", cmp.Or(c.Root, "-"))
 	granted := false
 	for _, a := range token.Actions() {
 		if patterns := c.Patterns(a); len(patterns) > 0 {
@@ -209,16 +207,12 @@ func runToken(args []string, out, info io.Writer) error {
 		}
 	}
 	if !granted {
-		fmt.Fprintf(&b, "  %-11s nothing: the token names its key's tenant alone, for a relay session's tickets to grant to\n", "Grants:")
+		fmt.Fprintf(&b, "  %-11s nothing: the token names its key's tenant alone\n", "Grants:")
 	}
 	fmt.Fprintf(&b, "  %-11s %s\n", "Subject:", cmp.Or(c.Subject, "-"))
 	fmt.Fprintf(&b, "  %-11s %s (in %s)\n", "Expires:", c.ExpiresAt.Format(time.DateTime), time.Until(c.ExpiresAt).Round(time.Second))
 	fmt.Fprintf(&b, "  %-11s %s\n", "Key:", key.ID)
-	if *ticket {
-		fmt.Fprintf(&b, "  %-11s on a live session's Auth Stream, not as ?jwt=\n", "Present:")
-	} else {
-		fmt.Fprintf(&b, "  %-11s https://<relay>/?jwt=<token>\n", "Connect:")
-	}
+	fmt.Fprintf(&b, "  %-11s https://<relay>/?jwt=<token>, or on a session's Auth Stream\n", "Present:")
 	_, err = io.WriteString(info, b.String())
 	return err
 }
