@@ -38,8 +38,10 @@ type VerifierConfig struct {
 // Verifier is the relay's session auth: it verifies credentials against a
 // key set. Its Authorize and End are what the relay's Server takes.
 //
-// A session's credential (the jwt query parameter of its connect URL) must be
-// signed by a key in the set, have its root within the key's prefix, and be
+// A session may connect with no credential (no jwt query parameter): it is
+// admitted anonymous, granted nothing, and binds itself to a key with the
+// first ticket it is granted (Ticket, Bind). A session's credential (the jwt
+// query parameter of its connect URL) must be signed by a key in the set, have its root within the key's prefix, and be
 // within its validity (token.Verify). Its grant lasts until it expires, as a
 // ticket's does: the relay applies the expiry to the grant, not to the
 // session, which a client keeps by presenting fresh tickets. A live session
@@ -124,6 +126,9 @@ func refuse(status int, format string, args ...any) error {
 func (v *Verifier) Authorize(_ context.Context, req Request) (*Grant, error) {
 	connect := req.Event == EventConnect
 	credential, credErr := credentialOf(req.Query)
+	if errors.Is(credErr, errNoCredential) {
+		return v.anonymous(req), nil
+	}
 	g, s, err := v.decide(credential, credErr, connect, func(g *Grant) bool { return connect && publishesBroadcast(g.grant) })
 	if v.usage != nil {
 		// A session is learned only when it is admitted at connect. A
@@ -142,6 +147,16 @@ func (v *Verifier) Authorize(_ context.Context, req Request) (*Grant, error) {
 	return g, err
 }
 
+// anonymous admits a session that carries no credential, at connect or a
+// revalidate: it grants nothing, so there is nothing to check. Its usage is
+// counted once a ticket binds it to a key (Bind).
+func (v *Verifier) anonymous(req Request) *Grant {
+	if v.usage != nil && req.Event == EventRevalidate {
+		v.usage.revalidated(req.ID, req.Bytes, true)
+	}
+	return &Grant{revalidate: revalidateEvery, anonymous: true}
+}
+
 // Check verifies credential, presented with one request that needs action
 // on the broadcast at path, such as a funnel's: as Authorize verifies a
 // connect, except that the key's pause refuses only creating a track the
@@ -158,7 +173,8 @@ func (v *Verifier) Check(credential string, action token.Action, path moqt.Broad
 // Ticket verifies credential, a ticket presented on an Auth Stream of a
 // session whose own credential keyID signed, as a connect is. The ticket must
 // be signed by that same key, so that everything a session may do is its
-// key's tenant's to grant and is reported under it. A key paused for
+// key's tenant's to grant and is reported under it. An empty keyID, for an
+// anonymous session no ticket has bound yet, takes any trusted key. A key paused for
 // publishing refuses one that may publish, unless the session has published
 // already (published): a pause stops what is new, and a publisher on air
 // renews its grant.
@@ -167,7 +183,7 @@ func (v *Verifier) Ticket(credential, keyID string, published bool) (*Grant, err
 	if err != nil {
 		return nil, err
 	}
-	if g.keyID != keyID {
+	if keyID != "" && g.keyID != keyID {
 		return nil, refuse(http.StatusForbidden, "the ticket is signed by key %s, not by the session's", g.keyID)
 	}
 	return g, nil
@@ -187,6 +203,14 @@ func (v *Verifier) Trusts(g *Grant) (bool, error) {
 	return ok && key.Holds(g.grant.Root), nil
 }
 
+// Bind records that the anonymous session id is bound to keyID by the first
+// ticket granted on it: its usage is reported under that key from then on.
+func (v *Verifier) Bind(id, keyID string) {
+	if v.usage != nil {
+		v.usage.open(id, usageSession{kid: keyID})
+	}
+}
+
 // Publishing records that the session id was granted a ticket that may
 // publish: the usage it reports is a publisher's from then on.
 func (v *Verifier) Publishing(id string) {
@@ -195,15 +219,19 @@ func (v *Verifier) Publishing(id string) {
 	}
 }
 
+// errNoCredential is a connect URL that carries no jwt query parameter.
+var errNoCredential = errors.New("auth: no credential")
+
 // credentialOf returns the credential a connect URL's raw query carries as
-// jwt.
+// jwt, or errNoCredential when it has none. An empty jwt is a credential,
+// which Verify refuses.
 func credentialOf(rawQuery string) (string, error) {
 	query, err := url.ParseQuery(rawQuery)
 	if err != nil {
 		return "", refuse(http.StatusUnauthorized, "query: %v", err)
 	}
 	if !query.Has("jwt") {
-		return "", refuse(http.StatusUnauthorized, "no credential: connect with ?jwt=")
+		return "", errNoCredential
 	}
 	return query.Get("jwt"), nil
 }

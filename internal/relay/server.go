@@ -1,6 +1,7 @@
 package relay
 
 import (
+	"cmp"
 	"context"
 	"log/slog"
 	"maps"
@@ -65,6 +66,10 @@ type Server struct {
 	// (admit.go): the Verifier's Ticket. Nil refuses every ticket with
 	// NOT_SUPPORTED, as with auth off.
 	Tickets TicketVerifier
+
+	// AuthDeadline is how long a session that connected with no credential
+	// has to be granted a ticket before it is closed. Zero is 10 s.
+	AuthDeadline time.Duration
 
 	// framePool recycles frame buffers for track distributors; sized from Config.FrameCapacity in init() (falling back to
 	// DefaultFramePool when unset, so a minimally-constructed Server still works).
@@ -769,6 +774,17 @@ func (s *Server) serveSession(sess *moqt.Session) {
 	if checked {
 		if l = startLease(sess.Context(), sess, s.Authorize, a.req, a.grant.Revalidate()); l != nil {
 			defer l.stop()
+		}
+		if a.grant.Anonymous() {
+			deadline := time.AfterFunc(cmp.Or(s.AuthDeadline, authDeadline), func() {
+				if a.granted.Load() {
+					return
+				}
+				metricSessionsEnded.WithLabelValues(endUnbound).Inc()
+				slog.Info("relay: session closed: no credential presented in time", "id", a.req.ID, "remote", a.req.Remote)
+				_ = sess.CloseWithError(moqt.UnauthorizedSessionErrorCode, endUnboundMessage) // not actionable: the session is ending either way
+			})
+			defer deadline.Stop()
 		}
 	}
 

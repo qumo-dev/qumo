@@ -48,6 +48,32 @@ type admission struct {
 	// connection's credential or a ticket: a key paused for publishing still
 	// renews its grant (Ticket).
 	published atomic.Bool
+	// key is the kid an anonymous session is bound to by the first ticket
+	// it presented, or nil while none has (bind).
+	key atomic.Pointer[string]
+	// granted is set once a ticket is granted on the session: an anonymous
+	// session closed without one when its authDeadline passes.
+	granted atomic.Bool
+}
+
+// boundKey returns the kid an anonymous session is bound to, or "" while no
+// ticket has bound it.
+func (a *admission) boundKey() string {
+	if k := a.key.Load(); k != nil {
+		return *k
+	}
+	return ""
+}
+
+// bind binds an anonymous session to kid, the key of a ticket it presented:
+// the first ticket's key wins, and a ticket of any other key is refused. It
+// reports whether the session is bound to kid, and whether this call bound
+// it.
+func (a *admission) bind(kid string) (ok, first bool) {
+	if a.key.CompareAndSwap(nil, &kid) {
+		return true, true
+	}
+	return a.boundKey() == kid, false
 }
 
 type admissionKey struct{}
@@ -253,12 +279,16 @@ func refusalReason(err error) string {
 
 // TicketVerifier verifies the tickets a session presents on Auth Streams
 // (auth.Verifier): Ticket when one is presented, which must be signed by the
-// key that signed the session's own credential, and published when the
-// session has been granted what may publish; Trusts while its grant is in
-// force; and Publishing once a session is granted one that may publish.
+// key that signed the session's own credential, or for an anonymous session
+// by the key its first ticket bound it to (any key before that: an empty
+// keyID), and published when the session has been granted what may publish;
+// Trusts while its grant is in force; Bind once an anonymous session is
+// bound to a key; and Publishing once a session is granted one that may
+// publish.
 type TicketVerifier interface {
 	Ticket(credential, keyID string, published bool) (*auth.Grant, error)
 	Trusts(g *auth.Grant) (bool, error)
+	Bind(id, keyID string)
 	Publishing(id string)
 }
 
@@ -274,6 +304,15 @@ const (
 	// gomoqt revokes the grant first and tells the presenter: a handler that
 	// returned first would end it silently.
 	revokeMargin = time.Second
+	// authDeadline is how long a session that connected with no credential
+	// has to be granted a ticket before the relay closes it, so that one
+	// can't hold a session open granted nothing.
+	authDeadline = 10 * time.Second
+	// endUnbound is the reason label of metricSessionsEnded for an
+	// anonymous session closed at its deadline, and endUnboundMessage
+	// the close message its client sees.
+	endUnbound        = "no_credential"
+	endUnboundMessage = "no credential presented in time"
 )
 
 // everything is the grant of a session the relay checks nothing for: a relay
@@ -287,6 +326,10 @@ var everything = moqt.Grant{Root: "/", Publish: []string{"/"}, Subscribe: []stri
 // session's (serveTicket). Every grant of a verified credential lasts until
 // its token expires, wherever the token was presented: a client that stays
 // longer presents a fresh one before then.
+//
+// A session that connected with no credential (an anonymous one) is granted
+// nothing for it, and holds what its tickets grant. Until one is granted it
+// is closed after authDeadline (serveSession).
 //
 // A client may present no token on an Auth Stream too, and gets its
 // connection's grant again, for what is left of it, which adds nothing. A
@@ -414,8 +457,9 @@ func hold(ctx context.Context, lapses time.Time, revalidate func() bool) heldOut
 
 // serveTicket verifies a ticket and grants it until it expires, its presenter
 // withdraws it or its key leaves the set. Only a session admitted with a
-// credential the relay verified may present one, and it must be signed by
-// the same key.
+// credential the relay verified, or anonymous, may present one. It must be
+// signed by the key of the session's credential or, for an anonymous
+// session, by the key its first ticket bound it to.
 func (s *Server) serveTicket(w *moqt.AuthWriter, r *moqt.AuthRequest) {
 	ctx := r.Context()
 	a := admissionFrom(ctx)
@@ -423,13 +467,17 @@ func (s *Server) serveTicket(w *moqt.AuthWriter, r *moqt.AuthRequest) {
 	if err != nil {
 		return
 	}
-	if s.Tickets == nil || g == nil || g.KeyID() == "" {
+	if s.Tickets == nil || g == nil || (g.KeyID() == "" && !g.Anonymous()) {
 		metricTickets.WithLabelValues(ticketNotSupported).Inc()
 		_ = w.Refuse(moqt.NotSupportedErrorCode, "this relay verifies no tickets for the session")
 		return
 	}
 
-	tg, err := s.Tickets.Ticket(string(r.Token), g.KeyID(), a.published.Load())
+	keyID := g.KeyID()
+	if g.Anonymous() {
+		keyID = a.boundKey()
+	}
+	tg, err := s.Tickets.Ticket(string(r.Token), keyID, a.published.Load())
 	if err != nil {
 		if _, refused := errors.AsType[auth.RefusedError](err); !refused {
 			// Not the ticket's fault: the key set is not usable just now.
@@ -442,6 +490,20 @@ func (s *Server) serveTicket(w *moqt.AuthWriter, r *moqt.AuthRequest) {
 		slog.Info("relay: ticket refused", "id", a.req.ID, "reason", err)
 		_ = w.Refuse(moqt.UnauthorizedSessionErrorCode, "ticket refused")
 		return
+	}
+	if g.Anonymous() {
+		ok, first := a.bind(tg.KeyID())
+		if !ok {
+			// Another ticket, presented at the same time, bound the session
+			// to its key first.
+			metricTickets.WithLabelValues(ticketRefused).Inc()
+			slog.Info("relay: ticket refused: the session is bound to another key", "id", a.req.ID, "kid", tg.KeyID())
+			_ = w.Refuse(moqt.UnauthorizedSessionErrorCode, "ticket refused")
+			return
+		}
+		if first {
+			s.Tickets.Bind(a.req.ID, tg.KeyID())
+		}
 	}
 	// AUTH_OK tells the presenter when it lapses, so it can present a fresh
 	// ticket in time.
@@ -463,6 +525,7 @@ func (s *Server) serveTicket(w *moqt.AuthWriter, r *moqt.AuthRequest) {
 		return
 	}
 	metricTickets.WithLabelValues(ticketGranted).Inc()
+	a.granted.Store(true)
 	if len(grant.Publish) > 0 {
 		s.Tickets.Publishing(a.req.ID)
 	}

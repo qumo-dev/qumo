@@ -188,7 +188,7 @@ func TestVerifier_Decisions(t *testing.T) {
 		"root outside the prefix": {jwt: sign(t, unconfined, publishAll("globex/app")), wantConnect: 403, wantRevalidate: 403},
 		"prefix's sibling":        {jwt: sign(t, unconfined, publishAll("acme/application")), wantConnect: 403, wantRevalidate: 403},
 		"root above the prefix":   {jwt: sign(t, unconfined, token.Grant{Root: "/acme/", Publish: []string{"/app/"}}), wantConnect: 403, wantRevalidate: 403},
-		"no credential":           {jwt: "", wantConnect: 401, wantRevalidate: 401},
+		"no credential":           {jwt: "", wantConnect: 200, wantRevalidate: 200},
 		"not a credential":        {jwt: "not.a.jwt", wantConnect: 401, wantRevalidate: 401},
 	}
 	for name, tt := range tests {
@@ -773,13 +773,13 @@ func TestVerifier_Ticket(t *testing.T) {
 		published bool
 		wantCode  int
 	}{
-		"the session's key":                 {key: session, ticket: listen, keyID: session.ID, wantCode: http.StatusOK},
-		"the session's key, to publish":     {key: session, ticket: speak, keyID: session.ID, wantCode: http.StatusOK},
-		"another trusted key":               {key: other, ticket: listen, keyID: session.ID, wantCode: http.StatusForbidden},
-		"a key not in the set":              {key: gone, ticket: listen, keyID: gone.ID, wantCode: http.StatusUnauthorized},
-		"a session admitted by no key":      {key: session, ticket: listen, keyID: "", wantCode: http.StatusForbidden},
-		"a paused key, a ticket to publish": {key: paused, ticket: speak, keyID: paused.ID, wantCode: http.StatusForbidden},
-		"a paused key, a ticket to listen":  {key: paused, ticket: listen, keyID: paused.ID, wantCode: http.StatusOK},
+		"the session's key":                  {key: session, ticket: listen, keyID: session.ID, wantCode: http.StatusOK},
+		"the session's key, to publish":      {key: session, ticket: speak, keyID: session.ID, wantCode: http.StatusOK},
+		"another trusted key":                {key: other, ticket: listen, keyID: session.ID, wantCode: http.StatusForbidden},
+		"a key not in the set":               {key: gone, ticket: listen, keyID: gone.ID, wantCode: http.StatusUnauthorized},
+		"an anonymous session not yet bound": {key: other, ticket: listen, keyID: "", wantCode: http.StatusOK},
+		"a paused key, a ticket to publish":  {key: paused, ticket: speak, keyID: paused.ID, wantCode: http.StatusForbidden},
+		"a paused key, a ticket to listen":   {key: paused, ticket: listen, keyID: paused.ID, wantCode: http.StatusOK},
 		// A pause stops what is new: a publisher on air renews its grant.
 		"a paused key, a publisher renewing": {key: paused, ticket: speak, keyID: paused.ID, published: true, wantCode: http.StatusOK},
 	}
@@ -793,7 +793,7 @@ func TestVerifier_Ticket(t *testing.T) {
 				return
 			}
 			require.NotNil(t, g)
-			assert.Equal(t, tt.keyID, g.KeyID())
+			assert.Equal(t, tt.key.ID, g.KeyID())
 			assert.WithinDuration(t, time.Now().Add(10*time.Minute), g.Expires(), 2*time.Second)
 			assert.Equal(t, tt.ticket, g.grant)
 		})
@@ -927,4 +927,57 @@ func TestVerifier_TokenAdmitsAndIsATicket(t *testing.T) {
 	g, err := v.Ticket(jwt, k.ID, false)
 	require.NoError(t, err, "on a live session")
 	assert.Equal(t, "/acme/app/room/42/", g.grant.Root)
+}
+
+// A session that connects with no credential is admitted anonymous and
+// granted nothing, at connect and at each revalidate; one that connects with
+// an empty credential is refused, as any credential that does not verify.
+func TestVerifier_Anonymous(t *testing.T) {
+	k := genKey(t, "acme/app")
+	v := verifierWith(t, keySetJSON(t, []token.SigningKey{k}), time.Now())
+
+	for _, event := range []string{EventConnect, EventRevalidate} {
+		g, err := v.Authorize(context.Background(), sessionReq(event, ""))
+
+		require.NoError(t, err, event)
+		assert.True(t, g.Anonymous(), event)
+		assert.Empty(t, g.KeyID(), event)
+		assert.Zero(t, g.Expires(), event)
+		assert.Equal(t, token.Grant{}, g.Token(), event)
+		assert.Equal(t, revalidateEvery, g.Revalidate(), event)
+	}
+
+	req := sessionReq(EventConnect, "")
+	req.Query = "jwt="
+	_, err := v.Authorize(context.Background(), req)
+	assert.Equal(t, http.StatusUnauthorized, statusOf(err))
+}
+
+// An anonymous session's usage is reported under the key its first ticket
+// bound it to, from then on: nothing before, and its bytes once bound.
+func TestVerifier_AnonymousUsage(t *testing.T) {
+	k := genKey(t, "acme/app")
+	sink := &fakeUsageSink{}
+	v := verifierWith(t, keySetJSON(t, []token.SigningKey{k}), time.Now())
+	v.usage = newTestUsage(t, sink)
+	ctx := context.Background()
+
+	_, err := v.Authorize(ctx, sessionReq(EventConnect, ""))
+	require.NoError(t, err)
+	assert.Empty(t, v.usage.sessions, "an anonymous session is not counted at connect")
+
+	v.Bind("s1", k.ID)
+	v.Publishing("s1")
+	req := sessionReq(EventRevalidate, "")
+	req.Bytes = Bytes{Received: 40}
+	_, err = v.Authorize(ctx, req)
+	require.NoError(t, err)
+	require.NoError(t, v.usage.flush(ctx))
+
+	var got []string
+	for _, rec := range sink.received()[0] {
+		assert.Equal(t, k.ID, rec.KID)
+		got = append(got, string(rec.Type))
+	}
+	assert.ElementsMatch(t, []string{"session_open", "usage"}, got)
 }

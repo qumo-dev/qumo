@@ -639,6 +639,7 @@ func (uncheckableTickets) Ticket(string, string, bool) (*auth.Grant, error) {
 	return nil, errors.New("auth: no key set loaded yet")
 }
 func (uncheckableTickets) Trusts(*auth.Grant) (bool, error) { return false, errors.New("no set") }
+func (uncheckableTickets) Bind(string, string)              {}
 func (uncheckableTickets) Publishing(string)                {}
 
 // A ticket that could not be checked is answered with INTERNAL, which a
@@ -655,4 +656,102 @@ func TestServer_ServeAuth_TicketUncheckable(t *testing.T) {
 	authErr, ok := errors.AsType[*moqt.AuthError](err)
 	require.True(t, ok, "want an AuthError, got %v", err)
 	assert.Equal(t, moqt.InternalSessionErrorCode, authErr.Code)
+}
+
+// bindingTickets verifies with the Verifier and records each session bound
+// to a key.
+type bindingTickets struct {
+	*auth.Verifier
+	mu    sync.Mutex
+	bound []string
+}
+
+func (b *bindingTickets) Bind(id, keyID string) {
+	b.mu.Lock()
+	b.bound = append(b.bound, keyID)
+	b.mu.Unlock()
+	b.Verifier.Bind(id, keyID)
+}
+
+func (b *bindingTickets) binds() []string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return slices.Clone(b.bound)
+}
+
+// A session that connected with no credential is granted nothing for it, and
+// what its tickets grant: the first ticket binds it to its key, and a ticket
+// of any other trusted key is refused from then on.
+func TestServer_ServeAuth_Anonymous(t *testing.T) {
+	keys := newTicketTestKeys(t)
+	tickets := &bindingTickets{Verifier: keys.verifier}
+	srv := newWebSocketTestServer(t, &fakeAuth{})
+	srv.Authorize = keys.verifier.Authorize
+	srv.Tickets = tickets
+	sess := dialTest(t, srv, "")
+
+	own, err := authTest(t, sess, "")
+	require.NoError(t, err)
+	assert.Empty(t, own.Grant().Root, "no credential grants nothing")
+	assert.Empty(t, own.Grant().Publish)
+	assert.Empty(t, own.Grant().Subscribe)
+
+	c, err := authTest(t, sess, signTest(t, keys.other, listenRoom))
+	require.NoError(t, err, "the first ticket may be of any trusted key")
+	assert.Equal(t, "/acme/room/42/", c.Grant().Root)
+	assert.Positive(t, c.Grant().MaxAge)
+
+	_, err = authTest(t, sess, signTest(t, keys.session, listenRoom))
+	authErr, ok := errors.AsType[*moqt.AuthError](err)
+	require.True(t, ok, "want an AuthError, got %v", err)
+	assert.Equal(t, moqt.UnauthorizedSessionErrorCode, authErr.Code, "a ticket of another key than the bound one")
+
+	_, err = authTest(t, sess, signTest(t, keys.other, listenAndSpeak))
+	require.NoError(t, err, "a later ticket of the bound key")
+	assert.Equal(t, []string{keys.other.ID}, tickets.binds(), "bound once, to the first ticket's key")
+}
+
+// A session that connected with no credential is closed when it is granted
+// no ticket within its deadline, and kept when it is.
+func TestServer_AnonymousDeadline(t *testing.T) {
+	keys := newTicketTestKeys(t)
+	newServer := func() *Server {
+		srv := newWebSocketTestServer(t, &fakeAuth{})
+		srv.Authorize = keys.verifier.Authorize
+		srv.Tickets = keys.verifier
+		srv.AuthDeadline = 300 * time.Millisecond
+		return srv
+	}
+
+	t.Run("no ticket", func(t *testing.T) {
+		sess := dialTest(t, newServer(), "")
+
+		select {
+		case <-sess.Context().Done():
+		case <-time.After(5 * time.Second):
+			t.Fatal("the session was not closed at its deadline")
+		}
+	})
+	t.Run("a ticket in time", func(t *testing.T) {
+		sess := dialTest(t, newServer(), "")
+		_, err := authTest(t, sess, signTest(t, keys.session, listenRoom))
+		require.NoError(t, err)
+
+		select {
+		case <-sess.Context().Done():
+			t.Fatal("a session granted a ticket in time was closed")
+		case <-time.After(time.Second):
+		}
+	})
+	t.Run("only a refused ticket", func(t *testing.T) {
+		sess := dialTest(t, newServer(), "")
+		_, err := authTest(t, sess, "not.a.jwt")
+		require.Error(t, err)
+
+		select {
+		case <-sess.Context().Done():
+		case <-time.After(5 * time.Second):
+			t.Fatal("a session granted nothing was not closed at its deadline")
+		}
+	})
 }

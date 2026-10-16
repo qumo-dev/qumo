@@ -9,7 +9,7 @@ weight: 2
 **How it fits together:**
 1. **Once:** generate a signing key pair (`qumo auth keygen`). The private key stays on your app's server; the relay gets the public one, in a key set.
 2. **Per client:** your server signs a token naming what that client may do on which broadcasts ([below](#what-a-token-grants)). Use the Go package `github.com/qumo-dev/qumo/token`, or `qumo auth token` while testing.
-3. **The client** connects with the token in the relay URL: `https://relay:4433/?jwt=<token>` (WebTransport), or `moqt://relay:4433/?jwt=<token>` (native QUIC).
+3. **The client** connects with the token in the relay URL: `https://relay:4433/?jwt=<token>` (WebTransport), or `moqt://relay:4433/?jwt=<token>` (native QUIC). Or it connects with no token and presents one on the session's Auth Stream ([below](#tickets-on-the-relay)).
 4. **The relay** verifies the token itself against the key set (`QUMO_AUTH_KEYS=keys.json qumo relay`) and enforces what it grants. The token's expiry decides whether a session may start; the session then lives on until it closes or its key leaves the set ([configuration](../../configuration/#credential-expiry-and-live-sessions)).
 
 ## Usage
@@ -78,7 +78,7 @@ grants what `{"root": "/acme/app/rooms/42/", "publish": ["/alice", "/alice/"], "
 
 ### Tickets on the relay
 
-A session holds more than the credential it connected with: a client presents further tokens, *tickets*, on MoQ Auth Streams, and the relay adds what each grants to the session's while it is in force. An app can then keep one long-lived session per client, connected with a token of **no patterns**, which names the app's key alone, and grant each room as the client joins it, with a ticket per room.
+A session holds more than the credential it connected with: a client presents further tokens, *tickets*, on MoQ Auth Streams, and the relay adds what each grants to the session's while it is in force. An app can then keep one long-lived session per client, connected with **no token** or with a token of **no patterns**, which names the app's key alone, and grant each room as the client joins it, with a ticket per room.
 
 **Every grant lasts until its token expires,** wherever the token was presented: at its `exp`, with the 60 s leeway. A ticket and the credential a session connected with are the same kind of token, signed with `token.Sign`; what one is for is where it is presented. The `AUTH_OK` granting a ticket says when it lapses (its max age), so the client presents a fresh one in time, and at expiry the grant is revoked with `AUTH_ERROR` ("grant expired"). The session outlives its credential's grant: once that lapses the session may do nothing more until a ticket grants it, and it ends only when its key leaves the set. A client that stays connected longer than its credential, such as a publisher that runs for hours, presents a fresh token on an Auth Stream before the one in force expires. qumo's [funnel](../funnel/) and [HLS egress](../hls/) do this themselves when they sign their own credentials.
 
@@ -91,7 +91,9 @@ A ticket:
 - is withdrawn by the client closing its Auth Stream;
 - is a bearer token, as a credential is: any session of the same key's tenant that holds it may present it.
 
-A session holds at most 33 credentials at once, its connection's own among them. An Auth Stream carrying no token is answered with the session's own grant again, for what is left of it, which adds nothing; once that grant has lapsed it is refused with `UNAUTHORIZED`. A session granted a ticket that may publish is reported as a publisher from then on, for the rest of its life ([usage](../../configuration/#usage-reports)). A relay with auth off, or a session admitted without a credential (a relay peer), takes no tickets: it answers `NOT_SUPPORTED`, and its own grant never lapses.
+A session holds at most 33 credentials at once, its connection's own among them. An Auth Stream carrying no token is answered with the session's own grant again, for what is left of it, which adds nothing; once that grant has lapsed it is refused with `UNAUTHORIZED`. A session granted a ticket that may publish is reported as a publisher from then on, for the rest of its life ([usage](../../configuration/#usage-reports)). A relay with auth off, or a relay peer, takes no tickets: it answers `NOT_SUPPORTED`, and its own grant never lapses.
+
+**A session may connect with no token** (no `jwt` in its URL; an empty `jwt=` is a token that doesn't verify, and is refused). It is admitted granted nothing, and an Auth Stream carrying no token is answered with that empty grant. Its first ticket may be signed by any key in the set, and binds the session to that key: every later ticket must be signed by it, as one of a session that connected with a token must be signed by that token's key, and the session's usage is reported under it from then on. A session granted no ticket within 10 s of connecting is closed with `UNAUTHORIZED` ("no credential presented in time"), so no one holds a session open granted nothing. Once one is granted, the session stays open as any other does, even after its tickets lapse.
 
 ## Signing in your app (Go)
 
