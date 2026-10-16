@@ -424,7 +424,10 @@ func TestServer_ServeAuth_Ticket(t *testing.T) {
 
 			c, err := authTest(t, sess, tt.ticket)
 
-			assert.Equal(t, before+1, testutil.ToFloat64(counter))
+			// The relay counts the outcome after it answers, so the count may
+			// trail the answer.
+			assert.Eventually(t, func() bool { return testutil.ToFloat64(counter) == before+1 },
+				5*time.Second, 10*time.Millisecond, "the outcome %q is counted once", tt.wantResult)
 			if tt.wantCode != 0 {
 				authErr, ok := errors.AsType[*moqt.AuthError](err)
 				require.True(t, ok, "an AUTH_ERROR, not %v", err)
