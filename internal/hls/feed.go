@@ -181,40 +181,34 @@ func checkPeerCertificate(certFile, keyFile string) error {
 // The grant's root is the directory path lies in, "/" for a path of one
 // segment.
 func subscribeGrant(path string) token.Grant {
-	root, base := "/", strings.Trim(path, "/")
+	dir, base := "", strings.Trim(path, "/")
 	if i := strings.LastIndex(base, "/"); i >= 0 {
-		root, base = "/"+base[:i]+"/", base[i+1:]
+		dir, base = base[:i], base[i+1:]
 	}
+	// A path that isn't one, which a token would refuse, roots nowhere: the
+	// grant is refused when signed.
+	root, _ := token.Directory(dir)
 	return token.Grant{Root: root, Subscribe: []string{"/" + base}}
 }
 
-// sign signs the egress's credential.
-func (c feedConfig) sign() (string, error) {
-	credential, err := token.Sign(*c.signingKey, subscribeGrant(c.trackPath), token.MaxLifetime)
-	if err != nil {
-		return "", fmt.Errorf("sign relay credential: %w", err)
-	}
-	return credential, nil
-}
-
 // target returns the URL to dial, with a freshly signed credential when the
-// egress signs its own.
-func (c feedConfig) target() (string, error) {
+// egress signs its own, and when that credential's grant lapses.
+func (c feedConfig) target() (string, time.Time, error) {
 	if c.signingKey == nil {
-		return c.relayURL, nil
+		return c.relayURL, time.Time{}, nil
 	}
-	credential, err := c.sign()
+	credential, lapses, err := relaycred.Sign(*c.signingKey, subscribeGrant(c.trackPath))
 	if err != nil {
-		return "", err
+		return "", time.Time{}, err
 	}
 	u, err := url.Parse(c.relayURL)
 	if err != nil {
-		return "", errors.New("RELAY_URL: invalid URL")
+		return "", time.Time{}, errors.New("RELAY_URL: invalid URL")
 	}
 	query := u.Query()
 	query.Set("jwt", credential)
 	u.RawQuery = query.Encode()
-	return u.String(), nil
+	return u.String(), lapses, nil
 }
 
 // relayTLSConfig builds the client TLS config for dialing the relay. The egress
@@ -244,7 +238,7 @@ func connect(ctx context.Context, cfg feedConfig) (*moqt.Session, mediaInfo, err
 	if err := tlsclient.ApplyClientCert(tc, cfg.certFile, cfg.keyFile); err != nil {
 		return nil, mediaInfo{}, fmt.Errorf("hls: relay client certificate: %w", err)
 	}
-	target, err := cfg.target()
+	target, lapses, err := cfg.target()
 	if err != nil {
 		return nil, mediaInfo{}, fmt.Errorf("hls: %w", err)
 	}
@@ -282,7 +276,7 @@ func connect(ctx context.Context, cfg feedConfig) (*moqt.Session, mediaInfo, err
 	}
 
 	if cfg.signingKey != nil {
-		go relaycred.Keep(session, cfg.sign, token.MaxLifetime)
+		go relaycred.Keep(session, *cfg.signingKey, subscribeGrant(cfg.trackPath), lapses)
 	}
 
 	slog.Info("hls: catalog loaded",

@@ -159,9 +159,11 @@ func (v *Verifier) Check(credential string, action token.Action, path moqt.Broad
 // session whose own credential keyID signed, as a connect is. The ticket must
 // be signed by that same key, so that everything a session may do is its
 // key's tenant's to grant and is reported under it. A key paused for
-// publishing refuses one that may publish.
-func (v *Verifier) Ticket(credential, keyID string) (*Grant, error) {
-	g, _, err := v.decide(credential, nil, true, func(g *Grant) bool { return publishesBroadcast(g.grant) })
+// publishing refuses one that may publish, unless the session has published
+// already (published): a pause stops what is new, and a publisher on air
+// renews its grant.
+func (v *Verifier) Ticket(credential, keyID string, published bool) (*Grant, error) {
+	g, _, err := v.decide(credential, nil, true, func(g *Grant) bool { return !published && publishesBroadcast(g.grant) })
 	if err != nil {
 		return nil, err
 	}

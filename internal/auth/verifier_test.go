@@ -766,10 +766,12 @@ func TestVerifier_Ticket(t *testing.T) {
 	listen := token.Grant{Root: "/acme/app/room/42/", Subscribe: []string{"/"}}
 	speak := token.Grant{Root: "/acme/app/room/42/", Publish: []string{"/7"}}
 	tests := map[string]struct {
-		key      token.SigningKey
-		ticket   token.Grant
-		keyID    string
-		wantCode int
+		key    token.SigningKey
+		ticket token.Grant
+		keyID  string
+		// published: the session has been granted what may publish.
+		published bool
+		wantCode  int
 	}{
 		"the session's key":                 {key: session, ticket: listen, keyID: session.ID, wantCode: http.StatusOK},
 		"the session's key, to publish":     {key: session, ticket: speak, keyID: session.ID, wantCode: http.StatusOK},
@@ -778,10 +780,12 @@ func TestVerifier_Ticket(t *testing.T) {
 		"a session admitted by no key":      {key: session, ticket: listen, keyID: "", wantCode: http.StatusForbidden},
 		"a paused key, a ticket to publish": {key: paused, ticket: speak, keyID: paused.ID, wantCode: http.StatusForbidden},
 		"a paused key, a ticket to listen":  {key: paused, ticket: listen, keyID: paused.ID, wantCode: http.StatusOK},
+		// A pause stops what is new: a publisher on air renews its grant.
+		"a paused key, a publisher renewing": {key: paused, ticket: speak, keyID: paused.ID, published: true, wantCode: http.StatusOK},
 	}
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
-			g, err := v.Ticket(sign(t, tt.key, tt.ticket), tt.keyID)
+			g, err := v.Ticket(sign(t, tt.key, tt.ticket), tt.keyID, tt.published)
 
 			assert.Equal(t, tt.wantCode, statusOf(err), "%v", err)
 			if tt.wantCode != http.StatusOK {
@@ -806,7 +810,7 @@ func TestVerifier_Ticket_Expired(t *testing.T) {
 
 		time.Sleep(10*time.Minute + token.Leeway)
 
-		g, err := v.Ticket(ticket, k.ID)
+		g, err := v.Ticket(ticket, k.ID, false)
 		assert.Equal(t, http.StatusUnauthorized, statusOf(err), "presented: %v", err)
 		assert.Nil(t, g)
 	})
@@ -817,7 +821,7 @@ func TestVerifier_Ticket_Expired(t *testing.T) {
 func TestVerifier_Trusts(t *testing.T) {
 	k := genKey(t, "acme/app")
 	v := verifierWith(t, keySetJSON(t, []token.SigningKey{k}), time.Now())
-	g, err := v.Ticket(sign(t, k, pathGrant("", "acme/app/room")), k.ID)
+	g, err := v.Ticket(sign(t, k, pathGrant("", "acme/app/room")), k.ID, false)
 	require.NoError(t, err)
 
 	trusted, err := v.Trusts(g)
@@ -868,9 +872,9 @@ func TestVerifier_Ticket_PublishingPromotesAViewer(t *testing.T) {
 	rv.Bytes = Bytes{Sent: 100, Received: 10}
 	_, err = v.Authorize(context.Background(), rv)
 	require.NoError(t, err)
-	_, err = v.Ticket(listen, k.ID)
+	_, err = v.Ticket(listen, k.ID, false)
 	require.NoError(t, err)
-	_, err = v.Ticket(speak, k.ID)
+	_, err = v.Ticket(speak, k.ID, false)
 	require.NoError(t, err)
 	require.NoError(t, v.usage.flush(context.Background()))
 	before := sink.received()
@@ -920,7 +924,7 @@ func TestVerifier_TokenAdmitsAndIsATicket(t *testing.T) {
 	require.NoError(t, err, "at connect")
 	_, err = v.Authorize(context.Background(), sessionReq(EventRevalidate, jwt))
 	require.NoError(t, err, "at revalidate")
-	g, err := v.Ticket(jwt, k.ID)
+	g, err := v.Ticket(jwt, k.ID, false)
 	require.NoError(t, err, "on a live session")
 	assert.Equal(t, "/acme/app/room/42/", g.grant.Root)
 }

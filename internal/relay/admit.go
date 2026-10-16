@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"slices"
 	"sync/atomic"
 	"time"
 
@@ -43,6 +44,10 @@ type admission struct {
 	// connection's own, each presented again with no token, and its
 	// tickets (ServeAuth).
 	credentials atomic.Int32
+	// published is set once the session is granted what may publish, by its
+	// connection's credential or a ticket: a key paused for publishing still
+	// renews its grant (Ticket).
+	published atomic.Bool
 }
 
 type admissionKey struct{}
@@ -248,10 +253,11 @@ func refusalReason(err error) string {
 
 // TicketVerifier verifies the tickets a session presents on Auth Streams
 // (auth.Verifier): Ticket when one is presented, which must be signed by the
-// key that signed the session's own credential; Trusts while its grant is in
+// key that signed the session's own credential, and published when the
+// session has been granted what may publish; Trusts while its grant is in
 // force; and Publishing once a session is granted one that may publish.
 type TicketVerifier interface {
-	Ticket(credential, keyID string) (*auth.Grant, error)
+	Ticket(credential, keyID string, published bool) (*auth.Grant, error)
 	Trusts(g *auth.Grant) (bool, error)
 	Publishing(id string)
 }
@@ -319,7 +325,7 @@ func (s *Server) serveConnection(w *moqt.AuthWriter, r *moqt.AuthRequest) {
 	}
 	grant, lapses := everything, time.Time{}
 	if g != nil {
-		grant, lapses = g.Token().Grant, lapsesAt(g)
+		grant, lapses = moqGrant(g.Token()), lapsesAt(g)
 	}
 	if !lapses.IsZero() {
 		left := time.Until(lapses)
@@ -328,6 +334,11 @@ func (s *Server) serveConnection(w *moqt.AuthWriter, r *moqt.AuthRequest) {
 			return
 		}
 		grant.MaxAge = left
+	}
+	// Marked before the grant is answered, so a ticket presented after the
+	// answer finds it.
+	if a := admissionFrom(ctx); a != nil && len(grant.Publish) > 0 {
+		a.published.Store(true)
 	}
 	if err := w.Grant(grant); err != nil {
 		slog.Error("relay: the session's grant could not be applied; it may do nothing", "id", id, "error", err)
@@ -338,6 +349,17 @@ func (s *Server) serveConnection(w *moqt.AuthWriter, r *moqt.AuthRequest) {
 	if hold(ctx, lapses, nil) == heldLapsed {
 		slog.Info("relay: the session's credential expired", "id", id)
 	}
+}
+
+// moqGrant is the MoQ grant a session is given for tg: a copy of its
+// embedded one, or none at all when it has no publish or subscribe pattern,
+// since a root alone would still let the session list announcements within
+// it.
+func moqGrant(tg token.Grant) moqt.Grant {
+	if len(tg.Publish) == 0 && len(tg.Subscribe) == 0 {
+		return moqt.Grant{}
+	}
+	return moqt.Grant{Root: tg.Root, Publish: slices.Clone(tg.Publish), Subscribe: slices.Clone(tg.Subscribe)}
 }
 
 // lapsesAt is when g's grant lapses: its token's expiry, judged with the
@@ -407,7 +429,7 @@ func (s *Server) serveTicket(w *moqt.AuthWriter, r *moqt.AuthRequest) {
 		return
 	}
 
-	tg, err := s.Tickets.Ticket(string(r.Token), g.KeyID())
+	tg, err := s.Tickets.Ticket(string(r.Token), g.KeyID(), a.published.Load())
 	if err != nil {
 		if _, refused := errors.AsType[auth.RefusedError](err); !refused {
 			// Not the ticket's fault: the key set is not usable just now.
@@ -424,8 +446,13 @@ func (s *Server) serveTicket(w *moqt.AuthWriter, r *moqt.AuthRequest) {
 	// AUTH_OK tells the presenter when it lapses, so it can present a fresh
 	// ticket in time.
 	lapses := lapsesAt(tg)
-	grant := tg.Token().Grant
+	grant := moqGrant(tg.Token())
 	grant.MaxAge = max(time.Until(lapses), time.Millisecond)
+	// Marked before the grant is answered, so a ticket presented after the
+	// answer finds it. A key's pause refused this one already if it had to.
+	if len(grant.Publish) > 0 {
+		a.published.Store(true)
+	}
 	if err := w.Grant(grant); err != nil {
 		metricTickets.WithLabelValues(ticketRefused).Inc()
 		slog.Info("relay: ticket not granted", "id", a.req.ID, "error", err)

@@ -204,7 +204,7 @@ func TestFeedConfig_Target(t *testing.T) {
 	t.Run("without a signing key the URL is dialed as it is", func(t *testing.T) {
 		cfg := feedConfig{relayURL: "https://relay:4433/?jwt=h.p.s", trackPath: "/hls/live"}
 
-		got, err := cfg.target()
+		got, _, err := cfg.target()
 
 		require.NoError(t, err)
 		assert.Equal(t, cfg.relayURL, got)
@@ -213,7 +213,7 @@ func TestFeedConfig_Target(t *testing.T) {
 	t.Run("a signing key replaces the credential with one for the path alone", func(t *testing.T) {
 		cfg := feedConfig{relayURL: "https://relay:4433/?jwt=h.p.s&x=1", trackPath: "/hls/live", signingKey: &key}
 
-		got, err := cfg.target()
+		got, _, err := cfg.target()
 
 		require.NoError(t, err)
 		u, err := url.Parse(got)
@@ -232,9 +232,9 @@ func TestFeedConfig_Target(t *testing.T) {
 	t.Run("each connect signs a new one", func(t *testing.T) {
 		cfg := feedConfig{relayURL: "https://relay:4433", trackPath: "/hls/live", signingKey: &key}
 
-		first, err := cfg.target()
+		first, _, err := cfg.target()
 		require.NoError(t, err)
-		second, err := cfg.target()
+		second, _, err := cfg.target()
 		require.NoError(t, err)
 
 		assert.NotEqual(t, first, second)

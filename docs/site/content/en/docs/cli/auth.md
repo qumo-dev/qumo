@@ -85,7 +85,7 @@ A session holds more than the credential it connected with: a client presents fu
 A ticket:
 
 - must be signed by **the same key** as the session's credential, so everything a session may do is one tenant's;
-- is verified as a credential is at connect, and a key paused with `"pause": ["publish"]` refuses one that may publish;
+- is verified as a credential is at connect, and a key paused with `"pause": ["publish"]` refuses one that may publish, unless the session has been granted what may publish already: a pause stops what is new, and a publisher on air renews its grant;
 - is revoked too when its key leaves the set, or its key's prefix no longer holds its root, at the next 30 s check;
 - that could not be checked just now, as while the relay has no usable key set, is answered `AUTH_ERROR` with `INTERNAL` (`0x1`), which the client may retry; a refused one with `UNAUTHORIZED` (`0x2`);
 - is withdrawn by the client closing its Auth Stream;

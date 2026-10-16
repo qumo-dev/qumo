@@ -7,6 +7,8 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"path/filepath"
+	"slices"
+	"sync"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -341,7 +343,13 @@ func TestServer_ServeAuth_ConnectionCredential(t *testing.T) {
 			want:       moqt.Grant{Root: "/acme/room/42/", Publish: []string{"/7"}, Subscribe: []string{"/"}},
 			wantLapse:  true,
 		},
-		"a credential of no patterns":   {credential: signTest(t, keys.session, token.Grant{}), want: moqt.Grant{}, wantLapse: true},
+		"a credential of no patterns": {credential: signTest(t, keys.session, token.Grant{}), want: moqt.Grant{}, wantLapse: true},
+		// A root alone would still let the session list announcements
+		// within it.
+		"a root and no relay patterns": {
+			credential: signTest(t, keys.session, token.Grant{Root: "/acme/room/42/", Post: []string{"/comments"}}),
+			want:       moqt.Grant{}, wantLapse: true,
+		},
 		"a session checked for nothing": {unchecked: true, want: everything},
 	}
 	for name, tt := range tests {
@@ -543,11 +551,91 @@ func TestServer_ServeAuth_TicketMaxAge(t *testing.T) {
 	assert.LessOrEqual(t, c.Grant().MaxAge, token.MaxLifetime+token.Leeway)
 }
 
+// A ticket of a root and no relay patterns grants nothing, not even listing
+// announcements within its root.
+func TestServer_ServeAuth_TicketOfARootAlone(t *testing.T) {
+	keys := newTicketTestKeys(t)
+	srv := newWebSocketTestServer(t, &fakeAuth{})
+	srv.Authorize = keys.verifier.Authorize
+	srv.Tickets = keys.verifier
+	sess := dialTest(t, srv, signTest(t, keys.session, token.Grant{}))
+
+	c, err := authTest(t, sess, signTest(t, keys.session, token.Grant{Root: "/acme/room/42/", Post: []string{"/comments"}}))
+
+	require.NoError(t, err)
+	assert.Empty(t, c.Grant().Root)
+	assert.Empty(t, c.Grant().Publish)
+	assert.Empty(t, c.Grant().Subscribe)
+}
+
+// recordingTickets verifies with the Verifier and records whether each
+// ticket came from a session that had been granted what may publish.
+type recordingTickets struct {
+	*auth.Verifier
+	mu        sync.Mutex
+	published []bool
+}
+
+func (r *recordingTickets) Ticket(credential, keyID string, published bool) (*auth.Grant, error) {
+	r.mu.Lock()
+	r.published = append(r.published, published)
+	r.mu.Unlock()
+	return r.Verifier.Ticket(credential, keyID, published)
+}
+
+func (r *recordingTickets) seen() []bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return slices.Clone(r.published)
+}
+
+// A session has published once its connection's credential, or a ticket it
+// was granted, may publish; a key paused for publishing still renews its
+// grant then.
+func TestServer_ServeAuth_TicketKnowsAPublisher(t *testing.T) {
+	keys := newTicketTestKeys(t)
+	tests := map[string]struct {
+		credential token.Grant
+		tickets    []token.Grant
+		want       []bool
+	}{
+		"connected to publish": {
+			credential: listenAndSpeak, tickets: []token.Grant{listenRoom}, want: []bool{true},
+		},
+		"connected to listen, then granted a ticket to publish": {
+			credential: listenRoom, tickets: []token.Grant{listenAndSpeak, listenRoom}, want: []bool{false, true},
+		},
+		"never published": {
+			credential: token.Grant{}, tickets: []token.Grant{listenRoom, listenRoom}, want: []bool{false, false},
+		},
+	}
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			tickets := &recordingTickets{Verifier: keys.verifier}
+			srv := newWebSocketTestServer(t, &fakeAuth{})
+			srv.Authorize = keys.verifier.Authorize
+			srv.Tickets = tickets
+			sess := dialTest(t, srv, signTest(t, keys.session, tt.credential))
+			// The connection's own credential is granted as the session
+			// starts; presenting it again waits for that.
+			_, err := authTest(t, sess, "")
+			require.NoError(t, err)
+
+			for _, g := range tt.tickets {
+				_, err := authTest(t, sess, signTest(t, keys.session, g))
+				require.NoError(t, err)
+			}
+
+			assert.Equal(t, tt.want, tickets.seen())
+		})
+	}
+}
+
 // uncheckableTickets can check no ticket just now, as a relay whose key set
 // is not usable.
 type uncheckableTickets struct{}
 
-func (uncheckableTickets) Ticket(string, string) (*auth.Grant, error) {
+func (uncheckableTickets) Ticket(string, string, bool) (*auth.Grant, error) {
 	return nil, errors.New("auth: no key set loaded yet")
 }
 func (uncheckableTickets) Trusts(*auth.Grant) (bool, error) { return false, errors.New("no set") }

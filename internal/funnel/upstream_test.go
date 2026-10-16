@@ -62,7 +62,7 @@ func TestUpstream_Target(t *testing.T) {
 		u, err := newUpstream(RelayConfig{URL: "https://relay:4433/?jwt=given"})
 		require.NoError(t, err)
 
-		target, err := u.target()
+		target, _, err := u.target()
 
 		require.NoError(t, err)
 		assert.Equal(t, "https://relay:4433/?jwt=given", target)
@@ -73,9 +73,9 @@ func TestUpstream_Target(t *testing.T) {
 		u, err := newUpstream(RelayConfig{URL: "moqt://relay:4433/?jwt=stale", SigningKeyFile: keyFile, Publish: "/room"})
 		require.NoError(t, err)
 
-		first, err := u.target()
+		first, _, err := u.target()
 		require.NoError(t, err)
-		second, err := u.target()
+		second, _, err := u.target()
 		require.NoError(t, err)
 
 		assert.NotEqual(t, first, second, "each dial signs its own credential")

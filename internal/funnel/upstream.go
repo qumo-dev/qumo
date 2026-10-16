@@ -132,12 +132,12 @@ func publishGrant(dir string) token.Grant {
 // the session before its grant lapses.
 func (u *upstream) run(ctx context.Context, mux *moqt.TrackMux) {
 	for {
-		sess, err := u.dial(ctx, mux)
+		sess, lapses, err := u.dial(ctx, mux)
 		switch {
 		case err == nil:
 			slog.Info("funnel: publishing through the relay")
 			if u.key != nil {
-				go relaycred.Keep(sess, u.sign, token.MaxLifetime)
+				go relaycred.Keep(sess, *u.key, publishGrant(u.publish), lapses)
 			}
 			select {
 			case <-ctx.Done():
@@ -158,44 +158,36 @@ func (u *upstream) run(ctx context.Context, mux *moqt.TrackMux) {
 	}
 }
 
-// dial opens one session to the relay, serving mux's broadcasts on it.
-func (u *upstream) dial(ctx context.Context, mux *moqt.TrackMux) (*moqt.Session, error) {
-	target, err := u.target()
+// dial opens one session to the relay, serving mux's broadcasts on it, and
+// returns when the grant of the credential it signed lapses (zero for none).
+func (u *upstream) dial(ctx context.Context, mux *moqt.TrackMux) (*moqt.Session, time.Time, error) {
+	target, lapses, err := u.target()
 	if err != nil {
-		return nil, err
+		return nil, time.Time{}, err
 	}
 	sess, err := (&moqt.Dialer{TLSConfig: u.tls.Clone(), QUICConfig: u.quic}).Dial(ctx, target, mux)
 	if err != nil {
-		return nil, fmt.Errorf("dial relay: %w", err)
+		return nil, time.Time{}, fmt.Errorf("dial relay: %w", err)
 	}
-	return sess, nil
+	return sess, lapses, nil
 }
 
 // target returns the URL to dial, with a freshly signed credential when the
-// upstream signs its own.
-func (u *upstream) target() (string, error) {
+// upstream signs its own, and when that credential's grant lapses.
+func (u *upstream) target() (string, time.Time, error) {
 	if u.key == nil {
-		return u.url, nil
+		return u.url, time.Time{}, nil
 	}
-	credential, err := u.sign()
+	credential, lapses, err := relaycred.Sign(*u.key, publishGrant(u.publish))
 	if err != nil {
-		return "", err
+		return "", time.Time{}, err
 	}
 	parsed, err := url.Parse(u.url)
 	if err != nil {
-		return "", err
+		return "", time.Time{}, err
 	}
 	query := parsed.Query()
 	query.Set("jwt", credential)
 	parsed.RawQuery = query.Encode()
-	return parsed.String(), nil
-}
-
-// sign signs a credential granting what the upstream publishes.
-func (u *upstream) sign() (string, error) {
-	credential, err := token.Sign(*u.key, publishGrant(u.publish), token.MaxLifetime)
-	if err != nil {
-		return "", fmt.Errorf("sign relay credential: %w", err)
-	}
-	return credential, nil
+	return parsed.String(), lapses, nil
 }
