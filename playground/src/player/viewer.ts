@@ -1,7 +1,7 @@
 import { background, withCancel } from "@okdaichi/golikejs/context";
 import { createLogger, MediaTags } from "@okdaichi/media-log";
 import { type AudioBufferStats, AudioOutput } from "./audio/output.ts";
-import { decoderConfigs } from "./catalog.ts";
+import { decoderConfigs, readCatalogs } from "./catalog.ts";
 import {
 	type GroupObserver,
 	type GroupOutcome,
@@ -235,18 +235,14 @@ export class Viewer {
 		}
 
 		// The catalog is not media: its groups carry no timestamps to pace
-		// by, so it is read plainly, one group after another.
+		// by, so it is read plainly, the newest catalog winning.
 		try {
-			while (run.playing()) {
-				const [group, err] = await track.acceptGroup(run.done);
-				if (group === undefined) {
-					if (run.playing()) log.warn("catalog acceptGroup failed", { err });
-					break;
-				}
-				for await (const frame of group.frames()) {
-					this.#configure(run, frame.bytes);
-				}
-			}
+			const err = await readCatalogs(
+				track,
+				run.done,
+				(catalog) => this.#configure(run, catalog),
+			);
+			if (run.playing()) log.warn("catalog acceptGroup failed", { err });
 		} catch (err) {
 			if (run.playing()) log.warn("catalog track error", { err });
 		} finally {
