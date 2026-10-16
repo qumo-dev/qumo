@@ -12,8 +12,9 @@
 // A record goes only into a track that exists: the app creates the tracks.
 // With a key set, every request carries a qumo credential as a bearer token.
 // Its scopes name what it reaches, on the track's broadcast: creating needs a
-// "publish" scope, a write a "post" scope, a read a "fetch" scope and a
-// redaction a "redact" scope. The records carry its "sub" as their sender, or
+// "create" scope, a write a "post" scope, a read a "fetch" scope and a
+// redaction a "redact" scope; "publish", which sends through a relay, grants
+// nothing here. The records carry its "sub" as their sender, or
 // no sender without one.
 //
 // The funnel publishes through a relay it dials as a client, so subscribers

@@ -123,6 +123,10 @@ func TestVerifier_PublishLimit(t *testing.T) {
 			}}),
 			wantConnect: 200, wantRevalidate: 200,
 		},
+		// A relay ignores create, which a funnel checks itself.
+		"limited key, create scope": {
+			jwt: sign(t, limited, scoped(token.ActionCreate)), wantConnect: 200, wantRevalidate: 200,
+		},
 		"limited key, post scope": {
 			jwt: sign(t, limited, scoped(token.ActionPost)), wantConnect: 200, wantRevalidate: 200,
 		},

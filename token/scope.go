@@ -34,7 +34,7 @@ const (
 	// ActionCreate is creating a track of a broadcast at a funnel, which the
 	// funnel then publishes. It is for the app, which decides which tracks a
 	// broadcast has; senders post only into the tracks it made. A relay
-	// never reads it as publishing.
+	// ignores it.
 	ActionCreate Action = "create"
 )
 

@@ -27,7 +27,8 @@ import (
 //
 // The credential is checked on every request, so one that expires or whose
 // key leaves the set is refused at once. A key paused for publishing refuses
-// creating only. A nil verifier checks nothing and names no sender.
+// creating only, even a track that exists. A nil verifier checks nothing and
+// names no sender.
 func authorizer(v *auth.Verifier) func(*http.Request, ingest.Track, ingest.Access) (string, error) {
 	if v == nil {
 		return nil
@@ -43,7 +44,7 @@ func authorizer(v *auth.Verifier) func(*http.Request, ingest.Track, ingest.Acces
 			// credential gains it by default.
 			return "", fmt.Errorf("funnel: no credential grants access %d to %s track %q", access, t.BroadcastPath, t.TrackName)
 		}
-		grant, err := v.Check(credential, action)
+		grant, err := v.Check(credential, action, moqt.BroadcastPath(t.BroadcastPath))
 		if err != nil {
 			if refused, ok := errors.AsType[auth.RefusedError](err); ok && refused.Status == http.StatusUnauthorized {
 				return "", fmt.Errorf("funnel: %w: %w", ingest.ErrUnauthenticated, err)

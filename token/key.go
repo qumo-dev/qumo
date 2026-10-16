@@ -25,7 +25,8 @@ type Key struct {
 	Prefix string
 	// Pause lists what the key starts no new sessions for. Only ActionPublish
 	// can be paused: a verifier then starts no session that may publish with
-	// the key, and a funnel creates no track with it (ActionCreate), for
+	// the key, and a funnel creates no track with it (ActionCreate), even one
+	// that exists, for
 	// example while its owner is at a limit on broadcasts. Sessions that only
 	// subscribe, fetch, post or redact still start, and live sessions
 	// continue.

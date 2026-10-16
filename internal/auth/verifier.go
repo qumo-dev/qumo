@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/qumo-dev/gomoqt/moqt"
 	"github.com/qumo-dev/qumo/token"
 )
 
@@ -44,7 +45,8 @@ type VerifierConfig struct {
 // (token.VerifyLive): a key that has left the set ends its sessions. The
 // credential's expiry decides only whether the session may start. A key
 // marked "pause": ["publish"] starts no new sessions that may publish (a
-// credential with a publish or create scope); it
+// credential with a publish scope), and a funnel creates no track with it
+// (Check); it
 // never ends a live one, since it pauses what is new rather than what is on
 // air. The key set is kept when a refresh fails (fail-static): after 6 h
 // without one, new sessions are refused, while live ones continue on the
@@ -120,7 +122,8 @@ func refuse(status int, format string, args ...any) error {
 // reported whatever it decides, since they were sent.
 func (v *Verifier) Authorize(_ context.Context, req Request) (*Grant, error) {
 	connect := req.Event == EventConnect
-	g, s, err := v.decide(req, func(g token.Grant) bool { return connect && publishesBroadcast(g) })
+	credential, credErr := credentialOf(req.Query)
+	g, s, err := v.decide(credential, credErr, connect, func(g *Grant) bool { return connect && publishesBroadcast(g.scopes) })
 	if v.usage != nil {
 		// A session is learned only when it is admitted at connect. A
 		// revalidate never adds one: it can finish after the session's end
@@ -138,22 +141,37 @@ func (v *Verifier) Authorize(_ context.Context, req Request) (*Grant, error) {
 	return g, err
 }
 
-// Check verifies credential, presented with one request that needs action,
-// such as a funnel's: as Authorize verifies a connect, except that the key's
-// pause refuses it only when action is publish or create, so a paused key's
-// credentials still read, post and redact. It reports no usage.
-func (v *Verifier) Check(credential string, action token.Action) (*Grant, error) {
-	req := Request{Event: EventConnect, Query: url.Values{"jwt": {credential}}.Encode()}
-	pausable := action == token.ActionPublish || action == token.ActionCreate
-	g, _, err := v.decide(req, func(token.Grant) bool { return pausable })
+// Check verifies credential, presented with one request that needs action
+// on the broadcast at path, such as a funnel's: as Authorize verifies a
+// connect, except that the key's pause refuses only creating a track the
+// credential may create, so a paused key's credentials still read, post and
+// redact, and one that may not create is refused for that by the caller. It
+// reports no usage.
+func (v *Verifier) Check(credential string, action token.Action, path moqt.BroadcastPath) (*Grant, error) {
+	g, _, err := v.decide(credential, nil, true, func(g *Grant) bool {
+		return action == token.ActionCreate && g.Allows(token.ActionCreate, path)
+	})
 	return g, err
 }
 
-// decide verifies req's credential. A key paused for publishing refuses it
-// when paused reports true for its grant.
-func (v *Verifier) decide(req Request, paused func(token.Grant) bool) (*Grant, usageSession, error) {
+// credentialOf returns the credential a connect URL's raw query carries as
+// jwt.
+func credentialOf(rawQuery string) (string, error) {
+	query, err := url.ParseQuery(rawQuery)
+	if err != nil {
+		return "", refuse(http.StatusUnauthorized, "query: %v", err)
+	}
+	if !query.Has("jwt") {
+		return "", refuse(http.StatusUnauthorized, "no credential: connect with ?jwt=")
+	}
+	return query.Get("jwt"), nil
+}
+
+// decide verifies credential, at connect or for a live session; credErr is
+// why there is none, answered once the key set is known to be usable. A key
+// paused for publishing refuses it when paused reports true for its grant.
+func (v *Verifier) decide(credential string, credErr error, connect bool, paused func(*Grant) bool) (*Grant, usageSession, error) {
 	now := v.now()
-	connect := req.Event == EventConnect
 	set, fresh := v.store.current(now)
 	switch {
 	case set == nil:
@@ -164,18 +182,14 @@ func (v *Verifier) decide(req Request, paused func(token.Grant) bool) (*Grant, u
 		return nil, usageSession{}, fmt.Errorf("auth: the key set is older than %s", keysMaxStale)
 	}
 
-	query, err := url.ParseQuery(req.Query)
-	if err != nil {
-		return nil, usageSession{}, refuse(http.StatusUnauthorized, "query: %v", err)
-	}
-	if !query.Has("jwt") {
-		return nil, usageSession{}, refuse(http.StatusUnauthorized, "no credential: connect with ?jwt=")
+	if credErr != nil {
+		return nil, usageSession{}, credErr
 	}
 	verify := token.VerifyLive
 	if connect {
 		verify = token.Verify
 	}
-	c, err := verify(query.Get("jwt"), set.keys, now)
+	c, err := verify(credential, set.keys, now)
 	if err != nil {
 		status := http.StatusUnauthorized
 		if errors.Is(err, token.ErrForbidden) {
@@ -183,22 +197,21 @@ func (v *Verifier) decide(req Request, paused func(token.Grant) bool) (*Grant, u
 		}
 		return nil, usageSession{}, refuse(status, "%v", err)
 	}
-	if c.Key.Pauses(token.ActionPublish) && paused(c.Grant) {
-		return nil, usageSession{}, refuse(http.StatusForbidden,
-			"signing key %s starts no new publishing sessions", c.Key.ID)
-	}
-
 	g := &Grant{scopes: c.Scopes, subject: c.Subject, revalidate: revalidateEvery}
-	return g, usageSession{kid: c.Key.ID, publishes: publishesBroadcast(c.Grant)}, nil
+	if c.Key.Pauses(token.ActionPublish) && paused(g) {
+		return nil, usageSession{}, refuse(http.StatusForbidden,
+			"signing key %s starts nothing new that publishes", c.Key.ID)
+	}
+	return g, usageSession{kid: c.Key.ID, publishes: publishesBroadcast(c.Scopes)}, nil
 }
 
-// publishesBroadcast reports whether g lets its bearer publish a broadcast: a
-// scope permitting publish, which announces it through a relay, or create,
-// which makes tracks of it that a funnel publishes. A bearer that may only
+// publishesBroadcast reports whether scopes let a relay session publish a
+// broadcast: a scope permitting publish, which announces it. A relay ignores
+// create, which a funnel checks itself (Check), and a bearer that may only
 // post is a viewer, such as a chat sender posting into a funnel's track.
-func publishesBroadcast(g token.Grant) bool {
-	return slices.ContainsFunc(g.Scopes, func(s token.Scope) bool {
-		return slices.Contains(s.Actions, token.ActionPublish) || slices.Contains(s.Actions, token.ActionCreate)
+func publishesBroadcast(scopes []token.Scope) bool {
+	return slices.ContainsFunc(scopes, func(s token.Scope) bool {
+		return slices.Contains(s.Actions, token.ActionPublish)
 	})
 }
 

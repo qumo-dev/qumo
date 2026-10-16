@@ -288,6 +288,14 @@ func TestAuthorizer_PausedKeyCreatesNothing(t *testing.T) {
 
 		assert.Equal(t, wantErr, err != nil, "access %d: %v", access, err)
 	}
+
+	r := httptest.NewRequest(http.MethodPut, "/tracks/room/123/comments/chat", nil)
+	r.Header.Set("Authorization", "Bearer "+sign(t, key, token.Grant{Scopes: []token.Scope{{
+		Actions: []token.Action{token.ActionPost}, Broadcast: "room/123/comments",
+	}}}))
+	_, err := authorize(r, chat, ingest.Create)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "may not create", "a credential that may not create is refused for that, paused or not")
 }
 
 func TestAuthorizer_NoVerifierChecksNothing(t *testing.T) {

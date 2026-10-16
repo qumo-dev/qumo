@@ -711,22 +711,22 @@ func TestVerifier_UsagePublishes(t *testing.T) {
 		jwt  string
 		want bool
 	}{
-		"publish":               {jwt: sign(t, k, scoped(token.ActionPublish)), want: true},
-		"publish and fetch":     {jwt: sign(t, k, scoped(token.ActionPublish, token.ActionFetch)), want: true},
-		"a path_auth publisher": {jwt: signPathAuth(t, k, "acme/app/live", ""), want: true},
-		"a path_auth of both":   {jwt: signPathAuth(t, k, "acme/app/live", "acme/app"), want: true},
-		"subscribe":             {jwt: sign(t, k, scoped(token.ActionSubscribe)), want: false},
-		"fetch":                 {jwt: sign(t, k, scoped(token.ActionFetch)), want: false},
-		"a path_auth viewer":    {jwt: signPathAuth(t, k, "", "acme/app"), want: false},
-		"redact only":           {jwt: sign(t, k, scoped(token.ActionRedact)), want: false},
-		"post only":             {jwt: sign(t, k, scoped(token.ActionPost)), want: false},
-		"a viewer who may post": {jwt: sign(t, k, scoped(token.ActionPost, token.ActionSubscribe)), want: false},
-		"post and publish":      {jwt: sign(t, k, scoped(token.ActionPost, token.ActionPublish)), want: true},
-		"create only":           {jwt: sign(t, k, scoped(token.ActionCreate)), want: true},
+		"publish":                            {jwt: sign(t, k, scoped(token.ActionPublish)), want: true},
+		"publish and fetch":                  {jwt: sign(t, k, scoped(token.ActionPublish, token.ActionFetch)), want: true},
+		"a path_auth publisher":              {jwt: signPathAuth(t, k, "acme/app/live", ""), want: true},
+		"a path_auth of both":                {jwt: signPathAuth(t, k, "acme/app/live", "acme/app"), want: true},
+		"subscribe":                          {jwt: sign(t, k, scoped(token.ActionSubscribe)), want: false},
+		"fetch":                              {jwt: sign(t, k, scoped(token.ActionFetch)), want: false},
+		"a path_auth viewer":                 {jwt: signPathAuth(t, k, "", "acme/app"), want: false},
+		"redact only":                        {jwt: sign(t, k, scoped(token.ActionRedact)), want: false},
+		"post only":                          {jwt: sign(t, k, scoped(token.ActionPost)), want: false},
+		"a viewer who may post":              {jwt: sign(t, k, scoped(token.ActionPost, token.ActionSubscribe)), want: false},
+		"post and publish":                   {jwt: sign(t, k, scoped(token.ActionPost, token.ActionPublish)), want: true},
+		"create only, which a relay ignores": {jwt: sign(t, k, scoped(token.ActionCreate)), want: false},
 	}
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
-			_, s, err := v.decide(sessionReq(EventConnect, tt.jwt), func(token.Grant) bool { return false })
+			_, s, err := v.decide(tt.jwt, nil, true, func(*Grant) bool { return false })
 
 			require.NoError(t, err)
 			assert.Equal(t, tt.want, s.publishes)
