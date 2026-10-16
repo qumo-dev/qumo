@@ -42,10 +42,12 @@ Without `LEDGER_URI`, records are kept in memory and are lost when the
 process exits. Without `QUMO_AUTH_KEYS`, every sender is accepted.
 Without `RELAY_URL`, the funnel serves subscribers itself on `:4433`.
 
-A sender posts to the track's URL, `/tracks/` followed by the
-broadcast path and the track name:
+The app creates a track by putting to its URL, `/tracks/` followed by the
+broadcast path and the track name, and senders post records into it:
 
 ```console
+$ curl -X PUT localhost:8090/tracks/room/123/chat -H "Authorization: Bearer $APP"
+
 $ curl -X POST localhost:8090/tracks/room/123/chat \
     -H "Authorization: Bearer $ALICE" \
     -H "Idempotency-Key: 7f9c2b" \
@@ -64,8 +66,8 @@ on one subscription.
 
 | Endpoint | Body | Result |
 |---|---|---|
-| `POST /tracks/{broadcast path}/{track name}` | The record's payload, one JSON value in UTF-8 | `201` once the record is committed. Creates the track when it does not exist. |
-| `PUT /tracks/{broadcast path}/{track name}` | — | Creates the track ahead of its first record, so subscribers can wait on it: `201`, or `204` when it exists. |
+| `PUT /tracks/{broadcast path}/{track name}` | — | Creates the track and publishes it, so subscribers can wait on it before its first record: `201`, or `204` when it exists. |
+| `POST /tracks/{broadcast path}/{track name}` | The record's payload, one JSON value in UTF-8 | `201` once the record is committed; `404` when the track does not exist. A record never creates its track. |
 | `GET /tracks/{broadcast path}/{track name}` | — | A page of records, oldest first: the newest, or those before `?before=<group>`, at most `?limit=` (default 50, at most 200). `before` in the answer is the cursor for the next older page. A redacted record keeps its `group` and `wallclock` with `"redacted": true`, and has no sender or payload. |
 | `DELETE /tracks/{broadcast path}/{track name}?group=<group>` | — | Redacts that record ([qumo-ledger](https://github.com/okdaichi/qumo-ledger) `ingest`): commits and publishes a redaction, `{"redacts": "<group>"}`, then deletes the record's payload. `201` with the redaction's group, or `204` when the record was redacted already; `400` for a missing or malformed `group` or a redaction itself, `404` for no such track or group. Without `QUMO_AUTH_KEYS` it is open to anyone, like every other request. |
 
@@ -89,18 +91,22 @@ sender and per track; past either, a record is answered `429` with a
 With a key set (`QUMO_AUTH_KEYS`), every request carries a qumo credential as
 `Authorization: Bearer`, the same kind the relay admits sessions with and
 verified against the same key set. Its scopes
-([auth](../auth/#what-a-token-grants)) name the tracks it reaches:
+([auth](../auth/#what-a-token-grants)) name the broadcasts it reaches, and
+each reaches every track of them:
 
-- **Posting** (`POST`, `PUT`) needs a `post` scope matching the broadcast
-  path and the track name. The record's sender is the credential's `sub`,
-  whatever the payload claims; a credential without `sub` posts with no
-  sender. A `publish` scope does not post: it sends through a relay, so a
-  credential meant for posting can't publish into the relay directly, and a
-  publisher's can't post.
-- **Reading** history (`GET`) needs a `fetch` scope matching the broadcast path
-  and the track name.
-- **Redacting** (`DELETE`) needs a `redact` scope matching the broadcast path
-  and the track name. The redaction carries the credential's `sub` as its
+- **Creating** a track (`PUT`) needs a `publish` scope matching the broadcast
+  path: the funnel publishes the track. It is for the app, which decides
+  which tracks a broadcast has; a sender's credential has none, so senders
+  record only into the tracks the app made.
+- **Posting** (`POST`) needs a `post` scope matching the broadcast path. The
+  record's sender is the credential's `sub`, whatever the payload claims; a
+  credential without `sub` posts with no sender. A `publish` scope does not
+  post, and a `post` scope never publishes through a relay, so a sender's
+  credential can't publish into the relay directly.
+- **Reading** history (`GET`) needs a `fetch` scope matching the broadcast
+  path.
+- **Redacting** (`DELETE`) needs a `redact` scope matching the broadcast
+  path. The redaction carries the credential's `sub` as its
   sender. No other scope redacts, so a sender's `post` credential can't take
   anyone's record out; an app that lets senders redact their own records
   checks the record and redacts with a credential it keeps to itself.
@@ -110,22 +116,21 @@ verified against the same key set. Its scopes
 
 ```json
 {"sub": "alice",
- "scopes": [{"actions": ["post"], "broadcast": {"exact": "room/123"}, "track": {"exact": "chat"}},
+ "scopes": [{"actions": ["post"], "broadcast": {"exact": "room/123/comments"}},
             {"actions": ["fetch"], "broadcast": {"prefix": "room/123"}}],
  "iat": 1791370000, "nbf": 1791370000, "exp": 1791370600}
 ```
 
-posts into `chat` of `/room/123` as `alice`, and reads any track of
-`/room/123` and the broadcasts beneath it. It posts into no other track.
+posts as `alice` into the tracks the app made of `/room/123/comments`, and
+reads any track of `/room/123` and the broadcasts beneath it.
 
 A `path_auth` credential is read as the scopes it amounts to: its `sub` reads
-any track at or beneath its path. Its `pub` is publishing, so it posts
-nothing.
+any track at or beneath its path, and its `pub` creates tracks there. It
+posts nothing.
 
 The credential is checked on every request: once it expires or its key leaves
 the key set, it is refused. A missing or invalid credential answers `401` with
-`WWW-Authenticate: Bearer`, and one that does not cover the broadcast or the
-track `403`.
+`WWW-Authenticate: Bearer`, and one that does not cover the broadcast `403`.
 
 ## Publishing through a relay
 

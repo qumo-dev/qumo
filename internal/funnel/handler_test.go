@@ -34,6 +34,7 @@ func TestNewHandler_PublishesCommittedRecords(t *testing.T) {
 	mux := moqt.NewTrackMux(0)
 	h, err := NewHandler(t.Context(), mem.New(), mux, HandlerOptions{})
 	require.NoError(t, err)
+	require.Equal(t, http.StatusCreated, serve(h, http.MethodPut, chatURL, "").Code)
 
 	for _, payload := range []string{`{"text":"hello"}`, `"again"`} {
 		rr := serve(h, http.MethodPost, chatURL, payload)
@@ -41,7 +42,7 @@ func TestNewHandler_PublishesCommittedRecords(t *testing.T) {
 	}
 
 	_, handler := mux.TrackHandler("/room/123")
-	require.NotNil(t, handler, "the first record publishes the broadcast")
+	require.NotNil(t, handler)
 	chat, ok := handler.(*broadcast).lookup("chat")
 	require.True(t, ok)
 	require.NotNil(t, chat.latest)
@@ -49,10 +50,17 @@ func TestNewHandler_PublishesCommittedRecords(t *testing.T) {
 	assert.Equal(t, `{"payload":"again"}`, string(chat.latest.payload), "the record is sent as it was stored")
 }
 
-// postAs grants subject posting into every track of the broadcast at path.
+// postAs grants subject posting into the tracks of the broadcast at path.
 func postAs(subject, path string) token.Grant {
 	return token.Grant{Subject: subject, Scopes: []token.Scope{
 		{Actions: []token.Action{token.ActionPost}, Broadcast: path},
+	}}
+}
+
+// publishOn grants creating tracks of the broadcast at path.
+func publishOn(path string) token.Grant {
+	return token.Grant{Scopes: []token.Scope{
+		{Actions: []token.Action{token.ActionPublish}, Broadcast: path},
 	}}
 }
 
@@ -61,6 +69,7 @@ func TestNewHandler_SenderComesFromTheCredential(t *testing.T) {
 	mux := moqt.NewTrackMux(0)
 	h, err := NewHandler(t.Context(), mem.New(), mux, HandlerOptions{Verifier: v})
 	require.NoError(t, err)
+	require.Equal(t, http.StatusCreated, serve(h, http.MethodPut, chatURL, "", sign(t, key, publishOn("room/123"))).Code)
 
 	rr := serve(h, http.MethodPost, chatURL, `{"user":"mallory","text":"hi"}`,
 		sign(t, key, postAs("user-42", "room/123")))
@@ -90,6 +99,22 @@ func TestNewHandler_CreatePublishesTheTrack(t *testing.T) {
 	assert.False(t, ok, "a subscriber to any other name is not found")
 }
 
+func TestNewHandler_PostingNeedsACreatedTrack(t *testing.T) {
+	v, key := newVerifier(t)
+	mux := moqt.NewTrackMux(0)
+	h, err := NewHandler(t.Context(), mem.New(), mux, HandlerOptions{Verifier: v})
+	require.NoError(t, err)
+	poster := sign(t, key, postAs("user-42", "room/123"))
+
+	posted := serve(h, http.MethodPost, chatURL, `"hi"`, poster)
+	created := serve(h, http.MethodPut, chatURL, "", poster)
+
+	assert.Equal(t, http.StatusNotFound, posted.Code, "posting never creates a track")
+	assert.Equal(t, http.StatusForbidden, created.Code, "posting does not grant creating")
+	ann, _ := mux.TrackHandler("/room/123")
+	assert.Nil(t, ann, "nothing is published")
+}
+
 func TestNewHandler_RefusedRecordIsNotPublished(t *testing.T) {
 	v, _ := newVerifier(t)
 	mux := moqt.NewTrackMux(0)
@@ -108,6 +133,7 @@ func TestNewHandler_HistoryNeedsASubscriber(t *testing.T) {
 	v, key := newVerifier(t)
 	h, err := NewHandler(t.Context(), mem.New(), moqt.NewTrackMux(0), HandlerOptions{Verifier: v})
 	require.NoError(t, err)
+	require.Equal(t, http.StatusCreated, serve(h, http.MethodPut, chatURL, "", sign(t, key, publishOn("room/123"))).Code)
 	require.Equal(t, http.StatusCreated,
 		serve(h, http.MethodPost, chatURL, `"hello"`, sign(t, key, postAs("user-42", "room/123"))).Code)
 
@@ -126,6 +152,7 @@ func TestNewHandler_Limits(t *testing.T) {
 		TrackLimit: ingest.Limit{Rate: 1, Burst: 1},
 	})
 	require.NoError(t, err)
+	require.Equal(t, http.StatusCreated, serve(h, http.MethodPut, chatURL, "").Code)
 
 	assert.Equal(t, http.StatusCreated, serve(h, http.MethodPost, chatURL, `"one"`).Code)
 	assert.Equal(t, http.StatusTooManyRequests, serve(h, http.MethodPost, chatURL, `"two"`).Code)

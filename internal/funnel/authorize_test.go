@@ -62,7 +62,7 @@ func signPathAuth(tb testing.TB, key token.SigningKey, pub, sub string) string {
 }
 
 // A path_auth credential is read as scopes: sub reads at its path and beneath
-// it, and pub, being publish, never writes.
+// it, and pub, being publish, creates tracks there but never writes.
 func TestAuthorizer_PathAuth(t *testing.T) {
 	v, key := newVerifier(t)
 	other, err := token.GenerateKey("")
@@ -91,6 +91,8 @@ func TestAuthorizer_PathAuth(t *testing.T) {
 		"reading with a publisher's":        {header: pub("room/123"), access: ingest.Read, wantErr: true},
 		"reading another room":              {header: sub("room/9"), access: ingest.Read, wantErr: true},
 		"reading one segment beneath pub":   {header: pub("room/123/comments/user-42"), access: ingest.Read, wantErr: true},
+		"creating with pub":                 {header: pub("room/123"), access: ingest.Create},
+		"creating with sub":                 {header: sub("room/123"), access: ingest.Create, wantErr: true},
 	}
 	authorize := authorizer(v)
 	for name, tt := range tests {
@@ -116,8 +118,8 @@ func TestAuthorizer_PathAuth(t *testing.T) {
 func TestAuthorizer_Scopes(t *testing.T) {
 	v, key := newVerifier(t)
 	chat := ingest.Track{BroadcastPath: "/room/123/comments", TrackName: "chat"}
-	scope := func(broadcast string, prefix bool, track string, actions ...token.Action) token.Scope {
-		return token.Scope{Actions: actions, Broadcast: broadcast, Prefix: prefix, Track: track}
+	scope := func(broadcast string, prefix bool, actions ...token.Action) token.Scope {
+		return token.Scope{Actions: actions, Broadcast: broadcast, Prefix: prefix}
 	}
 	bearerOf := func(subject string, scopes ...token.Scope) string {
 		return "Bearer " + sign(t, key, token.Grant{Subject: subject, Scopes: scopes})
@@ -129,100 +131,101 @@ func TestAuthorizer_Scopes(t *testing.T) {
 		wantSender string
 		wantErr    bool
 	}{
-		"posting the exact track as a subject": {
-			header:     bearerOf("42", scope("room/123/comments", false, "chat", token.ActionPost)),
-			wantSender: "42",
-		},
 		"posting with no subject": {
-			header: bearerOf("", scope("room/123/comments", false, "chat", token.ActionPost)),
+			header: bearerOf("", scope("room/123/comments", false, token.ActionPost)),
 		},
-		"posting any track of the broadcast": {
-			header:     bearerOf("42", scope("room/123/comments", false, "", token.ActionPost)),
+		"posting as a subject": {
+			header:     bearerOf("42", scope("room/123/comments", false, token.ActionPost)),
 			wantSender: "42",
 		},
 		"posting under a prefix": {
-			header:     bearerOf("42", scope("room/123", true, "chat", token.ActionPost)),
+			header:     bearerOf("42", scope("room/123", true, token.ActionPost)),
 			wantSender: "42",
 		},
-		"posting another track": {
-			header:  bearerOf("42", scope("room/123/comments", false, "other", token.ActionPost)),
-			wantErr: true,
-		},
 		"posting beneath the broadcast": {
-			header:  bearerOf("42", scope("room/123/comments/user-42", false, "chat", token.ActionPost)),
+			header:  bearerOf("42", scope("room/123/comments/user-42", false, token.ActionPost)),
 			wantErr: true,
 		},
 		"posting under a sibling prefix": {
-			header:  bearerOf("42", scope("room/12", true, "chat", token.ActionPost)),
+			header:  bearerOf("42", scope("room/12", true, token.ActionPost)),
 			wantErr: true,
 		},
-		"posting with publish, which only sends through the relay": {
-			header:  bearerOf("42", scope("room/123/comments", false, "chat", token.ActionPublish)),
+		"posting with publish, which creates tracks but never posts": {
+			header:  bearerOf("42", scope("room/123/comments", false, token.ActionPublish)),
 			wantErr: true,
 		},
 		"posting with fetch only": {
-			header:  bearerOf("42", scope("room/123/comments", false, "chat", token.ActionFetch)),
+			header:  bearerOf("42", scope("room/123/comments", false, token.ActionFetch)),
 			wantErr: true,
 		},
 		"posting with subscribe only": {
-			header:  bearerOf("42", scope("room/123/comments", false, "chat", token.ActionSubscribe)),
+			header:  bearerOf("42", scope("room/123/comments", false, token.ActionSubscribe)),
 			wantErr: true,
 		},
 		"reading with fetch": {
-			header: bearerOf("42", scope("room/123/comments", false, "chat", token.ActionFetch)),
+			header: bearerOf("42", scope("room/123/comments", false, token.ActionFetch)),
 			access: ingest.Read,
 		},
 		"reading under a fetch prefix": {
-			header: bearerOf("", scope("room", true, "", token.ActionFetch)),
+			header: bearerOf("", scope("room", true, token.ActionFetch)),
 			access: ingest.Read,
 		},
 		"reading with subscribe only": {
-			header:  bearerOf("42", scope("room/123/comments", false, "chat", token.ActionSubscribe)),
+			header:  bearerOf("42", scope("room/123/comments", false, token.ActionSubscribe)),
 			access:  ingest.Read,
 			wantErr: true,
 		},
 		"reading with post only": {
-			header:  bearerOf("42", scope("room/123/comments", false, "chat", token.ActionPost)),
+			header:  bearerOf("42", scope("room/123/comments", false, token.ActionPost)),
 			access:  ingest.Read,
 			wantErr: true,
 		},
-		"reading another track": {
-			header:  bearerOf("42", scope("room/123/comments", false, "other", token.ActionFetch)),
-			access:  ingest.Read,
+		"creating with publish": {
+			header: bearerOf("app", scope("room/123/comments", false, token.ActionPublish)),
+			access: ingest.Create,
+		},
+		"creating under a publish prefix": {
+			header: bearerOf("", scope("room", true, token.ActionPublish)),
+			access: ingest.Create,
+		},
+		"creating with post only": {
+			header:  bearerOf("42", scope("room/123/comments", false, token.ActionPost)),
+			access:  ingest.Create,
+			wantErr: true,
+		},
+		"creating with every other action": {
+			header: bearerOf("", scope("room", true,
+				token.ActionSubscribe, token.ActionFetch, token.ActionPost, token.ActionRedact)),
+			access:  ingest.Create,
 			wantErr: true,
 		},
 		"the second of two scopes": {
 			header: bearerOf("42",
-				scope("room/9", true, "", token.ActionPost),
-				scope("room/123/comments", false, "chat", token.ActionPost)),
+				scope("room/9", true, token.ActionPost),
+				scope("room/123/comments", false, token.ActionPost)),
 			wantSender: "42",
 		},
-		"redacting the exact track": {
-			header:     bearerOf("moderator", scope("room/123/comments", false, "chat", token.ActionRedact)),
+		"redacting at the broadcast": {
+			header:     bearerOf("moderator", scope("room/123/comments", false, token.ActionRedact)),
 			access:     ingest.Redact,
 			wantSender: "moderator",
 		},
 		"redacting under a prefix, with no subject": {
-			header: bearerOf("", scope("room", true, "", token.ActionRedact)),
+			header: bearerOf("", scope("room", true, token.ActionRedact)),
 			access: ingest.Redact,
 		},
-		"redacting another track": {
-			header:  bearerOf("", scope("room/123/comments", false, "other", token.ActionRedact)),
-			access:  ingest.Redact,
-			wantErr: true,
-		},
 		"redacting with every other action": {
-			header: bearerOf("", scope("room", true, "",
+			header: bearerOf("", scope("room", true,
 				token.ActionPublish, token.ActionSubscribe, token.ActionFetch, token.ActionPost)),
 			access:  ingest.Redact,
 			wantErr: true,
 		},
 		"posting with redact only": {
-			header:  bearerOf("", scope("room", true, "", token.ActionRedact)),
+			header:  bearerOf("", scope("room", true, token.ActionRedact)),
 			wantErr: true,
 		},
 		"reading with redact only": {
-			header:  bearerOf("", scope("room", true, "", token.ActionRedact)),
+			header:  bearerOf("", scope("room", true, token.ActionRedact)),
 			access:  ingest.Read,
 			wantErr: true,
 		},

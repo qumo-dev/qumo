@@ -153,10 +153,9 @@ func runToken(args []string, out, info io.Writer) error {
 	publish := fs.String("publish", "", "the path the bearer may publish at or beneath: short for -scope publish:PATH/**")
 	subscribe := fs.String("subscribe", "", "the path the bearer may subscribe at or beneath: short for -scope subscribe,fetch:PATH/**")
 	var scopes []token.Scope
-	fs.Func("scope", "a scope, `ACTIONS:BROADCAST[:TRACK]` (repeatable):\n"+
+	fs.Func("scope", "a scope, `ACTIONS:BROADCAST` (repeatable):\n"+
 		"ACTIONS is a comma-separated list of publish, subscribe, fetch, post and redact;\n"+
-		"BROADCAST is a path, or a/b/** for it and every path beneath it;\n"+
-		"TRACK is one track name, or omitted for every track",
+		"BROADCAST is a path, or a/b/** for it and every path beneath it",
 		func(v string) error {
 			s, err := parseScope(v)
 			if err != nil {
@@ -206,20 +205,19 @@ func runToken(args []string, out, info io.Writer) error {
 	return err
 }
 
-// parseScope reads a -scope value, ACTIONS:BROADCAST[:TRACK]. A broadcast
-// ending in "/**" matches it and every path beneath it; the track is the rest
-// of the value, so it may hold a ":". A ":" names a track, so an empty one is
-// refused rather than read as every track. token.Sign checks the rest.
+// parseScope reads a -scope value, ACTIONS:BROADCAST. A broadcast ending in
+// "/**" matches it and every path beneath it. A second ":" is refused, so a
+// value naming a track, which a scope can't, fails rather than signing for a
+// broadcast whose path holds it. token.Sign checks the rest.
 func parseScope(v string) (token.Scope, error) {
-	actions, rest, ok := strings.Cut(v, ":")
-	if !ok || actions == "" || rest == "" {
-		return token.Scope{}, fmt.Errorf("scope %q: want ACTIONS:BROADCAST[:TRACK]", v)
+	actions, broadcast, ok := strings.Cut(v, ":")
+	if !ok || actions == "" || broadcast == "" {
+		return token.Scope{}, fmt.Errorf("scope %q: want ACTIONS:BROADCAST", v)
 	}
-	broadcast, track, hasTrack := strings.Cut(rest, ":")
-	if hasTrack && track == "" {
-		return token.Scope{}, fmt.Errorf("scope %q: an empty track; omit \":TRACK\" for every track", v)
+	if strings.Contains(broadcast, ":") {
+		return token.Scope{}, fmt.Errorf("scope %q: want ACTIONS:BROADCAST; a scope reaches every track of its broadcast", v)
 	}
-	s := token.Scope{Track: track}
+	var s token.Scope
 	s.Broadcast, s.Prefix = strings.CutSuffix(broadcast, "/**")
 	for a := range strings.SplitSeq(actions, ",") {
 		s.Actions = append(s.Actions, token.Action(a))
@@ -237,5 +235,5 @@ func scopeLabel(s token.Scope) string {
 	if s.Prefix {
 		broadcast += "/**"
 	}
-	return strings.Join(actions, ",") + " " + broadcast + " track " + cmp.Or(s.Track, "*")
+	return strings.Join(actions, ",") + " " + broadcast
 }

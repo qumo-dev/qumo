@@ -14,16 +14,19 @@ type Action string
 
 // The actions a scope may list. Any other is refused.
 const (
-	// ActionPublish is sending a track's groups through a relay.
+	// ActionPublish is putting out a broadcast: sending its tracks' groups
+	// through a relay, or creating a track of it at a funnel, which the
+	// funnel publishes.
 	ActionPublish Action = "publish"
 	// ActionSubscribe is receiving a track live.
 	ActionSubscribe Action = "subscribe"
 	// ActionFetch is reading a track's history, such as a funnel's GET.
 	ActionFetch Action = "fetch"
 	// ActionPost is sending one message into a track at a funnel, which
-	// gathers many senders' messages into that one track and publishes it. A
-	// relay never reads it as publishing, so a credential that posts can't
-	// send into the relay directly.
+	// gathers many senders' messages into that one track and publishes it.
+	// The track must exist: posting never creates one. A relay never reads it
+	// as publishing, so a credential that posts can't send into the relay
+	// directly.
 	ActionPost Action = "post"
 	// ActionRedact is taking a record out of a track at a funnel: the funnel
 	// publishes a redaction naming it and deletes its payload. Who may redact
@@ -40,8 +43,8 @@ func (a Action) known() bool {
 	return false
 }
 
-// Scope grants actions on the broadcasts and tracks it matches; everything a
-// token's scopes don't grant is denied.
+// Scope grants actions on every track of the broadcasts it matches;
+// everything a token's scopes don't grant is denied.
 type Scope struct {
 	// Actions are what the scope permits. At least one is required.
 	Actions []Action
@@ -53,17 +56,11 @@ type Scope struct {
 	// Broadcast without Prefix reaches none.
 	Broadcast string
 	Prefix    bool
-	// Track is the one track name the scope reaches; empty reaches every
-	// track.
-	Track string
 }
 
-// Allows reports whether the scope permits action on the track named track
-// of the broadcast at broadcast.
-func (s Scope) Allows(action Action, broadcast, track string) bool {
-	if s.Track != "" && s.Track != track {
-		return false
-	}
+// Allows reports whether the scope permits action on the broadcast at
+// broadcast.
+func (s Scope) Allows(action Action, broadcast string) bool {
 	if !slices.Contains(s.Actions, action) {
 		return false
 	}
@@ -82,21 +79,15 @@ func (s Scope) Allows(action Action, broadcast, track string) bool {
 }
 
 // scopeJSON is a scope as encoded, the JSON counterpart of a CAT-4-MOQT
-// scope: actions, a broadcast match (exact or prefix) and an optional track
-// match (exact).
+// scope: actions and a broadcast match (exact or prefix).
 type scopeJSON struct {
 	Actions   []Action        `json:"actions"`
 	Broadcast *broadcastMatch `json:"broadcast"`
-	Track     *trackMatch     `json:"track,omitzero"`
 }
 
 type broadcastMatch struct {
 	Exact  *string `json:"exact,omitzero"`
 	Prefix *string `json:"prefix,omitzero"`
-}
-
-type trackMatch struct {
-	Exact *string `json:"exact"`
 }
 
 // encodeScopes encodes scopes for the scopes claim, checking each as Verify
@@ -123,9 +114,6 @@ func encodeScopes(scopes []Scope, keyPrefix string) (jsontext.Value, error) {
 		if s.Prefix {
 			sj.Broadcast = &broadcastMatch{Prefix: &path}
 		}
-		if s.Track != "" {
-			sj.Track = &trackMatch{Exact: &s.Track}
-		}
 		out[i] = sj
 	}
 	raw, err := json.Marshal(out)
@@ -136,9 +124,9 @@ func encodeScopes(scopes []Scope, keyPrefix string) (jsontext.Value, error) {
 }
 
 // scopesOf decodes the scopes claim into the scopes it grants, each confined
-// to prefix at a "/" boundary. A member it doesn't know is refused rather
-// than ignored, since ignoring a misspelled track match would widen a scope
-// to every track. No scopes grant nothing, which is forbidden.
+// to prefix at a "/" boundary. A member it doesn't know, such as a track
+// match, is refused rather than ignored, since it might be meant to narrow
+// the scope. No scopes grant nothing, which is forbidden.
 func scopesOf(raw jsontext.Value, prefix string) ([]Scope, error) {
 	var encoded []scopeJSON
 	if err := json.Unmarshal(raw, &encoded, json.RejectUnknownMembers(true)); err != nil {
@@ -189,12 +177,6 @@ func (sj scopeJSON) scope() (Scope, error) {
 		return Scope{}, errors.New("broadcast names no path")
 	}
 	s.Broadcast = path
-	if sj.Track != nil {
-		if sj.Track.Exact == nil || *sj.Track.Exact == "" {
-			return Scope{}, errors.New("the track match wants a non-empty exact")
-		}
-		s.Track = *sj.Track.Exact
-	}
 	s.Actions = sj.Actions
 	return s, nil
 }

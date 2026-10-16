@@ -215,11 +215,11 @@ func TestFeedConfig_Target(t *testing.T) {
 		require.NoError(t, err)
 		require.Len(t, claims.Scopes, 1)
 		scope := claims.Scopes[0]
-		assert.True(t, scope.Allows(token.ActionSubscribe, "hls/live", "video"))
-		assert.True(t, scope.Allows(token.ActionFetch, "hls/live", "catalog"))
-		assert.False(t, scope.Allows(token.ActionSubscribe, "hls/other", "video"), "no other broadcast")
-		assert.False(t, scope.Allows(token.ActionSubscribe, "hls/live/deeper", "video"), "nothing beneath it")
-		assert.False(t, scope.Allows(token.ActionPublish, "hls/live", "video"), "it publishes nothing")
+		assert.True(t, scope.Allows(token.ActionSubscribe, "hls/live"))
+		assert.True(t, scope.Allows(token.ActionFetch, "hls/live"))
+		assert.False(t, scope.Allows(token.ActionSubscribe, "hls/other"), "no other broadcast")
+		assert.False(t, scope.Allows(token.ActionSubscribe, "hls/live/deeper"), "nothing beneath it")
+		assert.False(t, scope.Allows(token.ActionPublish, "hls/live"), "it publishes nothing")
 	})
 
 	t.Run("each connect signs a new one", func(t *testing.T) {

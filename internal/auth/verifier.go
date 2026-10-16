@@ -43,9 +43,8 @@ type VerifierConfig struct {
 // within its validity (token.Verify). A live session is re-checked every 30 s
 // (token.VerifyLive): a key that has left the set ends its sessions. The
 // credential's expiry decides only whether the session may start. A key
-// marked "pause": ["publish"] starts no new sessions that may publish a
-// broadcast (a credential with a publish or post scope on every track of one,
-// at a relay or a funnel); it
+// marked "pause": ["publish"] starts no new sessions that may publish (a
+// credential with a publish scope, at a relay or a funnel); it
 // never ends a live one, since it pauses what is new rather than what is on
 // air. The key set is kept when a refresh fails (fail-static): after 6 h
 // without one, new sessions are refused, while live ones continue on the
@@ -181,18 +180,14 @@ func (v *Verifier) decide(req Request) (*Grant, usageSession, error) {
 }
 
 // publishesBroadcast reports whether g lets its bearer publish a broadcast: a
-// scope permitting publish or post on every track. Through a relay it
-// announces the broadcast, and at a funnel it may create any track of it,
-// which the funnel publishes. A scope naming one track publishes no broadcast
-// of its own, so its bearer is a viewer, such as a chat sender posting into a
+// scope permitting publish. Through a relay it announces the broadcast, and
+// at a funnel it may create tracks of it, which the funnel publishes. A
+// bearer that may only post is a viewer, such as a chat sender posting into a
 // funnel's track.
 func publishesBroadcast(g token.Grant) bool {
-	for _, s := range g.Scopes {
-		if s.Track == "" && (slices.Contains(s.Actions, token.ActionPublish) || slices.Contains(s.Actions, token.ActionPost)) {
-			return true
-		}
-	}
-	return false
+	return slices.ContainsFunc(g.Scopes, func(s token.Scope) bool {
+		return slices.Contains(s.Actions, token.ActionPublish)
+	})
 }
 
 // End reports a session's end with its final byte totals.

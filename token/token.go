@@ -3,9 +3,9 @@
 // or funnel.
 //
 // A token grants scopes, after CAT-4-MOQT's moqt claim: each scope permits
-// actions (publish, subscribe and fetch at a relay; post, fetch and redact at
-// a funnel) on an exact broadcast path or a prefix of them, and on one track
-// or every track. It may name its bearer in sub.
+// actions (publish, subscribe and fetch at a relay; publish, post, fetch and
+// redact at a funnel) on an exact broadcast path or a prefix of them, and on
+// every track of each. It may name its bearer in sub.
 //
 // Sign writes the scopes claim. Verify also accepts the path_auth claim of
 // other MoQ implementations (the @moq/token convention) and reads it as
@@ -65,7 +65,7 @@ var allowedClaims = map[string]bool{
 }
 
 // Grant is what a token allows its bearer: Scopes, each permitting actions on
-// the broadcasts and tracks it matches, of which there must be at least one,
+// the broadcasts it matches, of which there must be at least one,
 // and Subject, the bearer (the sub claim), which may be empty.
 type Grant struct {
 	Scopes  []Scope
