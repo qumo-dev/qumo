@@ -18,10 +18,11 @@ const defaultGroupTimeout = 5 * time.Second
 // list [Collector.WantTracks], and for a media track's first group. An ingest
 // can list a track before its media flows (RTSP lists the SDP's tracks at
 // SETUP), so the first group gets the startup budget rather than GroupTimeout.
-// catalogPollInterval spaces the catalog re-subscribes.
+// subscribeRetryInterval spaces catalog subscribes made before the publisher
+// has connected, which the relay refuses.
 const (
-	startupTimeout      = 10 * time.Second
-	catalogPollInterval = 100 * time.Millisecond
+	startupTimeout         = 10 * time.Second
+	subscribeRetryInterval = 100 * time.Millisecond
 )
 
 // Resource ceilings: the collector subscribes to a relay and must not trust it
@@ -49,8 +50,8 @@ type Collector struct {
 	GroupTimeout time.Duration
 	// WantTracks names the tracks the catalog must list before media is
 	// drained. An ingest publishes its catalog before the publisher's codec
-	// configuration arrives and adds tracks as it learns them, and the catalog
-	// track serves one snapshot per subscribe, so the collector re-subscribes
+	// configuration arrives and adds tracks as it learns them, sending the
+	// catalog again on each change, so the collector reads catalog updates
 	// until every named track is listed or startupTimeout elapses.
 	WantTracks []string
 }
@@ -89,7 +90,7 @@ func (c *Collector) Collect(ctx context.Context) (*Observation, error) {
 	return obs, nil
 }
 
-// collectCatalog fetches the MSF catalog until it lists every track in
+// collectCatalog reads the MSF catalog until it lists every track in
 // [Collector.WantTracks], and parses it into the observation's track map. When
 // the wait runs out it records the last catalog it read, so the gate reports
 // the missing tracks.
@@ -98,31 +99,34 @@ func (c *Collector) collectCatalog(ctx context.Context, sess *moqt.Session, obs 
 	// (or a relay that does not serve subscribers) must not hang the collector.
 	cctx, cancel := context.WithTimeout(ctx, startupTimeout)
 	defer cancel()
-	tick := time.NewTicker(catalogPollInterval)
-	defer tick.Stop()
 
-	// cat is the last catalog read; a fetch cut off by the deadline does not
-	// replace it.
+	tr, err := c.subscribeCatalog(cctx, sess)
+	if err != nil {
+		return err
+	}
+	defer tr.Close()
+
+	// cat is the last catalog read; each group carries the whole catalog.
 	var (
 		cat     msf.Catalog
+		catSeq  moqt.GroupSequence
 		fetched bool
 	)
-poll:
-	for {
-		got, err := c.fetchCatalog(cctx, sess)
-		if err == nil {
-			cat, fetched = got, true
-			if listsTracks(cat, c.WantTracks) {
+	for !fetched || !listsTracks(cat, c.WantTracks) {
+		gr, err := tr.AcceptGroup(cctx)
+		if err != nil {
+			if fetched {
 				break
 			}
+			return fmt.Errorf("read catalog group: %w", err)
 		}
-		select {
-		case <-cctx.Done():
-			if !fetched {
-				return err
-			}
-			break poll
-		case <-tick.C:
+		got, err := readCatalog(gr)
+		if err != nil {
+			return err
+		}
+		// Groups can arrive out of order; keep the newest.
+		if !fetched || gr.GroupSequence() > catSeq {
+			cat, catSeq, fetched = got, gr.GroupSequence(), true
 		}
 	}
 
@@ -146,18 +150,26 @@ poll:
 	return nil
 }
 
-// fetchCatalog subscribes to the "catalog" track and parses its first group.
-func (c *Collector) fetchCatalog(ctx context.Context, sess *moqt.Session) (msf.Catalog, error) {
-	tr, err := sess.Subscribe(ctx, c.Path, moqt.TrackName("catalog"), nil)
-	if err != nil {
-		return msf.Catalog{}, fmt.Errorf("subscribe catalog: %w", err)
+// subscribeCatalog subscribes to the catalog track, retrying until the
+// publisher has connected and the broadcast exists, or ctx ends.
+func (c *Collector) subscribeCatalog(ctx context.Context, sess *moqt.Session) (*moqt.TrackReader, error) {
+	tick := time.NewTicker(subscribeRetryInterval)
+	defer tick.Stop()
+	for {
+		tr, err := sess.Subscribe(ctx, c.Path, moqt.TrackName(msf.DefaultCatalogTrackName), nil)
+		if err == nil {
+			return tr, nil
+		}
+		select {
+		case <-ctx.Done():
+			return nil, fmt.Errorf("subscribe catalog: %w", err)
+		case <-tick.C:
+		}
 	}
-	defer tr.Close()
+}
 
-	gr, err := tr.AcceptGroup(ctx)
-	if err != nil {
-		return msf.Catalog{}, fmt.Errorf("read catalog group: %w", err)
-	}
+// readCatalog parses one catalog group.
+func readCatalog(gr *moqt.GroupReader) (msf.Catalog, error) {
 	buf := moqt.NewFrame(4096)
 	var raw []byte
 	for frame := range gr.Frames(buf) {
