@@ -9,12 +9,14 @@ import (
 	"net/http"
 	"net/url"
 	"slices"
+	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/qumo-dev/gomoqt/moqt"
 	"github.com/qumo-dev/qumo/internal/auth"
 	"github.com/qumo-dev/qumo/token"
+	"github.com/qumo-dev/qumo/usage"
 )
 
 // admission is a session's grant, carried in the session's context so that
@@ -48,6 +50,188 @@ type admission struct {
 	// connection's credential or a ticket: a key paused for publishing still
 	// renews its grant (Ticket).
 	published atomic.Bool
+	// held is the grants the session holds, and for an anonymous one its
+	// key and deadline.
+	held heldGrants
+}
+
+// heldGrants is what a session's grants in force decide about it. An
+// anonymous session (one that connected with no credential) is bound to the
+// key of the first ticket granted on it, and is closed whenever it has held
+// no grant that grants something for its deadline.
+type heldGrants struct {
+	mu sync.Mutex
+	// key is the kid an anonymous session is bound to, or "" while none
+	// is. A ticket in flight binds it tentatively: the binding holds once a
+	// grant succeeds, and is undone when every ticket in flight failed.
+	key string
+	// opened is set once a grant on an anonymous session succeeded: its
+	// usage is open under key, which binds it for good.
+	opened bool
+	// publishes is set once usage reports the anonymous session as a
+	// publisher.
+	publishes bool
+	// inFlight counts tickets that passed the key check and are being
+	// granted.
+	inFlight int
+	// live counts the grants in force that grant something.
+	live int
+	// pending is the server's count of anonymous sessions that hold no
+	// grant yet, this one among them until its first grant or its end, or
+	// nil once it is not.
+	pending *atomic.Int64
+	// wait is how long an anonymous session may hold no grant, and expire
+	// closes it then; both are set while its deadline is watched (watch).
+	wait   time.Duration
+	expire func()
+	timer  *time.Timer
+	// closedFor is why the relay closed the session, or "".
+	closedFor string
+}
+
+// boundKey returns the kid an anonymous session is bound to, or "" while no
+// ticket has bound it.
+func (a *admission) boundKey() string {
+	a.held.mu.Lock()
+	defer a.held.mu.Unlock()
+	return a.held.key
+}
+
+// beginTicket binds an anonymous session to kid, the key of a ticket that
+// verified, while the ticket is granted: the first key wins, and a ticket of
+// any other key is refused (false). Every true is followed by settleTicket.
+func (a *admission) beginTicket(kid string) bool {
+	h := &a.held
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	switch h.key {
+	case "":
+		h.key = kid
+	case kid:
+	default:
+		return false
+	}
+	h.inFlight++
+	return true
+}
+
+// settleTicket records whether a ticket begun by beginTicket was granted,
+// and whether what it grants publishes. The first granted on an anonymous
+// session opens its usage (open, with whether it publishes) and binds the
+// session for good; a later one that publishes makes it a publisher
+// (publishing), always after the open whatever order the grants came in. A
+// binding no grant ever held is undone once no ticket is in flight.
+func (a *admission) settleTicket(granted, publishes bool, open func(publishes bool), publishing func()) {
+	h := &a.held
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.inFlight--
+	switch {
+	case !granted:
+		if !h.opened && h.inFlight == 0 {
+			h.key = ""
+		}
+	case !h.opened:
+		h.opened, h.publishes = true, publishes
+		open(publishes)
+	case publishes && !h.publishes:
+		h.publishes = true
+		publishing()
+	}
+}
+
+// countPending counts the session in pending, the server's anonymous
+// sessions that hold no grant yet, until its first grant or its end.
+func (a *admission) countPending(pending *atomic.Int64) {
+	a.held.mu.Lock()
+	defer a.held.mu.Unlock()
+	a.held.pending = pending
+}
+
+// releasePendingLocked takes the session out of the server's pending
+// anonymous sessions. The caller holds held.mu.
+func (h *heldGrants) releasePendingLocked() {
+	if h.pending != nil {
+		h.pending.Add(-1)
+		h.pending = nil
+	}
+}
+
+// holding records a grant in force that grants something, until released.
+func (a *admission) holding() {
+	h := &a.held
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.live++
+	h.releasePendingLocked()
+	if h.timer != nil {
+		h.timer.Stop()
+	}
+}
+
+// released records that a grant holding recorded has ended. An anonymous
+// session left with none has its deadline again.
+func (a *admission) released() {
+	h := &a.held
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.live--
+	if h.live == 0 && h.expire != nil {
+		h.armLocked()
+	}
+}
+
+// watch closes the anonymous session with expire whenever it has held no
+// grant that grants something for wait, until unwatch.
+func (a *admission) watch(wait time.Duration, expire func()) {
+	h := &a.held
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.wait, h.expire = wait, expire
+	if h.live == 0 {
+		h.armLocked()
+	}
+}
+
+// armLocked starts the deadline. The caller holds held.mu.
+func (h *heldGrants) armLocked() {
+	if h.timer != nil {
+		h.timer.Stop()
+	}
+	var timer *time.Timer
+	timer = time.AfterFunc(h.wait, func() {
+		h.mu.Lock()
+		if h.timer != timer || h.live > 0 || h.expire == nil {
+			h.mu.Unlock()
+			return
+		}
+		h.closedFor = endUnbound
+		expire := h.expire
+		h.expire = nil
+		h.mu.Unlock()
+		expire()
+	})
+	h.timer = timer
+}
+
+// unwatch stops the deadline and takes the session out of the pending
+// ones, as the session ends.
+func (a *admission) unwatch() {
+	h := &a.held
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.expire = nil
+	if h.timer != nil {
+		h.timer.Stop()
+	}
+	h.releasePendingLocked()
+}
+
+// closedReason returns why the relay closed the session itself, or "".
+func (a *admission) closedReason() string {
+	a.held.mu.Lock()
+	defer a.held.mu.Unlock()
+	return a.held.closedFor
 }
 
 type admissionKey struct{}
@@ -157,6 +341,9 @@ const (
 	authRefused   = "refused"
 	authError     = "error"
 	authOK        = "ok"
+	// authBusy is an anonymous session refused while too many others hold
+	// no grant yet.
+	authBusy = "busy"
 )
 
 // authOutcome classifies an Authorize reply.
@@ -173,6 +360,37 @@ func authOutcome(g *auth.Grant, err error) string {
 	return authError
 }
 
+// errTooManyPending refuses an anonymous session as unavailable while
+// maxPendingAnonymous others hold no grant yet.
+var errTooManyPending = errors.New("relay: too many sessions hold no credential yet")
+
+// reservePending counts an anonymous session being admitted among those
+// that hold no grant yet, or reports false when there are as many as the
+// relay takes. The admission it gets takes it out again (countPending).
+func (s *Server) reservePending() bool {
+	if s.pendingAnonymous.Add(1) > int64(s.maxPendingAnonymous()) {
+		s.pendingAnonymous.Add(-1)
+		return false
+	}
+	return true
+}
+
+// maxPendingAnonymous is Server.MaxPendingAnonymous, or its default.
+func (s *Server) maxPendingAnonymous() int {
+	if s.MaxPendingAnonymous <= 0 {
+		return maxPendingAnonymous
+	}
+	return s.MaxPendingAnonymous
+}
+
+// authDeadline is Server.AuthDeadline, or its default.
+func (s *Server) authDeadline() time.Duration {
+	if s.AuthDeadline <= 0 {
+		return authDeadline
+	}
+	return s.AuthDeadline
+}
+
 // admit runs the connect check and records its outcome.
 func (s *Server) admit(ctx context.Context, req auth.Request) (*auth.Grant, error) {
 	if s.Authorize == nil {
@@ -183,8 +401,14 @@ func (s *Server) admit(ctx context.Context, req auth.Request) (*auth.Grant, erro
 	}
 	g, err := s.Authorize(ctx, req)
 	outcome := authOutcome(g, err)
+	if outcome == authAdmitted && g.Anonymous() && !s.reservePending() {
+		g, err, outcome = nil, errTooManyPending, authBusy
+	}
 	metricAuthRequests.WithLabelValues(auth.EventConnect, outcome).Inc()
 	switch outcome {
+	case authBusy:
+		slog.Warn("relay: session refused: too many sessions hold no credential yet", "transport", req.Transport,
+			"remote", req.Remote, "path", req.Path, "limit", s.maxPendingAnonymous())
 	case authRefused:
 		slog.Info("relay: session refused", "transport", req.Transport, "remote", req.Remote,
 			"path", req.Path, "reason", err)
@@ -252,13 +476,19 @@ func refusalReason(err error) string {
 }
 
 // TicketVerifier verifies the tickets a session presents on Auth Streams
-// (auth.Verifier): Ticket when one is presented, which must be signed by the
-// key that signed the session's own credential, and published when the
-// session has been granted what may publish; Trusts while its grant is in
-// force; and Publishing once a session is granted one that may publish.
+// (auth.Verifier): Ticket when one is presented, which must be signed by
+// keyID, the key that signed the session's own credential or that an
+// anonymous session is bound to, and published when the session has been
+// granted what may publish; FirstTicket for the first ticket of an
+// anonymous session no key binds yet, which any trusted key may sign;
+// Trusts while its grant is in force; Bind once a ticket granted on an
+// anonymous session binds it to its key, with whether it publishes; and
+// Publishing once a session is granted one that may publish.
 type TicketVerifier interface {
 	Ticket(credential, keyID string, published bool) (*auth.Grant, error)
+	FirstTicket(credential string) (*auth.Grant, error)
 	Trusts(g *auth.Grant) (bool, error)
+	Bind(id, keyID string, publishes bool)
 	Publishing(id string)
 }
 
@@ -274,6 +504,18 @@ const (
 	// gomoqt revokes the grant first and tells the presenter: a handler that
 	// returned first would end it silently.
 	revokeMargin = time.Second
+	// authDeadline is how long a session that connected with no credential
+	// may hold no grant that grants something before the relay closes it,
+	// so that one can't hold a session open granted nothing.
+	authDeadline = 10 * time.Second
+	// maxPendingAnonymous is how many sessions that connected with no
+	// credential and hold no grant yet may be open at once; past it the
+	// relay refuses another as unavailable.
+	maxPendingAnonymous = 1024
+	// endUnbound is why an anonymous session was closed at its deadline,
+	// and endUnboundMessage the close message its client sees.
+	endUnbound        = usage.ReasonUnauthenticated
+	endUnboundMessage = "no credential presented in time"
 )
 
 // everything is the grant of a session the relay checks nothing for: a relay
@@ -287,6 +529,12 @@ var everything = moqt.Grant{Root: "/", Publish: []string{"/"}, Subscribe: []stri
 // session's (serveTicket). Every grant of a verified credential lasts until
 // its token expires, wherever the token was presented: a client that stays
 // longer presents a fresh one before then.
+//
+// A session that connected with no credential (an anonymous one) is granted
+// nothing for it, and holds what its tickets grant. Whenever it holds no
+// grant that grants something, at its start or once its tickets have ended,
+// it is closed after authDeadline unless one is granted meanwhile
+// (serveSession).
 //
 // A client may present no token on an Auth Stream too, and gets its
 // connection's grant again, for what is left of it, which adds nothing. A
@@ -344,6 +592,10 @@ func (s *Server) serveConnection(w *moqt.AuthWriter, r *moqt.AuthRequest) {
 		slog.Error("relay: the session's grant could not be applied; it may do nothing", "id", id, "error", err)
 		return
 	}
+	if a := admissionFrom(ctx); a != nil && grantsSomething(grant) {
+		a.holding()
+		defer a.released()
+	}
 	// The session's lease checks the credential again while it lives, and
 	// ends the session when its key leaves the set.
 	if hold(ctx, lapses, nil) == heldLapsed {
@@ -360,6 +612,12 @@ func moqGrant(tg token.Grant) moqt.Grant {
 		return moqt.Grant{}
 	}
 	return moqt.Grant{Root: tg.Root, Publish: slices.Clone(tg.Publish), Subscribe: slices.Clone(tg.Subscribe)}
+}
+
+// grantsSomething reports whether g lets a session publish or subscribe to
+// anything.
+func grantsSomething(g moqt.Grant) bool {
+	return len(g.Publish) > 0 || len(g.Subscribe) > 0
 }
 
 // lapsesAt is when g's grant lapses: its token's expiry, judged with the
@@ -414,8 +672,9 @@ func hold(ctx context.Context, lapses time.Time, revalidate func() bool) heldOut
 
 // serveTicket verifies a ticket and grants it until it expires, its presenter
 // withdraws it or its key leaves the set. Only a session admitted with a
-// credential the relay verified may present one, and it must be signed by
-// the same key.
+// credential the relay verified, or anonymous, may present one. It must be
+// signed by the key of the session's credential or, for an anonymous
+// session, by the key its first ticket bound it to.
 func (s *Server) serveTicket(w *moqt.AuthWriter, r *moqt.AuthRequest) {
 	ctx := r.Context()
 	a := admissionFrom(ctx)
@@ -423,13 +682,22 @@ func (s *Server) serveTicket(w *moqt.AuthWriter, r *moqt.AuthRequest) {
 	if err != nil {
 		return
 	}
-	if s.Tickets == nil || g == nil || g.KeyID() == "" {
+	if s.Tickets == nil || g == nil || (g.KeyID() == "" && !g.Anonymous()) {
 		metricTickets.WithLabelValues(ticketNotSupported).Inc()
 		_ = w.Refuse(moqt.NotSupportedErrorCode, "this relay verifies no tickets for the session")
 		return
 	}
 
-	tg, err := s.Tickets.Ticket(string(r.Token), g.KeyID(), a.published.Load())
+	anonymous := g.Anonymous()
+	var tg *auth.Grant
+	switch key := a.boundKey(); {
+	case !anonymous:
+		tg, err = s.Tickets.Ticket(string(r.Token), g.KeyID(), a.published.Load())
+	case key != "":
+		tg, err = s.Tickets.Ticket(string(r.Token), key, a.published.Load())
+	default:
+		tg, err = s.Tickets.FirstTicket(string(r.Token))
+	}
 	if err != nil {
 		if _, refused := errors.AsType[auth.RefusedError](err); !refused {
 			// Not the ticket's fault: the key set is not usable just now.
@@ -443,6 +711,13 @@ func (s *Server) serveTicket(w *moqt.AuthWriter, r *moqt.AuthRequest) {
 		_ = w.Refuse(moqt.UnauthorizedSessionErrorCode, "ticket refused")
 		return
 	}
+	if anonymous && !a.beginTicket(tg.KeyID()) {
+		// Another ticket bound the session to its key first.
+		metricTickets.WithLabelValues(ticketRefused).Inc()
+		slog.Info("relay: ticket refused: the session is bound to another key", "id", a.req.ID, "kid", tg.KeyID())
+		_ = w.Refuse(moqt.UnauthorizedSessionErrorCode, "ticket refused")
+		return
+	}
 	// AUTH_OK tells the presenter when it lapses, so it can present a fresh
 	// ticket in time.
 	lapses := lapsesAt(tg)
@@ -453,7 +728,14 @@ func (s *Server) serveTicket(w *moqt.AuthWriter, r *moqt.AuthRequest) {
 	if len(grant.Publish) > 0 {
 		a.published.Store(true)
 	}
-	if err := w.Grant(grant); err != nil {
+	err = w.Grant(grant)
+	publishes := len(grant.Publish) > 0
+	if anonymous {
+		a.settleTicket(err == nil, publishes,
+			func(publishes bool) { s.Tickets.Bind(a.req.ID, tg.KeyID(), publishes) },
+			func() { s.Tickets.Publishing(a.req.ID) })
+	}
+	if err != nil {
 		metricTickets.WithLabelValues(ticketRefused).Inc()
 		slog.Info("relay: ticket not granted", "id", a.req.ID, "error", err)
 		// A grant gomoqt refused itself, too large, is answered already.
@@ -463,8 +745,12 @@ func (s *Server) serveTicket(w *moqt.AuthWriter, r *moqt.AuthRequest) {
 		return
 	}
 	metricTickets.WithLabelValues(ticketGranted).Inc()
-	if len(grant.Publish) > 0 {
+	if publishes && !anonymous {
 		s.Tickets.Publishing(a.req.ID)
+	}
+	if grantsSomething(grant) {
+		a.holding()
+		defer a.released()
 	}
 
 	switch hold(ctx, lapses, func() bool {

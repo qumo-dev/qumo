@@ -186,6 +186,18 @@ func sessionBytes(st moqt.SessionStats) auth.Bytes {
 	return auth.Bytes{Sent: st.BytesSent, Received: st.BytesReceived}
 }
 
+// sessionEndReason returns why a session admitted with a ended: why the relay
+// closed it itself, such as an anonymous session that held no grant in
+// time, or otherwise endReason.
+func sessionEndReason(a *admission, l *lease, cause error) string {
+	if a != nil {
+		if reason := a.closedReason(); reason != "" {
+			return reason
+		}
+	}
+	return endReason(l, cause)
+}
+
 // endReason returns why a checked session ended: the lease's reason when it
 // ended the session, otherwise from the session's close cause. A lost
 // connection is dropped; any other close is closed.

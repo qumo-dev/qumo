@@ -154,3 +154,61 @@ func TestRelay_Tickets(t *testing.T) {
 		}, 5*time.Second, 50*time.Millisecond)
 	})
 }
+
+func TestRelay_AnonymousSession(t *testing.T) {
+	keys, verifier := trustedKeys(t, "acme", 2)
+	session, other := keys[0], keys[1]
+	addr, srv := startAuthRelay(t, verifier.Authorize, nil, func(s *relay.Server) {
+		s.Tickets = verifier
+		s.AuthDeadline = 2 * time.Second
+	})
+	sign := func(key token.SigningKey, g token.Grant) string {
+		tok, err := token.Sign(key, g, time.Minute)
+		require.NoError(t, err)
+		return tok
+	}
+	publishOver(t, srv, "https://"+addr+"/?jwt="+sign(session, atAndBeneath("acme/room/42/host", token.ActionPublish)),
+		"/acme/room/42/host")
+
+	t.Run("presents a ticket within its deadline", func(t *testing.T) {
+		mux := moqt.NewTrackMux(0)
+		sess := dialOver(t, nativeURL(addr)+"/", nil, mux)
+		present := func(tok string) (*moqt.Credential, error) {
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			defer cancel()
+			return sess.Auth(ctx, []byte(tok))
+		}
+
+		assert.True(t, isSubscribeRefused(subscribeOn(t, sess, "/acme/room/42/host"), moqt.SubscribeErrorCodeUnauthorized),
+			"no subscription before a ticket")
+
+		cred, err := present(sign(session, token.Grant{Root: "/acme/room/42/", Publish: []string{"/7"}, Subscribe: []string{"/"}}))
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = cred.Close() })
+
+		assert.NoError(t, subscribeOn(t, sess, "/acme/room/42/host"))
+		end := announceOn(mux, "/acme/room/42/7")
+		t.Cleanup(end)
+		require.Eventually(t, routed(srv, "/acme/room/42/7"), 3*time.Second, 25*time.Millisecond)
+
+		_, err = present(sign(other, token.Grant{Root: "/acme/room/42/", Subscribe: []string{"/"}}))
+		authErr, ok := errors.AsType[*moqt.AuthError](err)
+		require.True(t, ok, "a ticket of another key than the bound one is refused with AUTH_ERROR, not %v", err)
+		assert.Equal(t, moqt.UnauthorizedSessionErrorCode, authErr.Code)
+
+		select {
+		case <-sess.Context().Done():
+			t.Fatal("a session granted a ticket in time was closed")
+		case <-time.After(3 * time.Second):
+		}
+	})
+	t.Run("presents nothing", func(t *testing.T) {
+		sess := dialOver(t, nativeURL(addr)+"/", nil, moqt.NewTrackMux(0))
+
+		select {
+		case <-sess.Context().Done():
+		case <-time.After(10 * time.Second):
+			t.Fatal("a session granted nothing was not closed at its deadline")
+		}
+	})
+}

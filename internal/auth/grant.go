@@ -21,12 +21,22 @@ type Grant struct {
 	keyID string
 	// expires is when the credential expires, or zero.
 	expires time.Time
+	// anonymous is a session that connected with no credential.
+	anonymous bool
 }
 
 // NewGrant returns a grant of g, checked again every revalidate (zero:
 // never). It is for an Authorize other than the Verifier's.
 func NewGrant(g token.Grant, revalidate time.Duration) *Grant {
 	return &Grant{grant: g, revalidate: revalidate}
+}
+
+// Anonymous reports whether the session connected with no credential. It
+// may do nothing until a ticket presented on its Auth Stream grants it
+// something, and every ticket it holds is signed by the key of the first one
+// granted: that key's tenant is the session's.
+func (g *Grant) Anonymous() bool {
+	return g.anonymous
 }
 
 // Subject returns who the credential says the bearer is (its sub), or ""

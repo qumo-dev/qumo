@@ -49,8 +49,9 @@ var (
 	}, []string{"transport", "class", "reason"})
 
 	// metricAuthRequests counts session admissions by event and result:
-	// admitted, refused (401/403), error (it could not be checked) or
-	// unchecked (auth off).
+	// admitted, refused (401/403), error (it could not be checked), busy
+	// (an anonymous session past MaxPendingAnonymous) or unchecked (auth
+	// off).
 	metricAuthRequests = promauto.NewCounterVec(
 		prometheus.CounterOpts{
 			Namespace: "qumo",
@@ -62,7 +63,9 @@ var (
 	)
 
 	// metricSessionsEnded counts checked sessions the relay ended because of
-	// their grant, by reason: refused (a revalidate was refused).
+	// their grant, by reason: refused (a revalidate was refused), or
+	// no_credential (an anonymous session that held no grant for its
+	// deadline).
 	metricSessionsEnded = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "qumo",
 		Subsystem: "relay",

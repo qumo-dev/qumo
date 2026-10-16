@@ -188,7 +188,7 @@ func TestVerifier_Decisions(t *testing.T) {
 		"root outside the prefix": {jwt: sign(t, unconfined, publishAll("globex/app")), wantConnect: 403, wantRevalidate: 403},
 		"prefix's sibling":        {jwt: sign(t, unconfined, publishAll("acme/application")), wantConnect: 403, wantRevalidate: 403},
 		"root above the prefix":   {jwt: sign(t, unconfined, token.Grant{Root: "/acme/", Publish: []string{"/app/"}}), wantConnect: 403, wantRevalidate: 403},
-		"no credential":           {jwt: "", wantConnect: 401, wantRevalidate: 401},
+		"no credential":           {jwt: "", wantConnect: 200, wantRevalidate: 200},
 		"not a credential":        {jwt: "not.a.jwt", wantConnect: 401, wantRevalidate: 401},
 	}
 	for name, tt := range tests {
@@ -927,4 +927,113 @@ func TestVerifier_TokenAdmitsAndIsATicket(t *testing.T) {
 	g, err := v.Ticket(jwt, k.ID, false)
 	require.NoError(t, err, "on a live session")
 	assert.Equal(t, "/acme/app/room/42/", g.grant.Root)
+}
+
+// A session that connects with no credential is admitted anonymous and
+// granted nothing, at connect and at each revalidate; one that connects with
+// an empty credential is refused, as any credential that does not verify.
+func TestVerifier_Anonymous(t *testing.T) {
+	k := genKey(t, "acme/app")
+	v := verifierWith(t, keySetJSON(t, []token.SigningKey{k}), time.Now())
+
+	for _, event := range []string{EventConnect, EventRevalidate} {
+		g, err := v.Authorize(context.Background(), sessionReq(event, ""))
+
+		require.NoError(t, err, event)
+		assert.True(t, g.Anonymous(), event)
+		assert.Empty(t, g.KeyID(), event)
+		assert.Zero(t, g.Expires(), event)
+		assert.Equal(t, token.Grant{}, g.Token(), event)
+		assert.Equal(t, revalidateEvery, g.Revalidate(), event)
+	}
+
+	req := sessionReq(EventConnect, "")
+	req.Query = "jwt="
+	_, err := v.Authorize(context.Background(), req)
+	assert.Equal(t, http.StatusUnauthorized, statusOf(err))
+}
+
+// An anonymous session's usage is reported under the key its first ticket
+// bound it to, from then on: nothing before, and its bytes once bound.
+func TestVerifier_AnonymousUsage(t *testing.T) {
+	k := genKey(t, "acme/app")
+	sink := &fakeUsageSink{}
+	v := verifierWith(t, keySetJSON(t, []token.SigningKey{k}), time.Now())
+	v.usage = newTestUsage(t, sink)
+	ctx := context.Background()
+
+	_, err := v.Authorize(ctx, sessionReq(EventConnect, ""))
+	require.NoError(t, err)
+	assert.Empty(t, v.usage.sessions, "an anonymous session is not counted at connect")
+
+	v.Bind("s1", k.ID, false)
+	v.Publishing("s1")
+	req := sessionReq(EventRevalidate, "")
+	req.Bytes = Bytes{Received: 40}
+	_, err = v.Authorize(ctx, req)
+	require.NoError(t, err)
+	require.NoError(t, v.usage.flush(ctx))
+
+	var got []string
+	for _, rec := range sink.received()[0] {
+		assert.Equal(t, k.ID, rec.KID)
+		got = append(got, string(rec.Type))
+	}
+	assert.ElementsMatch(t, []string{"session_open", "usage"}, got)
+}
+
+// The first ticket of an anonymous session may be signed by any key in the
+// set, verified as a connect is: a key paused for publishing refuses one
+// that may publish, since the session has published nothing.
+func TestVerifier_FirstTicket(t *testing.T) {
+	session, other, gone := genKey(t, "acme/app"), genKey(t, "acme/app"), genKey(t, "acme/app")
+	paused := genKey(t, "acme/app")
+	v := verifierWith(t, keySetJSON(t, []token.SigningKey{session, other, paused}, paused), time.Now())
+	listen := token.Grant{Root: "/acme/app/room/42/", Subscribe: []string{"/"}}
+	speak := token.Grant{Root: "/acme/app/room/42/", Publish: []string{"/7"}}
+	tests := map[string]struct {
+		key      token.SigningKey
+		ticket   token.Grant
+		wantCode int
+	}{
+		"a trusted key":                     {key: session, ticket: listen, wantCode: http.StatusOK},
+		"another trusted key":               {key: other, ticket: speak, wantCode: http.StatusOK},
+		"a key not in the set":              {key: gone, ticket: listen, wantCode: http.StatusUnauthorized},
+		"a paused key, a ticket to publish": {key: paused, ticket: speak, wantCode: http.StatusForbidden},
+		"a paused key, a ticket to listen":  {key: paused, ticket: listen, wantCode: http.StatusOK},
+	}
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			g, err := v.FirstTicket(sign(t, tt.key, tt.ticket))
+
+			assert.Equal(t, tt.wantCode, statusOf(err), "%v", err)
+			if tt.wantCode != http.StatusOK {
+				assert.Nil(t, g)
+				return
+			}
+			require.NotNil(t, g)
+			assert.Equal(t, tt.key.ID, g.KeyID())
+			assert.Equal(t, tt.ticket, g.grant)
+		})
+	}
+}
+
+// A session bound to a key after it ended, by a ticket granted as it
+// closed, is not brought back into usage, until the relay forgets it.
+func TestUsageReporter_OpenAfterClose(t *testing.T) {
+	sink := &fakeUsageSink{}
+	r := newTestUsage(t, sink)
+	now := time.Now()
+	r.now = func() time.Time { return now }
+
+	r.close("s1", Bytes{}, "closed")
+	r.open("s1", usageSession{kid: "k1", publishes: true})
+	r.publishing("s1")
+
+	assert.Empty(t, r.sessions, "an open after the close is ignored")
+	assert.Empty(t, r.events)
+
+	now = now.Add(sessionGrace + time.Second)
+	r.forgetStale()
+	assert.Empty(t, r.closed, "a closed session is forgotten as a stale one is")
 }

@@ -85,6 +85,10 @@ type usageReporter struct {
 	latest   map[string]usage.Record // latest cumulative report per session
 	viewers  map[string]*viewerTotal // by kid
 	failing  bool                    // the last send failed
+	// closed is when each session that ended was closed, until it is
+	// forgotten as a stale one would be: an open that comes after its
+	// close, from a ticket granted as the session ended, is ignored.
+	closed map[string]time.Time
 }
 
 func newUsageReporter(rawURL, bearer string) (*usageReporter, error) {
@@ -100,13 +104,18 @@ func newUsageReporter(rawURL, bearer string) (*usageReporter, error) {
 		sessions: map[string]usageSession{},
 		latest:   map[string]usage.Record{},
 		viewers:  map[string]*viewerTotal{},
+		closed:   map[string]time.Time{},
 	}, nil
 }
 
-// open records a session admitted at connect.
+// open records a session admitted at connect, or bound to a key by the first
+// ticket granted on it. One that was closed already is not brought back.
 func (r *usageReporter) open(id string, s usageSession) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if _, ended := r.closed[id]; ended {
+		return
+	}
 	s.seen = r.now()
 	r.sessions[id] = s
 	if s.publishes {
@@ -160,6 +169,7 @@ func (r *usageReporter) revalidated(id string, b Bytes, live bool) {
 func (r *usageReporter) close(id string, b Bytes, reason string) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	r.closed[id] = r.now()
 	s, ok := r.sessions[id]
 	if !ok {
 		return false
@@ -277,6 +287,11 @@ func (r *usageReporter) forgetStale() {
 	for id, s := range r.sessions {
 		if s.seen.Before(cutoff) {
 			delete(r.sessions, id)
+		}
+	}
+	for id, at := range r.closed {
+		if at.Before(cutoff) {
+			delete(r.closed, id)
 		}
 	}
 }
