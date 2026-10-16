@@ -14,10 +14,13 @@ import (
 
 const defaultGroupTimeout = 5 * time.Second
 
-// catalogTimeout bounds how long the collector waits for the catalog to list
-// [Collector.WantTracks]; catalogPollInterval spaces its re-subscribes.
+// startupTimeout bounds how long a publisher has to start: for the catalog to
+// list [Collector.WantTracks], and for a media track's first group. An ingest
+// can list a track before its media flows (RTSP lists the SDP's tracks at
+// SETUP), so the first group gets the startup budget rather than GroupTimeout.
+// catalogPollInterval spaces the catalog re-subscribes.
 const (
-	catalogTimeout      = 10 * time.Second
+	startupTimeout      = 10 * time.Second
 	catalogPollInterval = 100 * time.Millisecond
 )
 
@@ -48,7 +51,7 @@ type Collector struct {
 	// drained. An ingest publishes its catalog before the publisher's codec
 	// configuration arrives and adds tracks as it learns them, and the catalog
 	// track serves one snapshot per subscribe, so the collector re-subscribes
-	// until every named track is listed or catalogTimeout elapses.
+	// until every named track is listed or startupTimeout elapses.
 	WantTracks []string
 }
 
@@ -93,26 +96,33 @@ func (c *Collector) Collect(ctx context.Context) (*Observation, error) {
 func (c *Collector) collectCatalog(ctx context.Context, sess *moqt.Session, obs *Observation) error {
 	// Bound the catalog wait: a publisher that never sends a sequence header
 	// (or a relay that does not serve subscribers) must not hang the collector.
-	cctx, cancel := context.WithTimeout(ctx, catalogTimeout)
+	cctx, cancel := context.WithTimeout(ctx, startupTimeout)
 	defer cancel()
+	tick := time.NewTicker(catalogPollInterval)
+	defer tick.Stop()
 
+	// cat is the last catalog read; a fetch cut off by the deadline does not
+	// replace it.
 	var (
-		cat msf.Catalog
-		err error
+		cat     msf.Catalog
+		fetched bool
 	)
 poll:
 	for {
-		cat, err = c.fetchCatalog(cctx, sess)
-		if err == nil && listsTracks(cat, c.WantTracks) {
-			break
+		got, err := c.fetchCatalog(cctx, sess)
+		if err == nil {
+			cat, fetched = got, true
+			if listsTracks(cat, c.WantTracks) {
+				break
+			}
 		}
 		select {
 		case <-cctx.Done():
-			if err != nil {
+			if !fetched {
 				return err
 			}
 			break poll
-		case <-time.After(catalogPollInterval):
+		case <-tick.C:
 		}
 	}
 
@@ -201,11 +211,14 @@ func (c *Collector) collectMedia(ctx context.Context, sess *moqt.Session, t *Tra
 
 	isVideo := t.Role == string(msf.RoleVideo)
 	buf := moqt.NewFrame(1500)
-	timeout := c.groupTimeout()
 
 	for (c.MaxGroups <= 0 || t.GroupCount < c.MaxGroups) && len(t.Frames) < maxFramesPerTrack {
 		if ctx.Err() != nil {
 			return
+		}
+		timeout := c.groupTimeout()
+		if t.GroupCount == 0 {
+			timeout = max(timeout, startupTimeout)
 		}
 		gctx, cancel := context.WithTimeout(ctx, timeout)
 		gr, err := tr.AcceptGroup(gctx)
