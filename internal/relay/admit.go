@@ -102,7 +102,7 @@ func authorizeSubscribe(tw *moqt.TrackWriter) bool {
 		return false
 	case g == nil:
 		return true
-	case g.Allows(token.ActionSubscribe, tw.BroadcastPath, tw.TrackName):
+	case g.Allows(token.ActionSubscribe, tw.BroadcastPath):
 		metricSubscribeAuthorizations.WithLabelValues("admitted").Inc()
 		return true
 	}

@@ -24,11 +24,12 @@ type Key struct {
 	// "/" boundary. Empty leaves the key unconstrained.
 	Prefix string
 	// Pause lists what the key starts no new sessions for. Only ActionPublish
-	// can be paused: a verifier then starts no session that may publish a
-	// broadcast with the key (publish, or post, on every track of one), for
+	// can be paused: a verifier then starts no session that may publish with
+	// the key, and a funnel creates no track with it (ActionCreate), even one
+	// that exists, for
 	// example while its owner is at a limit on broadcasts. Sessions that only
-	// subscribe, fetch, post into one track or redact still start, and live
-	// sessions continue.
+	// subscribe, fetch, post or redact still start, and live sessions
+	// continue.
 	Pause []Action
 }
 

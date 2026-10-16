@@ -146,10 +146,10 @@ func TestVerifier_Grant(t *testing.T) {
 
 	g, err := v.Authorize(context.Background(), sessionReq(EventConnect, sign(t, k, pathGrant("acme/app/live", "acme/app"))))
 	require.NoError(t, err)
-	assert.True(t, g.Allows(token.ActionPublish, moqt.BroadcastPath("/acme/app/live/room1"), "video"))
-	assert.False(t, g.Allows(token.ActionPublish, moqt.BroadcastPath("/acme/app/other"), "video"))
-	assert.True(t, g.Allows(token.ActionSubscribe, moqt.BroadcastPath("/acme/app/other"), "video"))
-	assert.False(t, g.Allows(token.ActionSubscribe, moqt.BroadcastPath("/globex/app"), "video"))
+	assert.True(t, g.Allows(token.ActionPublish, moqt.BroadcastPath("/acme/app/live/room1")))
+	assert.False(t, g.Allows(token.ActionPublish, moqt.BroadcastPath("/acme/app/other")))
+	assert.True(t, g.Allows(token.ActionSubscribe, moqt.BroadcastPath("/acme/app/other")))
+	assert.False(t, g.Allows(token.ActionSubscribe, moqt.BroadcastPath("/globex/app")))
 	assert.Equal(t, revalidateEvery, g.Revalidate(), "every session is re-checked against the key set")
 }
 
@@ -674,11 +674,11 @@ func TestVerifier_PathAuthGrant(t *testing.T) {
 	require.NoError(t, err)
 	assert.Empty(t, g.Subject())
 	assert.True(t, g.Announces("/acme/app/live/cam"))
-	assert.True(t, g.Allows(token.ActionPublish, "/acme/app/live/cam", "video"))
-	assert.False(t, g.Allows(token.ActionPublish, "/acme/app/room", "video"))
-	assert.True(t, g.Allows(token.ActionSubscribe, "/acme/app/room/1", "video"))
-	assert.True(t, g.Allows(token.ActionFetch, "/acme/app/room/1", "chat"))
-	assert.False(t, g.Allows(token.ActionSubscribe, "/acme/app/live", "video"))
+	assert.True(t, g.Allows(token.ActionPublish, "/acme/app/live/cam"))
+	assert.False(t, g.Allows(token.ActionPublish, "/acme/app/room"))
+	assert.True(t, g.Allows(token.ActionSubscribe, "/acme/app/room/1"))
+	assert.True(t, g.Allows(token.ActionFetch, "/acme/app/room/1"))
+	assert.False(t, g.Allows(token.ActionSubscribe, "/acme/app/live"))
 	assert.False(t, g.Announces("/acme/app/room"))
 }
 
@@ -686,7 +686,7 @@ func TestVerifier_ScopedGrant(t *testing.T) {
 	k := genKey(t, "acme/app")
 	v := verifierWith(t, keySetJSON(t, []token.SigningKey{k}), time.Now())
 	jwt := sign(t, k, token.Grant{Subject: "42", Scopes: []token.Scope{
-		{Actions: []token.Action{token.ActionPublish}, Broadcast: "acme/app/room/123/comments", Track: "chat"},
+		{Actions: []token.Action{token.ActionPublish}, Broadcast: "acme/app/room/123/comments"},
 		{Actions: []token.Action{token.ActionFetch}, Broadcast: "acme/app/room/123", Prefix: true},
 	}})
 
@@ -694,16 +694,16 @@ func TestVerifier_ScopedGrant(t *testing.T) {
 
 	require.NoError(t, err)
 	assert.Equal(t, "42", g.Subject())
-	assert.True(t, g.Allows(token.ActionPublish, "/acme/app/room/123/comments", "chat"))
-	assert.False(t, g.Allows(token.ActionPublish, "/acme/app/room/123/comments", "other"))
-	assert.True(t, g.Allows(token.ActionFetch, "/acme/app/room/123/comments", "any"))
-	assert.False(t, g.Allows(token.ActionSubscribe, "/acme/app/room/123/comments", "chat"))
+	assert.True(t, g.Allows(token.ActionPublish, "/acme/app/room/123/comments"))
+	assert.False(t, g.Allows(token.ActionPublish, "/acme/app/room/123/comments/x"))
+	assert.True(t, g.Allows(token.ActionFetch, "/acme/app/room/123/comments"))
+	assert.False(t, g.Allows(token.ActionSubscribe, "/acme/app/room/123/comments"))
 }
 
 // TestVerifier_UsagePublishes pins which sessions are reported as
 // publishers, one by one, and which as viewers, in their key's total: a
-// session publishes when a scope lets it publish or post every track of a
-// broadcast, and any other session, whatever else it may do, is a viewer.
+// session publishes when a scope lets it publish, and any other session,
+// whatever else it may do, such as post, is a viewer.
 func TestVerifier_UsagePublishes(t *testing.T) {
 	k := genKey(t, "acme/app")
 	v := verifierWith(t, keySetJSON(t, []token.SigningKey{k}), time.Now())
@@ -711,32 +711,22 @@ func TestVerifier_UsagePublishes(t *testing.T) {
 		jwt  string
 		want bool
 	}{
-		"publish":               {jwt: sign(t, k, scoped(token.ActionPublish)), want: true},
-		"publish and fetch":     {jwt: sign(t, k, scoped(token.ActionPublish, token.ActionFetch)), want: true},
-		"post every track":      {jwt: sign(t, k, scoped(token.ActionPost)), want: true},
-		"a path_auth publisher": {jwt: signPathAuth(t, k, "acme/app/live", ""), want: true},
-		"a path_auth of both":   {jwt: signPathAuth(t, k, "acme/app/live", "acme/app"), want: true},
-		"subscribe":             {jwt: sign(t, k, scoped(token.ActionSubscribe)), want: false},
-		"fetch":                 {jwt: sign(t, k, scoped(token.ActionFetch)), want: false},
-		"a path_auth viewer":    {jwt: signPathAuth(t, k, "", "acme/app"), want: false},
-		"redact only":           {jwt: sign(t, k, scoped(token.ActionRedact)), want: false},
-		"a viewer who may post into one track": {
-			jwt: sign(t, k, token.Grant{Scopes: []token.Scope{
-				{Actions: []token.Action{token.ActionPost}, Broadcast: "acme/app/live", Track: "chat"},
-				{Actions: []token.Action{token.ActionSubscribe}, Broadcast: "acme/app/live"},
-			}}),
-			want: false,
-		},
-		"post into one track only": {
-			jwt: sign(t, k, token.Grant{Scopes: []token.Scope{
-				{Actions: []token.Action{token.ActionPost}, Broadcast: "acme/app/live", Track: "chat"},
-			}}),
-			want: false,
-		},
+		"publish":                            {jwt: sign(t, k, scoped(token.ActionPublish)), want: true},
+		"publish and fetch":                  {jwt: sign(t, k, scoped(token.ActionPublish, token.ActionFetch)), want: true},
+		"a path_auth publisher":              {jwt: signPathAuth(t, k, "acme/app/live", ""), want: true},
+		"a path_auth of both":                {jwt: signPathAuth(t, k, "acme/app/live", "acme/app"), want: true},
+		"subscribe":                          {jwt: sign(t, k, scoped(token.ActionSubscribe)), want: false},
+		"fetch":                              {jwt: sign(t, k, scoped(token.ActionFetch)), want: false},
+		"a path_auth viewer":                 {jwt: signPathAuth(t, k, "", "acme/app"), want: false},
+		"redact only":                        {jwt: sign(t, k, scoped(token.ActionRedact)), want: false},
+		"post only":                          {jwt: sign(t, k, scoped(token.ActionPost)), want: false},
+		"a viewer who may post":              {jwt: sign(t, k, scoped(token.ActionPost, token.ActionSubscribe)), want: false},
+		"post and publish":                   {jwt: sign(t, k, scoped(token.ActionPost, token.ActionPublish)), want: true},
+		"create only, which a relay ignores": {jwt: sign(t, k, scoped(token.ActionCreate)), want: false},
 	}
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
-			_, s, err := v.decide(sessionReq(EventConnect, tt.jwt))
+			_, s, err := v.decide(tt.jwt, nil, true, func(*Grant) bool { return false })
 
 			require.NoError(t, err)
 			assert.Equal(t, tt.want, s.publishes)

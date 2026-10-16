@@ -32,11 +32,11 @@ func (g *Grant) Subject() string {
 	return g.subject
 }
 
-// Allows reports whether a scope of the grant permits action on the track
-// named track of the broadcast at path.
-func (g *Grant) Allows(action token.Action, path moqt.BroadcastPath, track moqt.TrackName) bool {
+// Allows reports whether a scope of the grant permits action on the
+// broadcast at path.
+func (g *Grant) Allows(action token.Action, path moqt.BroadcastPath) bool {
 	for _, s := range g.scopes {
-		if s.Allows(action, path.String(), string(track)) {
+		if s.Allows(action, path.String()) {
 			return true
 		}
 	}
@@ -44,16 +44,10 @@ func (g *Grant) Allows(action token.Action, path moqt.BroadcastPath, track moqt.
 }
 
 // Announces reports whether the session may announce the broadcast at path:
-// whether a scope permits publishing every track of it. A broadcast has one
-// publisher, so a scope naming one track doesn't announce, and neither does
-// post, which writes into a funnel's track, never through the relay.
+// whether a scope permits publishing it. Post, which writes into a funnel's
+// track, never announces through the relay.
 func (g *Grant) Announces(path moqt.BroadcastPath) bool {
-	for _, s := range g.scopes {
-		if s.Track == "" && s.Allows(token.ActionPublish, path.String(), "") {
-			return true
-		}
-	}
-	return false
+	return g.Allows(token.ActionPublish, path)
 }
 
 // Revalidate returns how often the relay checks a live session again. Zero

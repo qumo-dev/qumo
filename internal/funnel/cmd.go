@@ -4,16 +4,17 @@
 // qumo-ledger track (in memory, or durable) first and then sent to the track's
 // MoQ subscribers, so a subscriber only ever sees a record that is stored.
 //
+//	PUT  /tracks/room/123/chat  create the track "chat" of the broadcast "/room/123"
 //	POST /tracks/room/123/chat  the record's payload, one JSON value, into the track
-//	                            "chat" of the broadcast "/room/123"
-//	PUT  /tracks/room/123/chat  create the track before its first record
 //	GET  /tracks/room/123/chat  a page of its records, newest or ?before= a group
 //	DELETE /tracks/room/123/chat?group=…  redact that record
 //
+// A record goes only into a track that exists: the app creates the tracks.
 // With a key set, every request carries a qumo credential as a bearer token.
-// Its scopes name exactly what it reaches: a read needs a "fetch" scope, a
-// write a "post" scope and a redaction a "redact" scope, on the track's
-// broadcast and track name; the records carry its "sub" as their sender, or
+// Its scopes name what it reaches, on the track's broadcast: creating needs a
+// "create" scope, a write a "post" scope, a read a "fetch" scope and a
+// redaction a "redact" scope; "publish", which sends through a relay, grants
+// nothing here. The records carry its "sub" as their sender, or
 // no sender without one.
 //
 // The funnel publishes through a relay it dials as a client, so subscribers

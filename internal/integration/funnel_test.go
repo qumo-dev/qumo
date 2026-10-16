@@ -189,6 +189,7 @@ func writeKeys(t *testing.T) (token.SigningKey, string, string) {
 
 func TestFunnel_RecordsReachAMoQSubscriber(t *testing.T) {
 	ingestURL, serveURL := startFunnel(t, mem.New(), nil)
+	require.Equal(t, http.StatusCreated, createChat(t, ingestURL, ""))
 	require.Equal(t, http.StatusCreated, record(t, ingestURL, "", `{"user":"alice","text":"hello"}`))
 
 	tr := subscribeChat(t, serveURL)
@@ -258,6 +259,7 @@ func TestFunnel_UnknownTrackIsNotFound(t *testing.T) {
 func TestFunnel_RestartServesRecordedTracks(t *testing.T) {
 	objects := mem.New()
 	firstURL, _ := startFunnel(t, objects, nil)
+	require.Equal(t, http.StatusCreated, createChat(t, firstURL, ""))
 	require.Equal(t, http.StatusCreated, record(t, firstURL, "", `"before"`))
 
 	ingestURL, serveURL := startFunnel(t, objects, nil)
@@ -295,7 +297,8 @@ func signPathAuth(t *testing.T, key token.SigningKey, pub, sub string) string {
 
 // TestFunnel_PathAuthCredentials verifies path_auth credentials, as other MoQ
 // implementations sign them, against a key set as the relay does: pub, being
-// publish, records nothing, and sub reads history.
+// publish, which sends through a relay, neither creates the track nor records,
+// and sub reads history.
 func TestFunnel_PathAuthCredentials(t *testing.T) {
 	key, _, keysFile := writeKeys(t)
 	verifier, err := auth.NewVerifier(auth.VerifierConfig{Keys: keysFile})
@@ -304,12 +307,18 @@ func TestFunnel_PathAuthCredentials(t *testing.T) {
 	publisher := signPathAuth(t, key, "room/123", "")
 	viewer := signPathAuth(t, key, "", "room/123")
 	poster, err := token.Sign(key, token.Grant{Scopes: []token.Scope{
-		{Actions: []token.Action{token.ActionPost}, Broadcast: "room/123", Track: "chat"},
+		{Actions: []token.Action{token.ActionPost}, Broadcast: "room/123"},
+	}}, time.Minute)
+	require.NoError(t, err)
+	creator, err := token.Sign(key, token.Grant{Scopes: []token.Scope{
+		{Actions: []token.Action{token.ActionCreate}, Broadcast: "room/123"},
 	}}, time.Minute)
 	require.NoError(t, err)
 
 	assert.Equal(t, http.StatusUnauthorized, createChat(t, ingestURL, ""), "no credential")
+	assert.Equal(t, http.StatusForbidden, createChat(t, ingestURL, viewer), "sub does not grant creating")
 	assert.Equal(t, http.StatusForbidden, createChat(t, ingestURL, publisher), "pub does not grant creating")
+	require.Equal(t, http.StatusCreated, createChat(t, ingestURL, creator))
 	assert.Equal(t, http.StatusUnauthorized, record(t, ingestURL, "", `"unsigned"`))
 	assert.Equal(t, http.StatusForbidden, record(t, ingestURL, viewer, `"a viewer"`), "subscribing does not grant recording")
 	assert.Equal(t, http.StatusForbidden, record(t, ingestURL, publisher, `"a publisher"`), "pub does not grant posting")
@@ -339,32 +348,38 @@ func TestFunnel_PathAuthCredentials(t *testing.T) {
 	assert.Equal(t, http.StatusForbidden, status, "pub does not grant reading")
 }
 
-// TestFunnel_ScopedCredentialsNameTracksAndSenders records and reads with
-// credentials whose scopes name the exact track: the sender is the
-// credential's sub, and a scope for another track or action grants nothing.
-func TestFunnel_ScopedCredentialsNameTracksAndSenders(t *testing.T) {
+// TestFunnel_ScopedCredentialsNameSenders creates, records and reads with
+// credentials whose scopes name the exact broadcast: create makes the
+// track, post records into it with the credential's sub as the sender, and a
+// scope for another broadcast or action grants nothing.
+func TestFunnel_ScopedCredentialsNameSenders(t *testing.T) {
 	key, _, keysFile := writeKeys(t)
 	verifier, err := auth.NewVerifier(auth.VerifierConfig{Keys: keysFile})
 	require.NoError(t, err)
 	ingestURL, _ := startFunnel(t, mem.New(), verifier)
-	credential := func(subject string, actions []token.Action, broadcast, track string) string {
+	credential := func(subject string, actions []token.Action, broadcast string) string {
 		c, err := token.Sign(key, token.Grant{Subject: subject, Scopes: []token.Scope{
-			{Actions: actions, Broadcast: broadcast, Track: track},
+			{Actions: actions, Broadcast: broadcast},
 		}}, time.Minute)
 		require.NoError(t, err)
 		return c
 	}
 	post, fetch := []token.Action{token.ActionPost}, []token.Action{token.ActionFetch}
-	alice := credential("alice", post, "room/123", "chat")
-	system := credential("", post, "room/123", "")
-	reader := credential("", fetch, "room/123", "chat")
+	alice := credential("alice", post, "room/123")
+	system := credential("", post, "room/123")
+	reader := credential("", fetch, "room/123")
+	host := credential("host", []token.Action{token.ActionCreate}, "room/123")
 
-	assert.Equal(t, http.StatusForbidden, record(t, ingestURL, credential("alice", post, "room/123", "other"), `"x"`), "another track")
-	assert.Equal(t, http.StatusForbidden, record(t, ingestURL, credential("alice", post, "room/123/alice", "chat"), `"x"`),
+	assert.Equal(t, http.StatusNotFound, record(t, ingestURL, alice, `"x"`), "posting never creates the track")
+	assert.Equal(t, http.StatusForbidden, createChat(t, ingestURL, alice), "posting does not grant creating")
+	assert.Equal(t, http.StatusForbidden, createChat(t, ingestURL, credential("host", []token.Action{token.ActionCreate}, "room/123/alice")),
+		"a broadcast beneath grants nothing above it")
+	require.Equal(t, http.StatusCreated, createChat(t, ingestURL, host))
+	assert.Equal(t, http.StatusForbidden, record(t, ingestURL, credential("alice", post, "room/123/alice"), `"x"`),
 		"a broadcast beneath grants nothing above it")
 	assert.Equal(t, http.StatusForbidden, record(t, ingestURL, reader, `"x"`), "fetching does not grant recording")
-	assert.Equal(t, http.StatusForbidden, record(t, ingestURL, credential("alice", []token.Action{token.ActionPublish}, "room/123", "chat"), `"x"`),
-		"publishing, which sends through the relay, does not grant posting")
+	assert.Equal(t, http.StatusForbidden, record(t, ingestURL, host, `"x"`),
+		"creating the track does not grant posting")
 	require.Equal(t, http.StatusCreated, record(t, ingestURL, alice, `{"name":"bob","text":"hi"}`))
 	require.Equal(t, http.StatusCreated, record(t, ingestURL, system, `{"type":"delete"}`))
 
@@ -433,6 +448,7 @@ func subscribeChatAsViewer(t *testing.T, relayAddr string, key token.SigningKey)
 // subscriber of the relay receives what the funnel records.
 func TestFunnel_PublishesThroughTheRelay(t *testing.T) {
 	ingestURL, relayAddr, relaySrv, key := startFunnelBehindRelay(t)
+	require.Equal(t, http.StatusCreated, createChat(t, ingestURL, ""))
 
 	require.Equal(t, http.StatusCreated, record(t, ingestURL, "", `"first"`))
 	require.Eventually(t, routed(relaySrv, "/room/123"), 5*time.Second, 25*time.Millisecond,
@@ -455,6 +471,7 @@ func TestFunnel_PublishesThroughTheRelay(t *testing.T) {
 // answered with the latest of them.
 func TestFunnel_RelaySubscriberJoinsAfterSeveralRecords(t *testing.T) {
 	ingestURL, relayAddr, relaySrv, key := startFunnelBehindRelay(t)
+	require.Equal(t, http.StatusCreated, createChat(t, ingestURL, ""))
 
 	for _, payload := range []string{`"first"`, `"second"`, `"third"`} {
 		require.Equal(t, http.StatusCreated, record(t, ingestURL, "", payload))
@@ -554,6 +571,7 @@ func TestFunnel_RedialsWhenTheRelayEndsTheSession(t *testing.T) {
 		cancel()
 		assert.NoError(t, <-published)
 	})
+	require.Equal(t, http.StatusCreated, createChat(t, ingestURL, ""))
 	require.Equal(t, http.StatusCreated, record(t, ingestURL, "", `"kept"`))
 
 	// The relay ends the funnel's first session; it sees the funnel dial again.
@@ -578,7 +596,7 @@ func TestFunnel_RedactNeedsARedactScope(t *testing.T) {
 	ingestURL, serveURL := startFunnel(t, mem.New(), verifier)
 	credential := func(subject string, action token.Action) string {
 		c, err := token.Sign(key, token.Grant{Subject: subject, Scopes: []token.Scope{
-			{Actions: []token.Action{action}, Broadcast: "room/123", Track: "chat"},
+			{Actions: []token.Action{action}, Broadcast: "room/123"},
 		}}, time.Minute)
 		require.NoError(t, err)
 		return c
@@ -586,6 +604,7 @@ func TestFunnel_RedactNeedsARedactScope(t *testing.T) {
 	alice := credential("alice", token.ActionPost)
 	reader := credential("", token.ActionFetch)
 	moderator := credential("moderator", token.ActionRedact)
+	require.Equal(t, http.StatusCreated, createChat(t, ingestURL, credential("host", token.ActionCreate)))
 
 	require.Equal(t, http.StatusCreated, record(t, ingestURL, alice, `"hello"`))
 	// A subscription starts at the track's latest record.

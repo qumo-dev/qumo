@@ -115,19 +115,20 @@ func TestVerifier_PublishLimit(t *testing.T) {
 		"limited key, path_auth viewer":    {jwt: signPathAuth(t, limited, "", "acme/app"), wantConnect: 200, wantRevalidate: 200},
 		"another key, path_auth publisher": {jwt: signPathAuth(t, free, "acme/app/live", ""), wantConnect: 200, wantRevalidate: 200},
 		"limited key, publish scope":       {jwt: sign(t, limited, scoped(token.ActionPublish)), wantConnect: 403, wantRevalidate: 200},
-		// Posting into one track of a funnel's broadcast, as a viewer who may
-		// chat does, publishes no broadcast.
-		"limited key, post one track and subscribe": {
+		// Posting into a funnel's track, as a viewer who may chat does,
+		// publishes nothing: posting never creates a track.
+		"limited key, post and subscribe": {
 			jwt: sign(t, limited, token.Grant{Scopes: []token.Scope{
-				{Actions: []token.Action{token.ActionPost}, Broadcast: "acme/app/live", Track: "chat"},
-				{Actions: []token.Action{token.ActionSubscribe}, Broadcast: "acme/app/live"},
+				{Actions: []token.Action{token.ActionPost, token.ActionSubscribe}, Broadcast: "acme/app/live"},
 			}}),
 			wantConnect: 200, wantRevalidate: 200,
 		},
-		// Posting into every track may create any track of the broadcast at a
-		// funnel, which the funnel publishes: the pause holds.
-		"limited key, post every track": {
-			jwt: sign(t, limited, scoped(token.ActionPost)), wantConnect: 403, wantRevalidate: 200,
+		// A relay ignores create, which a funnel checks itself.
+		"limited key, create scope": {
+			jwt: sign(t, limited, scoped(token.ActionCreate)), wantConnect: 200, wantRevalidate: 200,
+		},
+		"limited key, post scope": {
+			jwt: sign(t, limited, scoped(token.ActionPost)), wantConnect: 200, wantRevalidate: 200,
 		},
 		"limited key, subscribe and fetch scopes": {
 			jwt: sign(t, limited, scoped(token.ActionSubscribe, token.ActionFetch)), wantConnect: 200, wantRevalidate: 200,

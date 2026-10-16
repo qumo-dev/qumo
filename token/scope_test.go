@@ -24,7 +24,6 @@ func TestVerify_Scopes(t *testing.T) {
 	publishChat := map[string]any{
 		"actions":   []string{"publish"},
 		"broadcast": map[string]any{"exact": "acme/app/room/123/comments"},
-		"track":     map[string]any{"exact": "chat"},
 	}
 	tests := map[string]struct {
 		prefix  string
@@ -33,19 +32,19 @@ func TestVerify_Scopes(t *testing.T) {
 		wantErr error
 		reason  string
 	}{
-		"an exact broadcast and track, with a subject": {
+		"an exact broadcast, with a subject": {
 			prefix: "acme/app",
 			edit:   func(c map[string]any) { c["sub"] = "42" },
 			want: Grant{Subject: "42", Scopes: []Scope{
-				{Actions: []Action{ActionPublish}, Broadcast: "acme/app/room/123/comments", Track: "chat"},
+				{Actions: []Action{ActionPublish}, Broadcast: "acme/app/room/123/comments"},
 			}},
 		},
 		"no subject": {
 			want: Grant{Scopes: []Scope{
-				{Actions: []Action{ActionPublish}, Broadcast: "acme/app/room/123/comments", Track: "chat"},
+				{Actions: []Action{ActionPublish}, Broadcast: "acme/app/room/123/comments"},
 			}},
 		},
-		"a prefix, every track, normalized": {
+		"a prefix, normalized": {
 			edit: func(c map[string]any) {
 				c["scopes"] = []any{map[string]any{
 					"actions":   []string{"subscribe", "fetch"},
@@ -141,23 +140,19 @@ func TestVerify_Scopes(t *testing.T) {
 			edit:    func(c map[string]any) { c["scopes"] = []any{scopeOn("acme/*", "prefix")} },
 			wantErr: ErrInvalid, reason: "*",
 		},
-		"a track prefix": {
+		// A track match is refused rather than ignored: ignoring it would
+		// widen a scope meant for one track to every track.
+		"a track match": {
 			edit: func(c map[string]any) {
-				c["scopes"] = []any{withMember(publishChat, "track", map[string]any{"prefix": "ch"})}
+				c["scopes"] = []any{withMember(publishChat, "track", map[string]any{"exact": "chat"})}
 			},
-			wantErr: ErrInvalid, reason: "prefix",
+			wantErr: ErrInvalid, reason: "track",
 		},
-		"a misspelled track match": {
+		"an unknown member": {
 			edit: func(c map[string]any) {
 				c["scopes"] = []any{withMember(publishChat, "tracks", map[string]any{"exact": "chat"})}
 			},
 			wantErr: ErrInvalid, reason: "tracks",
-		},
-		"an empty track match": {
-			edit: func(c map[string]any) {
-				c["scopes"] = []any{withMember(publishChat, "track", map[string]any{"exact": ""})}
-			},
-			wantErr: ErrInvalid, reason: "track",
 		},
 		"sub is not a string": {
 			edit:    func(c map[string]any) { c["sub"] = 42 },
@@ -211,7 +206,7 @@ func TestSign_ScopesRoundTrip(t *testing.T) {
 	require.NoError(t, err)
 	now := time.Unix(1_800_000_000, 0)
 	g := Grant{Subject: "42", Scopes: []Scope{
-		{Actions: []Action{ActionPost}, Broadcast: "/acme/app/room/123/comments/", Track: "chat"},
+		{Actions: []Action{ActionPost}, Broadcast: "/acme/app/room/123/comments/"},
 		{Actions: []Action{ActionPublish}, Broadcast: "acme/app/room/123/42"},
 		{Actions: []Action{ActionSubscribe, ActionFetch}, Broadcast: "acme/app/room/123", Prefix: true},
 	}}
@@ -222,7 +217,7 @@ func TestSign_ScopesRoundTrip(t *testing.T) {
 
 	require.NoError(t, err)
 	assert.Equal(t, Grant{Subject: "42", Scopes: []Scope{
-		{Actions: []Action{ActionPost}, Broadcast: "acme/app/room/123/comments", Track: "chat"},
+		{Actions: []Action{ActionPost}, Broadcast: "acme/app/room/123/comments"},
 		{Actions: []Action{ActionPublish}, Broadcast: "acme/app/room/123/42"},
 		{Actions: []Action{ActionSubscribe, ActionFetch}, Broadcast: "acme/app/room/123", Prefix: true},
 	}}, c.Grant)
@@ -232,7 +227,7 @@ func TestSign_ScopesClaimShape(t *testing.T) {
 	key, err := GenerateKey("")
 	require.NoError(t, err)
 	g := Grant{Subject: "42", Scopes: []Scope{
-		{Actions: []Action{ActionPublish}, Broadcast: "room/123/comments", Track: "chat"},
+		{Actions: []Action{ActionPublish}, Broadcast: "room/123/comments"},
 	}}
 
 	tok, err := Sign(key, g, time.Minute)
@@ -246,13 +241,12 @@ func TestSign_ScopesClaimShape(t *testing.T) {
 	assert.Equal(t, []any{map[string]any{
 		"actions":   []any{"publish"},
 		"broadcast": map[string]any{"exact": "room/123/comments"},
-		"track":     map[string]any{"exact": "chat"},
 	}}, claims["scopes"])
 	assert.NotContains(t, claims, "path_auth")
 }
 
 func TestSign_ScopeRefusals(t *testing.T) {
-	chat := Scope{Actions: []Action{ActionPublish}, Broadcast: "acme/app/room", Track: "chat"}
+	chat := Scope{Actions: []Action{ActionPublish}, Broadcast: "acme/app/room"}
 	tests := map[string]struct {
 		grant       Grant
 		wantErrText string
@@ -282,44 +276,39 @@ func TestSign_ScopeRefusals(t *testing.T) {
 }
 
 func TestScope_Allows(t *testing.T) {
-	exact := Scope{Actions: []Action{ActionPublish}, Broadcast: "room/123/comments", Track: "chat"}
+	exact := Scope{Actions: []Action{ActionPublish}, Broadcast: "room/123/comments"}
 	prefix := Scope{Actions: []Action{ActionSubscribe, ActionFetch}, Broadcast: "room/123", Prefix: true}
-	anyTrack := Scope{Actions: []Action{ActionSubscribe}, Broadcast: "room/123/comments"}
 	everything := Scope{Actions: []Action{ActionFetch}, Prefix: true}
 	tests := map[string]struct {
 		scope     Scope
 		action    Action
 		broadcast string
-		track     string
 		want      bool
 	}{
-		"the exact broadcast and track":     {scope: exact, action: ActionPublish, broadcast: "/room/123/comments", track: "chat", want: true},
-		"another track":                     {scope: exact, action: ActionPublish, broadcast: "/room/123/comments", track: "other"},
-		"no track for a track scope":        {scope: exact, action: ActionPublish, broadcast: "/room/123/comments"},
-		"an action not listed":              {scope: exact, action: ActionFetch, broadcast: "/room/123/comments", track: "chat"},
-		"an unknown action":                 {scope: exact, action: "delete", broadcast: "/room/123/comments", track: "chat"},
-		"beneath an exact broadcast":        {scope: exact, action: ActionPublish, broadcast: "/room/123/comments/user-42", track: "chat"},
-		"above an exact broadcast":          {scope: exact, action: ActionPublish, broadcast: "/room/123", track: "chat"},
-		"the prefix itself":                 {scope: prefix, action: ActionFetch, broadcast: "/room/123", track: "x", want: true},
-		"beneath the prefix":                {scope: prefix, action: ActionSubscribe, broadcast: "/room/123/comments", track: "x", want: true},
-		"a sibling sharing a string prefix": {scope: prefix, action: ActionSubscribe, broadcast: "/room/1234", track: "x"},
-		"above the prefix":                  {scope: prefix, action: ActionSubscribe, broadcast: "/room", track: "x"},
-		"any track":                         {scope: anyTrack, action: ActionSubscribe, broadcast: "/room/123/comments", track: "x", want: true},
-		"another spelling of the broadcast": {scope: exact, action: ActionPublish, broadcast: "/room//123/comments/", track: "chat"},
-		"another spelling beneath a prefix": {scope: prefix, action: ActionFetch, broadcast: "/room/123//comments", track: "x"},
-		"without the leading slash":         {scope: exact, action: ActionPublish, broadcast: "room/123/comments", track: "chat", want: true},
-		"a dot-dot broadcast":               {scope: prefix, action: ActionFetch, broadcast: "/room/123/../9", track: "x"},
-		"the zero scope":                    {scope: Scope{Prefix: true}, action: ActionFetch, broadcast: "/room", track: "x"},
-		"a prefix of everything":            {scope: everything, action: ActionFetch, broadcast: "/room/123", track: "x", want: true},
-		"a prefix of everything, the root":  {scope: everything, action: ActionFetch, broadcast: "/", track: "x", want: true},
-		"a prefix of everything, unlisted":  {scope: everything, action: ActionPublish, broadcast: "/room", track: "x"},
-		"a prefix of everything, respelled": {scope: everything, action: ActionFetch, broadcast: "/room//123", track: "x"},
-		"an exact scope with no broadcast":  {scope: Scope{Actions: []Action{ActionFetch}}, action: ActionFetch, broadcast: "/", track: "x"},
-		"the empty path":                    {scope: prefix, action: ActionFetch, broadcast: "", track: "x"},
+		"the exact broadcast":               {scope: exact, action: ActionPublish, broadcast: "/room/123/comments", want: true},
+		"an action not listed":              {scope: exact, action: ActionFetch, broadcast: "/room/123/comments"},
+		"an unknown action":                 {scope: exact, action: "delete", broadcast: "/room/123/comments"},
+		"beneath an exact broadcast":        {scope: exact, action: ActionPublish, broadcast: "/room/123/comments/user-42"},
+		"above an exact broadcast":          {scope: exact, action: ActionPublish, broadcast: "/room/123"},
+		"the prefix itself":                 {scope: prefix, action: ActionFetch, broadcast: "/room/123", want: true},
+		"beneath the prefix":                {scope: prefix, action: ActionSubscribe, broadcast: "/room/123/comments", want: true},
+		"a sibling sharing a string prefix": {scope: prefix, action: ActionSubscribe, broadcast: "/room/1234"},
+		"above the prefix":                  {scope: prefix, action: ActionSubscribe, broadcast: "/room"},
+		"another spelling of the broadcast": {scope: exact, action: ActionPublish, broadcast: "/room//123/comments/"},
+		"another spelling beneath a prefix": {scope: prefix, action: ActionFetch, broadcast: "/room/123//comments"},
+		"without the leading slash":         {scope: exact, action: ActionPublish, broadcast: "room/123/comments", want: true},
+		"a dot-dot broadcast":               {scope: prefix, action: ActionFetch, broadcast: "/room/123/../9"},
+		"the zero scope":                    {scope: Scope{Prefix: true}, action: ActionFetch, broadcast: "/room"},
+		"a prefix of everything":            {scope: everything, action: ActionFetch, broadcast: "/room/123", want: true},
+		"a prefix of everything, the root":  {scope: everything, action: ActionFetch, broadcast: "/", want: true},
+		"a prefix of everything, unlisted":  {scope: everything, action: ActionPublish, broadcast: "/room"},
+		"a prefix of everything, respelled": {scope: everything, action: ActionFetch, broadcast: "/room//123"},
+		"an exact scope with no broadcast":  {scope: Scope{Actions: []Action{ActionFetch}}, action: ActionFetch, broadcast: "/"},
+		"the empty path":                    {scope: prefix, action: ActionFetch, broadcast: ""},
 	}
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
-			assert.Equal(t, tt.want, tt.scope.Allows(tt.action, tt.broadcast, tt.track))
+			assert.Equal(t, tt.want, tt.scope.Allows(tt.action, tt.broadcast))
 		})
 	}
 }

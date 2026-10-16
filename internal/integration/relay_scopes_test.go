@@ -1,9 +1,8 @@
 //go:build integration
 
 // Black-box tests of the relay enforcing a scoped credential, verified by a
-// real auth.Verifier: a publish scope on every track of a broadcast lets a
-// session announce it, and a subscribe scope gates the tracks a viewer
-// receives.
+// real auth.Verifier: a publish scope on a broadcast lets a session announce
+// it, and a subscribe scope gates the broadcasts a viewer receives.
 package integration
 
 import (
@@ -44,48 +43,48 @@ func TestRelay_ScopedCredentials(t *testing.T) {
 		require.NoError(t, err)
 		return "https://" + addr + "/?jwt=" + c
 	}
-	scope := func(broadcast string, prefix bool, track string, actions ...token.Action) token.Scope {
-		return token.Scope{Actions: actions, Broadcast: broadcast, Prefix: prefix, Track: track}
+	scope := func(broadcast string, prefix bool, actions ...token.Action) token.Scope {
+		return token.Scope{Actions: actions, Broadcast: broadcast, Prefix: prefix}
 	}
-	publishOver(t, srv, url(scope("acme/live", false, "", token.ActionPublish)), "/acme/live")
-	viewer := url(scope("acme", true, "", token.ActionSubscribe))
+	publishOver(t, srv, url(scope("acme/live", false, token.ActionPublish)), "/acme/live")
+	viewer := url(scope("acme", true, token.ActionSubscribe))
 
 	t.Run("a viewer of the broadcast", func(t *testing.T) {
 		assert.NoError(t, subscribeTrack(t, viewer, "/acme/live", "video"))
 	})
-	t.Run("a viewer scoped to another track", func(t *testing.T) {
-		err := subscribeTrack(t, url(scope("acme/live", false, "audio", token.ActionSubscribe)), "/acme/live", "video")
+	t.Run("a viewer scoped to another broadcast", func(t *testing.T) {
+		err := subscribeTrack(t, url(scope("acme/other", false, token.ActionSubscribe)), "/acme/live", "video")
 
 		assert.Error(t, err)
 	})
-	t.Run("a viewer scoped to the exact track", func(t *testing.T) {
-		err := subscribeTrack(t, url(scope("acme/live", false, "video", token.ActionSubscribe)), "/acme/live", "video")
+	t.Run("a viewer scoped to the exact broadcast", func(t *testing.T) {
+		err := subscribeTrack(t, url(scope("acme/live", false, token.ActionSubscribe)), "/acme/live", "video")
 
 		assert.NoError(t, err)
 	})
 	t.Run("fetch does not grant subscribing", func(t *testing.T) {
-		err := subscribeTrack(t, url(scope("acme", true, "", token.ActionFetch)), "/acme/live", "video")
+		err := subscribeTrack(t, url(scope("acme", true, token.ActionFetch)), "/acme/live", "video")
 
 		assert.Error(t, err)
 	})
-	t.Run("no publish scope on every track of the broadcast announces nothing", func(t *testing.T) {
+	t.Run("no publish scope on the broadcast announces nothing", func(t *testing.T) {
 		tests := map[string]struct {
 			path   moqt.BroadcastPath
 			scopes []token.Scope
 		}{
 			"subscribe and fetch only": {
 				path:   "/acme/quiet",
-				scopes: []token.Scope{scope("acme/quiet", false, "", token.ActionSubscribe, token.ActionFetch)},
+				scopes: []token.Scope{scope("acme/quiet", false, token.ActionSubscribe, token.ActionFetch)},
 			},
 			"publish on another broadcast": {
 				path:   "/acme/elsewhere",
-				scopes: []token.Scope{scope("acme/other", true, "", token.ActionPublish)},
+				scopes: []token.Scope{scope("acme/other", true, token.ActionPublish)},
 			},
-			// A scope naming one track writes into a broadcast through a
-			// funnel; the broadcast is someone else's to announce.
-			"publish on one track only": {
+			// Post writes into a broadcast through a funnel; the broadcast is
+			// someone else's to announce.
+			"post only": {
 				path:   "/acme/comments",
-				scopes: []token.Scope{scope("acme/comments", false, "chat", token.ActionPublish)},
+				scopes: []token.Scope{scope("acme/comments", false, token.ActionPost)},
 			},
 		}
 		for name, tt := range tests {
