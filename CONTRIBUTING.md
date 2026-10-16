@@ -151,6 +151,16 @@ When in doubt, prefer `internal/integration`. A test that needs an unexported sy
 - Code must pass linting checks
 - Documentation must be updated if needed
 - Commits should be clear and well-organized
+- `CHANGELOG.md` must have an entry under `[Unreleased]`, unless the PR has the `no-changelog` label (tests, CI, docs only)
+
+### Changelog Entries
+
+`CHANGELOG.md` follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/). Write for someone deciding whether to upgrade, not for a reviewer:
+
+- One line per entry, two sentences at most: what changed and who it affects, with the PR number, e.g. ``- **`qumo rtsp` pulls a stream from an IP camera and publishes it (#123).**``
+- Name new or changed commands, flags and environment variables exactly; keep CVE ids.
+- A breaking change gets a `> **Breaking for …**` line at the top of the release and up to three sub-bullets on how to move over.
+- Leave out how it works, benchmark figures, refactors and test-only changes; those belong in the PR description and the docs.
 
 ## Reporting Bugs
 
