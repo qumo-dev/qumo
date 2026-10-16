@@ -550,6 +550,10 @@ type trackDistributor struct {
 	stages *stageCollector
 
 	done chan struct{} // closed when ingest returns
+
+	subscribers sync.Map // *moqt.TrackWriter -> struct{}
+	dropsMu     sync.RWMutex
+	drops       []moqt.SubscribeDrop
 }
 
 func newTrackDistributor(manager *trackManager, trackID string, sampler *statsSampler) *trackDistributor {
@@ -594,8 +598,27 @@ func (d *trackDistributor) sampleCacheDepth() {
 	metricBufferDepthGroups.WithLabelValues(d.trackID).Set(float64(depth))
 }
 
+func (d *trackDistributor) forwardDrop(drop moqt.SubscribeDrop) {
+	slog.Debug("relay: forward drop", "track", d.trackID, "drop", drop)
+	d.dropsMu.Lock()
+	d.drops = append(d.drops, drop)
+	d.dropsMu.Unlock()
+
+	d.subscribers.Range(func(key, value any) bool {
+		tw := key.(*moqt.TrackWriter)
+		_ = tw.DropGroups(drop)
+		return true
+	})
+}
+
 func (d *trackDistributor) egress(tw *moqt.TrackWriter) {
 	twCtx := tw.Context()
+
+	d.dropsMu.RLock()
+	dropIdx := len(d.drops)
+	d.subscribers.Store(tw, struct{}{})
+	d.dropsMu.RUnlock()
+	defer d.subscribers.Delete(tw)
 
 	metricSubscribersActive.Inc()
 	defer metricSubscribersActive.Dec()
@@ -628,6 +651,12 @@ func (d *trackDistributor) egress(tw *moqt.TrackWriter) {
 	// behind, still draining queued groups → self-serialization). The first
 	// pickup after startup counts as caught up.
 	woken := true
+	var (
+		lastSent          moqt.GroupSequence
+		hasLastSent       bool
+		skipped           bool
+		hasDeliveredFirst bool
+	)
 
 	for {
 		latest := d.ring.head()
@@ -643,12 +672,35 @@ func (d *trackDistributor) egress(tw *moqt.TrackWriter) {
 				)
 				metricSubscriberSkipsTotal.Inc()
 				last = latest
+				skipped = true
 			}
 
 			if cache := d.ring.get(last); cache != nil {
+				if skipped {
+					if hasLastSent && lastSent+1 <= cache.seq-1 {
+						_ = tw.DropGroups(moqt.SubscribeDrop{
+							StartGroup: lastSent + 1,
+							EndGroup:   cache.seq - 1,
+							ErrorCode:  moqt.SubscribeErrorCodeInternal,
+						})
+					}
+					skipped = false
+				}
+
 				if d.deliverGroup(tw, twCtx, openTO, woken, cache) {
 					return
 				}
+				if !hasDeliveredFirst {
+					hasDeliveredFirst = true
+					d.dropsMu.RLock()
+					for _, drop := range d.drops[:dropIdx] {
+						slog.Debug("relay: replaying initial drop", "track", d.trackID, "drop", drop)
+						_ = tw.DropGroups(drop)
+					}
+					d.dropsMu.RUnlock()
+				}
+				lastSent = cache.seq
+				hasLastSent = true
 				woken = false // a subsequent direct iteration means we are behind
 				continue
 			}
@@ -726,6 +778,11 @@ func (d *trackDistributor) deliverGroup(tw *moqt.TrackWriter, twCtx context.Cont
 			// fast with timedOut=false and terminates, so a dead session costs
 			// at most one extra loop iteration.
 			metricSubscriberSkipsTotal.Inc()
+			_ = tw.DropGroups(moqt.SubscribeDrop{
+				StartGroup: cache.seq,
+				EndGroup:   cache.seq,
+				ErrorCode:  moqt.SubscribeErrorCodeInternal,
+			})
 			return false
 		}
 		// Non-timeout error (connection closed, session dead): terminate egress.
@@ -806,6 +863,16 @@ func (d *trackDistributor) deliverGroup(tw *moqt.TrackWriter, twCtx context.Cont
 func (d *trackDistributor) ingest(ctx context.Context, src *moqt.TrackReader) {
 	defer d.manager.remove(d.trackID, d)
 	defer d.sampler.removeTrack(d.trackID)
+
+	var dropWg sync.WaitGroup
+	dropWg.Add(1)
+	go func() {
+		defer dropWg.Done()
+		for drop := range src.Drops(ctx) {
+			d.forwardDrop(drop)
+		}
+	}()
+
 	// Workers must complete before egress is signalled to stop: a single
 	// deferred closure enforces close(fillJobs) → fillWg.Wait() → close(done),
 	// so every reserved cache is filled before any egress goroutine sees done.
@@ -822,10 +889,11 @@ func (d *trackDistributor) ingest(ctx context.Context, src *moqt.TrackReader) {
 			_ = src.Close() // not actionable: the subscription is ending either way
 		}
 		d.fillWg.Wait()
-		close(d.done)
 		if !drained {
 			_ = src.Close() // not actionable: the subscription is ending either way
 		}
+		dropWg.Wait()
+		close(d.done)
 	}()
 
 	for {
