@@ -59,6 +59,8 @@ type groupCache struct {
 	// sequences have gaps, so the ring is addressed by pos alone.
 	seq      moqt.GroupSequence
 	pos      ringPosition
+	isDrop   bool
+	drop     moqt.SubscribeDrop
 	complete atomic.Bool // True when all frames have been added
 	refCount atomic.Int32
 	evicted  atomic.Bool
@@ -107,6 +109,8 @@ func newGroupCache(seq moqt.GroupSequence) *groupCache {
 // ring.reserve init and releaseCache). It reuses the backing array — no
 // allocation — unlike the previous scheme, which allocated a fresh slice.
 func (gc *groupCache) resetForReuse() {
+	gc.isDrop = false
+	gc.drop = moqt.SubscribeDrop{}
 	n := int(gc.count.Load())
 	for i := range n {
 		gc.slots[i].Store(nil)
@@ -265,6 +269,35 @@ func (ring *groupRing) reserve(seq moqt.GroupSequence) *groupCache {
 	return cache
 }
 
+// reserveDrop allocates a ring slot for an upstream drop notification and
+// returns the new cache. Drops are distributed through the ring in arrival
+// order, bounded by ring size, in the same way as groups.
+func (ring *groupRing) reserveDrop(drop moqt.SubscribeDrop) *groupCache {
+	cache := ring.gcPool.Get().(*groupCache)
+	cache.seq = drop.StartGroup
+	cache.complete.Store(true)
+	cache.refCount.Store(0)
+	cache.evicted.Store(false)
+	cache.released.Store(false)
+	cache.resetForReuse()
+	cache.isDrop = true
+	cache.drop = drop
+
+	ring.stages.clearArrival(cache)
+
+	pos := ring.pos.Add(1)
+	cache.pos = ringPosition(pos)
+	idx := int(pos % uint64(ring.size))
+
+	ring.mu.Lock()
+	old := ring.caches[idx].Swap(cache)
+	if old != nil {
+		ring.markEvictedLocked(old)
+	}
+	ring.mu.Unlock()
+	return cache
+}
+
 // fill reads all frames from group into cache, calling onFrame after each frame
 // and once more when the group is complete.
 // onFrame receives the byte length of the frame just appended, or 0 on the
@@ -358,6 +391,8 @@ func (ring *groupRing) releaseCache(gc *groupCache) {
 		gc.slots[i].Store(nil)
 	}
 	gc.count.Store(0)
+	gc.isDrop = false
+	gc.drop = moqt.SubscribeDrop{}
 
 	ring.gcPool.Put(gc)
 }

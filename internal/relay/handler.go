@@ -550,10 +550,6 @@ type trackDistributor struct {
 	stages *stageCollector
 
 	done chan struct{} // closed when ingest returns
-
-	subscribers sync.Map // *moqt.TrackWriter -> struct{}
-	dropsMu     sync.RWMutex
-	drops       []moqt.SubscribeDrop
 }
 
 func newTrackDistributor(manager *trackManager, trackID string, sampler *statsSampler) *trackDistributor {
@@ -598,27 +594,16 @@ func (d *trackDistributor) sampleCacheDepth() {
 	metricBufferDepthGroups.WithLabelValues(d.trackID).Set(float64(depth))
 }
 
-func (d *trackDistributor) forwardDrop(drop moqt.SubscribeDrop) {
-	slog.Debug("relay: forward drop", "track", d.trackID, "drop", drop)
-	d.dropsMu.Lock()
-	d.drops = append(d.drops, drop)
-	d.dropsMu.Unlock()
-
-	d.subscribers.Range(func(key, value any) bool {
-		tw := key.(*moqt.TrackWriter)
-		_ = tw.DropGroups(drop)
-		return true
-	})
+// recordDrop allocates a drop slot in the distributor's group ring and notifies
+// all egress goroutines via broadcast(), distributing drops in the same way as
+// groups and frames.
+func (d *trackDistributor) recordDrop(drop moqt.SubscribeDrop) {
+	d.ring.reserveDrop(drop)
+	d.broadcast()
 }
 
 func (d *trackDistributor) egress(tw *moqt.TrackWriter) {
 	twCtx := tw.Context()
-
-	d.dropsMu.RLock()
-	dropIdx := len(d.drops)
-	d.subscribers.Store(tw, struct{}{})
-	d.dropsMu.RUnlock()
-	defer d.subscribers.Delete(tw)
 
 	metricSubscribersActive.Inc()
 	defer metricSubscribersActive.Dec()
@@ -652,10 +637,9 @@ func (d *trackDistributor) egress(tw *moqt.TrackWriter) {
 	// pickup after startup counts as caught up.
 	woken := true
 	var (
-		lastSent          moqt.GroupSequence
-		hasLastSent       bool
-		skipped           bool
-		hasDeliveredFirst bool
+		lastSent    moqt.GroupSequence
+		hasLastSent bool
+		skipped     bool
 	)
 
 	for {
@@ -682,22 +666,22 @@ func (d *trackDistributor) egress(tw *moqt.TrackWriter) {
 							StartGroup: lastSent + 1,
 							EndGroup:   cache.seq - 1,
 							ErrorCode:  moqt.SubscribeErrorCodeInternal,
-						})
+						}) // not actionable: subscriber session errors handled on delivery
 					}
 					skipped = false
 				}
 
+				if cache.isDrop {
+					_ = tw.DropGroups(cache.drop) // not actionable: subscriber session errors handled on delivery
+					d.ring.decrRef(cache)
+					lastSent = cache.drop.EndGroup
+					hasLastSent = true
+					woken = false
+					continue
+				}
+
 				if d.deliverGroup(tw, twCtx, openTO, woken, cache) {
 					return
-				}
-				if !hasDeliveredFirst {
-					hasDeliveredFirst = true
-					d.dropsMu.RLock()
-					for _, drop := range d.drops[:dropIdx] {
-						slog.Debug("relay: replaying initial drop", "track", d.trackID, "drop", drop)
-						_ = tw.DropGroups(drop)
-					}
-					d.dropsMu.RUnlock()
 				}
 				lastSent = cache.seq
 				hasLastSent = true
@@ -782,7 +766,7 @@ func (d *trackDistributor) deliverGroup(tw *moqt.TrackWriter, twCtx context.Cont
 				StartGroup: cache.seq,
 				EndGroup:   cache.seq,
 				ErrorCode:  moqt.SubscribeErrorCodeInternal,
-			})
+			}) // not actionable: subscriber session errors handled on delivery
 			return false
 		}
 		// Non-timeout error (connection closed, session dead): terminate egress.
@@ -869,7 +853,7 @@ func (d *trackDistributor) ingest(ctx context.Context, src *moqt.TrackReader) {
 	go func() {
 		defer dropWg.Done()
 		for drop := range src.Drops(ctx) {
-			d.forwardDrop(drop)
+			d.recordDrop(drop)
 		}
 	}()
 
