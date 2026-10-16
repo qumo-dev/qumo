@@ -102,10 +102,20 @@ func newUpstream(cfg RelayConfig) (*upstream, error) {
 	return u, nil
 }
 
-// publishGrant grants publishing every track of the broadcast at path and of
-// every broadcast beneath it.
+// publishBeneath returns the path the funnel's own relay credential grants
+// publishing beneath, or "" when it signs none (no RELAY_SIGNING_KEY) or
+// publishes through no relay.
+func (u *upstream) publishBeneath() string {
+	if u == nil {
+		return ""
+	}
+	return u.publish
+}
+
+// publishGrant grants publishing every track of every broadcast beneath path,
+// which is its root.
 func publishGrant(path string) token.Grant {
-	return token.Grant{Scopes: []token.Scope{{Actions: []token.Action{token.ActionPublish}, Broadcast: path, Prefix: true}}}
+	return token.Grant{Root: path, Publish: []string{"/"}}
 }
 
 // run keeps a session to the relay open until ctx ends, dialing again after

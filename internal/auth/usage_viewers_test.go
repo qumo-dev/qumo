@@ -99,3 +99,41 @@ func TestUsageReporter_EachRunHasItsOwnTotals(t *testing.T) {
 	a, b := newTestUsage(t, &fakeUsageSink{}), newTestUsage(t, &fakeUsageSink{})
 	assert.NotEqual(t, a.runID, b.runID, "a restarted relay starts new totals rather than lowering old ones")
 }
+
+// publishing turns a viewer into a publisher once: a session it doesn't know,
+// or one that publishes already, gets no second open.
+func TestUsageReporter_Publishing(t *testing.T) {
+	sink := &fakeUsageSink{}
+	r := newTestUsage(t, sink)
+	r.open("v1", viewerSession("k1"))
+	r.open("p1", usageSession{kid: "k1", publishes: true})
+
+	r.publishing("v1")
+	r.publishing("v1")
+	r.publishing("p1")
+	r.publishing("unknown")
+	r.revalidated("v1", Bytes{Received: 40}, true)
+	require.NoError(t, r.flush(context.Background()))
+
+	var got []string
+	for _, rec := range sink.received()[0] {
+		got = append(got, string(rec.Type)+" "+rec.SessionID)
+	}
+	assert.ElementsMatch(t, []string{"session_open p1", "session_open v1", "usage v1"}, got)
+}
+
+func TestBytes_Since(t *testing.T) {
+	tests := map[string]struct {
+		b, base Bytes
+		want    Bytes
+	}{
+		"nothing counted": {b: Bytes{Sent: 5, Received: 7}, want: Bytes{Sent: 5, Received: 7}},
+		"part counted":    {b: Bytes{Sent: 5, Received: 7}, base: Bytes{Sent: 2, Received: 7}, want: Bytes{Sent: 3}},
+		"a lower report":  {b: Bytes{Sent: 1, Received: 9}, base: Bytes{Sent: 4, Received: 2}, want: Bytes{Received: 7}},
+	}
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			assert.Equal(t, tt.want, tt.b.since(tt.base))
+		})
+	}
+}

@@ -5,11 +5,16 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"path/filepath"
 	"testing"
 	"testing/synctest"
+	"time"
 
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/qumo-dev/gomoqt/moqt"
 	"github.com/qumo-dev/qumo/internal/auth"
+	"github.com/qumo-dev/qumo/token"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -251,4 +256,255 @@ func TestServer_HandleWebTransport_FailedUpgradeReportsEnd(t *testing.T) {
 	want.Event = auth.EventEnd
 	want.Reason = endUpgradeFailed
 	assert.Equal(t, []auth.Request{want}, fake.ended())
+}
+
+// ticketTestKeys are a relay's trusted keys, the session's own and another of
+// the same tenant, and a Verifier trusting both.
+type ticketTestKeys struct {
+	session, other token.SigningKey
+	verifier       *auth.Verifier
+}
+
+// newTicketTestKeys returns two trusted keys and a Verifier trusting both.
+func newTicketTestKeys(t *testing.T) ticketTestKeys {
+	t.Helper()
+	var k ticketTestKeys
+	var err error
+	k.session, err = token.GenerateKey("acme")
+	require.NoError(t, err)
+	k.other, err = token.GenerateKey("acme")
+	require.NoError(t, err)
+	keys := filepath.Join(t.TempDir(), "keys.json")
+	writeKeyFile(t, keys, k.session.Public(), k.other.Public())
+	k.verifier, err = auth.NewVerifier(auth.VerifierConfig{Keys: keys})
+	require.NoError(t, err)
+	return k
+}
+
+// signTest mints a credential of key granting g.
+func signTest(t *testing.T, key token.SigningKey, g token.Grant) string {
+	t.Helper()
+	tok, err := token.Sign(key, g, credentialTTL)
+	require.NoError(t, err)
+	return tok
+}
+
+// dialTest dials srv over WebSocket with credential, if any, and closes the
+// session when the test ends.
+func dialTest(t *testing.T, srv *Server, credential string) *moqt.Session {
+	t.Helper()
+	target := "/acme"
+	if credential != "" {
+		target += "?" + url.Values{"jwt": {credential}}.Encode()
+	}
+	sess, err := dialWebSocket(t, srv, target)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = sess.CloseWithError(moqt.NoError, "done") })
+	return sess
+}
+
+// authTest presents tok on a new Auth Stream, withdrawing it when the test
+// ends.
+func authTest(t *testing.T, sess *moqt.Session, tok string) (*moqt.Credential, error) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	c, err := sess.Auth(ctx, []byte(tok))
+	if c != nil {
+		t.Cleanup(func() { _ = c.Close() })
+	}
+	return c, err
+}
+
+var (
+	// listenRoom subscribes beneath a room.
+	listenRoom = token.Grant{Root: "acme/room/42", Subscribe: []string{"/"}, Fetch: []string{"/"}}
+	// listenAndSpeak subscribes beneath a room and publishes one broadcast in
+	// it.
+	listenAndSpeak = token.Grant{Root: "acme/room/42", Publish: []string{"/7"}, Subscribe: []string{"/"}, Fetch: []string{"/"}}
+)
+
+// The credential a session connected with, presented again with no token, is
+// granted what the session was admitted with: what a verified credential
+// grants, nothing for one of no patterns, and everything when nothing is checked.
+func TestServer_ServeAuth_ConnectionCredential(t *testing.T) {
+	keys := newTicketTestKeys(t)
+	tests := map[string]struct {
+		credential string
+		unchecked  bool
+		want       moqt.Grant
+	}{
+		"a verified credential": {
+			credential: signTest(t, keys.session, listenAndSpeak),
+			want:       moqt.Grant{Root: "/acme/room/42/", Publish: []string{"/7"}, Subscribe: []string{"/"}},
+		},
+		"a credential of no patterns":   {credential: signTest(t, keys.session, token.Grant{}), want: moqt.Grant{}},
+		"a session checked for nothing": {unchecked: true, want: everything},
+	}
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			var g *auth.Grant
+			if !tt.unchecked {
+				var err error
+				g, err = keys.verifier.Authorize(t.Context(), auth.Request{
+					Event: auth.EventConnect, Query: url.Values{"jwt": {tt.credential}}.Encode(),
+				})
+				require.NoError(t, err)
+			}
+
+			got := connectionGrant(g)
+
+			assert.Equal(t, tt.want.Root, got.Root)
+			assert.ElementsMatch(t, tt.want.Publish, got.Publish)
+			assert.ElementsMatch(t, tt.want.Subscribe, got.Subscribe)
+		})
+	}
+}
+
+// An Auth Stream carrying no token is answered as the connection's own
+// credential is, which adds nothing to the session's grants.
+func TestServer_ServeAuth_EmptyTicket(t *testing.T) {
+	keys := newTicketTestKeys(t)
+	srv := newWebSocketTestServer(t, &fakeAuth{})
+	srv.Authorize = keys.verifier.Authorize
+	sess := dialTest(t, srv, signTest(t, keys.session, listenRoom))
+
+	c, err := authTest(t, sess, "")
+
+	require.NoError(t, err)
+	assert.Equal(t, "/acme/room/42/", c.Grant().Root)
+}
+
+// A ticket is granted only to a session whose credential the relay verified,
+// and only when signed by the same key; a refused one answers AUTH_ERROR.
+func TestServer_ServeAuth_Ticket(t *testing.T) {
+	keys := newTicketTestKeys(t)
+	ticket := signTest(t, keys.session, listenAndSpeak)
+	tests := map[string]struct {
+		authorize  func(context.Context, auth.Request) (*auth.Grant, error)
+		noTickets  bool
+		credential string
+		ticket     string
+		wantCode   moqt.SessionErrorCode
+		wantResult string
+	}{
+		"signed by the session's key": {
+			credential: signTest(t, keys.session, token.Grant{}), ticket: ticket, wantResult: ticketGranted,
+		},
+		"signed by another trusted key": {
+			credential: signTest(t, keys.session, token.Grant{}), ticket: signTest(t, keys.other, listenRoom),
+			wantCode: moqt.UnauthorizedSessionErrorCode, wantResult: ticketRefused,
+		},
+		"not a credential": {
+			credential: signTest(t, keys.session, token.Grant{}), ticket: "not.a.jwt",
+			wantCode: moqt.UnauthorizedSessionErrorCode, wantResult: ticketRefused,
+		},
+		"a relay that verifies no tickets": {
+			noTickets: true, credential: signTest(t, keys.session, token.Grant{}), ticket: ticket,
+			wantCode: moqt.NotSupportedErrorCode, wantResult: ticketNotSupported,
+		},
+		"a session checked for nothing": {
+			authorize: admitUnchecked, ticket: ticket,
+			wantCode: moqt.NotSupportedErrorCode, wantResult: ticketNotSupported,
+		},
+	}
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			srv := newWebSocketTestServer(t, &fakeAuth{})
+			srv.Authorize = keys.verifier.Authorize
+			if tt.authorize != nil {
+				srv.Authorize = tt.authorize
+			}
+			if !tt.noTickets {
+				srv.Tickets = keys.verifier
+			}
+			sess := dialTest(t, srv, tt.credential)
+			counter := metricTickets.WithLabelValues(tt.wantResult)
+			before := testutil.ToFloat64(counter)
+
+			c, err := authTest(t, sess, tt.ticket)
+
+			assert.Equal(t, before+1, testutil.ToFloat64(counter))
+			if tt.wantCode != 0 {
+				authErr, ok := errors.AsType[*moqt.AuthError](err)
+				require.True(t, ok, "an AUTH_ERROR, not %v", err)
+				assert.Equal(t, tt.wantCode, authErr.Code)
+				return
+			}
+			require.NoError(t, err)
+			g := c.Grant()
+			assert.Equal(t, "/acme/room/42/", g.Root)
+			assert.Equal(t, []string{"/7"}, g.Publish)
+			assert.Equal(t, []string{"/"}, g.Subscribe)
+		})
+	}
+}
+
+// A session holds at most maxTickets at once; withdrawing one makes room.
+func TestServer_ServeAuth_TooManyTickets(t *testing.T) {
+	keys := newTicketTestKeys(t)
+	srv := newWebSocketTestServer(t, &fakeAuth{})
+	srv.Authorize = keys.verifier.Authorize
+	srv.Tickets = keys.verifier
+	sess := dialTest(t, srv, signTest(t, keys.session, token.Grant{}))
+	ticket := signTest(t, keys.session, listenRoom)
+	held := make([]*moqt.Credential, maxTickets)
+	for i := range held {
+		c, err := authTest(t, sess, ticket)
+		require.NoError(t, err, "ticket %d", i)
+		held[i] = c
+	}
+
+	_, err := authTest(t, sess, ticket)
+
+	authErr, ok := errors.AsType[*moqt.AuthError](err)
+	require.True(t, ok, "an AUTH_ERROR, not %v", err)
+	assert.Equal(t, moqt.UnauthorizedSessionErrorCode, authErr.Code)
+	require.NoError(t, held[0].Close())
+	assert.Eventually(t, func() bool {
+		_, err := authTest(t, sess, ticket)
+		return err == nil
+	}, 5*time.Second, 20*time.Millisecond, "a withdrawn ticket makes room for another")
+}
+
+// A granted ticket's AUTH_OK says when it lapses, so its presenter can
+// present a fresh one in time.
+func TestServer_ServeAuth_TicketMaxAge(t *testing.T) {
+	keys := newTicketTestKeys(t)
+	srv := newWebSocketTestServer(t, &fakeAuth{})
+	srv.Authorize = keys.verifier.Authorize
+	srv.Tickets = keys.verifier
+	sess := dialTest(t, srv, signTest(t, keys.session, token.Grant{}))
+
+	c, err := authTest(t, sess, signTest(t, keys.session, listenRoom))
+
+	require.NoError(t, err)
+	assert.Positive(t, c.Grant().MaxAge)
+	assert.LessOrEqual(t, c.Grant().MaxAge, token.MaxLifetime+token.Leeway)
+}
+
+// uncheckableTickets can check no ticket just now, as a relay whose key set
+// is not usable.
+type uncheckableTickets struct{}
+
+func (uncheckableTickets) Ticket(string, string) (*auth.Grant, error) {
+	return nil, errors.New("auth: no key set loaded yet")
+}
+func (uncheckableTickets) Trusts(*auth.Grant) (bool, error) { return false, errors.New("no set") }
+func (uncheckableTickets) Publishing(string)                {}
+
+// A ticket that could not be checked is answered with INTERNAL, which a
+// client may retry, not UNAUTHORIZED, which says the ticket is no good.
+func TestServer_ServeAuth_TicketUncheckable(t *testing.T) {
+	keys := newTicketTestKeys(t)
+	srv := newWebSocketTestServer(t, &fakeAuth{})
+	srv.Authorize = keys.verifier.Authorize
+	srv.Tickets = uncheckableTickets{}
+	sess := dialTest(t, srv, signTest(t, keys.session, token.Grant{}))
+
+	_, err := authTest(t, sess, signTest(t, keys.session, listenRoom))
+
+	authErr, ok := errors.AsType[*moqt.AuthError](err)
+	require.True(t, ok, "want an AuthError, got %v", err)
+	assert.Equal(t, moqt.InternalSessionErrorCode, authErr.Code)
 }

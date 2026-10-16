@@ -109,6 +109,8 @@ func TestFeedConfig_Validate(t *testing.T) {
 	unnamedCert, unnamedKey := writeLeaf(t, ca, devcert.Leaf{CommonName: "egress-2", Validity: time.Hour})
 	key, err := token.GenerateKey("hls")
 	require.NoError(t, err)
+	exact, err := token.GenerateKey("hls/live")
+	require.NoError(t, err)
 
 	tests := map[string]struct {
 		cfg     feedConfig
@@ -148,6 +150,12 @@ func TestFeedConfig_Validate(t *testing.T) {
 		"a signing key confined elsewhere": {
 			cfg:     feedConfig{relayURL: "https://relay:4433", trackPath: "/room/1", signingKey: &key},
 			wantErr: "RELAY_TRACK_PATH",
+		},
+		// The grant's root is the path's directory: a key confined to the
+		// path itself can't grant it.
+		"a signing key confined to the path itself": {
+			cfg:     feedConfig{relayURL: "https://relay:4433", trackPath: "/hls/live", signingKey: &exact},
+			wantErr: "must lie beneath the key's prefix",
 		},
 	}
 	for name, tt := range tests {
@@ -213,13 +221,13 @@ func TestFeedConfig_Target(t *testing.T) {
 		assert.Equal(t, "1", u.Query().Get("x"), "the rest of the query is kept")
 		claims, err := token.Verify(u.Query().Get("jwt"), map[string]token.Key{key.ID: key.Public()}, time.Now())
 		require.NoError(t, err)
-		require.Len(t, claims.Scopes, 1)
-		scope := claims.Scopes[0]
-		assert.True(t, scope.Allows(token.ActionSubscribe, "hls/live"))
-		assert.True(t, scope.Allows(token.ActionFetch, "hls/live"))
-		assert.False(t, scope.Allows(token.ActionSubscribe, "hls/other"), "no other broadcast")
-		assert.False(t, scope.Allows(token.ActionSubscribe, "hls/live/deeper"), "nothing beneath it")
-		assert.False(t, scope.Allows(token.ActionPublish, "hls/live"), "it publishes nothing")
+		g := claims.Grant
+		assert.Equal(t, token.Grant{Root: "hls", Subscribe: []string{"/live"}, Fetch: []string{"/live"}}, g)
+		assert.True(t, g.Allows(token.ActionSubscribe, "hls/live"))
+		assert.True(t, g.Allows(token.ActionFetch, "hls/live"))
+		assert.False(t, g.Allows(token.ActionSubscribe, "hls/other"), "no other broadcast")
+		assert.False(t, g.Allows(token.ActionSubscribe, "hls/live/deeper"), "nothing beneath it")
+		assert.False(t, g.Allows(token.ActionPublish, "hls/live"), "it publishes nothing")
 	})
 
 	t.Run("each connect signs a new one", func(t *testing.T) {
@@ -232,4 +240,20 @@ func TestFeedConfig_Target(t *testing.T) {
 
 		assert.NotEqual(t, first, second)
 	})
+}
+
+func TestSubscribeGrant(t *testing.T) {
+	tests := map[string]struct {
+		path string
+		want token.Grant
+	}{
+		"beneath a directory": {path: "/acme/room/42/7", want: token.Grant{Root: "acme/room/42", Subscribe: []string{"/7"}, Fetch: []string{"/7"}}},
+		"one segment":         {path: "/live", want: token.Grant{Subscribe: []string{"/live"}, Fetch: []string{"/live"}}},
+		"no leading slash":    {path: "hls/live", want: token.Grant{Root: "hls", Subscribe: []string{"/live"}, Fetch: []string{"/live"}}},
+	}
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			assert.Equal(t, tt.want, subscribeGrant(tt.path))
+		})
+	}
 }

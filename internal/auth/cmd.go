@@ -51,9 +51,9 @@ func Run(args []string) error {
 // prefixLabel describes what a key with prefix may grant, for the terminal.
 func prefixLabel(prefix string) string {
 	if prefix == "" {
-		return "any path (no prefix)"
+		return "any root (no prefix)"
 	}
-	return prefix + "/**"
+	return "a root at or beneath " + prefix
 }
 
 // runKeygen writes a new signing key pair: the private key, for the app that
@@ -96,17 +96,18 @@ func runKeygen(args []string, out io.Writer) error {
 	fmt.Fprintf(&b, "  %-13s %s  (public: for the relay)\n", "Key set:", *pubPath)
 	fmt.Fprintf(&b, "\nNext:\n")
 	fmt.Fprintf(&b, "  1. Run the relay with it: QUMO_AUTH_KEYS=%s qumo relay\n", *pubPath)
-	fmt.Fprintf(&b, "  2. Sign a test token:      qumo auth token -key %s -publish %s\n", *privPath, examplePath(key.Prefix))
+	fmt.Fprintf(&b, "  2. Sign a test token:      qumo auth token -key %s %s\n", *privPath, exampleGrant(key.Prefix))
 	_, err = io.WriteString(out, b.String())
 	return err
 }
 
-// examplePath is a path a key with prefix may grant, for a usage example.
-func examplePath(prefix string) string {
+// exampleGrant is the flags of a grant a key with prefix may sign, for a
+// usage example.
+func exampleGrant(prefix string) string {
 	if prefix == "" {
-		return "demo"
+		return "-publish /demo"
 	}
-	return prefix + "/demo"
+	return "-root " + prefix + " -publish /demo"
 }
 
 // writeNew writes data to a new file at path, refusing to replace one. It
@@ -150,20 +151,27 @@ func removeFile(path string) error {
 func runToken(args []string, out, info io.Writer) error {
 	fs := flag.NewFlagSet("qumo auth token", flag.ContinueOnError)
 	keyPath := fs.String("key", "signing-key.jwk", "the private signing key (qumo auth keygen)")
-	publish := fs.String("publish", "", "the path the bearer may publish at or beneath: short for -scope publish:PATH/**")
-	subscribe := fs.String("subscribe", "", "the path the bearer may subscribe at or beneath: short for -scope subscribe,fetch:PATH/**")
-	var scopes []token.Scope
-	fs.Func("scope", "a scope, `ACTIONS:BROADCAST` (repeatable):\n"+
-		"ACTIONS is a comma-separated list of publish, subscribe, fetch, create, post and redact;\n"+
-		"BROADCAST is a path, or a/b/** for it and every path beneath it",
-		func(v string) error {
-			s, err := parseScope(v)
-			if err != nil {
-				return err
-			}
-			scopes = append(scopes, s)
-			return nil
-		})
+	root := fs.String("root", "", "the root the patterns are relative to, at or beneath the key's prefix (e.g. acme/room/42)")
+	var g token.Grant
+	for _, f := range []struct {
+		action   token.Action
+		patterns *[]string
+		usage    string
+	}{
+		{token.ActionPublish, &g.Publish, "publish through a relay"},
+		{token.ActionSubscribe, &g.Subscribe, "subscribe to live"},
+		{token.ActionFetch, &g.Fetch, "fetch the history of"},
+		{token.ActionCreate, &g.Create, "create tracks of at a funnel"},
+		{token.ActionPost, &g.Post, "post into at a funnel"},
+		{token.ActionRedact, &g.Redact, "redact records of at a funnel"},
+	} {
+		fs.Func(string(f.action), "a `PATTERN` relative to -root of the broadcasts the bearer may "+f.usage+
+			" (repeatable): /x is that path, /x/ every path beneath it, / everything beneath the root; a segment may be a {name} wildcard",
+			func(v string) error {
+				*f.patterns = append(*f.patterns, v)
+				return nil
+			})
+	}
 	subject := fs.String("sub", "", "who the bearer is (the sub claim)")
 	ttl := fs.Duration("ttl", time.Hour, "how long the token is valid (at most 1h)")
 	if err := fs.Parse(args); err != nil {
@@ -173,14 +181,8 @@ func runToken(args []string, out, info io.Writer) error {
 	if err != nil {
 		return err
 	}
-	if *publish != "" {
-		scopes = append(scopes, token.Scope{Actions: []token.Action{token.ActionPublish}, Broadcast: *publish, Prefix: true})
-	}
-	if *subscribe != "" {
-		scopes = append(scopes, token.Scope{Actions: []token.Action{token.ActionSubscribe, token.ActionFetch}, Broadcast: *subscribe, Prefix: true})
-	}
-	grant := token.Grant{Scopes: scopes, Subject: *subject}
-	tok, err := token.Sign(key, grant, *ttl)
+	g.Root, g.Subject = *root, *subject
+	tok, err := token.Sign(key, g, *ttl)
 	if err != nil {
 		return err
 	}
@@ -194,8 +196,16 @@ func runToken(args []string, out, info io.Writer) error {
 	}
 	var b strings.Builder
 	b.WriteString("\n")
-	for _, s := range c.Scopes {
-		fmt.Fprintf(&b, "  %-11s %s\n", "Scope:", scopeLabel(s))
+	fmt.Fprintf(&b, "  %-11s %s\n", "Root:", cmp.Or(c.Root, "- (every path)"))
+	granted := false
+	for _, a := range token.Actions() {
+		if patterns := c.Patterns(a); len(patterns) > 0 {
+			fmt.Fprintf(&b, "  %-11s %s\n", strings.ToUpper(string(a[:1]))+string(a[1:])+":", strings.Join(patterns, " "))
+			granted = true
+		}
+	}
+	if !granted {
+		fmt.Fprintf(&b, "  %-11s nothing: the token names its key's tenant alone, for a relay session's tickets to grant to\n", "Grants:")
 	}
 	fmt.Fprintf(&b, "  %-11s %s\n", "Subject:", cmp.Or(c.Subject, "-"))
 	fmt.Fprintf(&b, "  %-11s %s (in %s)\n", "Expires:", c.ExpiresAt.Format(time.DateTime), time.Until(c.ExpiresAt).Round(time.Second))
@@ -203,37 +213,4 @@ func runToken(args []string, out, info io.Writer) error {
 	fmt.Fprintf(&b, "  %-11s https://<relay>/?jwt=<token>\n", "Connect:")
 	_, err = io.WriteString(info, b.String())
 	return err
-}
-
-// parseScope reads a -scope value, ACTIONS:BROADCAST. A broadcast ending in
-// "/**" matches it and every path beneath it. A second ":" is refused, so a
-// value naming a track, which a scope can't, fails rather than signing for a
-// broadcast whose path holds it. token.Sign checks the rest.
-func parseScope(v string) (token.Scope, error) {
-	actions, broadcast, ok := strings.Cut(v, ":")
-	if !ok || actions == "" || broadcast == "" {
-		return token.Scope{}, fmt.Errorf("scope %q: want ACTIONS:BROADCAST", v)
-	}
-	if strings.Contains(broadcast, ":") {
-		return token.Scope{}, fmt.Errorf("scope %q: want ACTIONS:BROADCAST; a scope reaches every track of its broadcast", v)
-	}
-	var s token.Scope
-	s.Broadcast, s.Prefix = strings.CutSuffix(broadcast, "/**")
-	for a := range strings.SplitSeq(actions, ",") {
-		s.Actions = append(s.Actions, token.Action(a))
-	}
-	return s, nil
-}
-
-// scopeLabel describes a scope for the terminal, as -scope spells it.
-func scopeLabel(s token.Scope) string {
-	actions := make([]string, len(s.Actions))
-	for i, a := range s.Actions {
-		actions[i] = string(a)
-	}
-	broadcast := s.Broadcast
-	if s.Prefix {
-		broadcast += "/**"
-	}
-	return strings.Join(actions, ",") + " " + broadcast
 }

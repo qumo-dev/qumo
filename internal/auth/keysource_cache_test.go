@@ -114,26 +114,24 @@ func TestVerifier_PublishLimit(t *testing.T) {
 		"limited key, path_auth both":      {jwt: signPathAuth(t, limited, "acme/app/live", "acme/app"), wantConnect: 403, wantRevalidate: 200},
 		"limited key, path_auth viewer":    {jwt: signPathAuth(t, limited, "", "acme/app"), wantConnect: 200, wantRevalidate: 200},
 		"another key, path_auth publisher": {jwt: signPathAuth(t, free, "acme/app/live", ""), wantConnect: 200, wantRevalidate: 200},
-		"limited key, publish scope":       {jwt: sign(t, limited, scoped(token.ActionPublish)), wantConnect: 403, wantRevalidate: 200},
+		"limited key, publish pattern":     {jwt: sign(t, limited, beneathLive(token.ActionPublish)), wantConnect: 403, wantRevalidate: 200},
 		// Posting into a funnel's track, as a viewer who may chat does,
 		// publishes nothing: posting never creates a track.
 		"limited key, post and subscribe": {
-			jwt: sign(t, limited, token.Grant{Scopes: []token.Scope{
-				{Actions: []token.Action{token.ActionPost, token.ActionSubscribe}, Broadcast: "acme/app/live"},
-			}}),
+			jwt:         sign(t, limited, token.Grant{Root: "acme/app", Post: []string{"/live"}, Subscribe: []string{"/live"}}),
 			wantConnect: 200, wantRevalidate: 200,
 		},
 		// A relay ignores create, which a funnel checks itself.
-		"limited key, create scope": {
-			jwt: sign(t, limited, scoped(token.ActionCreate)), wantConnect: 200, wantRevalidate: 200,
+		"limited key, create pattern": {
+			jwt: sign(t, limited, beneathLive(token.ActionCreate)), wantConnect: 200, wantRevalidate: 200,
 		},
-		"limited key, post scope": {
-			jwt: sign(t, limited, scoped(token.ActionPost)), wantConnect: 200, wantRevalidate: 200,
+		"limited key, post pattern": {
+			jwt: sign(t, limited, beneathLive(token.ActionPost)), wantConnect: 200, wantRevalidate: 200,
 		},
-		"limited key, subscribe and fetch scopes": {
-			jwt: sign(t, limited, scoped(token.ActionSubscribe, token.ActionFetch)), wantConnect: 200, wantRevalidate: 200,
+		"limited key, subscribe and fetch patterns": {
+			jwt: sign(t, limited, beneathLive(token.ActionSubscribe, token.ActionFetch)), wantConnect: 200, wantRevalidate: 200,
 		},
-		"another key, publish scope": {jwt: sign(t, free, scoped(token.ActionPublish)), wantConnect: 200, wantRevalidate: 200},
+		"another key, publish pattern": {jwt: sign(t, free, beneathLive(token.ActionPublish)), wantConnect: 200, wantRevalidate: 200},
 	}
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
@@ -146,9 +144,17 @@ func TestVerifier_PublishLimit(t *testing.T) {
 	}
 }
 
-// scoped is a grant of actions on every track beneath acme/app/live.
-func scoped(actions ...token.Action) token.Grant {
-	return token.Grant{Scopes: []token.Scope{{Actions: actions, Broadcast: "acme/app/live", Prefix: true}}}
+// beneathLive is a grant of actions on every broadcast beneath acme/app/live.
+func beneathLive(actions ...token.Action) token.Grant {
+	g := token.Grant{Root: "acme/app/live"}
+	for _, a := range actions {
+		patterns := map[token.Action]*[]string{
+			token.ActionPublish: &g.Publish, token.ActionSubscribe: &g.Subscribe, token.ActionFetch: &g.Fetch,
+			token.ActionCreate: &g.Create, token.ActionPost: &g.Post, token.ActionRedact: &g.Redact,
+		}[a]
+		*patterns = append(*patterns, "/")
+	}
+	return g
 }
 
 // keyEntry is k's public JWK with the given members added.

@@ -61,10 +61,10 @@ func TestLease_RevalidateEnds(t *testing.T) {
 }
 
 // TestLease_RevalidateTakesCadence verifies an admitted revalidate keeps the
-// session and takes the reply's cadence; its scopes aren't checked.
+// session and takes the reply's cadence; its grant isn't checked.
 func TestLease_RevalidateTakesCadence(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		// The reply's scopes differ from connect's; only the cadence matters.
+		// The reply's grant differs from connect's; only the cadence matters.
 		server := &fakeAuth{grant: testGrant(t, "other/**", "", time.Minute)}
 		sess := &fakeLeasedSession{}
 		l := startLease(t.Context(), sess, server.authorize, leaseRequest, 30*time.Second)

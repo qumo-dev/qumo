@@ -306,13 +306,9 @@ func TestFunnel_PathAuthCredentials(t *testing.T) {
 	ingestURL, serveURL := startFunnel(t, mem.New(), verifier)
 	publisher := signPathAuth(t, key, "room/123", "")
 	viewer := signPathAuth(t, key, "", "room/123")
-	poster, err := token.Sign(key, token.Grant{Scopes: []token.Scope{
-		{Actions: []token.Action{token.ActionPost}, Broadcast: "room/123"},
-	}}, time.Minute)
+	poster, err := token.Sign(key, exactly("room/123", token.ActionPost), time.Minute)
 	require.NoError(t, err)
-	creator, err := token.Sign(key, token.Grant{Scopes: []token.Scope{
-		{Actions: []token.Action{token.ActionCreate}, Broadcast: "room/123"},
-	}}, time.Minute)
+	creator, err := token.Sign(key, exactly("room/123", token.ActionCreate), time.Minute)
 	require.NoError(t, err)
 
 	assert.Equal(t, http.StatusUnauthorized, createChat(t, ingestURL, ""), "no credential")
@@ -348,19 +344,19 @@ func TestFunnel_PathAuthCredentials(t *testing.T) {
 	assert.Equal(t, http.StatusForbidden, status, "pub does not grant reading")
 }
 
-// TestFunnel_ScopedCredentialsNameSenders creates, records and reads with
-// credentials whose scopes name the exact broadcast: create makes the
+// TestFunnel_PatternCredentialsNameSenders creates, records and reads with
+// credentials whose patterns name the exact broadcast: create makes the
 // track, post records into it with the credential's sub as the sender, and a
-// scope for another broadcast or action grants nothing.
-func TestFunnel_ScopedCredentialsNameSenders(t *testing.T) {
+// pattern for another broadcast or action grants nothing.
+func TestFunnel_PatternCredentialsNameSenders(t *testing.T) {
 	key, _, keysFile := writeKeys(t)
 	verifier, err := auth.NewVerifier(auth.VerifierConfig{Keys: keysFile})
 	require.NoError(t, err)
 	ingestURL, _ := startFunnel(t, mem.New(), verifier)
 	credential := func(subject string, actions []token.Action, broadcast string) string {
-		c, err := token.Sign(key, token.Grant{Subject: subject, Scopes: []token.Scope{
-			{Actions: actions, Broadcast: broadcast},
-		}}, time.Minute)
+		g := exactly(broadcast, actions...)
+		g.Subject = subject
+		c, err := token.Sign(key, g, time.Minute)
 		require.NoError(t, err)
 		return c
 	}
@@ -436,9 +432,7 @@ func startFunnelBehindRelay(t *testing.T) (ingestURL, relayAddr string, relaySrv
 // relay at relayAddr, with a credential key signs for subscribing to it.
 func subscribeChatAsViewer(t *testing.T, relayAddr string, key token.SigningKey) *moqt.TrackReader {
 	t.Helper()
-	viewer, err := token.Sign(key, token.Grant{Scopes: []token.Scope{
-		{Actions: []token.Action{token.ActionSubscribe}, Broadcast: "room/123", Prefix: true},
-	}}, time.Minute)
+	viewer, err := token.Sign(key, atAndBeneath("room/123", token.ActionSubscribe), time.Minute)
 	require.NoError(t, err)
 	return subscribeChat(t, nativeURL(relayAddr)+"?jwt="+viewer)
 }
@@ -506,9 +500,7 @@ func TestFunnel_RelaySubscriberOutwaitsAQuietTrack(t *testing.T) {
 	require.Eventually(t, routed(relaySrv, "/room/123"), 5*time.Second, 25*time.Millisecond,
 		"the relay routes the broadcast to the funnel")
 
-	viewer, err := token.Sign(key, token.Grant{Scopes: []token.Scope{
-		{Actions: []token.Action{token.ActionSubscribe}, Broadcast: "room/123", Prefix: true},
-	}}, token.MaxLifetime)
+	viewer, err := token.Sign(key, atAndBeneath("room/123", token.ActionSubscribe), token.MaxLifetime)
 	require.NoError(t, err)
 	sess := dialOver(t, nativeURL(relayAddr)+"?jwt="+viewer, nil, moqt.NewTrackMux(0))
 	ctx, cancel := context.WithTimeout(context.Background(), 2*quietTrackWait)
@@ -586,18 +578,19 @@ func TestFunnel_RedialsWhenTheRelayEndsTheSession(t *testing.T) {
 	assert.Equal(t, `{"payload":"kept"}`, got)
 }
 
-// TestFunnel_RedactNeedsARedactScope redacts a posted record: only a credential
-// with a redact scope may, the redaction reaches live subscribers carrying the
-// credential's sub, and history keeps the record's place without its payload.
-func TestFunnel_RedactNeedsARedactScope(t *testing.T) {
+// TestFunnel_RedactNeedsARedactPattern redacts a posted record: only a
+// credential with a redact pattern may, the redaction reaches live subscribers
+// carrying the credential's sub, and history keeps the record's place without
+// its payload.
+func TestFunnel_RedactNeedsARedactPattern(t *testing.T) {
 	key, _, keysFile := writeKeys(t)
 	verifier, err := auth.NewVerifier(auth.VerifierConfig{Keys: keysFile})
 	require.NoError(t, err)
 	ingestURL, serveURL := startFunnel(t, mem.New(), verifier)
 	credential := func(subject string, action token.Action) string {
-		c, err := token.Sign(key, token.Grant{Subject: subject, Scopes: []token.Scope{
-			{Actions: []token.Action{action}, Broadcast: "room/123"},
-		}}, time.Minute)
+		g := exactly("room/123", action)
+		g.Subject = subject
+		c, err := token.Sign(key, g, time.Minute)
 		require.NoError(t, err)
 		return c
 	}

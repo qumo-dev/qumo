@@ -14,16 +14,16 @@ import (
 )
 
 // authorizer returns the check a request passes: the bearer credential must be
-// one the relay would admit, with a scope matching the track's broadcast that
-// permits the access.
+// one the relay would admit, with a pattern for the access's action that
+// matches the track's broadcast.
 //
 // Creating a track needs create; it is for the app, which decides which tracks
 // a broadcast has. A write needs post, and records into a track that exists,
 // as the credential's subject (its sub), or with no sender when it names
 // none. A read needs fetch, and a redaction redact, carrying the credential's
 // subject as its sender. Publish, which sends through a relay, permits
-// nothing here. A path_auth credential is read as scopes (token.Verify): its
-// sub permits reading at its path and beneath it.
+// nothing here. A path_auth credential is read as the grant it amounts to
+// (token.Verify): its sub permits reading at its path and beneath it.
 //
 // The credential is checked on every request, so one that expires or whose
 // key leaves the set is refused at once. A key paused for publishing refuses
@@ -40,7 +40,7 @@ func authorizer(v *auth.Verifier) func(*http.Request, ingest.Track, ingest.Acces
 		}
 		action, sender, ok := accessAction(access)
 		if !ok {
-			// An access added later is refused until a scope grants it, so no
+			// An access added later is refused until an action grants it, so no
 			// credential gains it by default.
 			return "", fmt.Errorf("funnel: no credential grants access %d to %s track %q", access, t.BroadcastPath, t.TrackName)
 		}
@@ -61,7 +61,7 @@ func authorizer(v *auth.Verifier) func(*http.Request, ingest.Track, ingest.Acces
 	}
 }
 
-// accessAction returns the action a scope must permit for access, and
+// accessAction returns the action a pattern must grant for access, and
 // whether the credential's subject is the sender of what it makes.
 func accessAction(access ingest.Access) (action token.Action, sender, ok bool) {
 	switch access {
@@ -75,6 +75,27 @@ func accessAction(access ingest.Access) (action token.Action, sender, ok bool) {
 		return token.ActionRedact, true, true
 	}
 	return "", false, false
+}
+
+// publishedBeneath refuses to create a track whose broadcast does not lie
+// beneath path, a root, at a "/" boundary: the relay takes the funnel's
+// announcements beneath it alone, and its own path is not a broadcast.
+// Every other request goes to authorize, which may be nil. An empty path
+// checks nothing.
+func publishedBeneath(path string, authorize func(*http.Request, ingest.Track, ingest.Access) (string, error)) func(*http.Request, ingest.Track, ingest.Access) (string, error) {
+	if path == "" {
+		return authorize
+	}
+	root := "/" + strings.Trim(path, "/") + "/"
+	return func(r *http.Request, t ingest.Track, access ingest.Access) (string, error) {
+		if access == ingest.Create && !strings.HasPrefix(t.BroadcastPath, root) {
+			return "", fmt.Errorf("funnel: %s lies outside %s, beneath which the relay takes the funnel's broadcasts (RELAY_PUBLISH)", t.BroadcastPath, root)
+		}
+		if authorize == nil {
+			return "", nil
+		}
+		return authorize(r, t, access)
+	}
 }
 
 // bearer returns the credential of an "Authorization: Bearer" header.

@@ -11,11 +11,11 @@
 //
 // A record goes only into a track that exists: the app creates the tracks.
 // With a key set, every request carries a qumo credential as a bearer token.
-// Its scopes name what it reaches, on the track's broadcast: creating needs a
-// "create" scope, a write a "post" scope, a read a "fetch" scope and a
-// redaction a "redact" scope; "publish", which sends through a relay, grants
-// nothing here. The records carry its "sub" as their sender, or
-// no sender without one.
+// Its patterns name what it reaches, beneath its root: the track's broadcast
+// must match a "create" pattern to create, a "post" pattern to write, a
+// "fetch" pattern to read and a "redact" pattern to redact; "publish", which
+// sends through a relay, grants nothing here. The records carry its "sub" as
+// their sender, or no sender without one.
 //
 // The funnel publishes through a relay it dials as a client, so subscribers
 // reach its tracks on the relay, and it can also serve them itself. A
@@ -150,9 +150,10 @@ func Run(_ []string) error {
 
 	trackMux := moqt.NewTrackMux(0)
 	handler, err := NewHandler(ctx, objects, trackMux, HandlerOptions{
-		Verifier:    verifier,
-		SenderLimit: senderLimit,
-		TrackLimit:  trackLimit,
+		Verifier:       verifier,
+		SenderLimit:    senderLimit,
+		TrackLimit:     trackLimit,
+		PublishBeneath: up.publishBeneath(),
 	})
 	if err != nil {
 		return err
@@ -265,7 +266,7 @@ func NewHandler(ctx context.Context, objects store.Store, trackMux *moqt.TrackMu
 		slog.Info("funnel: restored recorded tracks", "tracks", restored)
 	}
 	return ingest.NewHandler(objects, ingest.Options{
-		Authorize:   authorizer(opts.Verifier),
+		Authorize:   publishedBeneath(opts.PublishBeneath, authorizer(opts.Verifier)),
 		Challenge:   "Bearer",
 		SenderLimit: opts.SenderLimit,
 		TrackLimit:  opts.TrackLimit,
@@ -291,6 +292,11 @@ type HandlerOptions struct {
 	// all of a track's.
 	SenderLimit ingest.Limit
 	TrackLimit  ingest.Limit
+	// PublishBeneath, when set, is the path the funnel's relay credential
+	// grants publishing beneath (RELAY_PUBLISH): a track whose broadcast
+	// does not lie beneath it is not created, since the relay would not take
+	// its announcement.
+	PublishBeneath string
 }
 
 // parseLimit reads a limit written "RATE,BURST", records per second and at

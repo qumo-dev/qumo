@@ -102,13 +102,10 @@ func TestRelay_SubscribeAuth_WebSocket(t *testing.T) {
 
 		assert.NoError(t, err)
 	})
-	t.Run("outside the grant looks like a missing path", func(t *testing.T) {
-		refused := subscribe(t, url, nil, "/acme/apple/live")
-		missing := subscribe(t, url, nil, "/acme/app/none")
+	t.Run("outside the grant is unauthorized", func(t *testing.T) {
+		err := subscribe(t, url, nil, "/acme/apple/live")
 
-		require.Error(t, refused)
-		require.Error(t, missing)
-		assert.Equal(t, missing.Error(), refused.Error())
+		assertSubscribeRefused(t, err, moqt.SubscribeErrorCodeUnauthorized)
 	})
 }
 

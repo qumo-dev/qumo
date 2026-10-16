@@ -359,9 +359,6 @@ func (h *relayHandler) TrackInfo(name moqt.TrackName) (pubInfo moqt.PublishInfo,
 }
 
 func (h *relayHandler) ServeTrack(tw *moqt.TrackWriter) {
-	if !authorizeSubscribe(tw) {
-		return
-	}
 	logger := slog.With(
 		"node", h.nodeID,
 		"broadcast_path", tw.BroadcastPath,

@@ -1,8 +1,8 @@
 //go:build integration
 
-// Black-box tests of the relay enforcing a scoped credential, verified by a
-// real auth.Verifier: a publish scope on a broadcast lets a session announce
-// it, and a subscribe scope gates the broadcasts a viewer receives.
+// Black-box tests of the relay enforcing a credential's grant, verified by a
+// real auth.Verifier: a publish pattern matching a broadcast lets a session
+// announce it, and subscribe patterns gate the broadcasts a viewer receives.
 package integration
 
 import (
@@ -33,58 +33,65 @@ func subscribeTrack(t *testing.T, url string, path moqt.BroadcastPath, track moq
 	return err
 }
 
-func TestRelay_ScopedCredentials(t *testing.T) {
+func TestRelay_PatternCredentials(t *testing.T) {
 	key, _, keysFile := writeKeys(t)
 	verifier, err := auth.NewVerifier(auth.VerifierConfig{Keys: keysFile})
 	require.NoError(t, err)
 	addr, srv := startAuthRelay(t, verifier.Authorize, nil)
-	url := func(scopes ...token.Scope) string {
-		c, err := token.Sign(key, token.Grant{Scopes: scopes}, time.Minute)
+	url := func(g token.Grant) string {
+		c, err := token.Sign(key, g, time.Minute)
 		require.NoError(t, err)
 		return "https://" + addr + "/?jwt=" + c
 	}
-	scope := func(broadcast string, prefix bool, actions ...token.Action) token.Scope {
-		return token.Scope{Actions: actions, Broadcast: broadcast, Prefix: prefix}
-	}
-	publishOver(t, srv, url(scope("acme/live", false, token.ActionPublish)), "/acme/live")
-	viewer := url(scope("acme", true, token.ActionSubscribe))
+	publishOver(t, srv, url(exactly("acme/live", token.ActionPublish)), "/acme/live")
+	viewer := url(grantOn("acme", []string{"/"}, token.ActionSubscribe))
 
 	t.Run("a viewer of the broadcast", func(t *testing.T) {
 		assert.NoError(t, subscribeTrack(t, viewer, "/acme/live", "video"))
 	})
-	t.Run("a viewer scoped to another broadcast", func(t *testing.T) {
-		err := subscribeTrack(t, url(scope("acme/other", false, token.ActionSubscribe)), "/acme/live", "video")
+	t.Run("a viewer granted a wildcard", func(t *testing.T) {
+		err := subscribeTrack(t, url(grantOn("acme", []string{"/{name}"}, token.ActionSubscribe)), "/acme/live", "video")
+
+		assert.NoError(t, err)
+	})
+	t.Run("a viewer granted the root alone", func(t *testing.T) {
+		err := subscribeTrack(t, url(grantOn("acme/live", []string{"/"}, token.ActionSubscribe)), "/acme/live", "video")
+
+		assert.Error(t, err, "/ matches every path beneath the root, not the root itself")
+	})
+	t.Run("a viewer granted another broadcast", func(t *testing.T) {
+		err := subscribeTrack(t, url(exactly("acme/other", token.ActionSubscribe)), "/acme/live", "video")
 
 		assert.Error(t, err)
 	})
-	t.Run("a viewer scoped to the exact broadcast", func(t *testing.T) {
-		err := subscribeTrack(t, url(scope("acme/live", false, token.ActionSubscribe)), "/acme/live", "video")
+	t.Run("a viewer granted the exact broadcast", func(t *testing.T) {
+		err := subscribeTrack(t, url(exactly("acme/live", token.ActionSubscribe)), "/acme/live", "video")
 
 		assert.NoError(t, err)
 	})
 	t.Run("fetch does not grant subscribing", func(t *testing.T) {
-		err := subscribeTrack(t, url(scope("acme", true, token.ActionFetch)), "/acme/live", "video")
+		err := subscribeTrack(t, url(grantOn("acme", []string{"/"}, token.ActionFetch)), "/acme/live", "video")
 
 		assert.Error(t, err)
 	})
-	t.Run("no publish scope on the broadcast announces nothing", func(t *testing.T) {
+	t.Run("no publish pattern for the broadcast announces nothing", func(t *testing.T) {
 		tests := map[string]struct {
-			path   moqt.BroadcastPath
-			scopes []token.Scope
+			path  moqt.BroadcastPath
+			grant token.Grant
 		}{
 			"subscribe and fetch only": {
-				path:   "/acme/quiet",
-				scopes: []token.Scope{scope("acme/quiet", false, token.ActionSubscribe, token.ActionFetch)},
+				path:  "/acme/quiet",
+				grant: exactly("acme/quiet", token.ActionSubscribe, token.ActionFetch),
 			},
 			"publish on another broadcast": {
-				path:   "/acme/elsewhere",
-				scopes: []token.Scope{scope("acme/other", true, token.ActionPublish)},
+				path:  "/acme/elsewhere",
+				grant: grantOn("acme/other", []string{"/"}, token.ActionPublish),
 			},
 			// Post writes into a broadcast through a funnel; the broadcast is
 			// someone else's to announce.
 			"post only": {
-				path:   "/acme/comments",
-				scopes: []token.Scope{scope("acme/comments", false, token.ActionPost)},
+				path:  "/acme/comments",
+				grant: exactly("acme/comments", token.ActionPost),
 			},
 		}
 		for name, tt := range tests {
@@ -94,7 +101,7 @@ func TestRelay_ScopedCredentials(t *testing.T) {
 				mux := moqt.NewTrackMux(0)
 				mux.PublishFunc(ctx, tt.path, func(tw *moqt.TrackWriter) { <-tw.Context().Done() })
 
-				dialOver(t, url(tt.scopes...), nil, mux)
+				dialOver(t, url(tt.grant), nil, mux)
 
 				assert.Never(t, routed(srv, tt.path), time.Second, 50*time.Millisecond)
 			})

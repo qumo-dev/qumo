@@ -8,46 +8,55 @@ import (
 	"github.com/qumo-dev/qumo/token"
 )
 
-// Grant is what a session may do: the actions its scopes permit, from its
-// credential or from an Authorize of its own, and the subject that names it.
+// Grant is what a session may do: the token grant of its credential, or of
+// an Authorize of its own, with how often to check it again.
 type Grant struct {
-	// scopes are what the session may do; whatever none permits is denied.
-	scopes []token.Scope
-	// subject is the credential's sub: who the bearer is. Empty names no
-	// one.
-	subject string
+	// grant is the root and patterns the session may act on, and the
+	// subject that names it; whatever no pattern matches is denied.
+	grant token.Grant
 	// revalidate is how often to check again; zero means never.
 	revalidate time.Duration
+	// keyID is the kid of the key that signed the credential, or "" for a
+	// grant an Authorize of its own made.
+	keyID string
+	// expires is when the credential expires, or zero.
+	expires time.Time
 }
 
-// NewGrant returns a grant of scopes, checked again every revalidate (zero:
+// NewGrant returns a grant of g, checked again every revalidate (zero:
 // never). It is for an Authorize other than the Verifier's.
-func NewGrant(scopes []token.Scope, revalidate time.Duration) *Grant {
-	return &Grant{scopes: scopes, revalidate: revalidate}
+func NewGrant(g token.Grant, revalidate time.Duration) *Grant {
+	return &Grant{grant: g, revalidate: revalidate}
 }
 
 // Subject returns who the credential says the bearer is (its sub), or ""
 // when it names no one.
 func (g *Grant) Subject() string {
-	return g.subject
+	return g.grant.Subject
 }
 
-// Allows reports whether a scope of the grant permits action on the
+// KeyID returns the kid of the key that signed the credential, or "" for a
+// grant an Authorize other than the Verifier's made.
+func (g *Grant) KeyID() string {
+	return g.keyID
+}
+
+// Expires returns when the credential expires, or the zero time when it
+// doesn't say.
+func (g *Grant) Expires() time.Time {
+	return g.expires
+}
+
+// MoQ returns what the grant lets a relay session do, as a MoQ grant: its
+// root, and its publish and subscribe patterns (token.Grant.MoQ).
+func (g *Grant) MoQ() moqt.Grant {
+	return g.grant.MoQ()
+}
+
+// Allows reports whether a pattern of the grant for action matches the
 // broadcast at path.
 func (g *Grant) Allows(action token.Action, path moqt.BroadcastPath) bool {
-	for _, s := range g.scopes {
-		if s.Allows(action, path.String()) {
-			return true
-		}
-	}
-	return false
-}
-
-// Announces reports whether the session may announce the broadcast at path:
-// whether a scope permits publishing it. Post, which writes into a funnel's
-// track, never announces through the relay.
-func (g *Grant) Announces(path moqt.BroadcastPath) bool {
-	return g.Allows(token.ActionPublish, path)
+	return g.grant.Allows(action, path.String())
 }
 
 // Revalidate returns how often the relay checks a live session again. Zero

@@ -33,6 +33,12 @@ type Key struct {
 	Pause []Action
 }
 
+// Holds reports whether root lies at or beneath the key's prefix, at a "/"
+// boundary: whether a token the key signed may grant beneath it.
+func (k Key) Holds(root string) bool {
+	return within(root, k.Prefix)
+}
+
 // Pauses reports whether the key starts no new sessions for action.
 func (k Key) Pauses(action Action) bool {
 	return slices.Contains(k.Pause, action)

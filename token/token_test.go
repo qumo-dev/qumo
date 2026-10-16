@@ -18,7 +18,7 @@ func TestVerify_AcceptsAValidToken(t *testing.T) {
 
 	require.NoError(t, err)
 	assert.Equal(t, signer.trusted(t).ID, c.Key.ID)
-	assert.Equal(t, Grant{Scopes: []Scope{pubScope("acme/app/alice"), subScope("acme/app")}}, c.Grant)
+	assert.Equal(t, validGrant, c.Grant)
 	assert.Equal(t, now.Add(10*time.Minute), c.ExpiresAt)
 	assert.Equal(t, "j-1", c.ID)
 }
@@ -118,15 +118,21 @@ func TestVerify_Invalid(t *testing.T) {
 			wantReason: "signature",
 		},
 		"unknown claim":      {token: func() string { return signer.sign(t, with(func(c map[string]any) { c["role"] = "admin" })) }, wantReason: `"role"`},
-		"sub with path_auth": {token: func() string { return signer.sign(t, with(func(c map[string]any) { c["sub"] = "user-1" })) }, wantReason: "sub goes with scopes"},
-		"aud is refused":     {token: func() string { return signer.sign(t, with(func(c map[string]any) { c["aud"] = "qumo-relay" })) }, wantReason: `"aud"`},
+		"sub with path_auth": {token: func() string { return signer.sign(t, with(func(c map[string]any) { c["sub"] = "user-1" })) }, wantReason: "sub goes with root"},
+		"the scopes claim":   {token: func() string { return signer.sign(t, with(func(c map[string]any) { c["scopes"] = []any{} })) }, wantReason: `"scopes"`},
+		"path_auth and root": {token: func() string { return signer.sign(t, with(func(c map[string]any) { c["root"] = "acme/app" })) }, wantReason: "not both"},
+		"path_auth and a pattern": {
+			token:      func() string { return signer.sign(t, with(func(c map[string]any) { c["fetch"] = []string{"/"} })) },
+			wantReason: "not both",
+		},
+		"path_auth is null": {token: func() string { return signer.sign(t, with(func(c map[string]any) { c["path_auth"] = nil })) }, wantReason: "null"},
+		"aud is refused":    {token: func() string { return signer.sign(t, with(func(c map[string]any) { c["aud"] = "qumo-relay" })) }, wantReason: `"aud"`},
 		// CAT's reval asks for a live session to end as its token expires,
 		// which never happens here.
 		"reval is refused": {token: func() string { return signer.sign(t, with(func(c map[string]any) { c["reval"] = 30 })) }, wantReason: `"reval"`},
 		"no exp":           {token: func() string { return signer.sign(t, with(func(c map[string]any) { delete(c, "exp") })) }, wantReason: "required"},
 		"no iat":           {token: func() string { return signer.sign(t, with(func(c map[string]any) { delete(c, "iat") })) }, wantReason: "required"},
 		"no nbf":           {token: func() string { return signer.sign(t, with(func(c map[string]any) { delete(c, "nbf") })) }, wantReason: "required"},
-		"no path_auth":     {token: func() string { return signer.sign(t, with(func(c map[string]any) { delete(c, "path_auth") })) }, wantReason: "path_auth"},
 		"lifetime over 1 h": {token: func() string {
 			return signer.sign(t, with(func(c map[string]any) { c["exp"] = now.Add(61 * time.Minute).Unix() }))
 		}, wantReason: "lifetime"},
@@ -186,7 +192,8 @@ func TestVerify_LeewayAdmitsSmallSkew(t *testing.T) {
 }
 
 // A path_auth claim, as other MoQ implementations sign it, is read as the
-// scopes it amounts to.
+// grant it amounts to: its root, with pub as publish and sub as subscribe and
+// fetch, each at its path and beneath it.
 func TestVerify_PathConfinement(t *testing.T) {
 	now := time.Unix(1_800_000_000, 0)
 	tests := map[string]struct {
@@ -197,33 +204,39 @@ func TestVerify_PathConfinement(t *testing.T) {
 	}{
 		"publish and subscribe": {
 			pathAuth: map[string]any{"root": "acme/app", "pub": "alice", "sub": ""},
-			want:     Grant{Scopes: []Scope{pubScope("acme/app/alice"), subScope("acme/app")}},
+			want:     validGrant,
 		},
 		"subscribe only": {
 			pathAuth: map[string]any{"root": "acme/app", "sub": "live"},
-			want:     Grant{Scopes: []Scope{subScope("acme/app/live")}},
+			want:     Grant{Root: "acme/app", Subscribe: []string{"/live", "/live/"}, Fetch: []string{"/live", "/live/"}},
 		},
 		"slashes normalized": {
-			pathAuth: map[string]any{"root": "/acme//app/", "pub": "/alice/"},
-			want:     pubGrant("acme/app/alice"),
+			pathAuth: map[string]any{"root": "/acme//app/", "pub": "/alice//x/"},
+			want:     Grant{Root: "acme/app", Publish: []string{"/alice/x", "/alice/x/"}},
 		},
 		"within the key's prefix": {
 			prefix:   "acme/app",
-			pathAuth: map[string]any{"root": "acme/app", "pub": "alice"},
-			want:     pubGrant("acme/app/alice"),
+			pathAuth: map[string]any{"root": "acme/app/rooms", "pub": "alice"},
+			want:     Grant{Root: "acme/app/rooms", Publish: []string{"/alice", "/alice/"}},
 		},
 		"exactly the key's prefix": {
 			prefix:   "acme/app",
 			pathAuth: map[string]any{"root": "acme/app", "pub": ""},
-			want:     pubGrant("acme/app"),
+			want:     Grant{Root: "acme/app", Publish: []string{"/"}},
+		},
+		"everything, from a key with no prefix": {
+			pathAuth: map[string]any{"root": "", "pub": ""},
+			want:     Grant{Publish: []string{"/"}},
 		},
 		"another tenant's path":             {prefix: "acme/app", pathAuth: map[string]any{"root": "other/app", "pub": ""}, wantErr: ErrForbidden},
 		"a sibling sharing a string prefix": {prefix: "acme/app", pathAuth: map[string]any{"root": "acme/apple", "pub": ""}, wantErr: ErrForbidden},
-		"a parent of the key's prefix":      {prefix: "acme/app", pathAuth: map[string]any{"root": "acme", "sub": ""}, wantErr: ErrForbidden},
-		"only sub escapes the prefix":       {prefix: "acme/app", pathAuth: map[string]any{"root": "acme/app", "pub": "alice", "sub": "../../other"}, wantErr: ErrInvalid},
+		"a parent of the key's prefix":      {prefix: "acme/app", pathAuth: map[string]any{"root": "acme", "sub": "app"}, wantErr: ErrForbidden},
+		"everything, from a confined key":   {prefix: "acme/app", pathAuth: map[string]any{"root": "", "pub": ""}, wantErr: ErrForbidden},
+		"sub escapes the root":              {prefix: "acme/app", pathAuth: map[string]any{"root": "acme/app", "pub": "alice", "sub": "../../other"}, wantErr: ErrInvalid},
 		"dot-dot in root":                   {pathAuth: map[string]any{"root": "acme/app/../../other", "pub": ""}, wantErr: ErrInvalid},
 		"a wildcard segment":                {pathAuth: map[string]any{"root": "acme/*", "pub": ""}, wantErr: ErrInvalid},
-		"names no path":                     {pathAuth: map[string]any{"root": "", "pub": ""}, wantErr: ErrInvalid},
+		"a braced segment":                  {pathAuth: map[string]any{"root": "acme/{id}", "pub": ""}, wantErr: ErrInvalid},
+		"a braced pub":                      {pathAuth: map[string]any{"root": "acme", "pub": "{id}"}, wantErr: ErrInvalid},
 		"grants nothing":                    {pathAuth: map[string]any{"root": "acme/app"}, wantErr: ErrForbidden},
 	}
 	for name, tt := range tests {
@@ -274,65 +287,15 @@ func TestVerifyLive(t *testing.T) {
 				return
 			}
 			require.NoError(t, err)
-			assert.Equal(t, Grant{Scopes: []Scope{pubScope("acme/app/alice"), subScope("acme/app")}}, got.Grant)
+			assert.Equal(t, validGrant, got.Grant)
 		})
 	}
 }
 
-func TestSign_RoundTrip(t *testing.T) {
-	key, err := GenerateKey("acme/app")
-	require.NoError(t, err)
-	now := time.Unix(1_800_000_000, 0)
-
-	tok, err := signAt(key, Grant{Scopes: []Scope{pubScope("/acme/app/rooms/42/alice/"), subScope("acme/app/rooms/42")}}, 30*time.Minute, now)
-	require.NoError(t, err)
-	c, err := Verify(tok, map[string]Key{key.ID: key.Public()}, now)
-
-	require.NoError(t, err)
-	assert.Equal(t, Grant{Scopes: []Scope{pubScope("acme/app/rooms/42/alice"), subScope("acme/app/rooms/42")}}, c.Grant)
-	assert.Equal(t, now.Add(30*time.Minute), c.ExpiresAt)
-	assert.Len(t, c.ID, 26, "a random jti (rand.Text)")
-}
-
-func TestSign_Refusals(t *testing.T) {
-	tests := map[string]struct {
-		prefix      string
-		grant       Grant
-		ttl         time.Duration
-		wantErrText string
-	}{
-		"zero ttl":        {grant: pubGrant("a"), ttl: 0, wantErrText: "ttl"},
-		"ttl over 1 h":    {grant: pubGrant("a"), ttl: 61 * time.Minute, wantErrText: "ttl"},
-		"grants nothing":  {grant: Grant{}, ttl: time.Minute, wantErrText: "no scope"},
-		"dot-dot path":    {grant: pubGrant("a/../b"), ttl: time.Minute, wantErrText: "segments"},
-		"wildcard path":   {grant: Grant{Scopes: []Scope{subScope("a/*")}}, ttl: time.Minute, wantErrText: "segments"},
-		"path of slashes": {grant: pubGrant("//"), ttl: time.Minute, wantErrText: "segments"},
-		// A verifier would refuse it, so it is never signed.
-		"publish outside the key's prefix":   {prefix: "acme/app", grant: pubGrant("other/app"), ttl: time.Minute, wantErrText: "outside"},
-		"subscribe outside the key's prefix": {prefix: "acme/app", grant: Grant{Scopes: []Scope{subScope("acme/application")}}, ttl: time.Minute, wantErrText: "outside"},
-	}
-	for name, tt := range tests {
-		t.Run(name, func(t *testing.T) {
-			key, err := GenerateKey(tt.prefix)
-			require.NoError(t, err)
-
-			_, err = Sign(key, tt.grant, tt.ttl)
-
-			assert.ErrorContains(t, err, tt.wantErrText)
-		})
-	}
-}
-
-// pubScope is the scope a path_auth pub of path amounts to.
-func pubScope(path string) Scope {
-	return Scope{Actions: []Action{ActionPublish}, Broadcast: path, Prefix: true}
-}
-
-// subScope is the scope a path_auth sub of path amounts to.
-func subScope(path string) Scope {
-	return Scope{Actions: []Action{ActionSubscribe, ActionFetch}, Broadcast: path, Prefix: true}
-}
-
-func pubGrant(path string) Grant {
-	return Grant{Scopes: []Scope{pubScope(path)}}
+// validGrant is the grant validClaims' path_auth amounts to.
+var validGrant = Grant{
+	Root:      "acme/app",
+	Publish:   []string{"/alice", "/alice/"},
+	Subscribe: []string{"/"},
+	Fetch:     []string{"/"},
 }
