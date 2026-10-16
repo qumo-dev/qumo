@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"path/filepath"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"testing/synctest"
@@ -721,8 +722,11 @@ func TestServer_ServeAuth_Anonymous(t *testing.T) {
 
 	_, err = authTest(t, sess, signTest(t, keys.other, listenAndSpeak))
 	require.NoError(t, err, "a later ticket of the bound key")
-	assert.Equal(t, []string{"bind " + keys.other.ID + " false", "publishing"}, tickets.seen(),
-		"bound once, to the first ticket's key, then made a publisher")
+	// The presenter has its answer before the relay records the grant.
+	assert.EventuallyWithT(t, func(c *assert.CollectT) {
+		assert.Equal(c, []string{"bind " + keys.other.ID + " false", "publishing"}, tickets.seen(),
+			"bound once, to the first ticket's key, then made a publisher")
+	}, time.Second, 5*time.Millisecond)
 }
 
 // Tickets granted at once on an anonymous session open its usage once, with
@@ -747,8 +751,13 @@ func TestServer_ServeAuth_AnonymousConcurrentTickets(t *testing.T) {
 		}
 		wg.Wait()
 
-		events := tickets.seen()
-		require.NotEmpty(t, events)
+		// The presenters have their answers before the relay records both
+		// grants: one bind, then a publishing unless the bind published.
+		var events []string
+		require.Eventually(t, func() bool {
+			events = tickets.seen()
+			return len(events) == 2 || (len(events) == 1 && strings.HasSuffix(events[0], " true"))
+		}, time.Second, 5*time.Millisecond, "events: %v", tickets.seen())
 		bind := "bind " + keys.session.ID
 		switch events[0] {
 		case bind + " true":
