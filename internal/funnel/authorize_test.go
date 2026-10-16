@@ -324,6 +324,29 @@ func TestPublishedBeneath(t *testing.T) {
 	assert.Nil(t, publishedBeneath("", nil), "no RELAY_PUBLISH checks nothing")
 }
 
+// RELAY_PUBLISH reads as a directory, however it is spelled; "/" lets a track
+// be created anywhere beneath the root.
+func TestPublishedBeneath_Spellings(t *testing.T) {
+	r := httptest.NewRequest(http.MethodPut, "/tracks/x", nil)
+	tests := map[string]struct {
+		publish   string
+		broadcast string
+		wantErr   bool
+	}{
+		"a directory":          {publish: "/room/", broadcast: "/room/1"},
+		"a bare path":          {publish: "room", broadcast: "/room/1"},
+		"the root, beneath it": {publish: "/", broadcast: "/room/1"},
+		"the root, elsewhere":  {publish: "/", broadcast: "/x"},
+	}
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			_, err := publishedBeneath(tt.publish, nil)(r, ingest.Track{BroadcastPath: tt.broadcast, TrackName: "chat"}, ingest.Create)
+
+			assert.Equal(t, tt.wantErr, err != nil, "%v", err)
+		})
+	}
+}
+
 func TestAuthorizer_NoVerifierChecksNothing(t *testing.T) {
 	assert.Nil(t, authorizer(nil))
 }

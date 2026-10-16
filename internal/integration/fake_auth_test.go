@@ -115,12 +115,21 @@ func testGrant(tb testing.TB, publish, subscribe string, revalidate time.Duratio
 		}
 		*role.patterns = patterns
 	}
+	g.Root = directory(g.Root)
 	return auth.NewGrant(g, revalidate)
 }
 
 // parentDir is the directory path lies in: "a" for "a/b", "" for "a".
 func parentDir(path string) string {
 	return path[:max(strings.LastIndex(path, "/"), 0)]
+}
+
+// directory is path, "a/b", as a grant's root: "/a/b/", or "/" for "".
+func directory(path string) string {
+	if path == "" {
+		return "/"
+	}
+	return "/" + path + "/"
 }
 
 // received returns a copy of the requests seen so far.
@@ -154,9 +163,9 @@ func atAndBeneath(path string, actions ...token.Action) token.Grant {
 	return grantOn(parentDir(path), []string{base, base + "/"}, actions...)
 }
 
-// grantOn grants actions on patterns beneath root.
+// grantOn grants actions on patterns beneath root, a path such as "a".
 func grantOn(root string, patterns []string, actions ...token.Action) token.Grant {
-	g := token.Grant{Root: root}
+	g := token.Grant{Root: directory(root)}
 	for _, a := range actions {
 		switch a {
 		case token.ActionPublish:

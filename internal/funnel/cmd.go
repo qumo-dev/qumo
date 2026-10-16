@@ -65,8 +65,8 @@ const (
 //
 //	FUNNEL_ADDR          - HTTP listen address for records (default: ":8090")
 //	RELAY_URL            - the relay to publish through, dialed as a client, e.g. "https://relay:4433" or "moqt://relay:4433"; it may carry a credential as ?jwt=
-//	RELAY_SIGNING_KEY    - a signing key (qumo auth keygen) the funnel signs a fresh relay credential with on every dial, replacing ?jwt=
-//	RELAY_PUBLISH        - the path that credential grants publishing at, e.g. "room"; set with RELAY_SIGNING_KEY
+//	RELAY_SIGNING_KEY    - a signing key (qumo auth keygen) the funnel signs a fresh relay credential with on every dial, replacing ?jwt=, and again on the session before its grant lapses; a credential in RELAY_URL grants for its lifetime alone
+//	RELAY_PUBLISH        - the directory that credential grants publishing beneath, e.g. "/room/"; set with RELAY_SIGNING_KEY
 //	RELAY_CA_FILE        - PEM cert to trust as the relay's root (default: the system roots)
 //	RELAY_TLS_INSECURE   - skip relay TLS verification, for a self-signed dev relay (default: "false")
 //	FUNNEL_SERVE_ADDR    - MoQT listen address for subscribers to dial directly (default: ":4433" without RELAY_URL, none with it)

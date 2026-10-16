@@ -20,8 +20,9 @@ type Key struct {
 	// its header.
 	ID     string
 	Public ed25519.PublicKey
-	// Prefix confines every path a token signed by this key may grant, at a
-	// "/" boundary. Empty leaves the key unconstrained.
+	// Prefix is the directory, in MoQ's form ("/acme/"), every root a token
+	// signed by this key may grant lies at or beneath. "/" leaves the key
+	// unconstrained.
 	Prefix string
 	// Pause lists what the key starts no new sessions for. Only ActionPublish
 	// can be paused: a verifier then starts no session that may publish with
@@ -33,10 +34,11 @@ type Key struct {
 	Pause []Action
 }
 
-// Holds reports whether root lies at or beneath the key's prefix, at a "/"
-// boundary: whether a token the key signed may grant beneath it.
+// Holds reports whether root, a directory in MoQ's form, lies at or beneath
+// the key's prefix: whether a token the key signed may grant beneath it. The
+// empty root, which grants nothing, is every key's.
 func (k Key) Holds(root string) bool {
-	return within(root, k.Prefix)
+	return root == "" || within(root, k.Prefix)
 }
 
 // Pauses reports whether the key starts no new sessions for action.
@@ -50,17 +52,18 @@ type SigningKey struct {
 	// ID is the key's RFC 7638 JWK thumbprint, set in every token's header.
 	ID      string
 	Private ed25519.PrivateKey
-	// Prefix is the prefix the relay confines this key to; Sign
-	// refuses a grant outside it.
+	// Prefix is the directory the relay confines this key to, in MoQ's form
+	// ("/acme/", or "/" for none); Sign refuses a grant outside it.
 	Prefix string
 }
 
 var errNoKeys = errors.New("token: the key set lists no keys")
 
-// GenerateKey returns a new Ed25519 signing key, confined to prefix ("" for
-// none).
+// GenerateKey returns a new Ed25519 signing key, confined to prefix, a
+// directory read as Directory reads it ("acme" and "/acme/" alike; "" or "/"
+// for none).
 func GenerateKey(prefix string) (SigningKey, error) {
-	norm, err := normalizePath(prefix)
+	norm, err := Directory(prefix)
 	if err != nil {
 		return SigningKey{}, fmt.Errorf("token: prefix: %w", err)
 	}
@@ -133,7 +136,8 @@ func (k SigningKey) MarshalJWK() ([]byte, error) {
 	return json.Marshal(j, jsontext.WithIndent("  "))
 }
 
-// ParseSigningKey decodes a private Ed25519 JWK.
+// ParseSigningKey decodes a private Ed25519 JWK. Its prefix is read as
+// Directory reads it.
 func ParseSigningKey(raw []byte) (SigningKey, error) {
 	var j jwk
 	if err := json.Unmarshal(raw, &j); err != nil {
@@ -151,7 +155,7 @@ func ParseSigningKey(raw []byte) (SigningKey, error) {
 	if j.Kid != "" && j.Kid != kid {
 		return SigningKey{}, fmt.Errorf("token: signing key: kid %q is not the key's RFC 7638 thumbprint %q", j.Kid, kid)
 	}
-	prefix, err := normalizePath(j.Prefix)
+	prefix, err := Directory(j.Prefix)
 	if err != nil {
 		return SigningKey{}, fmt.Errorf("token: signing key: prefix: %w", err)
 	}
@@ -172,7 +176,8 @@ func LoadSigningKey(path string) (SigningKey, error) {
 // is listed twice, is refused. A key's "pause" may list only "publish", so a
 // misspelled entry can't leave a key unpaused; a member it doesn't know is
 // ignored, as JWK prescribes. Any key that can't be used is an error, not
-// skipped: the set is configuration.
+// skipped: the set is configuration. A key's prefix is read as Directory
+// reads it, so "acme" and "/acme/" name the same one.
 func ParseKeySet(raw []byte) (map[string]Key, error) {
 	var set struct {
 		Keys []jwk `json:"keys"`
@@ -203,7 +208,7 @@ func ParseKeySet(raw []byte) (map[string]Key, error) {
 			// Two entries could give one key two prefixes; neither may win.
 			return nil, fmt.Errorf("token: key %d: key %q is listed twice", i, kid)
 		}
-		prefix, err := normalizePath(k.Prefix)
+		prefix, err := Directory(k.Prefix)
 		if err != nil {
 			return nil, fmt.Errorf("token: key %d: prefix: %w", i, err)
 		}

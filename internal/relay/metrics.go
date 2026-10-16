@@ -71,9 +71,9 @@ var (
 	}, []string{"reason"})
 
 	// metricTickets counts the tickets sessions present on Auth Streams, by
-	// result: granted, refused (at once, or for too many), revoked (by a
-	// later check), expired, error (could not be checked) or not_supported
-	// (a session that may present none).
+	// result: granted, refused (at once, or for too many credentials held),
+	// revoked (by a later check), expired, error (could not be checked) or
+	// not_supported (a session that may present none).
 	metricTickets = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "qumo",
 		Subsystem: "relay",

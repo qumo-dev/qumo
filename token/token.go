@@ -3,11 +3,12 @@
 // or funnel.
 //
 // A token grants what a MoQ grant (moqt.Grant) does: a root, the directory of
-// broadcast paths it applies to, and for each action the path patterns
-// beneath the root it permits (publish and subscribe at a relay; create,
-// post, subscribe to read history, and redact at a funnel), on every track of
-// each broadcast they match. It may name its bearer in sub. A relay hands the
-// root and the publish and subscribe patterns to its MoQ session unchanged.
+// broadcast paths it applies to, in MoQ's form ("/acme/room/42/"), and for
+// each action the path patterns beneath the root it permits (publish and
+// subscribe at a relay; create, post, subscribe to read history, and redact
+// at a funnel), on every track of each broadcast they match. It may name its
+// bearer in sub. Grant embeds the moqt.Grant a relay hands to its MoQ session
+// as it is.
 //
 // Sign writes the root, publish, subscribe, create, post and redact claims.
 // Verify also accepts the path_auth claim of other MoQ implementations (the
@@ -16,15 +17,16 @@
 // it. A token carries one of the two forms, never both.
 //
 // An app's backend signs one per client with Sign and hands it to the client,
-// which connects with it in the relay URL (?jwt=…). The relay checks it with
-// Verify. The app decides who may do what; this package is the machinery: the
-// key format, the signature, the time claims and confining every path to the
-// key's prefix.
+// which connects with it in the relay URL (?jwt=…) or presents it on a MoQ
+// Auth Stream of a session it holds. The relay checks it with Verify. The app
+// decides who may do what; this package is the machinery: the key format, the
+// signature, the time claims and confining every path to the key's prefix.
 //
-// A token's expiry decides whether a session may start, not how long it
-// lives: a relay checks a live session's token with VerifyLive, which ignores
-// the expiry, so the session ends only when the key that signed it is no
-// longer trusted.
+// A token's grant lasts until its exp, wherever it is presented; a client
+// that stays longer presents a fresh token before then. The session itself
+// outlives it: a relay checks a live session's token with VerifyLive, which
+// ignores the expiry, so the session ends only when the key that signed it is
+// no longer trusted.
 package token
 
 import (
@@ -39,6 +41,8 @@ import (
 	"slices"
 	"strings"
 	"time"
+
+	"github.com/qumo-dev/gomoqt/moqt"
 )
 
 const (
@@ -73,24 +77,14 @@ var allowedClaims = map[string]bool{
 // carrying any of them carries no path_auth.
 var grantClaims = []string{"root", "publish", "subscribe", "create", "post", "redact"}
 
-// Claims are a verified token's: its grant, normalized and confined to its
-// key's prefix, when it expires, its jti if any, the key that signed it, and
-// whether it is a ticket (SignTicket).
+// Claims are a verified token's: its grant, confined to its key's prefix,
+// when it expires, its jti if any, and the key that signed it.
 type Claims struct {
 	Grant
 	ExpiresAt time.Time
 	ID        string
 	Key       Key
-	Ticket    bool
 }
-
-// TicketType is the typ header of a ticket (SignTicket), after RFC 8725's
-// explicit typing: it marks a token meant only to add its grant to a live
-// session, so a relay refuses one presented at connect.
-const TicketType = "ticket+jwt"
-
-// jwtType is the typ header of every other token Sign writes.
-const jwtType = "JWT"
 
 // pathAuth is the capability claim of other MoQ implementations, per the
 // @moq/token convention: root plus pub or sub. A nil Pub or Sub grants
@@ -121,29 +115,22 @@ type claims struct {
 // grant is the grant of the claims other than path_auth.
 func (c claims) grant() Grant {
 	return Grant{
-		Root: c.Root, Publish: c.Publish, Subscribe: c.Subscribe,
+		Grant:  moqt.Grant{Root: c.Root, Publish: c.Publish, Subscribe: c.Subscribe},
 		Create: c.Create, Post: c.Post, Redact: c.Redact, Subject: c.Subject,
 	}
 }
 
 // Sign returns a token signed by key that grants g for ttl from now, at most
-// MaxLifetime: its root, normalized, each action's patterns, and sub when g
-// names a subject. It carries a random jti. A grant Verify would refuse, such
-// as a root outside key's prefix or a pattern that doesn't parse, is refused
-// here. A grant of no patterns names the key's tenant alone.
+// MaxLifetime: its root, each action's patterns, and sub when g names a
+// subject. It carries a random jti. A grant Verify would refuse, such as a
+// root outside key's prefix, a pattern that doesn't parse or a MaxAge (the
+// token's expiry is ttl), is refused here. A grant of no root and no patterns
+// names the key's tenant alone.
 func Sign(key SigningKey, g Grant, ttl time.Duration) (string, error) {
-	return signAt(key, g, ttl, time.Now(), jwtType)
+	return signAt(key, g, ttl, time.Now())
 }
 
-// SignTicket signs g as Sign does, as a ticket: a token a client presents on
-// a session it already holds, such as on a MoQ Auth Stream, to add g to it
-// until the ticket expires. A relay refuses a ticket as the credential a
-// session connects with, where its grant would outlive its expiry.
-func SignTicket(key SigningKey, g Grant, ttl time.Duration) (string, error) {
-	return signAt(key, g, ttl, time.Now(), TicketType)
-}
-
-func signAt(key SigningKey, g Grant, ttl time.Duration, now time.Time, typ string) (string, error) {
+func signAt(key SigningKey, g Grant, ttl time.Duration, now time.Time) (string, error) {
 	if ttl <= 0 || ttl > MaxLifetime {
 		return "", fmt.Errorf("token: ttl %s must be positive and at most %s", ttl, MaxLifetime)
 	}
@@ -160,7 +147,7 @@ func signAt(key SigningKey, g Grant, ttl time.Duration, now time.Time, typ strin
 	exp := float64(now.Add(ttl).Unix())
 	c.IssuedAt, c.NotBefore, c.ExpiresAt = &iat, &iat, &exp
 
-	header, err := json.Marshal(map[string]string{"alg": "EdDSA", "kid": key.ID, "typ": typ})
+	header, err := json.Marshal(map[string]string{"alg": "EdDSA", "kid": key.ID, "typ": "JWT"})
 	if err != nil {
 		return "", fmt.Errorf("token: encode header: %w", err)
 	}
@@ -203,14 +190,13 @@ func verify(token string, keys map[string]Key, now time.Time, expiry bool) (Clai
 	var header struct {
 		Alg  string         `json:"alg"`
 		Kid  string         `json:"kid"`
-		Typ  string         `json:"typ"`
 		Crit jsontext.Value `json:"crit"`
 	}
 	if err := decodeSegment(parts[0], &header); err != nil {
 		return Claims{}, invalid("header: %v", err)
 	}
 	// RFC 7515 4.1.11: crit lists headers the verifier must understand. This
-	// one understands none beyond alg, kid and typ, so any crit is refused.
+	// one understands none beyond alg and kid, so any crit is refused.
 	if len(header.Crit) > 0 {
 		return Claims{}, invalid("header: crit is not supported")
 	}
@@ -265,7 +251,7 @@ func verify(token string, keys map[string]Key, now time.Time, expiry bool) (Clai
 	if err != nil {
 		return Claims{}, err
 	}
-	return Claims{Grant: g, ExpiresAt: exp, ID: c.ID, Key: key, Ticket: isTicket(header.Typ)}, nil
+	return Claims{Grant: g, ExpiresAt: exp, ID: c.ID, Key: key}, nil
 }
 
 // grantOf reads path_auth as a grant: its root as the root, pub as publish,
@@ -277,14 +263,14 @@ func grantOf(pa pathAuth, prefix string) (Grant, error) {
 	if pa.Pub == nil && pa.Sub == nil {
 		return Grant{}, forbidden("path_auth grants neither pub nor sub")
 	}
-	root, err := normalizePath(pa.Root)
+	root, err := Directory(pa.Root)
 	if err != nil {
 		return Grant{}, invalid("path_auth root: %v", err)
 	}
 	if !within(root, prefix) {
 		return Grant{}, forbidden("path_auth root %q lies outside the signing key's prefix %q", root, prefix)
 	}
-	g := Grant{Root: root}
+	g := Grant{Grant: moqt.Grant{Root: root}}
 	if pa.Pub != nil {
 		if g.Publish, err = atAndBeneath(*pa.Pub); err != nil {
 			return Grant{}, invalid("path_auth pub: %v", err)
@@ -339,14 +325,4 @@ func decodeSegment(seg string, v any) error {
 		return fmt.Errorf("not base64url: %w", err)
 	}
 	return json.UnmarshalRead(bytes.NewReader(raw), v)
-}
-
-// isTicket reports whether typ marks a ticket. RFC 7515 4.1.9 compares a typ
-// ignoring case, and with or without its "application/" prefix.
-func isTicket(typ string) bool {
-	const prefix = "application/"
-	if len(typ) > len(prefix) && strings.EqualFold(typ[:len(prefix)], prefix) {
-		typ = typ[len(prefix):]
-	}
-	return strings.EqualFold(typ, TicketType)
 }

@@ -117,7 +117,7 @@ each reaches every track of them:
   moderators anonymous.
 
 ```json
-{"root": "room", "sub": "alice",
+{"root": "/room/", "sub": "alice",
  "post": ["/123/comments"], "subscribe": ["/"],
  "iat": 1791370000, "nbf": 1791370000, "exp": 1791370600}
 ```
@@ -143,14 +143,16 @@ broadcasts on that session; the relay subscribes to them when its subscribers
 do. The session needs a credential that may publish there. The funnel either
 uses the `?jwt=` in `RELAY_URL`, or, with `RELAY_SIGNING_KEY` and
 `RELAY_PUBLISH`, signs a fresh one for every session, whose root is
-`RELAY_PUBLISH` and which grants `publish` on every path beneath it
-(`"publish": ["/"]`), from a key the relay's key set trusts
-(`qumo auth keygen`, ideally confined with `-prefix`). A track is then
-created only beneath `RELAY_PUBLISH`, where the relay takes the funnel's
-announcements: a `PUT` for one elsewhere, or at `RELAY_PUBLISH` itself, is
-answered `403`. A credential
-lasts at most an hour, so one in `RELAY_URL` admits sessions only until then;
-a long-running funnel signs its own.
+`RELAY_PUBLISH` (a directory, `/room/`; a bare `room` reads the same) and
+which grants `publish` on every path beneath it (`"publish": ["/"]`), from a
+key the relay's key set trusts (`qumo auth keygen`, ideally confined with
+`-prefix`). A track is then created only beneath `RELAY_PUBLISH`, where the
+relay takes the funnel's announcements: a `PUT` for one elsewhere, or at
+`RELAY_PUBLISH` itself, is answered `403`. A credential lasts at most an
+hour, and what it grants with it, so the funnel presents a freshly signed one
+on the session before the one in force expires, and dials again if none is
+granted in time. One in `RELAY_URL` can't be renewed: the session publishes
+nothing after it expires, so a long-running funnel signs its own.
 
 When a session ends, the funnel dials again after two seconds and announces
 its broadcasts anew.
@@ -179,7 +181,7 @@ restart before anyone records again.
 | `FUNNEL_SENDER_LIMIT` | (unset) | Records each sender may send into a track, as `RATE,BURST`: per second, and at once, e.g. `1,5`. Unset is no limit. |
 | `FUNNEL_TRACK_LIMIT` | (unset) | Records a track takes from all senders together, as `RATE,BURST`, e.g. `20,40`. Unset is no limit. |
 | `RELAY_URL` | (unset) | The relay to publish through, dialed as a client: `https://relay:4433` for WebTransport or `moqt://relay:4433` for native QUIC. It may carry a credential as `?jwt=`. |
-| `RELAY_SIGNING_KEY` / `RELAY_PUBLISH` | (unset) | A signing key file and the root its credentials grant publishing beneath, e.g. `room` for `/room/123/comments`. Set together; the funnel signs a fresh relay credential for every session in place of `?jwt=`. |
+| `RELAY_SIGNING_KEY` / `RELAY_PUBLISH` | (unset) | A signing key file and the root its credentials grant publishing beneath, e.g. `/room/` for `/room/123/comments`. Set together; the funnel signs a fresh relay credential for every session in place of `?jwt=`, and renews it on the session before it expires. |
 | `RELAY_CA_FILE` | (unset) | PEM certificate to trust as the relay's root, instead of the system roots. |
 | `RELAY_TLS_INSECURE` | `false` | Skip relay TLS verification, for a self-signed dev relay. |
 | `FUNNEL_SERVE_ADDR` | `:4433` without `RELAY_URL`, none with it | MoQT listen address for subscribers that dial the funnel directly. |

@@ -204,7 +204,7 @@ func TestFeedConfig_Target(t *testing.T) {
 	t.Run("without a signing key the URL is dialed as it is", func(t *testing.T) {
 		cfg := feedConfig{relayURL: "https://relay:4433/?jwt=h.p.s", trackPath: "/hls/live"}
 
-		got, err := cfg.target()
+		got, _, err := cfg.target()
 
 		require.NoError(t, err)
 		assert.Equal(t, cfg.relayURL, got)
@@ -213,7 +213,7 @@ func TestFeedConfig_Target(t *testing.T) {
 	t.Run("a signing key replaces the credential with one for the path alone", func(t *testing.T) {
 		cfg := feedConfig{relayURL: "https://relay:4433/?jwt=h.p.s&x=1", trackPath: "/hls/live", signingKey: &key}
 
-		got, err := cfg.target()
+		got, _, err := cfg.target()
 
 		require.NoError(t, err)
 		u, err := url.Parse(got)
@@ -222,7 +222,7 @@ func TestFeedConfig_Target(t *testing.T) {
 		claims, err := token.Verify(u.Query().Get("jwt"), map[string]token.Key{key.ID: key.Public()}, time.Now())
 		require.NoError(t, err)
 		g := claims.Grant
-		assert.Equal(t, token.Grant{Root: "hls", Subscribe: []string{"/live"}}, g)
+		assert.Equal(t, token.Grant{Root: "/hls/", Subscribe: []string{"/live"}}, g)
 		assert.True(t, g.Allows(token.ActionSubscribe, "hls/live"))
 		assert.False(t, g.Allows(token.ActionSubscribe, "hls/other"), "no other broadcast")
 		assert.False(t, g.Allows(token.ActionSubscribe, "hls/live/deeper"), "nothing beneath it")
@@ -232,9 +232,9 @@ func TestFeedConfig_Target(t *testing.T) {
 	t.Run("each connect signs a new one", func(t *testing.T) {
 		cfg := feedConfig{relayURL: "https://relay:4433", trackPath: "/hls/live", signingKey: &key}
 
-		first, err := cfg.target()
+		first, _, err := cfg.target()
 		require.NoError(t, err)
-		second, err := cfg.target()
+		second, _, err := cfg.target()
 		require.NoError(t, err)
 
 		assert.NotEqual(t, first, second)
@@ -246,9 +246,9 @@ func TestSubscribeGrant(t *testing.T) {
 		path string
 		want token.Grant
 	}{
-		"beneath a directory": {path: "/acme/room/42/7", want: token.Grant{Root: "acme/room/42", Subscribe: []string{"/7"}}},
-		"one segment":         {path: "/live", want: token.Grant{Subscribe: []string{"/live"}}},
-		"no leading slash":    {path: "hls/live", want: token.Grant{Root: "hls", Subscribe: []string{"/live"}}},
+		"beneath a directory": {path: "/acme/room/42/7", want: token.Grant{Root: "/acme/room/42/", Subscribe: []string{"/7"}}},
+		"one segment":         {path: "/live", want: token.Grant{Root: "/", Subscribe: []string{"/live"}}},
+		"no leading slash":    {path: "hls/live", want: token.Grant{Root: "/hls/", Subscribe: []string{"/live"}}},
 	}
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {

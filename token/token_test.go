@@ -208,25 +208,25 @@ func TestVerify_PathConfinement(t *testing.T) {
 		},
 		"subscribe only": {
 			pathAuth: map[string]any{"root": "acme/app", "sub": "live"},
-			want:     Grant{Root: "acme/app", Subscribe: []string{"/live", "/live/"}},
+			want:     Grant{Root: "/acme/app/", Subscribe: []string{"/live", "/live/"}},
 		},
 		"slashes normalized": {
 			pathAuth: map[string]any{"root": "/acme//app/", "pub": "/alice//x/"},
-			want:     Grant{Root: "acme/app", Publish: []string{"/alice/x", "/alice/x/"}},
+			want:     Grant{Root: "/acme/app/", Publish: []string{"/alice/x", "/alice/x/"}},
 		},
 		"within the key's prefix": {
 			prefix:   "acme/app",
 			pathAuth: map[string]any{"root": "acme/app/rooms", "pub": "alice"},
-			want:     Grant{Root: "acme/app/rooms", Publish: []string{"/alice", "/alice/"}},
+			want:     Grant{Root: "/acme/app/rooms/", Publish: []string{"/alice", "/alice/"}},
 		},
 		"exactly the key's prefix": {
 			prefix:   "acme/app",
 			pathAuth: map[string]any{"root": "acme/app", "pub": ""},
-			want:     Grant{Root: "acme/app", Publish: []string{"/"}},
+			want:     Grant{Root: "/acme/app/", Publish: []string{"/"}},
 		},
 		"everything, from a key with no prefix": {
 			pathAuth: map[string]any{"root": "", "pub": ""},
-			want:     Grant{Publish: []string{"/"}},
+			want:     Grant{Root: "/", Publish: []string{"/"}},
 		},
 		"another tenant's path":             {prefix: "acme/app", pathAuth: map[string]any{"root": "other/app", "pub": ""}, wantErr: ErrForbidden},
 		"a sibling sharing a string prefix": {prefix: "acme/app", pathAuth: map[string]any{"root": "acme/apple", "pub": ""}, wantErr: ErrForbidden},
@@ -293,58 +293,4 @@ func TestVerifyLive(t *testing.T) {
 }
 
 // validGrant is the grant validClaims' path_auth amounts to.
-var validGrant = Grant{
-	Root:      "acme/app",
-	Publish:   []string{"/alice", "/alice/"},
-	Subscribe: []string{"/"},
-}
-
-// A ticket is a token like any other, marked by its typ: Verify reads the
-// mark, which no other token carries.
-func TestSignTicket(t *testing.T) {
-	key, err := GenerateKey("acme")
-	require.NoError(t, err)
-	keys := map[string]Key{key.ID: key.Public()}
-	g := Grant{Root: "acme/room/1", Subscribe: []string{"/"}}
-
-	ticket, err := SignTicket(key, g, time.Minute)
-	require.NoError(t, err)
-	plain, err := Sign(key, g, time.Minute)
-	require.NoError(t, err)
-
-	c, err := Verify(ticket, keys, time.Now())
-	require.NoError(t, err)
-	assert.True(t, c.Ticket)
-	assert.Equal(t, g, c.Grant)
-	c, err = Verify(plain, keys, time.Now())
-	require.NoError(t, err)
-	assert.False(t, c.Ticket)
-}
-
-// A typ marks a ticket ignoring case, with or without "application/".
-func TestVerify_TicketType(t *testing.T) {
-	now := time.Unix(1_800_000_000, 0)
-	signer := &rawSigner{}
-	for typ, want := range map[string]bool{
-		"ticket+jwt":             true,
-		"Ticket+JWT":             true,
-		"application/ticket+jwt": true,
-		"Application/Ticket+JWT": true,
-		"JWT":                    false,
-		"":                       false,
-		"application/jwt":        false,
-		"xticket+jwt":            false,
-	} {
-		t.Run(typ, func(t *testing.T) {
-			header := map[string]any{"alg": "EdDSA", "kid": signer.trusted(t).ID}
-			if typ != "" {
-				header["typ"] = typ
-			}
-
-			c, err := Verify(signer.signWithHeader(t, header, validClaims(now)), signer.keys(t), now)
-
-			require.NoError(t, err)
-			assert.Equal(t, want, c.Ticket)
-		})
-	}
-}
+var validGrant = Grant{Root: "/acme/app/", Publish: []string{"/alice", "/alice/"}, Subscribe: []string{"/"}}

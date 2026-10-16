@@ -6,7 +6,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/qumo-dev/gomoqt/moqt"
 	"github.com/stretchr/testify/assert"
@@ -30,7 +29,7 @@ func TestRunKeygen_TokenAndVerifierAgree(t *testing.T) {
 		"-publish", "/alice", "-publish", "/alice/", "-subscribe", "/", "-ttl", "5m"}, &out, &info))
 	tok := strings.TrimSpace(out.String())
 	assert.Equal(t, 2, strings.Count(tok, "."), "stdout carries the token alone, so it can be captured")
-	assert.Contains(t, info.String(), "Root:       acme/app\n", "the summary shows the grant as the relay will: normalized")
+	assert.Contains(t, info.String(), "Root:       /acme/app/\n", "the summary shows the grant as the relay will")
 	assert.Contains(t, info.String(), "Publish:    /alice /alice/\n")
 	v, err := NewVerifier(VerifierConfig{Keys: pub})
 	require.NoError(t, err)
@@ -42,7 +41,7 @@ func TestRunKeygen_TokenAndVerifierAgree(t *testing.T) {
 	assert.True(t, g.Allows(token.ActionPublish, moqt.BroadcastPath("/acme/app/alice")))
 	assert.False(t, g.Allows(token.ActionPublish, moqt.BroadcastPath("/acme/app/bob")))
 	assert.True(t, g.Allows(token.ActionSubscribe, moqt.BroadcastPath("/acme/app/bob")))
-	assert.Equal(t, moqt.Grant{Root: "/acme/app/", Publish: []string{"/alice", "/alice/"}, Subscribe: []string{"/"}}, g.MoQ())
+	assert.Equal(t, moqt.Grant{Root: "/acme/app/", Publish: []string{"/alice", "/alice/"}, Subscribe: []string{"/"}}, g.Token().Grant)
 }
 
 func TestRun_NoCommand(t *testing.T) {
@@ -91,7 +90,7 @@ func TestRunToken_Patterns(t *testing.T) {
 		"-publish", "/7", "-subscribe", "/", "-create", "/comments",
 		"-post", "/comments", "-post", "/7/", "-post", "/8", "-redact", "/{user}/comments"}, &out, &info))
 
-	assert.Contains(t, info.String(), "Root:       acme/app/room/1\n")
+	assert.Contains(t, info.String(), "Root:       /acme/app/room/1/\n", "a bare -root reads as the directory it names")
 	assert.Contains(t, info.String(), "Publish:    /7\n")
 	assert.Contains(t, info.String(), "Subscribe:  /\n")
 	assert.Contains(t, info.String(), "Create:     /comments\n")
@@ -164,22 +163,17 @@ func TestRunToken_NoPatterns(t *testing.T) {
 	assert.Contains(t, info.String(), "nothing: the token names its key's tenant alone")
 }
 
-// -ticket signs a ticket, and says where it is presented.
-func TestRunToken_Ticket(t *testing.T) {
+// The ticket flag is gone: any token is presented at connect or on a
+// session's Auth Stream alike.
+func TestRunToken_NoTicketFlag(t *testing.T) {
 	dir := t.TempDir()
 	priv := filepath.Join(dir, "signing-key.jwk")
 	require.NoError(t, runKeygen([]string{"-prefix", "acme", "-out", priv, "-keys", filepath.Join(dir, "keys.json")}, &bytes.Buffer{}))
-	key, err := token.LoadSigningKey(priv)
-	require.NoError(t, err)
 	var out, info bytes.Buffer
 
-	require.NoError(t, runToken([]string{"-key", priv, "-ticket", "-root", "acme/room/1", "-subscribe", "/"}, &out, &info))
-
-	c, err := token.Verify(strings.TrimSpace(out.String()), map[string]token.Key{key.ID: key.Public()}, time.Now())
-	require.NoError(t, err)
-	assert.True(t, c.Ticket)
-	assert.Contains(t, info.String(), "Auth Stream")
-	assert.NotContains(t, info.String(), "?jwt=<token>")
+	assert.ErrorContains(t, runToken([]string{"-key", priv, "-ticket"}, &out, &info), "-ticket")
+	require.NoError(t, runToken([]string{"-key", priv, "-root", "/acme/room/1/", "-subscribe", "/"}, &out, &info))
+	assert.Contains(t, info.String(), "?jwt=<token>, or on a session's Auth Stream")
 }
 
 func TestRunKeygen_SaysWhatTheKeyGrants(t *testing.T) {
@@ -187,8 +181,8 @@ func TestRunKeygen_SaysWhatTheKeyGrants(t *testing.T) {
 		prefix string
 		want   []string
 	}{
-		"a prefix": {prefix: "acme/app", want: []string{"a root at or beneath acme/app", "-root acme/app -publish /demo"}},
-		"none":     {want: []string{"any root (no prefix)", "-publish /demo"}},
+		"a prefix": {prefix: "acme/app", want: []string{"a root at or beneath /acme/app/", "-root /acme/app/ -publish /demo"}},
+		"none":     {want: []string{"any root (no prefix)", "-root / -publish /demo"}},
 	}
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
