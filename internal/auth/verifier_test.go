@@ -627,14 +627,14 @@ const testRoot = "acme/app"
 
 // pathGrant grants, under testRoot, what a path_auth credential of pub and
 // sub would: each non-empty path at or beneath testRoot and every path
-// beneath it, publish for pub, and subscribe and fetch for sub.
+// beneath it, publish for pub, and subscribe for sub.
 func pathGrant(pub, sub string) token.Grant {
 	g := token.Grant{Root: testRoot}
 	if pub != "" {
 		g.Publish = relAndBeneath(pub)
 	}
 	if sub != "" {
-		g.Subscribe, g.Fetch = relAndBeneath(sub), relAndBeneath(sub)
+		g.Subscribe = relAndBeneath(sub)
 	}
 	return g
 }
@@ -685,8 +685,8 @@ func publishAll(root string) token.Grant {
 }
 
 // A path_auth credential, as other MoQ implementations sign it, is admitted
-// with the grant it amounts to: pub publishes, and sub subscribes and
-// fetches, on every track at or beneath each path. It names no subject.
+// with the grant it amounts to: pub publishes, and sub subscribes, on every
+// track at or beneath each path. It names no subject.
 func TestVerifier_PathAuthGrant(t *testing.T) {
 	k := genKey(t, "acme/app")
 	v := verifierWith(t, keySetJSON(t, []token.SigningKey{k}), time.Now())
@@ -698,7 +698,6 @@ func TestVerifier_PathAuthGrant(t *testing.T) {
 	assert.True(t, g.Allows(token.ActionPublish, "/acme/app/live/cam"))
 	assert.False(t, g.Allows(token.ActionPublish, "/acme/app/room"))
 	assert.True(t, g.Allows(token.ActionSubscribe, "/acme/app/room/1"))
-	assert.True(t, g.Allows(token.ActionFetch, "/acme/app/room/1"))
 	assert.False(t, g.Allows(token.ActionSubscribe, "/acme/app/live"))
 }
 
@@ -707,7 +706,7 @@ func TestVerifier_PatternGrant(t *testing.T) {
 	v := verifierWith(t, keySetJSON(t, []token.SigningKey{k}), time.Now())
 	jwt := sign(t, k, token.Grant{
 		Root: "acme/app/room/123", Subject: "42",
-		Publish: []string{"/comments"}, Fetch: []string{"/"},
+		Publish: []string{"/comments"}, Subscribe: []string{"/"},
 	})
 
 	g, err := v.Authorize(context.Background(), sessionReq(EventConnect, jwt))
@@ -716,8 +715,8 @@ func TestVerifier_PatternGrant(t *testing.T) {
 	assert.Equal(t, "42", g.Subject())
 	assert.True(t, g.Allows(token.ActionPublish, "/acme/app/room/123/comments"))
 	assert.False(t, g.Allows(token.ActionPublish, "/acme/app/room/123/comments/x"))
-	assert.True(t, g.Allows(token.ActionFetch, "/acme/app/room/123/comments"))
-	assert.False(t, g.Allows(token.ActionSubscribe, "/acme/app/room/123/comments"))
+	assert.True(t, g.Allows(token.ActionSubscribe, "/acme/app/room/123/comments"))
+	assert.False(t, g.Allows(token.ActionSubscribe, "/acme/app/room/1234/comments"))
 }
 
 // TestVerifier_UsagePublishes pins which sessions are reported as
@@ -732,11 +731,10 @@ func TestVerifier_UsagePublishes(t *testing.T) {
 		want bool
 	}{
 		"publish":                            {jwt: sign(t, k, beneathLive(token.ActionPublish)), want: true},
-		"publish and fetch":                  {jwt: sign(t, k, beneathLive(token.ActionPublish, token.ActionFetch)), want: true},
+		"publish and subscribe":              {jwt: sign(t, k, beneathLive(token.ActionPublish, token.ActionSubscribe)), want: true},
 		"a path_auth publisher":              {jwt: signPathAuth(t, k, "acme/app/live", ""), want: true},
 		"a path_auth of both":                {jwt: signPathAuth(t, k, "acme/app/live", "acme/app"), want: true},
 		"subscribe":                          {jwt: sign(t, k, beneathLive(token.ActionSubscribe)), want: false},
-		"fetch":                              {jwt: sign(t, k, beneathLive(token.ActionFetch)), want: false},
 		"a path_auth viewer":                 {jwt: signPathAuth(t, k, "", "acme/app"), want: false},
 		"redact only":                        {jwt: sign(t, k, beneathLive(token.ActionRedact)), want: false},
 		"post only":                          {jwt: sign(t, k, beneathLive(token.ActionPost)), want: false},
@@ -760,7 +758,7 @@ func TestVerifier_Ticket(t *testing.T) {
 	session, other, gone := genKey(t, "acme/app"), genKey(t, "acme/app"), genKey(t, "acme/app")
 	paused := genKey(t, "acme/app")
 	v := verifierWith(t, keySetJSON(t, []token.SigningKey{session, other, paused}, paused), time.Now())
-	listen := token.Grant{Root: "acme/app/room/42", Subscribe: []string{"/"}, Fetch: []string{"/"}}
+	listen := token.Grant{Root: "acme/app/room/42", Subscribe: []string{"/"}}
 	speak := token.Grant{Root: "acme/app/room/42", Publish: []string{"/7"}}
 	tests := map[string]struct {
 		key      token.SigningKey

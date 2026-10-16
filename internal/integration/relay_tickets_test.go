@@ -81,7 +81,6 @@ func TestRelay_Tickets(t *testing.T) {
 		Root:      "acme/room/42",
 		Publish:   []string{"/7"},
 		Subscribe: []string{"/"},
-		Fetch:     []string{"/"},
 	})
 	mux := moqt.NewTrackMux(0)
 	sess := dialOver(t, nativeURL(addr)+"/?jwt="+sign(session, token.Grant{}), nil, mux)

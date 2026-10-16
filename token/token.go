@@ -5,16 +5,15 @@
 // A token grants what a MoQ grant (moqt.Grant) does: a root, the directory of
 // broadcast paths it applies to, and for each action the path patterns
 // beneath the root it permits (publish and subscribe at a relay; create,
-// post, fetch and redact at a funnel), on every track of each broadcast they
-// match. It may name its bearer in sub. A relay hands the root and the
-// publish and subscribe patterns to its MoQ session unchanged.
+// post, subscribe to read history, and redact at a funnel), on every track of
+// each broadcast they match. It may name its bearer in sub. A relay hands the
+// root and the publish and subscribe patterns to its MoQ session unchanged.
 //
-// Sign writes the root, publish, subscribe, fetch, create, post and redact
-// claims. Verify also accepts the path_auth claim of other MoQ
-// implementations (the @moq/token convention) and reads it as a grant: its
-// root as the root, pub as publish, and sub as subscribe and fetch, each on
-// its path and every path beneath it. A token carries one of the two forms,
-// never both.
+// Sign writes the root, publish, subscribe, create, post and redact claims.
+// Verify also accepts the path_auth claim of other MoQ implementations (the
+// @moq/token convention) and reads it as a grant: its root as the root, pub
+// as publish, and sub as subscribe, each on its path and every path beneath
+// it. A token carries one of the two forms, never both.
 //
 // An app's backend signs one per client with Sign and hands it to the client,
 // which connects with it in the relay URL (?jwt=…). The relay checks it with
@@ -66,13 +65,13 @@ var (
 // path_auth member must not widen it.
 var allowedClaims = map[string]bool{
 	"path_auth": true, "root": true,
-	"publish": true, "subscribe": true, "fetch": true, "create": true, "post": true, "redact": true,
+	"publish": true, "subscribe": true, "create": true, "post": true, "redact": true,
 	"sub": true, "iat": true, "nbf": true, "exp": true, "jti": true,
 }
 
 // grantClaims are the claims of a grant other than path_auth and sub: a token
 // carrying any of them carries no path_auth.
-var grantClaims = []string{"root", "publish", "subscribe", "fetch", "create", "post", "redact"}
+var grantClaims = []string{"root", "publish", "subscribe", "create", "post", "redact"}
 
 // Claims are a verified token's: its grant, normalized and confined to its
 // key's prefix, when it expires, its jti if any, and the key that signed it.
@@ -99,7 +98,6 @@ type claims struct {
 	Root      string    `json:"root,omitempty"`
 	Publish   []string  `json:"publish,omitempty"`
 	Subscribe []string  `json:"subscribe,omitempty"`
-	Fetch     []string  `json:"fetch,omitempty"`
 	Create    []string  `json:"create,omitempty"`
 	Post      []string  `json:"post,omitempty"`
 	Redact    []string  `json:"redact,omitempty"`
@@ -113,7 +111,7 @@ type claims struct {
 // grant is the grant of the claims other than path_auth.
 func (c claims) grant() Grant {
 	return Grant{
-		Root: c.Root, Publish: c.Publish, Subscribe: c.Subscribe, Fetch: c.Fetch,
+		Root: c.Root, Publish: c.Publish, Subscribe: c.Subscribe,
 		Create: c.Create, Post: c.Post, Redact: c.Redact, Subject: c.Subject,
 	}
 }
@@ -136,7 +134,7 @@ func signAt(key SigningKey, g Grant, ttl time.Duration, now time.Time) (string, 
 		return "", err
 	}
 	c := claims{
-		Root: g.Root, Publish: g.Publish, Subscribe: g.Subscribe, Fetch: g.Fetch,
+		Root: g.Root, Publish: g.Publish, Subscribe: g.Subscribe,
 		Create: g.Create, Post: g.Post, Redact: g.Redact,
 		Subject: g.Subject, ID: rand.Text(),
 	}
@@ -253,7 +251,7 @@ func verify(token string, keys map[string]Key, now time.Time, expiry bool) (Clai
 }
 
 // grantOf reads path_auth as a grant: its root as the root, pub as publish,
-// and sub as subscribe and fetch, each on its path and every path beneath it,
+// and sub as subscribe, each on its path and every path beneath it,
 // or on everything beneath the root for an empty one. The root must lie
 // within prefix at a "/" boundary: the rule that stops a key from signing for
 // another tenant's paths.
@@ -278,7 +276,6 @@ func grantOf(pa pathAuth, prefix string) (Grant, error) {
 		if g.Subscribe, err = atAndBeneath(*pa.Sub); err != nil {
 			return Grant{}, invalid("path_auth sub: %v", err)
 		}
-		g.Fetch = slices.Clone(g.Subscribe)
 	}
 	return g, nil
 }

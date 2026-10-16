@@ -48,9 +48,8 @@ type feedConfig struct {
 	certFile, keyFile string
 	// signingKey, when set, signs the egress's credential: a fresh one on
 	// every connect, in place of any ?jwt= in relayURL, granting subscribe
-	// and fetch on trackPath alone. A token lives an hour at most, so one
-	// fixed in relayURL stops admitting the egress at its first reconnect
-	// after that.
+	// on trackPath alone. A token lives an hour at most, so one fixed in
+	// relayURL stops admitting the egress at its first reconnect after that.
 	signingKey *token.SigningKey
 	// quic is the QUIC configuration of the session, whether moqt:// or
 	// https://; nil is quic-go's defaults.
@@ -175,8 +174,8 @@ func checkPeerCertificate(certFile, keyFile string) error {
 	return nil
 }
 
-// subscribeGrant grants what the egress does at path: subscribing to and
-// fetching every track of that broadcast, and of no other.
+// subscribeGrant grants what the egress does at path: subscribing to every
+// track of that broadcast, and of no other.
 // The grant's root is the directory path lies in, the empty root for a path
 // of one segment.
 func subscribeGrant(path string) token.Grant {
@@ -184,8 +183,7 @@ func subscribeGrant(path string) token.Grant {
 	if i := strings.LastIndex(base, "/"); i >= 0 {
 		root, base = base[:i], base[i+1:]
 	}
-	only := []string{"/" + base}
-	return token.Grant{Root: root, Subscribe: only, Fetch: slices.Clone(only)}
+	return token.Grant{Root: root, Subscribe: []string{"/" + base}}
 }
 
 // target returns the URL to dial, with a freshly signed credential when the

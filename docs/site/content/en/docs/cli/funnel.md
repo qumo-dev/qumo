@@ -105,8 +105,8 @@ each reaches every track of them:
   credential without `sub` posts with no sender. A `publish` pattern does not
   post, and a `post` pattern never publishes through a relay, so a sender's
   credential can't publish into the relay directly.
-- **Reading** history (`GET`) needs a `fetch` pattern matching the broadcast
-  path.
+- **Reading** history (`GET`) needs a `subscribe` pattern matching the
+  broadcast path, as a relay's FETCH does.
 - **Redacting** (`DELETE`) needs a `redact` pattern matching the broadcast
   path. The redaction carries the credential's `sub` as its
   sender. No other action redacts, so a sender's `post` credential can't take
@@ -118,7 +118,7 @@ each reaches every track of them:
 
 ```json
 {"root": "room", "sub": "alice",
- "post": ["/123/comments"], "fetch": ["/"],
+ "post": ["/123/comments"], "subscribe": ["/"],
  "iat": 1791370000, "nbf": 1791370000, "exp": 1791370600}
 ```
 

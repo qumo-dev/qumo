@@ -60,10 +60,10 @@ import (
 //	RELAY_SIGNING_KEY   - a signing key (qumo auth keygen) the relay's key
 //	                     set trusts. The egress signs a fresh credential with
 //	                     it on every connect, in place of any ?jwt= in
-//	                     RELAY_URL, granting subscribe and fetch on
-//	                     RELAY_TRACK_PATH alone. The way to connect to a
-//	                     relay with auth on: a credential fixed in RELAY_URL
-//	                     lives an hour at most.
+//	                     RELAY_URL, granting subscribe on RELAY_TRACK_PATH
+//	                     alone. The way to connect to a relay with auth on:
+//	                     a credential fixed in RELAY_URL lives an hour at
+//	                     most.
 //	RELAY_CERT_FILE,
 //	RELAY_KEY_FILE      - instead of a credential, a peer certificate and key
 //	                     (PEM) for the egress, from the relay CA the relay

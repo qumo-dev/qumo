@@ -318,10 +318,10 @@ func authTest(t *testing.T, sess *moqt.Session, tok string) (*moqt.Credential, e
 
 var (
 	// listenRoom subscribes beneath a room.
-	listenRoom = token.Grant{Root: "acme/room/42", Subscribe: []string{"/"}, Fetch: []string{"/"}}
+	listenRoom = token.Grant{Root: "acme/room/42", Subscribe: []string{"/"}}
 	// listenAndSpeak subscribes beneath a room and publishes one broadcast in
 	// it.
-	listenAndSpeak = token.Grant{Root: "acme/room/42", Publish: []string{"/7"}, Subscribe: []string{"/"}, Fetch: []string{"/"}}
+	listenAndSpeak = token.Grant{Root: "acme/room/42", Publish: []string{"/7"}, Subscribe: []string{"/"}}
 )
 
 // The credential a session connected with, presented again with no token, is

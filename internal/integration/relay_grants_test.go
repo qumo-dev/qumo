@@ -69,19 +69,14 @@ func TestRelay_PatternCredentials(t *testing.T) {
 
 		assert.NoError(t, err)
 	})
-	t.Run("fetch does not grant subscribing", func(t *testing.T) {
-		err := subscribeTrack(t, url(grantOn("acme", []string{"/"}, token.ActionFetch)), "/acme/live", "video")
-
-		assert.Error(t, err)
-	})
 	t.Run("no publish pattern for the broadcast announces nothing", func(t *testing.T) {
 		tests := map[string]struct {
 			path  moqt.BroadcastPath
 			grant token.Grant
 		}{
-			"subscribe and fetch only": {
+			"subscribe only": {
 				path:  "/acme/quiet",
-				grant: exactly("acme/quiet", token.ActionSubscribe, token.ActionFetch),
+				grant: exactly("acme/quiet", token.ActionSubscribe),
 			},
 			"publish on another broadcast": {
 				path:  "/acme/elsewhere",

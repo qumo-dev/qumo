@@ -26,7 +26,7 @@ func TestRunKeygen_TokenAndVerifierAgree(t *testing.T) {
 	out.Reset()
 	var info bytes.Buffer
 	require.NoError(t, runToken([]string{"-key", priv, "-root", "/acme/app/",
-		"-publish", "/alice", "-publish", "/alice/", "-subscribe", "/", "-fetch", "/", "-ttl", "5m"}, &out, &info))
+		"-publish", "/alice", "-publish", "/alice/", "-subscribe", "/", "-ttl", "5m"}, &out, &info))
 	tok := strings.TrimSpace(out.String())
 	assert.Equal(t, 2, strings.Count(tok, "."), "stdout carries the token alone, so it can be captured")
 	assert.Contains(t, info.String(), "Root:       acme/app\n", "the summary shows the grant as the relay will: normalized")
@@ -41,7 +41,6 @@ func TestRunKeygen_TokenAndVerifierAgree(t *testing.T) {
 	assert.True(t, g.Allows(token.ActionPublish, moqt.BroadcastPath("/acme/app/alice")))
 	assert.False(t, g.Allows(token.ActionPublish, moqt.BroadcastPath("/acme/app/bob")))
 	assert.True(t, g.Allows(token.ActionSubscribe, moqt.BroadcastPath("/acme/app/bob")))
-	assert.True(t, g.Allows(token.ActionFetch, moqt.BroadcastPath("/acme/app/bob")))
 	assert.Equal(t, moqt.Grant{Root: "/acme/app/", Publish: []string{"/alice", "/alice/"}, Subscribe: []string{"/"}}, g.MoQ())
 }
 
@@ -88,15 +87,14 @@ func TestRunToken_Patterns(t *testing.T) {
 	var out, info bytes.Buffer
 
 	require.NoError(t, runToken([]string{"-key", priv, "-sub", "42", "-root", "acme/app/room/1",
-		"-publish", "/7", "-subscribe", "/", "-fetch", "/7/", "-fetch", "/8",
-		"-create", "/comments", "-post", "/comments", "-redact", "/{user}/comments"}, &out, &info))
+		"-publish", "/7", "-subscribe", "/", "-create", "/comments",
+		"-post", "/comments", "-post", "/7/", "-post", "/8", "-redact", "/{user}/comments"}, &out, &info))
 
 	assert.Contains(t, info.String(), "Root:       acme/app/room/1\n")
 	assert.Contains(t, info.String(), "Publish:    /7\n")
 	assert.Contains(t, info.String(), "Subscribe:  /\n")
-	assert.Contains(t, info.String(), "Fetch:      /7/ /8\n")
 	assert.Contains(t, info.String(), "Create:     /comments\n")
-	assert.Contains(t, info.String(), "Post:       /comments\n")
+	assert.Contains(t, info.String(), "Post:       /comments /7/ /8\n")
 	assert.Contains(t, info.String(), "Redact:     /{user}/comments\n")
 	assert.Contains(t, info.String(), "Subject:    42\n")
 	v, err := NewVerifier(VerifierConfig{Keys: pub})
@@ -112,11 +110,11 @@ func TestRunToken_Patterns(t *testing.T) {
 		"publish the exact path":       {action: token.ActionPublish, path: "/acme/app/room/1/7", want: true},
 		"publish beneath it":           {action: token.ActionPublish, path: "/acme/app/room/1/7/x"},
 		"subscribe beneath the root":   {action: token.ActionSubscribe, path: "/acme/app/room/1/9", want: true},
-		"fetch beneath a directory":    {action: token.ActionFetch, path: "/acme/app/room/1/7/x", want: true},
-		"fetch, a second pattern":      {action: token.ActionFetch, path: "/acme/app/room/1/8", want: true},
-		"fetch the directory itself":   {action: token.ActionFetch, path: "/acme/app/room/1/7"},
 		"create":                       {action: token.ActionCreate, path: "/acme/app/room/1/comments", want: true},
 		"post":                         {action: token.ActionPost, path: "/acme/app/room/1/comments", want: true},
+		"post beneath a directory":     {action: token.ActionPost, path: "/acme/app/room/1/7/x", want: true},
+		"post, a third pattern":        {action: token.ActionPost, path: "/acme/app/room/1/8", want: true},
+		"post the directory itself":    {action: token.ActionPost, path: "/acme/app/room/1/7"},
 		"redact, a wildcard":           {action: token.ActionRedact, path: "/acme/app/room/1/bob/comments", want: true},
 		"redact, the wildcard missing": {action: token.ActionRedact, path: "/acme/app/room/1/comments"},
 	}

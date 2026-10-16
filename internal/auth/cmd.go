@@ -159,8 +159,7 @@ func runToken(args []string, out, info io.Writer) error {
 		usage    string
 	}{
 		{token.ActionPublish, &g.Publish, "publish through a relay"},
-		{token.ActionSubscribe, &g.Subscribe, "subscribe to live"},
-		{token.ActionFetch, &g.Fetch, "fetch the history of"},
+		{token.ActionSubscribe, &g.Subscribe, "subscribe to, live or as history,"},
 		{token.ActionCreate, &g.Create, "create tracks of at a funnel"},
 		{token.ActionPost, &g.Post, "post into at a funnel"},
 		{token.ActionRedact, &g.Redact, "redact records of at a funnel"},

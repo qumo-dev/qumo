@@ -70,7 +70,7 @@ func (f *fakeAuth) received() []auth.Request {
 }
 
 // testGrant returns a grant that may publish beneath one subtree pattern and
-// subscribe to and fetch beneath another ("**" for everything, "a/b/**" for
+// subscribe beneath another ("**" for everything, "a/b/**" for
 // a/b and beneath it, "" for none), checked again every revalidate. Its root
 // is the deepest directory both subtrees lie in.
 func testGrant(tb testing.TB, publish, subscribe string, revalidate time.Duration) *auth.Grant {
@@ -78,11 +78,11 @@ func testGrant(tb testing.TB, publish, subscribe string, revalidate time.Duratio
 	var g token.Grant
 	roles := []struct {
 		pattern  string
-		patterns []*[]string
+		patterns *[]string
 		base     string
 	}{
-		{pattern: publish, patterns: []*[]string{&g.Publish}},
-		{pattern: subscribe, patterns: []*[]string{&g.Subscribe, &g.Fetch}},
+		{pattern: publish, patterns: &g.Publish},
+		{pattern: subscribe, patterns: &g.Subscribe},
 	}
 	var dirs []string
 	for i, role := range roles {
@@ -112,9 +112,7 @@ func testGrant(tb testing.TB, publish, subscribe string, revalidate time.Duratio
 			rel := "/" + strings.TrimPrefix(strings.TrimPrefix(role.base, g.Root), "/")
 			patterns = []string{rel, rel + "/"}
 		}
-		for _, p := range role.patterns {
-			*p = patterns
-		}
+		*role.patterns = patterns
 	}
 	return auth.NewGrant(g, revalidate)
 }
