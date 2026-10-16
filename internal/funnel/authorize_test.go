@@ -165,24 +165,20 @@ func TestAuthorizer_Patterns(t *testing.T) {
 			header:  bearerOf("42", on("room/123", "/comments", token.ActionPublish)),
 			wantErr: true,
 		},
-		"posting with fetch only": {
-			header:  bearerOf("42", on("room/123", "/comments", token.ActionFetch)),
-			wantErr: true,
-		},
 		"posting with subscribe only": {
 			header:  bearerOf("42", on("room/123", "/comments", token.ActionSubscribe)),
 			wantErr: true,
 		},
-		"reading with fetch": {
-			header: bearerOf("42", on("room/123", "/comments", token.ActionFetch)),
+		"reading with subscribe": {
+			header: bearerOf("42", on("room/123", "/comments", token.ActionSubscribe)),
 			access: ingest.Read,
 		},
-		"reading under a fetch prefix": {
-			header: bearerOf("", on("room", "/", token.ActionFetch)),
+		"reading under a subscribe prefix": {
+			header: bearerOf("", on("room", "/", token.ActionSubscribe)),
 			access: ingest.Read,
 		},
-		"reading with subscribe only": {
-			header:  bearerOf("42", on("room/123", "/comments", token.ActionSubscribe)),
+		"reading with publish, which sends through a relay": {
+			header:  bearerOf("42", on("room/123", "/comments", token.ActionPublish)),
 			access:  ingest.Read,
 			wantErr: true,
 		},
@@ -215,7 +211,7 @@ func TestAuthorizer_Patterns(t *testing.T) {
 		},
 		"creating with every other action": {
 			header: bearerOf("", on("room", "/",
-				token.ActionPublish, token.ActionSubscribe, token.ActionFetch, token.ActionPost, token.ActionRedact)),
+				token.ActionPublish, token.ActionSubscribe, token.ActionPost, token.ActionRedact)),
 			access:  ingest.Create,
 			wantErr: true,
 		},
@@ -242,7 +238,7 @@ func TestAuthorizer_Patterns(t *testing.T) {
 		},
 		"redacting with every other action": {
 			header: bearerOf("", on("room", "/",
-				token.ActionPublish, token.ActionSubscribe, token.ActionFetch, token.ActionPost, token.ActionCreate)),
+				token.ActionPublish, token.ActionSubscribe, token.ActionPost, token.ActionCreate)),
 			access:  ingest.Redact,
 			wantErr: true,
 		},
@@ -281,7 +277,7 @@ func TestAuthorizer_PausedKeyCreatesNothing(t *testing.T) {
 	v, key := newVerifierPausing(t, token.ActionPublish)
 	chat := ingest.Track{BroadcastPath: "/room/123/comments", TrackName: "chat"}
 	app := "Bearer " + sign(t, key, grantOn("room/123", []string{"/comments"},
-		token.ActionCreate, token.ActionPost, token.ActionFetch, token.ActionRedact))
+		token.ActionCreate, token.ActionPost, token.ActionSubscribe, token.ActionRedact))
 	authorize := authorizer(v)
 
 	for access, wantErr := range map[ingest.Access]bool{

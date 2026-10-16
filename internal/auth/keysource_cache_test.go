@@ -128,8 +128,8 @@ func TestVerifier_PublishLimit(t *testing.T) {
 		"limited key, post pattern": {
 			jwt: sign(t, limited, beneathLive(token.ActionPost)), wantConnect: 200, wantRevalidate: 200,
 		},
-		"limited key, subscribe and fetch patterns": {
-			jwt: sign(t, limited, beneathLive(token.ActionSubscribe, token.ActionFetch)), wantConnect: 200, wantRevalidate: 200,
+		"limited key, subscribe pattern": {
+			jwt: sign(t, limited, beneathLive(token.ActionSubscribe)), wantConnect: 200, wantRevalidate: 200,
 		},
 		"another key, publish pattern": {jwt: sign(t, free, beneathLive(token.ActionPublish)), wantConnect: 200, wantRevalidate: 200},
 	}
@@ -149,7 +149,7 @@ func beneathLive(actions ...token.Action) token.Grant {
 	g := token.Grant{Root: "acme/app/live"}
 	for _, a := range actions {
 		patterns := map[token.Action]*[]string{
-			token.ActionPublish: &g.Publish, token.ActionSubscribe: &g.Subscribe, token.ActionFetch: &g.Fetch,
+			token.ActionPublish: &g.Publish, token.ActionSubscribe: &g.Subscribe,
 			token.ActionCreate: &g.Create, token.ActionPost: &g.Post, token.ActionRedact: &g.Redact,
 		}[a]
 		*patterns = append(*patterns, "/")

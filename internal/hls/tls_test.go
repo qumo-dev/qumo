@@ -222,9 +222,8 @@ func TestFeedConfig_Target(t *testing.T) {
 		claims, err := token.Verify(u.Query().Get("jwt"), map[string]token.Key{key.ID: key.Public()}, time.Now())
 		require.NoError(t, err)
 		g := claims.Grant
-		assert.Equal(t, token.Grant{Root: "hls", Subscribe: []string{"/live"}, Fetch: []string{"/live"}}, g)
+		assert.Equal(t, token.Grant{Root: "hls", Subscribe: []string{"/live"}}, g)
 		assert.True(t, g.Allows(token.ActionSubscribe, "hls/live"))
-		assert.True(t, g.Allows(token.ActionFetch, "hls/live"))
 		assert.False(t, g.Allows(token.ActionSubscribe, "hls/other"), "no other broadcast")
 		assert.False(t, g.Allows(token.ActionSubscribe, "hls/live/deeper"), "nothing beneath it")
 		assert.False(t, g.Allows(token.ActionPublish, "hls/live"), "it publishes nothing")
@@ -247,9 +246,9 @@ func TestSubscribeGrant(t *testing.T) {
 		path string
 		want token.Grant
 	}{
-		"beneath a directory": {path: "/acme/room/42/7", want: token.Grant{Root: "acme/room/42", Subscribe: []string{"/7"}, Fetch: []string{"/7"}}},
-		"one segment":         {path: "/live", want: token.Grant{Subscribe: []string{"/live"}, Fetch: []string{"/live"}}},
-		"no leading slash":    {path: "hls/live", want: token.Grant{Root: "hls", Subscribe: []string{"/live"}, Fetch: []string{"/live"}}},
+		"beneath a directory": {path: "/acme/room/42/7", want: token.Grant{Root: "acme/room/42", Subscribe: []string{"/7"}}},
+		"one segment":         {path: "/live", want: token.Grant{Subscribe: []string{"/live"}}},
+		"no leading slash":    {path: "hls/live", want: token.Grant{Root: "hls", Subscribe: []string{"/live"}}},
 	}
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {

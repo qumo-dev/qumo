@@ -28,7 +28,7 @@ type Key struct {
 	// the key, and a funnel creates no track with it (ActionCreate), even one
 	// that exists, for
 	// example while its owner is at a limit on broadcasts. Sessions that only
-	// subscribe, fetch, post or redact still start, and live sessions
+	// subscribe, post or redact still start, and live sessions
 	// continue.
 	Pause []Action
 }

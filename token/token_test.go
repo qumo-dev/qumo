@@ -122,7 +122,7 @@ func TestVerify_Invalid(t *testing.T) {
 		"the scopes claim":   {token: func() string { return signer.sign(t, with(func(c map[string]any) { c["scopes"] = []any{} })) }, wantReason: `"scopes"`},
 		"path_auth and root": {token: func() string { return signer.sign(t, with(func(c map[string]any) { c["root"] = "acme/app" })) }, wantReason: "not both"},
 		"path_auth and a pattern": {
-			token:      func() string { return signer.sign(t, with(func(c map[string]any) { c["fetch"] = []string{"/"} })) },
+			token:      func() string { return signer.sign(t, with(func(c map[string]any) { c["subscribe"] = []string{"/"} })) },
 			wantReason: "not both",
 		},
 		"path_auth is null": {token: func() string { return signer.sign(t, with(func(c map[string]any) { c["path_auth"] = nil })) }, wantReason: "null"},
@@ -192,8 +192,8 @@ func TestVerify_LeewayAdmitsSmallSkew(t *testing.T) {
 }
 
 // A path_auth claim, as other MoQ implementations sign it, is read as the
-// grant it amounts to: its root, with pub as publish and sub as subscribe and
-// fetch, each at its path and beneath it.
+// grant it amounts to: its root, with pub as publish and sub as subscribe,
+// each at its path and beneath it.
 func TestVerify_PathConfinement(t *testing.T) {
 	now := time.Unix(1_800_000_000, 0)
 	tests := map[string]struct {
@@ -208,7 +208,7 @@ func TestVerify_PathConfinement(t *testing.T) {
 		},
 		"subscribe only": {
 			pathAuth: map[string]any{"root": "acme/app", "sub": "live"},
-			want:     Grant{Root: "acme/app", Subscribe: []string{"/live", "/live/"}, Fetch: []string{"/live", "/live/"}},
+			want:     Grant{Root: "acme/app", Subscribe: []string{"/live", "/live/"}},
 		},
 		"slashes normalized": {
 			pathAuth: map[string]any{"root": "/acme//app/", "pub": "/alice//x/"},
@@ -297,5 +297,4 @@ var validGrant = Grant{
 	Root:      "acme/app",
 	Publish:   []string{"/alice", "/alice/"},
 	Subscribe: []string{"/"},
-	Fetch:     []string{"/"},
 }

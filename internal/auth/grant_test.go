@@ -27,7 +27,7 @@ func TestGrant_Allows(t *testing.T) {
 		Publish:   []string{"/comments"},
 		Subscribe: []string{"/"},
 	}, 0)
-	everything := NewGrant(token.Grant{Subscribe: []string{"/"}, Fetch: []string{"/"}}, 0)
+	everything := NewGrant(token.Grant{Subscribe: []string{"/"}}, 0)
 	tests := map[string]struct {
 		grant  *Grant
 		action token.Action
@@ -38,10 +38,10 @@ func TestGrant_Allows(t *testing.T) {
 		"beneath an exact path":             {grant: room, action: token.ActionPublish, path: "/room/123/comments/x"},
 		"beneath the root":                  {grant: room, action: token.ActionSubscribe, path: "/room/123/x", want: true},
 		"a sibling of the root":             {grant: room, action: token.ActionSubscribe, path: "/room/1234"},
-		"an action not granted":             {grant: room, action: token.ActionFetch, path: "/room/123/comments"},
+		"an action not granted":             {grant: room, action: token.ActionCreate, path: "/room/123/comments"},
 		"an unknown action":                 {grant: room, action: "delete", path: "/room/123/x"},
 		"everything: any path":              {grant: everything, action: token.ActionSubscribe, path: "/any/path", want: true},
-		"everything: the root":              {grant: everything, action: token.ActionFetch, path: "/", want: true},
+		"everything: the root":              {grant: everything, action: token.ActionSubscribe, path: "/", want: true},
 		"everything: an action not granted": {grant: everything, action: token.ActionPublish, path: "/any"},
 		"nothing granted":                   {grant: &Grant{}, action: token.ActionSubscribe, path: "/room"},
 	}
@@ -60,7 +60,7 @@ func TestGrant_MoQ(t *testing.T) {
 		want  moqt.Grant
 	}{
 		"a voice room: subscribe beneath the room, publish one broadcast": {
-			grant: token.Grant{Root: "room/42", Publish: []string{"/7"}, Subscribe: []string{"/"}, Fetch: []string{"/"}},
+			grant: token.Grant{Root: "room/42", Publish: []string{"/7"}, Subscribe: []string{"/"}},
 			want:  moqt.Grant{Root: "/room/42/", Publish: []string{"/7"}, Subscribe: []string{"/"}},
 		},
 		"the empty root": {
@@ -68,7 +68,7 @@ func TestGrant_MoQ(t *testing.T) {
 			want:  moqt.Grant{Root: "/", Publish: []string{"/live"}},
 		},
 		"a funnel's actions alone grant nothing": {
-			grant: token.Grant{Root: "room/42", Create: []string{"/comments"}, Post: []string{"/comments"}, Fetch: []string{"/"}},
+			grant: token.Grant{Root: "room/42", Create: []string{"/comments"}, Post: []string{"/comments"}, Redact: []string{"/"}},
 			want:  moqt.Grant{},
 		},
 		"no patterns": {grant: token.Grant{Root: "room/42"}, want: moqt.Grant{}},

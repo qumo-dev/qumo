@@ -15,10 +15,9 @@ type Action string
 const (
 	// ActionPublish is sending a broadcast's tracks through a relay.
 	ActionPublish Action = "publish"
-	// ActionSubscribe is receiving a track live.
+	// ActionSubscribe is receiving a track, live at a relay, and reading its
+	// history, as a relay's FETCH or a funnel's GET does.
 	ActionSubscribe Action = "subscribe"
-	// ActionFetch is reading a track's history, such as a funnel's GET.
-	ActionFetch Action = "fetch"
 	// ActionPost is sending one message into a track at a funnel, which
 	// gathers many senders' messages into that one track and publishes it.
 	// The track must exist: posting never creates one (ActionCreate). A relay
@@ -55,10 +54,9 @@ type Grant struct {
 	Root string
 	// Publish matches the broadcasts the bearer may publish through a relay.
 	Publish []string
-	// Subscribe matches the broadcasts the bearer may receive live.
+	// Subscribe matches the broadcasts the bearer may receive, live or as
+	// history.
 	Subscribe []string
-	// Fetch matches the broadcasts whose history the bearer may read.
-	Fetch []string
 	// Create matches the broadcasts the bearer may create tracks of at a
 	// funnel.
 	Create []string
@@ -79,8 +77,6 @@ func (g Grant) Patterns(action Action) []string {
 		return g.Publish
 	case ActionSubscribe:
 		return g.Subscribe
-	case ActionFetch:
-		return g.Fetch
 	case ActionCreate:
 		return g.Create
 	case ActionPost:
@@ -93,7 +89,7 @@ func (g Grant) Patterns(action Action) []string {
 
 // Actions returns every action, in the order a grant lists them.
 func Actions() []Action {
-	return []Action{ActionPublish, ActionSubscribe, ActionFetch, ActionCreate, ActionPost, ActionRedact}
+	return []Action{ActionPublish, ActionSubscribe, ActionCreate, ActionPost, ActionRedact}
 }
 
 // Allows reports whether a pattern of the grant for action matches the

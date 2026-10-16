@@ -20,10 +20,11 @@ import (
 // Creating a track needs create; it is for the app, which decides which tracks
 // a broadcast has. A write needs post, and records into a track that exists,
 // as the credential's subject (its sub), or with no sender when it names
-// none. A read needs fetch, and a redaction redact, carrying the credential's
-// subject as its sender. Publish, which sends through a relay, permits
-// nothing here. A path_auth credential is read as the grant it amounts to
-// (token.Verify): its sub permits reading at its path and beneath it.
+// none. A read of history needs subscribe, as a relay's FETCH does, and a
+// redaction redact, carrying the credential's subject as its sender. Publish,
+// which sends through a relay, permits nothing here. A path_auth credential
+// is read as the grant it amounts to (token.Verify): its sub permits reading
+// at its path and beneath it.
 //
 // The credential is checked on every request, so one that expires or whose
 // key leaves the set is refused at once. A key paused for publishing refuses
@@ -70,7 +71,7 @@ func accessAction(access ingest.Access) (action token.Action, sender, ok bool) {
 	case ingest.Write:
 		return token.ActionPost, true, true
 	case ingest.Read:
-		return token.ActionFetch, false, true
+		return token.ActionSubscribe, false, true
 	case ingest.Redact:
 		return token.ActionRedact, true, true
 	}

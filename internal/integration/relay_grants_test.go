@@ -64,24 +64,28 @@ func TestRelay_PatternCredentials(t *testing.T) {
 
 		assert.Error(t, err)
 	})
+	t.Run("a credential carrying fetch is refused", func(t *testing.T) {
+		stale := signClaims(t, key, map[string]any{
+			"root": "acme", "subscribe": []string{"/"}, "fetch": []string{"/"},
+		})
+
+		err := subscribeTrack(t, "https://"+addr+"/?jwt="+stale, "/acme/live", "video")
+
+		assert.Error(t, err, "fetch is no claim the relay knows, so the session is not admitted")
+	})
 	t.Run("a viewer granted the exact broadcast", func(t *testing.T) {
 		err := subscribeTrack(t, url(exactly("acme/live", token.ActionSubscribe)), "/acme/live", "video")
 
 		assert.NoError(t, err)
-	})
-	t.Run("fetch does not grant subscribing", func(t *testing.T) {
-		err := subscribeTrack(t, url(grantOn("acme", []string{"/"}, token.ActionFetch)), "/acme/live", "video")
-
-		assert.Error(t, err)
 	})
 	t.Run("no publish pattern for the broadcast announces nothing", func(t *testing.T) {
 		tests := map[string]struct {
 			path  moqt.BroadcastPath
 			grant token.Grant
 		}{
-			"subscribe and fetch only": {
+			"subscribe only": {
 				path:  "/acme/quiet",
-				grant: exactly("acme/quiet", token.ActionSubscribe, token.ActionFetch),
+				grant: exactly("acme/quiet", token.ActionSubscribe),
 			},
 			"publish on another broadcast": {
 				path:  "/acme/elsewhere",

@@ -275,6 +275,23 @@ func TestFunnel_RestartServesRecordedTracks(t *testing.T) {
 	assert.Equal(t, `{"payload":"after"}`, got)
 }
 
+// signClaims mints a one-minute credential with grant claims as given, so a
+// test can present one Sign would not write.
+func signClaims(t *testing.T, key token.SigningKey, grant map[string]any) string {
+	t.Helper()
+	now := time.Now().Unix()
+	header, err := json.Marshal(map[string]string{"alg": "EdDSA", "kid": key.ID, "typ": "JWT"})
+	require.NoError(t, err)
+	claims := map[string]any{"iat": now, "nbf": now, "exp": now + 60}
+	for k, v := range grant {
+		claims[k] = v
+	}
+	body, err := json.Marshal(claims)
+	require.NoError(t, err)
+	input := base64.RawURLEncoding.EncodeToString(header) + "." + base64.RawURLEncoding.EncodeToString(body)
+	return input + "." + base64.RawURLEncoding.EncodeToString(ed25519.Sign(key.Private, []byte(input)))
+}
+
 // signPathAuth mints a one-minute credential with a path_auth claim of pub
 // and sub (each left out when empty), as other MoQ implementations sign one.
 func signPathAuth(t *testing.T, key token.SigningKey, pub, sub string) string {
@@ -360,10 +377,10 @@ func TestFunnel_PatternCredentialsNameSenders(t *testing.T) {
 		require.NoError(t, err)
 		return c
 	}
-	post, fetch := []token.Action{token.ActionPost}, []token.Action{token.ActionFetch}
+	post, read := []token.Action{token.ActionPost}, []token.Action{token.ActionSubscribe}
 	alice := credential("alice", post, "room/123")
 	system := credential("", post, "room/123")
-	reader := credential("", fetch, "room/123")
+	reader := credential("", read, "room/123")
 	host := credential("host", []token.Action{token.ActionCreate}, "room/123")
 
 	assert.Equal(t, http.StatusNotFound, record(t, ingestURL, alice, `"x"`), "posting never creates the track")
@@ -373,7 +390,7 @@ func TestFunnel_PatternCredentialsNameSenders(t *testing.T) {
 	require.Equal(t, http.StatusCreated, createChat(t, ingestURL, host))
 	assert.Equal(t, http.StatusForbidden, record(t, ingestURL, credential("alice", post, "room/123/alice"), `"x"`),
 		"a broadcast beneath grants nothing above it")
-	assert.Equal(t, http.StatusForbidden, record(t, ingestURL, reader, `"x"`), "fetching does not grant recording")
+	assert.Equal(t, http.StatusForbidden, record(t, ingestURL, reader, `"x"`), "reading does not grant recording")
 	assert.Equal(t, http.StatusForbidden, record(t, ingestURL, host, `"x"`),
 		"creating the track does not grant posting")
 	require.Equal(t, http.StatusCreated, record(t, ingestURL, alice, `{"name":"bob","text":"hi"}`))
@@ -395,7 +412,7 @@ func TestFunnel_PatternCredentialsNameSenders(t *testing.T) {
 	assert.Contains(t, body, `"sender":"alice","payload":{"name":"bob","text":"hi"}`, "the sender is the credential's sub")
 	assert.Regexp(t, `"wallclock":\d+,"payload":\{"type":"delete"\}`, body, "a credential without sub records with no sender")
 	status, _ = history(alice)
-	assert.Equal(t, http.StatusForbidden, status, "posting does not grant fetching")
+	assert.Equal(t, http.StatusForbidden, status, "posting does not grant reading")
 }
 
 // startFunnelBehindRelay runs a relay that verifies credentials and a funnel
@@ -595,7 +612,7 @@ func TestFunnel_RedactNeedsARedactPattern(t *testing.T) {
 		return c
 	}
 	alice := credential("alice", token.ActionPost)
-	reader := credential("", token.ActionFetch)
+	reader := credential("", token.ActionSubscribe)
 	moderator := credential("moderator", token.ActionRedact)
 	require.Equal(t, http.StatusCreated, createChat(t, ingestURL, credential("host", token.ActionCreate)))
 
@@ -626,7 +643,7 @@ func TestFunnel_RedactNeedsARedactPattern(t *testing.T) {
 	group := page.Records[0].Group
 
 	assert.Equal(t, http.StatusForbidden, redactChat(t, ingestURL, alice, group), "posting does not grant redacting")
-	assert.Equal(t, http.StatusForbidden, redactChat(t, ingestURL, reader, group), "fetching does not grant redacting")
+	assert.Equal(t, http.StatusForbidden, redactChat(t, ingestURL, reader, group), "reading does not grant redacting")
 	require.Equal(t, http.StatusCreated, redactChat(t, ingestURL, moderator, group))
 
 	_, redaction := nextRecord(t, tr)

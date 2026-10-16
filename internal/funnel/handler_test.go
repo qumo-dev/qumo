@@ -81,8 +81,6 @@ func grantOn(root string, patterns []string, actions ...token.Action) token.Gran
 			g.Publish = patterns
 		case token.ActionSubscribe:
 			g.Subscribe = patterns
-		case token.ActionFetch:
-			g.Fetch = patterns
 		case token.ActionCreate:
 			g.Create = patterns
 		case token.ActionPost:
@@ -167,7 +165,7 @@ func TestNewHandler_HistoryNeedsASubscriber(t *testing.T) {
 	require.Equal(t, http.StatusCreated,
 		serve(h, http.MethodPost, chatURL, `"hello"`, sign(t, key, postAs("user-42", "room/123"))).Code)
 
-	viewer := serve(h, http.MethodGet, chatURL, "", sign(t, key, grantOn("room", []string{"/123", "/123/"}, token.ActionFetch)))
+	viewer := serve(h, http.MethodGet, chatURL, "", sign(t, key, grantOn("room", []string{"/123", "/123/"}, token.ActionSubscribe)))
 	sender := serve(h, http.MethodGet, chatURL, "", sign(t, key, postAs("user-42", "room/123")))
 
 	require.Equal(t, http.StatusOK, viewer.Code)

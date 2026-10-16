@@ -65,11 +65,10 @@ CDN or application, not by the relay. Against a relay with auth on
 (`QUMO_AUTH_KEYS`), the egress itself connects in one of two ways:
 
 - **With a signing key** (`RELAY_SIGNING_KEY`), like any client. The egress
-  signs itself a fresh credential on every connect, granting `subscribe` and
-  `fetch` on `RELAY_TRACK_PATH` and nothing else. The key is one the relay's
-  key set trusts, made with `qumo auth keygen`; confine it with `-prefix` to
-  the paths the egress serves. The relay reports the session's usage under
-  that key.
+  signs itself a fresh credential on every connect, granting `subscribe` on
+  `RELAY_TRACK_PATH` and nothing else. The key is one the relay's key set
+  trusts, made with `qumo auth keygen`; confine it with `-prefix` to the paths
+  the egress serves. The relay reports the session's usage under that key.
 - **As a relay peer** (`RELAY_CERT_FILE`, `RELAY_KEY_FILE`). The egress
   presents a peer certificate from the relay CA that the relay trusts as
   `CA_FILE`, one that carries the peering name. The relay then never checks
@@ -131,7 +130,7 @@ All configuration is via environment variables:
 | `HLS_LIVE_TIMEOUT_S` | `10` | Seconds of silence after which the publisher is treated as gone; the feed reconnects and manifests answer `503`. |
 | `RELAY_CA_FILE` | _unset_ | PEM cert to trust as the relay's root, overriding the system roots. Unset means verify against the system root store. |
 | `RELAY_TLS_INSECURE` | `false` | Skip relay TLS verification entirely. Dominates `RELAY_CA_FILE` when both are set. |
-| `RELAY_SIGNING_KEY` | _unset_ | A signing key file (`qumo auth keygen`) the relay's key set trusts. The egress signs a fresh credential on every connect, granting `subscribe` and `fetch` on `RELAY_TRACK_PATH` alone, in place of any `?jwt=` in `RELAY_URL`. Not with `RELAY_CERT_FILE`. |
+| `RELAY_SIGNING_KEY` | _unset_ | A signing key file (`qumo auth keygen`) the relay's key set trusts. The egress signs a fresh credential on every connect, granting `subscribe` on `RELAY_TRACK_PATH` alone, in place of any `?jwt=` in `RELAY_URL`. Not with `RELAY_CERT_FILE`. |
 | `RELAY_CERT_FILE`, `RELAY_KEY_FILE` | _unset_ | A peer certificate and key (PEM) for the egress, from the private CA the relay trusts as `CA_FILE`, with the peering name. It must be the egress's own, not the relay's. The relay serves the egress as a relay peer: no credential, no expiry, nothing checked. Not with `RELAY_SIGNING_KEY` or `?jwt=`. Set both or neither; they need a `moqt://` `RELAY_URL`. |
 | `CORS_ALLOWED_ORIGINS` | _unset_ | Comma-separated origins allowed to fetch manifests and segments, or `*` for any. Unset disables CORS. Required when the player is served from another origin (e.g. `http://localhost:5173` for the playground). |
 
