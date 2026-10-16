@@ -80,12 +80,12 @@ A session holds more than the credential it connected with: a client presents fu
 
 - must be signed by **the same key** as the session's credential, so everything a session may do is one tenant's;
 - is verified as a credential is at connect, and a key paused with `"pause": ["publish"]` refuses one that may publish;
-- **expires** at its `exp` (with the 60 s leeway), unlike a session's credential. The `AUTH_OK` granting it says when (its max age), so the client presents a fresh one in time; at expiry its grant is revoked with `AUTH_ERROR` ("ticket expired"). A key that leaves the set, or whose prefix no longer holds the ticket's root, revokes it too, at the next 30 s check;
+- **expires** at its `exp` (with the 60 s leeway), unlike a session's credential. The `AUTH_OK` granting it says when (its max age), so the client presents a fresh one in time; at expiry its grant is revoked with `AUTH_ERROR` ("grant expired"). A key that leaves the set, or whose prefix no longer holds the ticket's root, revokes it too, at the next 30 s check;
 - that could not be checked just now, as while the relay has no usable key set, is answered `AUTH_ERROR` with `INTERNAL` (`0x1`), which the client may retry; a refused one with `UNAUTHORIZED` (`0x2`);
 - is withdrawn by the client closing its Auth Stream;
 - is a bearer token, as a credential is: any session of the same key's tenant that holds it may present it.
 
-A session holds at most 32 tickets at once. An Auth Stream carrying no token is answered with the session's own grant again, which adds nothing, and counts toward the 32. A relay with auth off, or a session admitted without a credential (a relay peer), takes none: it answers `NOT_SUPPORTED`.
+A session holds at most 32 tickets at once. An Auth Stream carrying no token is answered with the session's own grant again, which adds nothing; a session holds at most 32 of those beside its connection's own. A session granted a ticket that may publish is reported as a publisher from then on, for the rest of its life ([usage](../../configuration/#usage-reports)). A relay with auth off, or a session admitted without a credential (a relay peer), takes none: it answers `NOT_SUPPORTED`.
 
 ## Signing in your app (Go)
 

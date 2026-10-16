@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
-	"strings"
 	"sync"
 	"time"
 
@@ -181,11 +180,7 @@ func (v *Verifier) Trusts(g *Grant) (bool, error) {
 		return false, errors.New("auth: no key set loaded yet")
 	}
 	key, ok := set.keys[g.keyID]
-	if !ok {
-		return false, nil
-	}
-	root := g.grant.Root
-	return key.Prefix == "" || root == key.Prefix || strings.HasPrefix(root, key.Prefix+"/"), nil
+	return ok && key.Holds(g.grant.Root), nil
 }
 
 // Publishing records that the session id was granted a ticket that may

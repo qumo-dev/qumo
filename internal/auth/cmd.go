@@ -198,10 +198,7 @@ func runToken(args []string, out, info io.Writer) error {
 	b.WriteString("\n")
 	fmt.Fprintf(&b, "  %-11s %s\n", "Root:", cmp.Or(c.Root, "- (every path)"))
 	granted := false
-	for _, a := range []token.Action{
-		token.ActionPublish, token.ActionSubscribe, token.ActionFetch,
-		token.ActionCreate, token.ActionPost, token.ActionRedact,
-	} {
+	for _, a := range token.Actions() {
 		if patterns := c.Patterns(a); len(patterns) > 0 {
 			fmt.Fprintf(&b, "  %-11s %s\n", strings.ToUpper(string(a[:1]))+string(a[1:])+":", strings.Join(patterns, " "))
 			granted = true

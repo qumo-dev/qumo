@@ -39,9 +39,10 @@ type admission struct {
 	// client is what the upgrade request said about its client, set before
 	// the session starts. Zero for a native-QUIC session.
 	client upgradeClient
-	// held counts the credentials the session holds (ServeAuth): its
-	// connection's own and its tickets.
-	held atomic.Int32
+	// tickets counts the tickets the session holds, and plain the
+	// credentials presented with no token, its connection's own among them
+	// (ServeAuth).
+	tickets, plain atomic.Int32
 }
 
 type admissionKey struct{}
@@ -276,17 +277,24 @@ var everything = moqt.Grant{Root: "/", Publish: []string{"/"}, Subscribe: []stri
 // session's, while it is in force (serveTicket).
 //
 // A client may present no token on an Auth Stream too, and gets the same
-// grant again, which adds nothing. Every credential a session holds counts
-// toward maxTickets, beyond the connection's own.
+// grant again, which adds nothing. A session holds at most maxTickets
+// tickets, and as many credentials of no token beside its connection's own;
+// those it presents first may crowd out its connection's own, which leaves
+// only that client's session without its grant.
 func (s *Server) ServeAuth(w *moqt.AuthWriter, r *moqt.AuthRequest) {
 	if a := admissionFrom(r.Context()); a != nil {
-		if a.held.Add(1) > maxTickets+1 {
-			a.held.Add(-1)
+		held, limit := &a.plain, int32(maxTickets+1)
+		if len(r.Token) > 0 {
+			held, limit = &a.tickets, maxTickets
+		}
+		if held.Add(1) > limit {
+			held.Add(-1)
 			metricTickets.WithLabelValues(ticketRefused).Inc()
+			slog.Info("relay: credential refused: too many held", "id", a.req.ID)
 			_ = w.Refuse(moqt.UnauthorizedSessionErrorCode, "too many tickets")
 			return
 		}
-		defer a.held.Add(-1)
+		defer held.Add(-1)
 	}
 	if len(r.Token) > 0 {
 		s.serveTicket(w, r)
@@ -355,6 +363,10 @@ func (s *Server) serveTicket(w *moqt.AuthWriter, r *moqt.AuthRequest) {
 	if err := w.Grant(grant); err != nil {
 		metricTickets.WithLabelValues(ticketRefused).Inc()
 		slog.Info("relay: ticket not granted", "id", a.req.ID, "error", err)
+		// A grant gomoqt refused itself, too large, is answered already.
+		if !errors.Is(err, moqt.ErrAuthEnded) {
+			_ = w.Refuse(moqt.UnauthorizedSessionErrorCode, "ticket grants what this relay can't apply")
+		}
 		return
 	}
 	metricTickets.WithLabelValues(ticketGranted).Inc()
@@ -362,7 +374,9 @@ func (s *Server) serveTicket(w *moqt.AuthWriter, r *moqt.AuthRequest) {
 		s.Tickets.Publishing(a.req.ID)
 	}
 
-	lapse := time.NewTimer(time.Until(expires))
+	// A second after MaxAge, so gomoqt revokes the grant first and tells the
+	// presenter: a handler that returned first would end it silently.
+	lapse := time.NewTimer(time.Until(expires) + time.Second)
 	defer lapse.Stop()
 	revalidate := time.NewTicker(ticketRevalidateEvery)
 	defer revalidate.Stop()
@@ -371,9 +385,8 @@ func (s *Server) serveTicket(w *moqt.AuthWriter, r *moqt.AuthRequest) {
 		case <-ctx.Done():
 			return
 		case <-lapse.C:
-			// MaxAge has revoked it, or is about to: the presenter hears why.
+			// MaxAge has revoked it, telling the presenter so.
 			metricTickets.WithLabelValues(ticketExpired).Inc()
-			_ = w.Refuse(moqt.UnauthorizedSessionErrorCode, "ticket expired")
 			return
 		case <-revalidate.C:
 			trusted, err := s.Tickets.Trusts(tg)

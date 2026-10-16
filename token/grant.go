@@ -91,8 +91,10 @@ func (g Grant) Patterns(action Action) []string {
 	return nil
 }
 
-// actions are every action, in the order a grant lists them.
-var actions = []Action{ActionPublish, ActionSubscribe, ActionFetch, ActionCreate, ActionPost, ActionRedact}
+// Actions returns every action, in the order a grant lists them.
+func Actions() []Action {
+	return []Action{ActionPublish, ActionSubscribe, ActionFetch, ActionCreate, ActionPost, ActionRedact}
+}
 
 // Allows reports whether a pattern of the grant for action matches the
 // broadcast at path, such as "/acme/room/42/7"; the leading "/" is optional.
@@ -151,7 +153,7 @@ func (g Grant) checked(prefix string) (Grant, error) {
 	}
 	g.Root = root
 	patterns := false
-	for _, a := range actions {
+	for _, a := range Actions() {
 		for _, s := range g.Patterns(a) {
 			if err := checkPattern(root, s); err != nil {
 				return Grant{}, invalid("%s pattern %q: %v", a, s, err)
