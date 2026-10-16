@@ -123,6 +123,11 @@ func (v *Verifier) Authorize(_ context.Context, req Request) (*Grant, error) {
 	connect := req.Event == EventConnect
 	credential, credErr := credentialOf(req.Query)
 	g, s, err := v.decide(credential, credErr, connect, func(g *Grant) bool { return connect && publishesBroadcast(g.grant) })
+	if err == nil && g.ticket {
+		// A session's credential lives as long as its key: a ticket's grant
+		// would outlive the ticket's expiry there.
+		g, err = nil, refuse(http.StatusUnauthorized, "a ticket is presented on a live session, not as its credential")
+	}
 	if v.usage != nil {
 		// A session is learned only when it is admitted at connect. A
 		// revalidate never adds one: it can finish after the session's end
@@ -234,7 +239,7 @@ func (v *Verifier) decide(credential string, credErr error, connect bool, paused
 		}
 		return nil, usageSession{}, refuse(status, "%v", err)
 	}
-	g := &Grant{grant: c.Grant, revalidate: revalidateEvery, keyID: c.Key.ID, expires: c.ExpiresAt}
+	g := &Grant{grant: c.Grant, revalidate: revalidateEvery, keyID: c.Key.ID, expires: c.ExpiresAt, ticket: c.Ticket}
 	if c.Key.Pauses(token.ActionPublish) && paused(g) {
 		return nil, usageSession{}, refuse(http.StatusForbidden,
 			"signing key %s starts nothing new that publishes", c.Key.ID)

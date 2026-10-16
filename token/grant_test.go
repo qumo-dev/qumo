@@ -159,7 +159,7 @@ func TestSign_RoundTrip(t *testing.T) {
 				want = tt.grant
 			}
 
-			tok, err := signAt(key, tt.grant, 30*time.Minute, now)
+			tok, err := signAt(key, tt.grant, 30*time.Minute, now, "JWT")
 			require.NoError(t, err)
 			c, err := Verify(tok, map[string]Key{key.ID: key.Public()}, now)
 

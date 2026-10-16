@@ -298,3 +298,25 @@ var validGrant = Grant{
 	Publish:   []string{"/alice", "/alice/"},
 	Subscribe: []string{"/"},
 }
+
+// A ticket is a token like any other, marked by its typ: Verify reads the
+// mark, which no other token carries.
+func TestSignTicket(t *testing.T) {
+	key, err := GenerateKey("acme")
+	require.NoError(t, err)
+	keys := map[string]Key{key.ID: key.Public()}
+	g := Grant{Root: "acme/room/1", Subscribe: []string{"/"}}
+
+	ticket, err := SignTicket(key, g, time.Minute)
+	require.NoError(t, err)
+	plain, err := Sign(key, g, time.Minute)
+	require.NoError(t, err)
+
+	c, err := Verify(ticket, keys, time.Now())
+	require.NoError(t, err)
+	assert.True(t, c.Ticket)
+	assert.Equal(t, g, c.Grant)
+	c, err = Verify(plain, keys, time.Now())
+	require.NoError(t, err)
+	assert.False(t, c.Ticket)
+}

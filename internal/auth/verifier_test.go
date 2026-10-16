@@ -903,3 +903,20 @@ func TestVerifier_GrantMoQ(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, moqt.Grant{Root: "/acme/app/", Subscribe: []string{"/"}}, g.MoQ())
 }
+
+// A ticket admits no session as its credential, where its grant would
+// outlive its expiry, but adds to a live session's.
+func TestVerifier_TicketIsNoCredential(t *testing.T) {
+	k := genKey(t, "acme/app")
+	v := verifierWith(t, keySetJSON(t, []token.SigningKey{k}), time.Now())
+	ticket, err := token.SignTicket(k, token.Grant{Root: "acme/app/room/42", Subscribe: []string{"/"}}, time.Minute)
+	require.NoError(t, err)
+
+	_, err = v.Authorize(context.Background(), sessionReq(EventConnect, ticket))
+	assert.Equal(t, http.StatusUnauthorized, statusOf(err), "at connect: %v", err)
+	_, err = v.Authorize(context.Background(), sessionReq(EventRevalidate, ticket))
+	assert.Equal(t, http.StatusUnauthorized, statusOf(err), "at revalidate: %v", err)
+	g, err := v.Ticket(ticket, k.ID)
+	require.NoError(t, err, "on a live session")
+	assert.Equal(t, "acme/app/room/42", g.grant.Root)
+}

@@ -80,6 +80,7 @@ grants what `{"root": "acme/app/rooms/42", "publish": ["/alice", "/alice/"], "su
 
 A session holds more than the credential it connected with: a client presents further tokens, *tickets*, on MoQ Auth Streams, and the relay adds what each grants to the session's while it is in force. An app can then keep one long-lived session per client, connected with a token of **no patterns**, which names the app's key alone, and grant each room as the client joins it, with a ticket per room. A ticket:
 
+- is signed with **`token.SignTicket`**, which marks it with the header `typ: "ticket+jwt"` (RFC 8725's explicit typing). The relay refuses a ticket as the credential a session connects with, where its grant would last as long as the session rather than until the ticket's `exp`;
 - must be signed by **the same key** as the session's credential, so everything a session may do is one tenant's;
 - is verified as a credential is at connect, and a key paused with `"pause": ["publish"]` refuses one that may publish;
 - **expires** at its `exp` (with the 60 s leeway), unlike a session's credential. The `AUTH_OK` granting it says when (its max age), so the client presents a fresh one in time; at expiry its grant is revoked with `AUTH_ERROR` ("grant expired"). A key that leaves the set, or whose prefix no longer holds the ticket's root, revokes it too, at the next 30 s check;
