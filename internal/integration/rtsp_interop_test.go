@@ -85,9 +85,6 @@ func TestRTSPInterop_Matrix(t *testing.T) {
 			require.NoError(t, pub.Start(pubCtx))
 			t.Cleanup(func() { _ = pub.Wait() })
 
-			// Let ffmpeg connect, ANNOUNCE, SETUP, RECORD, and publish a few frames.
-			time.Sleep(2000 * time.Millisecond)
-
 			collectCtx, cancelCollect := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancelCollect()
 			obs, err := (&Collector{
@@ -96,6 +93,7 @@ func TestRTSPInterop_Matrix(t *testing.T) {
 				Path:         moqt.BroadcastPath(path),
 				MaxGroups:    3,
 				GroupTimeout: 4 * time.Second,
+				WantTracks:   m.exp.TrackNames(),
 			}).Collect(collectCtx)
 			require.NoError(t, err, "collect failed")
 			cancelPub()

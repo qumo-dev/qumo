@@ -97,9 +97,6 @@ func TestRTMPInterop_Matrix(t *testing.T) {
 			require.NoError(t, pub.Start(pubCtx))
 			t.Cleanup(func() { _ = pub.Wait() })
 
-			// Let ffmpeg connect, send the sequence header, and publish a few frames.
-			time.Sleep(1500 * time.Millisecond)
-
 			// Bound the whole collect so a misbehaving relay/ffmpeg can never
 			// hang the subtest; the collector's internal catalog/group timeouts
 			// bound the individual waits below this ceiling.
@@ -111,6 +108,7 @@ func TestRTMPInterop_Matrix(t *testing.T) {
 				Path:         moqt.BroadcastPath(path),
 				MaxGroups:    3,
 				GroupTimeout: 4 * time.Second,
+				WantTracks:   m.exp.TrackNames(),
 			}).Collect(collectCtx)
 			require.NoError(t, err, "collect failed")
 

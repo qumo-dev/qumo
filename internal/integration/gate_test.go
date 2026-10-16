@@ -163,3 +163,20 @@ func joinFailures(v Verdict) string {
 	}
 	return out
 }
+
+func TestExpectations_TrackNames(t *testing.T) {
+	tests := map[string]struct {
+		exp      Expectations
+		expected []string
+	}{
+		"video and audio": {exp: Expectations{WantVideo: true, WantAudio: true}, expected: []string{"video", "audio"}},
+		"video only":      {exp: Expectations{WantVideo: true}, expected: []string{"video"}},
+		"audio only":      {exp: Expectations{WantAudio: true}, expected: []string{"audio"}},
+		"none":            {exp: Expectations{}, expected: nil},
+	}
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			assert.Equal(t, tt.expected, tt.exp.TrackNames())
+		})
+	}
+}

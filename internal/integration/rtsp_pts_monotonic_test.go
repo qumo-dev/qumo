@@ -51,9 +51,6 @@ func TestRTSP_PTSMonotonic(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = pub.Wait() })
 
-	// Let ffmpeg ANNOUNCE/SETUP/RECORD and publish a few GOPs before subscribing.
-	time.Sleep(2 * time.Second)
-
 	collectCtx, cancelCollect := context.WithTimeout(context.Background(), 40*time.Second)
 	defer cancelCollect()
 	obs, err := (&Collector{
@@ -62,6 +59,7 @@ func TestRTSP_PTSMonotonic(t *testing.T) {
 		Path:         moqt.BroadcastPath(path),
 		MaxGroups:    30,
 		GroupTimeout: 4 * time.Second,
+		WantTracks:   []string{"video"},
 	}).Collect(collectCtx)
 	if err != nil {
 		t.Fatalf("collect: %v", err)
