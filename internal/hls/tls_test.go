@@ -213,13 +213,13 @@ func TestFeedConfig_Target(t *testing.T) {
 		assert.Equal(t, "1", u.Query().Get("x"), "the rest of the query is kept")
 		claims, err := token.Verify(u.Query().Get("jwt"), map[string]token.Key{key.ID: key.Public()}, time.Now())
 		require.NoError(t, err)
-		require.Len(t, claims.Scopes, 1)
-		scope := claims.Scopes[0]
-		assert.True(t, scope.Allows(token.ActionSubscribe, "hls/live"))
-		assert.True(t, scope.Allows(token.ActionFetch, "hls/live"))
-		assert.False(t, scope.Allows(token.ActionSubscribe, "hls/other"), "no other broadcast")
-		assert.False(t, scope.Allows(token.ActionSubscribe, "hls/live/deeper"), "nothing beneath it")
-		assert.False(t, scope.Allows(token.ActionPublish, "hls/live"), "it publishes nothing")
+		g := claims.Grant
+		assert.Equal(t, token.Grant{Root: "hls", Subscribe: []string{"/live"}, Fetch: []string{"/live"}}, g)
+		assert.True(t, g.Allows(token.ActionSubscribe, "hls/live"))
+		assert.True(t, g.Allows(token.ActionFetch, "hls/live"))
+		assert.False(t, g.Allows(token.ActionSubscribe, "hls/other"), "no other broadcast")
+		assert.False(t, g.Allows(token.ActionSubscribe, "hls/live/deeper"), "nothing beneath it")
+		assert.False(t, g.Allows(token.ActionPublish, "hls/live"), "it publishes nothing")
 	})
 
 	t.Run("each connect signs a new one", func(t *testing.T) {
@@ -232,4 +232,20 @@ func TestFeedConfig_Target(t *testing.T) {
 
 		assert.NotEqual(t, first, second)
 	})
+}
+
+func TestSubscribeGrant(t *testing.T) {
+	tests := map[string]struct {
+		path string
+		want token.Grant
+	}{
+		"beneath a directory": {path: "/acme/room/42/7", want: token.Grant{Root: "acme/room/42", Subscribe: []string{"/7"}, Fetch: []string{"/7"}}},
+		"one segment":         {path: "/live", want: token.Grant{Subscribe: []string{"/live"}, Fetch: []string{"/live"}}},
+		"no leading slash":    {path: "hls/live", want: token.Grant{Root: "hls", Subscribe: []string{"/live"}, Fetch: []string{"/live"}}},
+	}
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			assert.Equal(t, tt.want, subscribeGrant(tt.path))
+		})
+	}
 }

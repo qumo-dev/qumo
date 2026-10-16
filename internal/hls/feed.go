@@ -171,11 +171,15 @@ func checkPeerCertificate(certFile, keyFile string) error {
 
 // subscribeGrant grants what the egress does at path: subscribing to and
 // fetching every track of that broadcast, and of no other.
+// The grant's root is the directory path lies in, the empty root for a path
+// of one segment.
 func subscribeGrant(path string) token.Grant {
-	return token.Grant{Scopes: []token.Scope{{
-		Actions:   []token.Action{token.ActionSubscribe, token.ActionFetch},
-		Broadcast: strings.TrimPrefix(path, "/"),
-	}}}
+	root, base := "", strings.Trim(path, "/")
+	if i := strings.LastIndex(base, "/"); i >= 0 {
+		root, base = base[:i], base[i+1:]
+	}
+	only := []string{"/" + base}
+	return token.Grant{Root: root, Subscribe: only, Fetch: slices.Clone(only)}
 }
 
 // target returns the URL to dial, with a freshly signed credential when the

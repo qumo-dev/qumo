@@ -84,11 +84,8 @@ func TestUpstream_Target(t *testing.T) {
 		assert.Equal(t, "relay:4433", parsed.Host)
 		claims, err := token.Verify(parsed.Query().Get("jwt"), map[string]token.Key{key.ID: key.Public()}, time.Now())
 		require.NoError(t, err, "the ?jwt= given is replaced by a signed one")
-		assert.Equal(t, []token.Scope{
-			{Actions: []token.Action{token.ActionPublish}, Broadcast: "room"},
-			{Actions: []token.Action{token.ActionPublish}, Broadcast: "room", Prefix: true},
-		}, claims.Scopes, "publishing every track at or beneath RELAY_PUBLISH")
-		assert.Empty(t, claims.Subject)
+		assert.Equal(t, token.Grant{Root: "room", Publish: []string{"/"}}, claims.Grant,
+			"publishing every broadcast beneath RELAY_PUBLISH, its root")
 	})
 }
 

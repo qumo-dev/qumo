@@ -25,10 +25,12 @@ func TestRunKeygen_TokenAndVerifierAgree(t *testing.T) {
 	assert.Contains(t, out.String(), "Key ID:")
 	out.Reset()
 	var info bytes.Buffer
-	require.NoError(t, runToken([]string{"-key", priv, "-publish", "acme/app/alice", "-subscribe", "acme/app", "-ttl", "5m"}, &out, &info))
+	require.NoError(t, runToken([]string{"-key", priv, "-root", "/acme/app/",
+		"-publish", "/alice", "-publish", "/alice/", "-subscribe", "/", "-fetch", "/", "-ttl", "5m"}, &out, &info))
 	tok := strings.TrimSpace(out.String())
 	assert.Equal(t, 2, strings.Count(tok, "."), "stdout carries the token alone, so it can be captured")
-	assert.Contains(t, info.String(), "acme/app/alice/**", "the summary shows the grant as the relay will")
+	assert.Contains(t, info.String(), "Root:       acme/app\n", "the summary shows the grant as the relay will: normalized")
+	assert.Contains(t, info.String(), "Publish:    /alice /alice/\n")
 	v, err := NewVerifier(VerifierConfig{Keys: pub})
 	require.NoError(t, err)
 
@@ -36,11 +38,11 @@ func TestRunKeygen_TokenAndVerifierAgree(t *testing.T) {
 
 	require.NoError(t, err)
 	assert.True(t, g.Allows(token.ActionPublish, moqt.BroadcastPath("/acme/app/alice/cam")))
+	assert.True(t, g.Allows(token.ActionPublish, moqt.BroadcastPath("/acme/app/alice")))
 	assert.False(t, g.Allows(token.ActionPublish, moqt.BroadcastPath("/acme/app/bob")))
 	assert.True(t, g.Allows(token.ActionSubscribe, moqt.BroadcastPath("/acme/app/bob")))
 	assert.True(t, g.Allows(token.ActionFetch, moqt.BroadcastPath("/acme/app/bob")))
-	assert.True(t, g.Allows(token.ActionPublish, moqt.BroadcastPath("/acme/app/alice")), "-publish covers the path itself")
-	assert.True(t, g.Allows(token.ActionSubscribe, moqt.BroadcastPath("/acme/app")), "-subscribe covers the path itself")
+	assert.Equal(t, moqt.Grant{Root: "/acme/app/", Publish: []string{"/alice", "/alice/"}, Subscribe: []string{"/"}}, g.MoQ())
 }
 
 func TestRun_NoCommand(t *testing.T) {
@@ -78,94 +80,80 @@ func TestRun_UnknownCommand(t *testing.T) {
 	assert.ErrorContains(t, err, "unknown command")
 }
 
-func TestRunToken_Scopes(t *testing.T) {
+// Each action's flag adds a pattern relative to -root, and may be repeated.
+func TestRunToken_Patterns(t *testing.T) {
 	dir := t.TempDir()
 	priv, pub := filepath.Join(dir, "signing-key.jwk"), filepath.Join(dir, "keys.json")
 	require.NoError(t, runKeygen([]string{"-prefix", "acme/app", "-out", priv, "-keys", pub}, &bytes.Buffer{}))
 	var out, info bytes.Buffer
 
-	require.NoError(t, runToken([]string{"-key", priv, "-sub", "42",
-		"-scope", "publish:acme/app/room/1/comments",
-		"-scope", "subscribe,fetch:acme/app/room/1/**"}, &out, &info))
+	require.NoError(t, runToken([]string{"-key", priv, "-sub", "42", "-root", "acme/app/room/1",
+		"-publish", "/7", "-subscribe", "/", "-fetch", "/7/", "-fetch", "/8",
+		"-create", "/comments", "-post", "/comments", "-redact", "/{user}/comments"}, &out, &info))
 
-	assert.Contains(t, info.String(), "publish acme/app/room/1/comments\n")
-	assert.Contains(t, info.String(), "subscribe,fetch acme/app/room/1/**\n")
-	assert.Contains(t, info.String(), "42")
+	assert.Contains(t, info.String(), "Root:       acme/app/room/1\n")
+	assert.Contains(t, info.String(), "Publish:    /7\n")
+	assert.Contains(t, info.String(), "Subscribe:  /\n")
+	assert.Contains(t, info.String(), "Fetch:      /7/ /8\n")
+	assert.Contains(t, info.String(), "Create:     /comments\n")
+	assert.Contains(t, info.String(), "Post:       /comments\n")
+	assert.Contains(t, info.String(), "Redact:     /{user}/comments\n")
+	assert.Contains(t, info.String(), "Subject:    42\n")
 	v, err := NewVerifier(VerifierConfig{Keys: pub})
 	require.NoError(t, err)
 	g, err := v.Authorize(t.Context(), Request{ID: "s1", Event: EventConnect, Query: "jwt=" + strings.TrimSpace(out.String())})
 	require.NoError(t, err)
 	assert.Equal(t, "42", g.Subject())
-	assert.True(t, g.Allows("publish", "/acme/app/room/1/comments"))
-	assert.False(t, g.Allows("publish", "/acme/app/room/1/comments/x"))
-	assert.True(t, g.Allows("fetch", "/acme/app/room/1/comments"))
-	assert.False(t, g.Allows("fetch", "/acme/app/room/1"), "a/b/** is every path beneath a/b, not a/b itself")
-}
-
-func TestParseScope(t *testing.T) {
 	tests := map[string]struct {
-		value   string
-		want    token.Scope
-		wantErr bool
+		action token.Action
+		path   moqt.BroadcastPath
+		want   bool
 	}{
-		"an exact broadcast": {
-			value: "publish:room/1",
-			want:  token.Scope{Actions: []token.Action{"publish"}, Broadcast: "room/1"},
-		},
-		"post": {
-			value: "post:room/1",
-			want:  token.Scope{Actions: []token.Action{"post"}, Broadcast: "room/1"},
-		},
-		"a prefix": {
-			value: "subscribe,fetch:room/**",
-			want:  token.Scope{Actions: []token.Action{"subscribe", "fetch"}, Broadcast: "room", Prefix: true},
-		},
-		// A scope names no track, so a second ":" is refused rather than
-		// read as part of the broadcast.
-		"a track after the broadcast": {
-			value:   "fetch:room/1:a",
-			wantErr: true,
-		},
-		"no broadcast":       {value: "publish", wantErr: true},
-		"an empty broadcast": {value: "publish:", wantErr: true},
-		"no actions":         {value: ":room/1", wantErr: true},
-		"nothing given":      {value: "", wantErr: true},
+		"publish the exact path":       {action: token.ActionPublish, path: "/acme/app/room/1/7", want: true},
+		"publish beneath it":           {action: token.ActionPublish, path: "/acme/app/room/1/7/x"},
+		"subscribe beneath the root":   {action: token.ActionSubscribe, path: "/acme/app/room/1/9", want: true},
+		"fetch beneath a directory":    {action: token.ActionFetch, path: "/acme/app/room/1/7/x", want: true},
+		"fetch, a second pattern":      {action: token.ActionFetch, path: "/acme/app/room/1/8", want: true},
+		"fetch the directory itself":   {action: token.ActionFetch, path: "/acme/app/room/1/7"},
+		"create":                       {action: token.ActionCreate, path: "/acme/app/room/1/comments", want: true},
+		"post":                         {action: token.ActionPost, path: "/acme/app/room/1/comments", want: true},
+		"redact, a wildcard":           {action: token.ActionRedact, path: "/acme/app/room/1/bob/comments", want: true},
+		"redact, the wildcard missing": {action: token.ActionRedact, path: "/acme/app/room/1/comments"},
 	}
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
-			got, err := parseScope(tt.value)
-
-			if tt.wantErr {
-				assert.Error(t, err)
-				return
-			}
-			require.NoError(t, err)
-			assert.Equal(t, tt.want, got)
+			assert.Equal(t, tt.want, g.Allows(tt.action, tt.path))
 		})
 	}
 }
 
-// -publish and -subscribe are short for the scopes of a path and every path
-// beneath it, and add to -scope.
-func TestRunToken_PathFlagsAreScopes(t *testing.T) {
-	dir := t.TempDir()
-	priv := filepath.Join(dir, "signing-key.jwk")
-	require.NoError(t, runKeygen([]string{"-out", priv, "-keys", filepath.Join(dir, "keys.json")}, &bytes.Buffer{}))
-	var out, info bytes.Buffer
+func TestRunToken_Refusals(t *testing.T) {
+	tests := map[string]struct {
+		args    []string
+		wantErr string
+	}{
+		"a root outside the key's prefix": {args: []string{"-root", "other", "-publish", "/"}, wantErr: "outside"},
+		"a pattern with no slash":         {args: []string{"-root", "acme/app", "-subscribe", "live"}, wantErr: "subscribe"},
+		"a malformed wildcard":            {args: []string{"-root", "acme/app", "-post", "/{x"}, wantErr: "post"},
+		"the scope flag is gone":          {args: []string{"-scope", "publish:acme/app"}, wantErr: "-scope"},
+	}
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			priv := filepath.Join(dir, "signing-key.jwk")
+			require.NoError(t, runKeygen([]string{"-prefix", "acme/app", "-out", priv, "-keys", filepath.Join(dir, "keys.json")}, &bytes.Buffer{}))
+			var out bytes.Buffer
 
-	require.NoError(t, runToken([]string{"-key", priv, "-sub", "42",
-		"-publish", "room/1/alice", "-subscribe", "room/1", "-scope", "fetch:room/9"}, &out, &info))
+			err := runToken(append([]string{"-key", priv}, tt.args...), &out, &bytes.Buffer{})
 
-	assert.Contains(t, info.String(), "fetch room/9\n")
-	assert.Contains(t, info.String(), "publish room/1/alice\n")
-	assert.Contains(t, info.String(), "publish room/1/alice/**\n")
-	assert.Contains(t, info.String(), "subscribe,fetch room/1\n")
-	assert.Contains(t, info.String(), "subscribe,fetch room/1/**\n")
-	assert.Contains(t, info.String(), "42")
+			assert.ErrorContains(t, err, tt.wantErr)
+			assert.Empty(t, out.String(), "no token is printed")
+		})
+	}
 }
 
-// A token of no scopes says so in the summary.
-func TestRunToken_NoScopes(t *testing.T) {
+// A token of no patterns says so in the summary.
+func TestRunToken_NoPatterns(t *testing.T) {
 	dir := t.TempDir()
 	priv := filepath.Join(dir, "signing-key.jwk")
 	require.NoError(t, runKeygen([]string{"-prefix", "acme", "-out", priv, "-keys", filepath.Join(dir, "keys.json")}, &bytes.Buffer{}))
@@ -174,5 +162,28 @@ func TestRunToken_NoScopes(t *testing.T) {
 	require.NoError(t, runToken([]string{"-key", priv}, &out, &info))
 
 	assert.Equal(t, 2, strings.Count(strings.TrimSpace(out.String()), "."))
-	assert.Contains(t, info.String(), "none: the token names its key's tenant alone")
+	assert.Contains(t, info.String(), "nothing: the token names its key's tenant alone")
+}
+
+func TestRunKeygen_SaysWhatTheKeyGrants(t *testing.T) {
+	tests := map[string]struct {
+		prefix string
+		want   []string
+	}{
+		"a prefix": {prefix: "acme/app", want: []string{"a root at or beneath acme/app", "-root acme/app -publish /demo"}},
+		"none":     {want: []string{"any root (no prefix)", "-publish /demo"}},
+	}
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			var out bytes.Buffer
+
+			require.NoError(t, runKeygen([]string{"-prefix", tt.prefix,
+				"-out", filepath.Join(dir, "signing-key.jwk"), "-keys", filepath.Join(dir, "keys.json")}, &out))
+
+			for _, w := range tt.want {
+				assert.Contains(t, out.String(), w)
+			}
+		})
+	}
 }

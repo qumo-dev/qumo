@@ -69,20 +69,22 @@ func TestRelay_Tickets(t *testing.T) {
 	keys, verifier := trustedKeys(t, "acme", 2)
 	session, other := keys[0], keys[1]
 	addr, srv := startAuthRelay(t, verifier.Authorize, nil, func(s *relay.Server) { s.Tickets = verifier })
-	sign := func(key token.SigningKey, scopes ...token.Scope) string {
-		tok, err := token.Sign(key, token.Grant{Scopes: scopes}, time.Minute)
+	sign := func(key token.SigningKey, g token.Grant) string {
+		tok, err := token.Sign(key, g, time.Minute)
 		require.NoError(t, err)
 		return tok
 	}
-	publishOver(t, srv, "https://"+addr+"/?jwt="+sign(session, token.PathAndBeneath("acme/room/42/host", token.ActionPublish)...),
+	publishOver(t, srv, "https://"+addr+"/?jwt="+sign(session, atAndBeneath("acme/room/42/host", token.ActionPublish)),
 		"/acme/room/42/host")
 	// A room: listen to everything in it, and speak as one member.
-	ticket := sign(session,
-		token.Scope{Actions: []token.Action{token.ActionSubscribe, token.ActionFetch}, Broadcast: "acme/room/42", Prefix: true},
-		token.Scope{Actions: []token.Action{token.ActionPublish}, Broadcast: "acme/room/42/7"},
-	)
+	ticket := sign(session, token.Grant{
+		Root:      "acme/room/42",
+		Publish:   []string{"/7"},
+		Subscribe: []string{"/"},
+		Fetch:     []string{"/"},
+	})
 	mux := moqt.NewTrackMux(0)
-	sess := dialOver(t, nativeURL(addr)+"/?jwt="+sign(session), nil, mux)
+	sess := dialOver(t, nativeURL(addr)+"/?jwt="+sign(session, token.Grant{}), nil, mux)
 	present := func(tok string) (*moqt.Credential, error) {
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		defer cancel()
@@ -96,7 +98,7 @@ func TestRelay_Tickets(t *testing.T) {
 	assert.Never(t, routed(srv, "/acme/room/42/7"), 500*time.Millisecond, 25*time.Millisecond, "no announcement before a ticket")
 	endEarly()
 
-	_, err := present(sign(other, token.Scope{Actions: []token.Action{token.ActionSubscribe}, Broadcast: "acme/room/42", Prefix: true}))
+	_, err := present(sign(other, token.Grant{Root: "acme/room/42", Subscribe: []string{"/"}}))
 	authErr, ok := errors.AsType[*moqt.AuthError](err)
 	require.True(t, ok, "a ticket of another trusted key is refused with AUTH_ERROR, not %v", err)
 	assert.Equal(t, moqt.UnauthorizedSessionErrorCode, authErr.Code)

@@ -39,11 +39,9 @@ type admission struct {
 	// client is what the upgrade request said about its client, set before
 	// the session starts. Zero for a native-QUIC session.
 	client upgradeClient
-	// tickets counts the tickets the session holds (serveTicket).
-	tickets atomic.Int32
-	// connAnswered is set once the connection's own credential, the one
-	// presented with no token, has been answered (ServeAuth).
-	connAnswered atomic.Bool
+	// held counts the credentials the session holds (ServeAuth): its
+	// connection's own and its tickets.
+	held atomic.Int32
 }
 
 type admissionKey struct{}
@@ -248,15 +246,19 @@ func refusalReason(err error) string {
 }
 
 // TicketVerifier verifies the tickets a session presents on Auth Streams
-// (auth.Verifier.Ticket): signed by the key that signed the session's own
-// credential, verified as new when presented and as live after.
+// (auth.Verifier): Ticket when one is presented, which must be signed by the
+// key that signed the session's own credential; Trusts while its grant is in
+// force; and Publishing once a session is granted one that may publish.
 type TicketVerifier interface {
-	Ticket(id, credential, keyID string, live bool) (*auth.Grant, error)
+	Ticket(credential, keyID string) (*auth.Grant, error)
+	Trusts(g *auth.Grant) (bool, error)
+	Publishing(id string)
 }
 
 const (
 	// maxTickets bounds the tickets one session may hold at once, so a
-	// client can't make the relay keep any number of them.
+	// client can't make the relay keep any number of them. The connection's
+	// own credential is not one of them.
 	maxTickets = 32
 	// ticketRevalidateEvery is how often a ticket in force is checked again,
 	// so that a key leaving the set ends it, as it ends a session.
@@ -272,16 +274,22 @@ var everything = moqt.Grant{Root: "/", Publish: []string{"/"}, Subscribe: []stri
 // was admitted with (admit.go), and a session checked for nothing is granted
 // everything. A ticket presented on an Auth Stream adds its grant to the
 // session's, while it is in force (serveTicket).
+//
+// A client may present no token on an Auth Stream too, and gets the same
+// grant again, which adds nothing. Every credential a session holds counts
+// toward maxTickets, beyond the connection's own.
 func (s *Server) ServeAuth(w *moqt.AuthWriter, r *moqt.AuthRequest) {
+	if a := admissionFrom(r.Context()); a != nil {
+		if a.held.Add(1) > maxTickets+1 {
+			a.held.Add(-1)
+			metricTickets.WithLabelValues(ticketRefused).Inc()
+			_ = w.Refuse(moqt.UnauthorizedSessionErrorCode, "too many tickets")
+			return
+		}
+		defer a.held.Add(-1)
+	}
 	if len(r.Token) > 0 {
 		s.serveTicket(w, r)
-		return
-	}
-	// gomoqt presents the connection's credential once, with no token; an
-	// Auth Stream carrying none is a ticket of nothing.
-	if a := admissionFrom(r.Context()); a != nil && a.connAnswered.Swap(true) {
-		metricTickets.WithLabelValues(ticketRefused).Inc()
-		_ = w.Refuse(moqt.UnauthorizedSessionErrorCode, "empty ticket")
 		return
 	}
 	g, err := sessionGrant(r.Context())
@@ -324,31 +332,35 @@ func (s *Server) serveTicket(w *moqt.AuthWriter, r *moqt.AuthRequest) {
 		_ = w.Refuse(moqt.NotSupportedErrorCode, "this relay verifies no tickets for the session")
 		return
 	}
-	if a.tickets.Add(1) > maxTickets {
-		defer a.tickets.Add(-1)
-		metricTickets.WithLabelValues(ticketRefused).Inc()
-		_ = w.Refuse(moqt.UnauthorizedSessionErrorCode, "too many tickets")
-		return
-	}
-	defer a.tickets.Add(-1)
 
-	credential := string(r.Token)
-	tg, err := s.Tickets.Ticket(a.req.ID, credential, g.KeyID(), false)
+	tg, err := s.Tickets.Ticket(string(r.Token), g.KeyID())
 	if err != nil {
-		metricTickets.WithLabelValues(ticketOutcome(err)).Inc()
+		if _, refused := errors.AsType[auth.RefusedError](err); !refused {
+			// Not the ticket's fault: the key set is not usable just now.
+			metricTickets.WithLabelValues(ticketError).Inc()
+			slog.Warn("relay: ticket could not be checked", "id", a.req.ID, "error", err)
+			_ = w.Refuse(moqt.InternalSessionErrorCode, "ticket could not be checked; present it again")
+			return
+		}
+		metricTickets.WithLabelValues(ticketRefused).Inc()
 		slog.Info("relay: ticket refused", "id", a.req.ID, "reason", err)
 		_ = w.Refuse(moqt.UnauthorizedSessionErrorCode, "ticket refused")
 		return
 	}
-	// Judged with the leeway, as token.Verify judges exp. The handler revokes
-	// it itself, so the presenter is told why.
+	// Judged with the leeway, as token.Verify judges exp. AUTH_OK tells the
+	// presenter when, so it can present a fresh ticket in time.
 	expires := tg.Expires().Add(token.Leeway)
-	if err := w.Grant(tg.MoQ()); err != nil {
+	grant := tg.MoQ()
+	grant.MaxAge = max(time.Until(expires), time.Millisecond)
+	if err := w.Grant(grant); err != nil {
 		metricTickets.WithLabelValues(ticketRefused).Inc()
 		slog.Info("relay: ticket not granted", "id", a.req.ID, "error", err)
 		return
 	}
 	metricTickets.WithLabelValues(ticketGranted).Inc()
+	if len(grant.Publish) > 0 {
+		s.Tickets.Publishing(a.req.ID)
+	}
 
 	lapse := time.NewTimer(time.Until(expires))
 	defer lapse.Stop()
@@ -359,14 +371,15 @@ func (s *Server) serveTicket(w *moqt.AuthWriter, r *moqt.AuthRequest) {
 		case <-ctx.Done():
 			return
 		case <-lapse.C:
+			// MaxAge has revoked it, or is about to: the presenter hears why.
 			metricTickets.WithLabelValues(ticketExpired).Inc()
 			_ = w.Refuse(moqt.UnauthorizedSessionErrorCode, "ticket expired")
 			return
 		case <-revalidate.C:
-			_, err := s.Tickets.Ticket(a.req.ID, credential, g.KeyID(), true)
-			if _, refused := errors.AsType[auth.RefusedError](err); refused {
+			trusted, err := s.Tickets.Trusts(tg)
+			if err == nil && !trusted {
 				metricTickets.WithLabelValues(ticketRevoked).Inc()
-				slog.Info("relay: ticket revoked", "id", a.req.ID, "reason", err)
+				slog.Info("relay: ticket revoked: its key left the set", "id", a.req.ID, "kid", tg.KeyID())
 				_ = w.Refuse(moqt.UnauthorizedSessionErrorCode, "ticket revoked")
 				return
 			}
@@ -385,11 +398,3 @@ const (
 	ticketError        = "error"
 	ticketNotSupported = "not_supported"
 )
-
-// ticketOutcome classifies a refused ticket's error.
-func ticketOutcome(err error) string {
-	if _, refused := errors.AsType[auth.RefusedError](err); refused {
-		return ticketRefused
-	}
-	return ticketError
-}

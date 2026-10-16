@@ -1,7 +1,6 @@
 package token
 
 import (
-	"errors"
 	"fmt"
 	"strings"
 )
@@ -26,32 +25,23 @@ func normalizePath(p string) (string, error) {
 	return strings.Join(kept, "/"), nil
 }
 
-// scopeOf joins root and a role's suffix into the granted path. It must name
-// a path: a grant of everything ("") is refused rather than read as "**".
-func scopeOf(root, suffix string) (string, error) {
-	r, err := normalizePath(root)
-	if err != nil {
-		return "", fmt.Errorf("root: %w", err)
-	}
+// atAndBeneath returns the patterns, relative to a root, matching the path
+// suffix and every path beneath it, or everything beneath the root ("/") for
+// an empty suffix.
+func atAndBeneath(suffix string) ([]string, error) {
 	s, err := normalizePath(suffix)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
-	scope := strings.Trim(r+"/"+s, "/")
-	if scope == "" {
-		return "", errors.New("root and suffix name no path")
+	if s == "" {
+		return []string{"/"}, nil
 	}
-	return scope, nil
-}
-
-// beneath reports whether path lies beneath prefix at a "/" boundary, not at
-// it; an empty prefix contains everything.
-func beneath(path, prefix string) bool {
-	return prefix == "" || strings.HasPrefix(path, prefix+"/")
+	return []string{"/" + s, "/" + s + "/"}, nil
 }
 
 // within reports whether path lies at or beneath prefix at a "/" boundary; an
-// empty prefix contains everything. A key's prefix confines paths this way.
+// empty prefix contains everything. A key's prefix confines a grant's root
+// this way.
 func within(path, prefix string) bool {
 	return prefix == "" || path == prefix || strings.HasPrefix(path, prefix+"/")
 }

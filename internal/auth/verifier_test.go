@@ -185,8 +185,9 @@ func TestVerifier_Decisions(t *testing.T) {
 	}{
 		"active key":              {jwt: sign(t, active, pathGrant("", "acme/app")), wantConnect: 200, wantRevalidate: 200},
 		"key not in the set":      {jwt: sign(t, other, pathGrant("", "acme/app")), wantConnect: 401, wantRevalidate: 401},
-		"path outside the prefix": {jwt: sign(t, unconfined, pathGrant("globex/app", "")), wantConnect: 403, wantRevalidate: 403},
-		"prefix's sibling":        {jwt: sign(t, unconfined, pathGrant("acme/application", "")), wantConnect: 403, wantRevalidate: 403},
+		"root outside the prefix": {jwt: sign(t, unconfined, publishAll("globex/app")), wantConnect: 403, wantRevalidate: 403},
+		"prefix's sibling":        {jwt: sign(t, unconfined, publishAll("acme/application")), wantConnect: 403, wantRevalidate: 403},
+		"root above the prefix":   {jwt: sign(t, unconfined, token.Grant{Root: "acme", Publish: []string{"/app/"}}), wantConnect: 403, wantRevalidate: 403},
 		"no credential":           {jwt: "", wantConnect: 401, wantRevalidate: 401},
 		"not a credential":        {jwt: "not.a.jwt", wantConnect: 401, wantRevalidate: 401},
 	}
@@ -620,30 +621,46 @@ func writeKeySet(t *testing.T, keys ...token.SigningKey) string {
 	return path
 }
 
-// pathGrant grants what a path_auth credential of pub and sub would: each
-// non-empty path and every path beneath it, publish for pub, and subscribe
-// and fetch for sub.
+// testRoot is the root of the grants pathGrant makes: the prefix of the keys
+// the tests sign with.
+const testRoot = "acme/app"
+
+// pathGrant grants, under testRoot, what a path_auth credential of pub and
+// sub would: each non-empty path at or beneath testRoot and every path
+// beneath it, publish for pub, and subscribe and fetch for sub.
 func pathGrant(pub, sub string) token.Grant {
-	var g token.Grant
+	g := token.Grant{Root: testRoot}
 	if pub != "" {
-		g.Scopes = append(g.Scopes, token.PathAndBeneath(pub, token.ActionPublish)...)
+		g.Publish = relAndBeneath(pub)
 	}
 	if sub != "" {
-		g.Scopes = append(g.Scopes, token.PathAndBeneath(sub, token.ActionSubscribe, token.ActionFetch)...)
+		g.Subscribe, g.Fetch = relAndBeneath(sub), relAndBeneath(sub)
 	}
 	return g
 }
 
+// relAndBeneath is the patterns relative to testRoot of path, which lies at
+// or beneath it, and of every path beneath it: everything beneath the root
+// for testRoot itself.
+func relAndBeneath(path string) []string {
+	rel := strings.TrimPrefix(path, testRoot)
+	if rel == "" {
+		return []string{"/"}
+	}
+	return []string{rel, rel + "/"}
+}
+
 // signPathAuth mints a 10-minute token with a path_auth claim of pub and sub
-// (each left out when empty), as other MoQ implementations sign one.
+// (each left out when empty), as other MoQ implementations sign one: its root
+// is the key's prefix, and pub and sub, at or beneath it, are relative to it.
 func signPathAuth(tb testing.TB, key token.SigningKey, pub, sub string) string {
 	tb.Helper()
-	pathAuth := map[string]string{"root": ""}
+	pathAuth := map[string]string{"root": key.Prefix}
 	if pub != "" {
-		pathAuth["pub"] = pub
+		pathAuth["pub"] = strings.TrimPrefix(pub, key.Prefix)
 	}
 	if sub != "" {
-		pathAuth["sub"] = sub
+		pathAuth["sub"] = strings.TrimPrefix(sub, key.Prefix)
 	}
 	now := time.Now().Unix()
 	header, err := json.Marshal(map[string]string{"alg": "EdDSA", "kid": key.ID, "typ": "JWT"})
@@ -662,8 +679,13 @@ func sign(tb testing.TB, key token.SigningKey, g token.Grant) string {
 	return tok
 }
 
+// publishAll grants publishing everything beneath root.
+func publishAll(root string) token.Grant {
+	return token.Grant{Root: root, Publish: []string{"/"}}
+}
+
 // A path_auth credential, as other MoQ implementations sign it, is admitted
-// with the scopes it amounts to: pub publishes, and sub subscribes and
+// with the grant it amounts to: pub publishes, and sub subscribes and
 // fetches, on every track at or beneath each path. It names no subject.
 func TestVerifier_PathAuthGrant(t *testing.T) {
 	k := genKey(t, "acme/app")
@@ -680,13 +702,13 @@ func TestVerifier_PathAuthGrant(t *testing.T) {
 	assert.False(t, g.Allows(token.ActionSubscribe, "/acme/app/live"))
 }
 
-func TestVerifier_ScopedGrant(t *testing.T) {
+func TestVerifier_PatternGrant(t *testing.T) {
 	k := genKey(t, "acme/app")
 	v := verifierWith(t, keySetJSON(t, []token.SigningKey{k}), time.Now())
-	jwt := sign(t, k, token.Grant{Subject: "42", Scopes: []token.Scope{
-		{Actions: []token.Action{token.ActionPublish}, Broadcast: "acme/app/room/123/comments"},
-		{Actions: []token.Action{token.ActionFetch}, Broadcast: "acme/app/room/123", Prefix: true},
-	}})
+	jwt := sign(t, k, token.Grant{
+		Root: "acme/app/room/123", Subject: "42",
+		Publish: []string{"/comments"}, Fetch: []string{"/"},
+	})
 
 	g, err := v.Authorize(context.Background(), sessionReq(EventConnect, jwt))
 
@@ -700,7 +722,7 @@ func TestVerifier_ScopedGrant(t *testing.T) {
 
 // TestVerifier_UsagePublishes pins which sessions are reported as
 // publishers, one by one, and which as viewers, in their key's total: a
-// session publishes when a scope lets it publish, and any other session,
+// session publishes when its grant has a publish pattern, and any other session,
 // whatever else it may do, such as post, is a viewer.
 func TestVerifier_UsagePublishes(t *testing.T) {
 	k := genKey(t, "acme/app")
@@ -709,18 +731,18 @@ func TestVerifier_UsagePublishes(t *testing.T) {
 		jwt  string
 		want bool
 	}{
-		"publish":                            {jwt: sign(t, k, scoped(token.ActionPublish)), want: true},
-		"publish and fetch":                  {jwt: sign(t, k, scoped(token.ActionPublish, token.ActionFetch)), want: true},
+		"publish":                            {jwt: sign(t, k, beneathLive(token.ActionPublish)), want: true},
+		"publish and fetch":                  {jwt: sign(t, k, beneathLive(token.ActionPublish, token.ActionFetch)), want: true},
 		"a path_auth publisher":              {jwt: signPathAuth(t, k, "acme/app/live", ""), want: true},
 		"a path_auth of both":                {jwt: signPathAuth(t, k, "acme/app/live", "acme/app"), want: true},
-		"subscribe":                          {jwt: sign(t, k, scoped(token.ActionSubscribe)), want: false},
-		"fetch":                              {jwt: sign(t, k, scoped(token.ActionFetch)), want: false},
+		"subscribe":                          {jwt: sign(t, k, beneathLive(token.ActionSubscribe)), want: false},
+		"fetch":                              {jwt: sign(t, k, beneathLive(token.ActionFetch)), want: false},
 		"a path_auth viewer":                 {jwt: signPathAuth(t, k, "", "acme/app"), want: false},
-		"redact only":                        {jwt: sign(t, k, scoped(token.ActionRedact)), want: false},
-		"post only":                          {jwt: sign(t, k, scoped(token.ActionPost)), want: false},
-		"a viewer who may post":              {jwt: sign(t, k, scoped(token.ActionPost, token.ActionSubscribe)), want: false},
-		"post and publish":                   {jwt: sign(t, k, scoped(token.ActionPost, token.ActionPublish)), want: true},
-		"create only, which a relay ignores": {jwt: sign(t, k, scoped(token.ActionCreate)), want: false},
+		"redact only":                        {jwt: sign(t, k, beneathLive(token.ActionRedact)), want: false},
+		"post only":                          {jwt: sign(t, k, beneathLive(token.ActionPost)), want: false},
+		"a viewer who may post":              {jwt: sign(t, k, beneathLive(token.ActionPost, token.ActionSubscribe)), want: false},
+		"post and publish":                   {jwt: sign(t, k, beneathLive(token.ActionPost, token.ActionPublish)), want: true},
+		"create only, which a relay ignores": {jwt: sign(t, k, beneathLive(token.ActionCreate)), want: false},
 	}
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
@@ -732,36 +754,31 @@ func TestVerifier_UsagePublishes(t *testing.T) {
 	}
 }
 
-// A ticket is verified as the credential of a session whose own credential
-// keyID signed: by that key alone, as new when presented and as live after.
+// A ticket is verified as a connect is, signed by the key that signed the
+// session's own credential and by no other.
 func TestVerifier_Ticket(t *testing.T) {
 	session, other, gone := genKey(t, "acme/app"), genKey(t, "acme/app"), genKey(t, "acme/app")
 	paused := genKey(t, "acme/app")
 	v := verifierWith(t, keySetJSON(t, []token.SigningKey{session, other, paused}, paused), time.Now())
-	listen := token.Grant{Scopes: token.PathAndBeneath("acme/app/room/42", token.ActionSubscribe, token.ActionFetch)}
-	speak := token.Grant{Scopes: []token.Scope{{Actions: []token.Action{token.ActionPublish}, Broadcast: "acme/app/room/42/7"}}}
+	listen := token.Grant{Root: "acme/app/room/42", Subscribe: []string{"/"}, Fetch: []string{"/"}}
+	speak := token.Grant{Root: "acme/app/room/42", Publish: []string{"/7"}}
 	tests := map[string]struct {
 		key      token.SigningKey
 		ticket   token.Grant
 		keyID    string
-		live     bool
 		wantCode int
 	}{
-		"the session's key":                     {key: session, ticket: listen, keyID: session.ID, wantCode: http.StatusOK},
-		"the session's key, live":               {key: session, ticket: speak, keyID: session.ID, live: true, wantCode: http.StatusOK},
-		"another trusted key":                   {key: other, ticket: listen, keyID: session.ID, wantCode: http.StatusForbidden},
-		"another trusted key, live":             {key: other, ticket: listen, keyID: session.ID, live: true, wantCode: http.StatusForbidden},
-		"a key not in the set":                  {key: gone, ticket: listen, keyID: gone.ID, wantCode: http.StatusUnauthorized},
-		"a session admitted by no key":          {key: session, ticket: listen, keyID: "", wantCode: http.StatusForbidden},
-		"a paused key, a new ticket to publish": {key: paused, ticket: speak, keyID: paused.ID, wantCode: http.StatusForbidden},
-		"a paused key, a new ticket to listen":  {key: paused, ticket: listen, keyID: paused.ID, wantCode: http.StatusOK},
-		"a paused key, a live ticket to publish": {
-			key: paused, ticket: speak, keyID: paused.ID, live: true, wantCode: http.StatusOK,
-		},
+		"the session's key":                 {key: session, ticket: listen, keyID: session.ID, wantCode: http.StatusOK},
+		"the session's key, to publish":     {key: session, ticket: speak, keyID: session.ID, wantCode: http.StatusOK},
+		"another trusted key":               {key: other, ticket: listen, keyID: session.ID, wantCode: http.StatusForbidden},
+		"a key not in the set":              {key: gone, ticket: listen, keyID: gone.ID, wantCode: http.StatusUnauthorized},
+		"a session admitted by no key":      {key: session, ticket: listen, keyID: "", wantCode: http.StatusForbidden},
+		"a paused key, a ticket to publish": {key: paused, ticket: speak, keyID: paused.ID, wantCode: http.StatusForbidden},
+		"a paused key, a ticket to listen":  {key: paused, ticket: listen, keyID: paused.ID, wantCode: http.StatusOK},
 	}
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
-			g, err := v.Ticket("s1", sign(t, tt.key, tt.ticket), tt.keyID, tt.live)
+			g, err := v.Ticket(sign(t, tt.key, tt.ticket), tt.keyID)
 
 			assert.Equal(t, tt.wantCode, statusOf(err), "%v", err)
 			if tt.wantCode != http.StatusOK {
@@ -771,13 +788,13 @@ func TestVerifier_Ticket(t *testing.T) {
 			require.NotNil(t, g)
 			assert.Equal(t, tt.keyID, g.KeyID())
 			assert.WithinDuration(t, time.Now().Add(10*time.Minute), g.Expires(), 2*time.Second)
-			assert.Equal(t, tt.ticket.Scopes, g.scopes)
+			assert.Equal(t, tt.ticket, g.grant)
 		})
 	}
 }
 
-// An expired ticket is refused when presented, but one already in force is
-// checked as a live session is, and stays.
+// An expired ticket is refused when presented, while one already in force is
+// still trusted: its expiry is the relay's to enforce, as MaxAge.
 func TestVerifier_Ticket_Expired(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		k := genKey(t, "acme/app")
@@ -786,33 +803,51 @@ func TestVerifier_Ticket_Expired(t *testing.T) {
 
 		time.Sleep(10*time.Minute + token.Leeway)
 
-		_, err := v.Ticket("s1", ticket, k.ID, false)
+		g, err := v.Ticket(ticket, k.ID)
 		assert.Equal(t, http.StatusUnauthorized, statusOf(err), "presented: %v", err)
-		_, err = v.Ticket("s1", ticket, k.ID, true)
-		assert.NoError(t, err, "live")
+		assert.Nil(t, g)
 	})
 }
 
-// A key leaving the set ends the tickets it signed.
-func TestVerifier_Ticket_WithdrawnKey(t *testing.T) {
+// A ticket in force is trusted while its key is in the set and its root
+// within the key's prefix, read from the set alone.
+func TestVerifier_Trusts(t *testing.T) {
 	k := genKey(t, "acme/app")
 	v := verifierWith(t, keySetJSON(t, []token.SigningKey{k}), time.Now())
-	ticket := sign(t, k, pathGrant("", "acme/app/room"))
-	_, err := v.Ticket("s1", ticket, k.ID, false)
+	g, err := v.Ticket(sign(t, k, pathGrant("", "acme/app/room")), k.ID)
 	require.NoError(t, err)
 
-	set, err := parseKeySet([]byte(`{"keys":[]}`))
+	trusted, err := v.Trusts(g)
 	require.NoError(t, err)
-	v.store.replace(set, time.Now())
-	_, err = v.Ticket("s1", ticket, k.ID, true)
+	assert.True(t, trusted, "its key is in the set")
 
-	assert.Equal(t, http.StatusUnauthorized, statusOf(err))
+	moved := k.Public()
+	moved.Prefix = "other"
+	set, err := token.MarshalKeySet(moved)
+	require.NoError(t, err)
+	parsed, err := parseKeySet(set)
+	require.NoError(t, err)
+	v.store.replace(parsed, time.Now())
+	trusted, err = v.Trusts(g)
+	require.NoError(t, err)
+	assert.False(t, trusted, "its root is no longer within the key's prefix")
+
+	empty, err := parseKeySet([]byte(`{"keys":[]}`))
+	require.NoError(t, err)
+	v.store.replace(empty, time.Now())
+	trusted, err = v.Trusts(g)
+	require.NoError(t, err)
+	assert.False(t, trusted, "its key left the set")
+
+	unloaded := &Verifier{now: time.Now}
+	_, err = unloaded.Trusts(g)
+	assert.Error(t, err, "with no set loaded, it can't be judged")
 }
 
-// A viewer session that presents a ticket to publish is reported by itself
-// from then on, with only what it moved since it was last counted as a
-// viewer; what it moved before stays in its key's viewer total. A ticket
-// checked again while live changes nothing.
+// A viewer session granted a ticket to publish is reported by itself from
+// then on, with only what it moved since it was last counted as a viewer;
+// what it moved before stays in its key's viewer total. Verifying a ticket
+// changes nothing: the relay reports the grant (Publishing) once it holds.
 func TestVerifier_Ticket_PublishingPromotesAViewer(t *testing.T) {
 	k := genKey(t, "acme/app")
 	sink := &fakeUsageSink{}
@@ -830,21 +865,20 @@ func TestVerifier_Ticket_PublishingPromotesAViewer(t *testing.T) {
 	rv.Bytes = Bytes{Sent: 100, Received: 10}
 	_, err = v.Authorize(context.Background(), rv)
 	require.NoError(t, err)
-	_, err = v.Ticket(rv.ID, listen, k.ID, false)
+	_, err = v.Ticket(listen, k.ID)
 	require.NoError(t, err)
-	_, err = v.Ticket(rv.ID, speak, k.ID, true)
+	_, err = v.Ticket(speak, k.ID)
 	require.NoError(t, err)
 	require.NoError(t, v.usage.flush(context.Background()))
 	before := sink.received()
-	_, err = v.Ticket(rv.ID, speak, k.ID, false)
-	require.NoError(t, err)
+	v.Publishing(rv.ID)
 	end := sessionReq(EventEnd, viewer)
 	end.Bytes, end.Reason = Bytes{Sent: 170, Received: 15}, "closed"
 	require.NoError(t, v.End(context.Background(), end))
 	require.NoError(t, v.usage.flush(context.Background()))
 
 	require.Len(t, before, 1)
-	require.Len(t, before[0], 1, "a viewer, and a ticket to listen or a live one, open no session")
+	require.Len(t, before[0], 1, "a viewer, and a ticket only verified, open no session")
 	assert.Equal(t, usage.Viewers, before[0][0].Type)
 	assert.Equal(t, map[string]int64{"gateway.egress_bytes": 100, "gateway.ingress_bytes": 10}, before[0][0].Metrics)
 	batches := sink.received()
@@ -861,8 +895,8 @@ func TestVerifier_Ticket_PublishingPromotesAViewer(t *testing.T) {
 		"what it moved since it was last counted as a viewer")
 }
 
-// A verified grant knows its key's prefix: its MoQ root never lies above it.
-func TestVerifier_GrantKeepsTheKeyPrefix(t *testing.T) {
+// A verified grant's MoQ grant is its token's root and patterns, unchanged.
+func TestVerifier_GrantMoQ(t *testing.T) {
 	k := genKey(t, "acme/app")
 	v := verifierWith(t, keySetJSON(t, []token.SigningKey{k}), time.Now())
 

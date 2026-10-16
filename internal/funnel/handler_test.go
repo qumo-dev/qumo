@@ -52,16 +52,46 @@ func TestNewHandler_PublishesCommittedRecords(t *testing.T) {
 
 // postAs grants subject posting into the tracks of the broadcast at path.
 func postAs(subject, path string) token.Grant {
-	return token.Grant{Subject: subject, Scopes: []token.Scope{
-		{Actions: []token.Action{token.ActionPost}, Broadcast: path},
-	}}
+	g := exactly(path, token.ActionPost)
+	g.Subject = subject
+	return g
 }
 
 // createOn grants creating tracks of the broadcast at path.
 func createOn(path string) token.Grant {
-	return token.Grant{Scopes: []token.Scope{
-		{Actions: []token.Action{token.ActionCreate}, Broadcast: path},
-	}}
+	return exactly(path, token.ActionCreate)
+}
+
+// exactly grants actions on the broadcast at path, "a/b", alone: the pattern
+// "/b" beneath the root "a".
+func exactly(path string, actions ...token.Action) token.Grant {
+	root, base := "", path
+	if i := strings.LastIndex(path, "/"); i >= 0 {
+		root, base = path[:i], path[i+1:]
+	}
+	return grantOn(root, []string{"/" + base}, actions...)
+}
+
+// grantOn grants actions on patterns beneath root.
+func grantOn(root string, patterns []string, actions ...token.Action) token.Grant {
+	g := token.Grant{Root: root}
+	for _, a := range actions {
+		switch a {
+		case token.ActionPublish:
+			g.Publish = patterns
+		case token.ActionSubscribe:
+			g.Subscribe = patterns
+		case token.ActionFetch:
+			g.Fetch = patterns
+		case token.ActionCreate:
+			g.Create = patterns
+		case token.ActionPost:
+			g.Post = patterns
+		case token.ActionRedact:
+			g.Redact = patterns
+		}
+	}
+	return g
 }
 
 func TestNewHandler_SenderComesFromTheCredential(t *testing.T) {
@@ -137,7 +167,7 @@ func TestNewHandler_HistoryNeedsASubscriber(t *testing.T) {
 	require.Equal(t, http.StatusCreated,
 		serve(h, http.MethodPost, chatURL, `"hello"`, sign(t, key, postAs("user-42", "room/123"))).Code)
 
-	viewer := serve(h, http.MethodGet, chatURL, "", sign(t, key, token.Grant{Scopes: token.PathAndBeneath("room/123", token.ActionFetch)}))
+	viewer := serve(h, http.MethodGet, chatURL, "", sign(t, key, grantOn("room", []string{"/123", "/123/"}, token.ActionFetch)))
 	sender := serve(h, http.MethodGet, chatURL, "", sign(t, key, postAs("user-42", "room/123")))
 
 	require.Equal(t, http.StatusOK, viewer.Code)

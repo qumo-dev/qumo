@@ -50,8 +50,8 @@ type authorizeFunc func(ctx context.Context, req auth.Request) (*auth.Grant, err
 //
 // A revalidate re-sends the connect request. Its reply decides only whether
 // the session continues: a refusal ends it, and an admitted grant sets the
-// cadence. The scopes were fixed at connect, since the credential is the
-// same, so they are not compared.
+// cadence. The grant was fixed at connect, since the credential is the
+// same, so it is not compared.
 type lease struct {
 	// ctx is the session's. It ends a revalidate in flight when the session
 	// closes.

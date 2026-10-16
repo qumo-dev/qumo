@@ -90,26 +90,26 @@ sender and per track; past either, a record is answered `429` with a
 
 With a key set (`QUMO_AUTH_KEYS`), every request carries a qumo credential as
 `Authorization: Bearer`, the same kind the relay admits sessions with and
-verified against the same key set. Its scopes
+verified against the same key set. Its root and each action's path patterns
 ([auth](../auth/#what-a-token-grants)) name the broadcasts it reaches, and
 each reaches every track of them:
 
-- **Creating** a track (`PUT`) needs a `create` scope matching the broadcast
+- **Creating** a track (`PUT`) needs a `create` pattern matching the broadcast
   path; the funnel then publishes the track. It is for the app, which
   decides which tracks a broadcast has; a sender's credential has none, so
-  senders record only into the tracks the app made. A `publish` scope, which
+  senders record only into the tracks the app made. A `publish` pattern, which
   sends through a relay, creates nothing here, so a publisher can't make
   funnel tracks under its own broadcast.
-- **Posting** (`POST`) needs a `post` scope matching the broadcast path. The
+- **Posting** (`POST`) needs a `post` pattern matching the broadcast path. The
   record's sender is the credential's `sub`, whatever the payload claims; a
-  credential without `sub` posts with no sender. A `publish` scope does not
-  post, and a `post` scope never publishes through a relay, so a sender's
+  credential without `sub` posts with no sender. A `publish` pattern does not
+  post, and a `post` pattern never publishes through a relay, so a sender's
   credential can't publish into the relay directly.
-- **Reading** history (`GET`) needs a `fetch` scope matching the broadcast
+- **Reading** history (`GET`) needs a `fetch` pattern matching the broadcast
   path.
-- **Redacting** (`DELETE`) needs a `redact` scope matching the broadcast
+- **Redacting** (`DELETE`) needs a `redact` pattern matching the broadcast
   path. The redaction carries the credential's `sub` as its
-  sender. No other scope redacts, so a sender's `post` credential can't take
+  sender. No other action redacts, so a sender's `post` credential can't take
   anyone's record out; an app that lets senders redact their own records
   checks the record and redacts with a credential it keeps to itself.
   Redactions are published live and kept in history, so a `sub` there is
@@ -117,16 +117,17 @@ each reaches every track of them:
   moderators anonymous.
 
 ```json
-{"sub": "alice",
- "scopes": [{"actions": ["post"], "broadcast": {"exact": "room/123/comments"}},
-            {"actions": ["fetch"], "broadcast": {"prefix": "room"}}],
+{"root": "room", "sub": "alice",
+ "post": ["/123/comments"], "fetch": ["/"],
  "iat": 1791370000, "nbf": 1791370000, "exp": 1791370600}
 ```
 
 posts as `alice` into the tracks the app made of `/room/123/comments`, and
-reads any track of every broadcast beneath `/room`.
+reads any track of every broadcast beneath `/room`. A wildcard grants one
+pattern for many broadcasts: `"post": ["/{room}/comments"]` posts into the
+comments of every room.
 
-A `path_auth` credential is read as the scopes it amounts to: its `sub` reads
+A `path_auth` credential is read as the grant it amounts to: its `sub` reads
 any track at or beneath its path. Its `pub` is publishing, so it creates
 and posts nothing.
 
@@ -141,9 +142,10 @@ With `RELAY_URL`, the funnel dials the relay as a client and announces its
 broadcasts on that session; the relay subscribes to them when its subscribers
 do. The session needs a credential that may publish there. The funnel either
 uses the `?jwt=` in `RELAY_URL`, or, with `RELAY_SIGNING_KEY` and
-`RELAY_PUBLISH`, signs a fresh one for every session, granting `publish` on
-`RELAY_PUBLISH` and every path beneath it, from a key the relay's key
-set trusts (`qumo auth keygen`, ideally confined with `-prefix`). A credential
+`RELAY_PUBLISH`, signs a fresh one for every session, whose root is
+`RELAY_PUBLISH` and which grants `publish` on every path beneath it
+(`"publish": ["/"]`), from a key the relay's key set trusts
+(`qumo auth keygen`, ideally confined with `-prefix`). A credential
 lasts at most an hour, so one in `RELAY_URL` admits sessions only until then;
 a long-running funnel signs its own.
 
@@ -174,7 +176,7 @@ restart before anyone records again.
 | `FUNNEL_SENDER_LIMIT` | (unset) | Records each sender may send into a track, as `RATE,BURST`: per second, and at once, e.g. `1,5`. Unset is no limit. |
 | `FUNNEL_TRACK_LIMIT` | (unset) | Records a track takes from all senders together, as `RATE,BURST`, e.g. `20,40`. Unset is no limit. |
 | `RELAY_URL` | (unset) | The relay to publish through, dialed as a client: `https://relay:4433` for WebTransport or `moqt://relay:4433` for native QUIC. It may carry a credential as `?jwt=`. |
-| `RELAY_SIGNING_KEY` / `RELAY_PUBLISH` | (unset) | A signing key file and the path its credentials grant publishing at, e.g. `room`. Set together; the funnel signs a fresh relay credential for every session in place of `?jwt=`. |
+| `RELAY_SIGNING_KEY` / `RELAY_PUBLISH` | (unset) | A signing key file and the root its credentials grant publishing beneath, e.g. `room` for `/room/123/comments`. Set together; the funnel signs a fresh relay credential for every session in place of `?jwt=`. |
 | `RELAY_CA_FILE` | (unset) | PEM certificate to trust as the relay's root, instead of the system roots. |
 | `RELAY_TLS_INSECURE` | `false` | Skip relay TLS verification, for a self-signed dev relay. |
 | `FUNNEL_SERVE_ADDR` | `:4433` without `RELAY_URL`, none with it | MoQT listen address for subscribers that dial the funnel directly. |

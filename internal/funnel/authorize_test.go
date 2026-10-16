@@ -70,7 +70,7 @@ func signPathAuth(tb testing.TB, key token.SigningKey, pub, sub string) string {
 	return input + "." + base64.RawURLEncoding.EncodeToString(ed25519.Sign(key.Private, []byte(input)))
 }
 
-// A path_auth credential is read as scopes: sub reads at its path and beneath
+// A path_auth credential is read as the grant it amounts to: sub reads at its path and beneath
 // it, and pub, being publish, which sends through a relay, permits nothing.
 func TestAuthorizer_PathAuth(t *testing.T) {
 	v, key := newVerifier(t)
@@ -124,14 +124,16 @@ func TestAuthorizer_PathAuth(t *testing.T) {
 	}
 }
 
-func TestAuthorizer_Scopes(t *testing.T) {
+func TestAuthorizer_Patterns(t *testing.T) {
 	v, key := newVerifier(t)
 	chat := ingest.Track{BroadcastPath: "/room/123/comments", TrackName: "chat"}
-	scope := func(broadcast string, prefix bool, actions ...token.Action) token.Scope {
-		return token.Scope{Actions: actions, Broadcast: broadcast, Prefix: prefix}
+	// on grants actions on pattern beneath root.
+	on := func(root, pattern string, actions ...token.Action) token.Grant {
+		return grantOn(root, []string{pattern}, actions...)
 	}
-	bearerOf := func(subject string, scopes ...token.Scope) string {
-		return "Bearer " + sign(t, key, token.Grant{Subject: subject, Scopes: scopes})
+	bearerOf := func(subject string, g token.Grant) string {
+		g.Subject = subject
+		return "Bearer " + sign(t, key, g)
 	}
 
 	tests := map[string]struct {
@@ -141,109 +143,115 @@ func TestAuthorizer_Scopes(t *testing.T) {
 		wantErr    bool
 	}{
 		"posting with no subject": {
-			header: bearerOf("", scope("room/123/comments", false, token.ActionPost)),
+			header: bearerOf("", on("room/123", "/comments", token.ActionPost)),
 		},
 		"posting as a subject": {
-			header:     bearerOf("42", scope("room/123/comments", false, token.ActionPost)),
+			header:     bearerOf("42", on("room/123", "/comments", token.ActionPost)),
 			wantSender: "42",
 		},
 		"posting under a prefix": {
-			header:     bearerOf("42", scope("room/123", true, token.ActionPost)),
+			header:     bearerOf("42", on("room/123", "/", token.ActionPost)),
 			wantSender: "42",
 		},
 		"posting beneath the broadcast": {
-			header:  bearerOf("42", scope("room/123/comments/user-42", false, token.ActionPost)),
+			header:  bearerOf("42", on("room/123/comments", "/user-42", token.ActionPost)),
 			wantErr: true,
 		},
 		"posting under a sibling prefix": {
-			header:  bearerOf("42", scope("room/12", true, token.ActionPost)),
+			header:  bearerOf("42", on("room/12", "/", token.ActionPost)),
 			wantErr: true,
 		},
 		"posting with publish, which sends through a relay": {
-			header:  bearerOf("42", scope("room/123/comments", false, token.ActionPublish)),
+			header:  bearerOf("42", on("room/123", "/comments", token.ActionPublish)),
 			wantErr: true,
 		},
 		"posting with fetch only": {
-			header:  bearerOf("42", scope("room/123/comments", false, token.ActionFetch)),
+			header:  bearerOf("42", on("room/123", "/comments", token.ActionFetch)),
 			wantErr: true,
 		},
 		"posting with subscribe only": {
-			header:  bearerOf("42", scope("room/123/comments", false, token.ActionSubscribe)),
+			header:  bearerOf("42", on("room/123", "/comments", token.ActionSubscribe)),
 			wantErr: true,
 		},
 		"reading with fetch": {
-			header: bearerOf("42", scope("room/123/comments", false, token.ActionFetch)),
+			header: bearerOf("42", on("room/123", "/comments", token.ActionFetch)),
 			access: ingest.Read,
 		},
 		"reading under a fetch prefix": {
-			header: bearerOf("", scope("room", true, token.ActionFetch)),
+			header: bearerOf("", on("room", "/", token.ActionFetch)),
 			access: ingest.Read,
 		},
 		"reading with subscribe only": {
-			header:  bearerOf("42", scope("room/123/comments", false, token.ActionSubscribe)),
+			header:  bearerOf("42", on("room/123", "/comments", token.ActionSubscribe)),
 			access:  ingest.Read,
 			wantErr: true,
 		},
 		"reading with post only": {
-			header:  bearerOf("42", scope("room/123/comments", false, token.ActionPost)),
+			header:  bearerOf("42", on("room/123", "/comments", token.ActionPost)),
 			access:  ingest.Read,
 			wantErr: true,
 		},
 		"creating with create": {
-			header: bearerOf("app", scope("room/123/comments", false, token.ActionCreate)),
+			header: bearerOf("app", on("room/123", "/comments", token.ActionCreate)),
 			access: ingest.Create,
 		},
 		"creating under a create prefix": {
-			header: bearerOf("", scope("room", true, token.ActionCreate)),
+			header: bearerOf("", on("room", "/", token.ActionCreate)),
 			access: ingest.Create,
 		},
 		"creating with publish, which sends through a relay": {
-			header:  bearerOf("", scope("room/123/comments", false, token.ActionPublish)),
+			header:  bearerOf("", on("room/123", "/comments", token.ActionPublish)),
 			access:  ingest.Create,
 			wantErr: true,
 		},
 		"posting with create only": {
-			header:  bearerOf("42", scope("room/123/comments", false, token.ActionCreate)),
+			header:  bearerOf("42", on("room/123", "/comments", token.ActionCreate)),
 			wantErr: true,
 		},
 		"creating with post only": {
-			header:  bearerOf("42", scope("room/123/comments", false, token.ActionPost)),
+			header:  bearerOf("42", on("room/123", "/comments", token.ActionPost)),
 			access:  ingest.Create,
 			wantErr: true,
 		},
 		"creating with every other action": {
-			header: bearerOf("", scope("room", true,
+			header: bearerOf("", on("room", "/",
 				token.ActionPublish, token.ActionSubscribe, token.ActionFetch, token.ActionPost, token.ActionRedact)),
 			access:  ingest.Create,
 			wantErr: true,
 		},
-		"the second of two scopes": {
-			header: bearerOf("42",
-				scope("room/9", true, token.ActionPost),
-				scope("room/123/comments", false, token.ActionPost)),
+		"the second of two patterns": {
+			header:     bearerOf("42", grantOn("room", []string{"/9/", "/123/comments"}, token.ActionPost)),
 			wantSender: "42",
 		},
+		"posting with a wildcard": {
+			header:     bearerOf("42", on("room", "/{room}/comments", token.ActionPost)),
+			wantSender: "42",
+		},
+		"posting at the root itself": {
+			header:  bearerOf("42", on("room/123/comments", "/", token.ActionPost)),
+			wantErr: true,
+		},
 		"redacting at the broadcast": {
-			header:     bearerOf("moderator", scope("room/123/comments", false, token.ActionRedact)),
+			header:     bearerOf("moderator", on("room/123", "/comments", token.ActionRedact)),
 			access:     ingest.Redact,
 			wantSender: "moderator",
 		},
 		"redacting under a prefix, with no subject": {
-			header: bearerOf("", scope("room", true, token.ActionRedact)),
+			header: bearerOf("", on("room", "/", token.ActionRedact)),
 			access: ingest.Redact,
 		},
 		"redacting with every other action": {
-			header: bearerOf("", scope("room", true,
+			header: bearerOf("", on("room", "/",
 				token.ActionPublish, token.ActionSubscribe, token.ActionFetch, token.ActionPost, token.ActionCreate)),
 			access:  ingest.Redact,
 			wantErr: true,
 		},
 		"posting with redact only": {
-			header:  bearerOf("", scope("room", true, token.ActionRedact)),
+			header:  bearerOf("", on("room", "/", token.ActionRedact)),
 			wantErr: true,
 		},
 		"reading with redact only": {
-			header:  bearerOf("", scope("room", true, token.ActionRedact)),
+			header:  bearerOf("", on("room", "/", token.ActionRedact)),
 			access:  ingest.Read,
 			wantErr: true,
 		},
@@ -272,10 +280,8 @@ func TestAuthorizer_Scopes(t *testing.T) {
 func TestAuthorizer_PausedKeyCreatesNothing(t *testing.T) {
 	v, key := newVerifierPausing(t, token.ActionPublish)
 	chat := ingest.Track{BroadcastPath: "/room/123/comments", TrackName: "chat"}
-	app := "Bearer " + sign(t, key, token.Grant{Scopes: []token.Scope{{
-		Actions:   []token.Action{token.ActionCreate, token.ActionPost, token.ActionFetch, token.ActionRedact},
-		Broadcast: "room/123/comments",
-	}}})
+	app := "Bearer " + sign(t, key, grantOn("room/123", []string{"/comments"},
+		token.ActionCreate, token.ActionPost, token.ActionFetch, token.ActionRedact))
 	authorize := authorizer(v)
 
 	for access, wantErr := range map[ingest.Access]bool{
@@ -290,9 +296,7 @@ func TestAuthorizer_PausedKeyCreatesNothing(t *testing.T) {
 	}
 
 	r := httptest.NewRequest(http.MethodPut, "/tracks/room/123/comments/chat", nil)
-	r.Header.Set("Authorization", "Bearer "+sign(t, key, token.Grant{Scopes: []token.Scope{{
-		Actions: []token.Action{token.ActionPost}, Broadcast: "room/123/comments",
-	}}}))
+	r.Header.Set("Authorization", "Bearer "+sign(t, key, grantOn("room/123", []string{"/comments"}, token.ActionPost)))
 	_, err := authorize(r, chat, ingest.Create)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "may not create", "a credential that may not create is refused for that, paused or not")

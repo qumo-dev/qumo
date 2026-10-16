@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
-	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -40,12 +40,12 @@ type VerifierConfig struct {
 // key set. Its Authorize and End are what the relay's Server takes.
 //
 // A session's credential (the jwt query parameter of its connect URL) must be
-// signed by a key in the set, grant only paths within the key's prefix, and be
+// signed by a key in the set, have its root within the key's prefix, and be
 // within its validity (token.Verify). A live session is re-checked every 30 s
 // (token.VerifyLive): a key that has left the set ends its sessions. The
 // credential's expiry decides only whether the session may start. A key
 // marked "pause": ["publish"] starts no new sessions that may publish (a
-// credential with a publish scope), and a funnel creates no track with it
+// credential with a publish pattern), and a funnel creates no track with it
 // (Check); it
 // never ends a live one, since it pauses what is new rather than what is on
 // air. The key set is kept when a refresh fails (fail-static): after 6 h
@@ -123,7 +123,7 @@ func refuse(status int, format string, args ...any) error {
 func (v *Verifier) Authorize(_ context.Context, req Request) (*Grant, error) {
 	connect := req.Event == EventConnect
 	credential, credErr := credentialOf(req.Query)
-	g, s, err := v.decide(credential, credErr, connect, func(g *Grant) bool { return connect && publishesBroadcast(g.scopes) })
+	g, s, err := v.decide(credential, credErr, connect, func(g *Grant) bool { return connect && publishesBroadcast(g.grant) })
 	if v.usage != nil {
 		// A session is learned only when it is admitted at connect. A
 		// revalidate never adds one: it can finish after the session's end
@@ -154,26 +154,46 @@ func (v *Verifier) Check(credential string, action token.Action, path moqt.Broad
 	return g, err
 }
 
-// Ticket verifies credential, a ticket presented on an Auth Stream of the
-// session id, whose own credential keyID signed. The ticket must be signed by
-// that same key, so that everything a session may do is its key's tenant's
-// to grant and is reported under it. A new ticket is verified as a connect
-// is; a live one, checked again while its grant is in force, as a live
-// session is (token.VerifyLive), so a key that left the set ends it. A key
-// paused for publishing refuses a new ticket that may publish, and one that
-// may makes its session a publisher in the usage reported.
-func (v *Verifier) Ticket(id, credential, keyID string, live bool) (*Grant, error) {
-	g, s, err := v.decide(credential, nil, !live, func(g *Grant) bool { return !live && publishesBroadcast(g.scopes) })
+// Ticket verifies credential, a ticket presented on an Auth Stream of a
+// session whose own credential keyID signed, as a connect is. The ticket must
+// be signed by that same key, so that everything a session may do is its
+// key's tenant's to grant and is reported under it. A key paused for
+// publishing refuses one that may publish.
+func (v *Verifier) Ticket(credential, keyID string) (*Grant, error) {
+	g, _, err := v.decide(credential, nil, true, func(g *Grant) bool { return publishesBroadcast(g.grant) })
 	if err != nil {
 		return nil, err
 	}
 	if g.keyID != keyID {
 		return nil, refuse(http.StatusForbidden, "the ticket is signed by key %s, not by the session's", g.keyID)
 	}
-	if !live && s.publishes && v.usage != nil {
+	return g, nil
+}
+
+// Trusts reports whether g, a ticket's grant, is still in force as a live
+// session's credential is: its key is in the current set, and its root
+// within the key's prefix. It reads the set alone, so checking every ticket
+// often costs no signature. An error is a set it can't judge by, such as
+// none loaded yet: the ticket stays in force and is checked again.
+func (v *Verifier) Trusts(g *Grant) (bool, error) {
+	set, _ := v.store.current(v.now())
+	if set == nil {
+		return false, errors.New("auth: no key set loaded yet")
+	}
+	key, ok := set.keys[g.keyID]
+	if !ok {
+		return false, nil
+	}
+	root := g.grant.Root
+	return key.Prefix == "" || root == key.Prefix || strings.HasPrefix(root, key.Prefix+"/"), nil
+}
+
+// Publishing records that the session id was granted a ticket that may
+// publish: the usage it reports is a publisher's from then on.
+func (v *Verifier) Publishing(id string) {
+	if v.usage != nil {
 		v.usage.publishing(id)
 	}
-	return g, nil
 }
 
 // credentialOf returns the credential a connect URL's raw query carries as
@@ -219,25 +239,20 @@ func (v *Verifier) decide(credential string, credErr error, connect bool, paused
 		}
 		return nil, usageSession{}, refuse(status, "%v", err)
 	}
-	g := &Grant{
-		scopes: c.Scopes, subject: c.Subject, revalidate: revalidateEvery,
-		keyID: c.Key.ID, expires: c.ExpiresAt, keyPrefix: c.Key.Prefix,
-	}
+	g := &Grant{grant: c.Grant, revalidate: revalidateEvery, keyID: c.Key.ID, expires: c.ExpiresAt}
 	if c.Key.Pauses(token.ActionPublish) && paused(g) {
 		return nil, usageSession{}, refuse(http.StatusForbidden,
 			"signing key %s starts nothing new that publishes", c.Key.ID)
 	}
-	return g, usageSession{kid: c.Key.ID, publishes: publishesBroadcast(c.Scopes)}, nil
+	return g, usageSession{kid: c.Key.ID, publishes: publishesBroadcast(c.Grant)}, nil
 }
 
-// publishesBroadcast reports whether scopes let a relay session publish a
-// broadcast: a scope permitting publish, which announces it. A relay ignores
-// create, which a funnel checks itself (Check), and a bearer that may only
-// post is a viewer, such as a chat sender posting into a funnel's track.
-func publishesBroadcast(scopes []token.Scope) bool {
-	return slices.ContainsFunc(scopes, func(s token.Scope) bool {
-		return slices.Contains(s.Actions, token.ActionPublish)
-	})
+// publishesBroadcast reports whether g lets a relay session publish a
+// broadcast: a publish pattern, which announces it. A relay ignores create,
+// which a funnel checks itself (Check), and a bearer that may only post is a
+// viewer, such as a chat sender posting into a funnel's track.
+func publishesBroadcast(g token.Grant) bool {
+	return len(g.Publish) > 0
 }
 
 // End reports a session's end with its final byte totals.

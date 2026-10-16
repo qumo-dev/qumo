@@ -71,27 +71,55 @@ func (f *fakeAuth) received() []auth.Request {
 
 // testGrant returns a grant that may publish beneath one subtree pattern and
 // subscribe to and fetch beneath another ("**" for everything, "a/b/**" for
-// a/b and beneath it, "" for none), checked again every revalidate.
+// a/b and beneath it, "" for none), checked again every revalidate. Its root
+// is the deepest directory both subtrees lie in.
 func testGrant(tb testing.TB, publish, subscribe string, revalidate time.Duration) *auth.Grant {
 	tb.Helper()
-	var scopes []token.Scope
-	for _, role := range []struct {
-		pattern string
-		actions []token.Action
+	var g token.Grant
+	roles := []struct {
+		pattern  string
+		patterns []*[]string
+		base     string
 	}{
-		{publish, []token.Action{token.ActionPublish}},
-		{subscribe, []token.Action{token.ActionSubscribe, token.ActionFetch}},
-	} {
+		{pattern: publish, patterns: []*[]string{&g.Publish}},
+		{pattern: subscribe, patterns: []*[]string{&g.Subscribe, &g.Fetch}},
+	}
+	var dirs []string
+	for i, role := range roles {
 		if role.pattern == "" {
 			continue
 		}
 		base, ok := strings.CutSuffix(role.pattern, "**")
 		require.True(tb, ok, "pattern %q is not a subtree", role.pattern)
-		if base == "" {
-			scopes = append(scopes, token.Scope{Actions: role.actions, Prefix: true})
+		roles[i].base = strings.TrimSuffix(base, "/")
+		dirs = append(dirs, parentDir(roles[i].base))
+	}
+	for i, d := range dirs {
+		if i == 0 {
+			g.Root = d
 			continue
 		}
-		scopes = append(scopes, token.PathAndBeneath(strings.TrimSuffix(base, "/"), role.actions...)...)
+		for g.Root != "" && d != g.Root && !strings.HasPrefix(d, g.Root+"/") {
+			g.Root = parentDir(g.Root)
+		}
 	}
-	return auth.NewGrant(scopes, revalidate)
+	for _, role := range roles {
+		if role.pattern == "" {
+			continue
+		}
+		patterns := []string{"/"}
+		if role.base != "" {
+			rel := "/" + strings.TrimPrefix(strings.TrimPrefix(role.base, g.Root), "/")
+			patterns = []string{rel, rel + "/"}
+		}
+		for _, p := range role.patterns {
+			*p = patterns
+		}
+	}
+	return auth.NewGrant(g, revalidate)
+}
+
+// parentDir is the directory path lies in: "a" for "a/b", "" for "a".
+func parentDir(path string) string {
+	return path[:max(strings.LastIndex(path, "/"), 0)]
 }
