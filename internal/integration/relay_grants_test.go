@@ -64,6 +64,15 @@ func TestRelay_PatternCredentials(t *testing.T) {
 
 		assert.Error(t, err)
 	})
+	t.Run("a credential carrying fetch is refused", func(t *testing.T) {
+		stale := signClaims(t, key, map[string]any{
+			"root": "acme", "subscribe": []string{"/"}, "fetch": []string{"/"},
+		})
+
+		err := subscribeTrack(t, "https://"+addr+"/?jwt="+stale, "/acme/live", "video")
+
+		assert.Error(t, err, "fetch is no claim the relay knows, so the session is not admitted")
+	})
 	t.Run("a viewer granted the exact broadcast", func(t *testing.T) {
 		err := subscribeTrack(t, url(exactly("acme/live", token.ActionSubscribe)), "/acme/live", "video")
 

@@ -70,6 +70,8 @@ A token may grant no pattern at all, and may then leave out `root`. Whatever no 
 
 grants what `{"root": "acme/app/rooms/42", "publish": ["/alice", "/alice/"], "subscribe": ["/"]}` does. A token carrying both `path_auth` and `root` or a pattern is refused, and so is one carrying `path_auth` and `sub`. `qumo auth token` and `token.Sign` never write `path_auth`.
 
+**`subscribe` is both live and history**, so a credential that reads a funnel track's history may also subscribe to the broadcasts it names on a relay, and one that listens live may read their history: grant patterns as narrow as the bearer needs.
+
 **On the relay**, a session may announce a broadcast a `publish` pattern matches, and the relay takes its tracks from it. A broadcast has one publisher, so give each publisher its own broadcast path; to write into a track a [funnel](../funnel/) publishes, grant `post` there instead. The relay ignores `post` and `create`. A session may subscribe to, request the track info of and fetch from any track of a broadcast a `subscribe` pattern matches.
 
 **A session may list announcements within its token's root**: a credential whose root is `acme/app/rooms/42` lists `/acme/app/rooms/42/` and what lies beneath it, and nothing of another room. Since the root lies at or beneath the key's prefix, a session lists nothing of another tenant. A credential with no `publish` or `subscribe` pattern grants nothing on the relay, not even listing.

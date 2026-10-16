@@ -275,6 +275,23 @@ func TestFunnel_RestartServesRecordedTracks(t *testing.T) {
 	assert.Equal(t, `{"payload":"after"}`, got)
 }
 
+// signClaims mints a one-minute credential with grant claims as given, so a
+// test can present one Sign would not write.
+func signClaims(t *testing.T, key token.SigningKey, grant map[string]any) string {
+	t.Helper()
+	now := time.Now().Unix()
+	header, err := json.Marshal(map[string]string{"alg": "EdDSA", "kid": key.ID, "typ": "JWT"})
+	require.NoError(t, err)
+	claims := map[string]any{"iat": now, "nbf": now, "exp": now + 60}
+	for k, v := range grant {
+		claims[k] = v
+	}
+	body, err := json.Marshal(claims)
+	require.NoError(t, err)
+	input := base64.RawURLEncoding.EncodeToString(header) + "." + base64.RawURLEncoding.EncodeToString(body)
+	return input + "." + base64.RawURLEncoding.EncodeToString(ed25519.Sign(key.Private, []byte(input)))
+}
+
 // signPathAuth mints a one-minute credential with a path_auth claim of pub
 // and sub (each left out when empty), as other MoQ implementations sign one.
 func signPathAuth(t *testing.T, key token.SigningKey, pub, sub string) string {
