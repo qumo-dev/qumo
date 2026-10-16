@@ -53,6 +53,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A viewer that subscribes before a publisher’s tracks are known now gets them (gomoqt v0.26.0, `@qumo/moq` 0.26.0).** An ingest’s catalog subscription stays open and receives each change, so a player no longer stays on an empty catalog; the playground applies the newest catalog when updates arrive out of order.
 - **The relay closes an upstream subscription when it stops forwarding a track,** so publishers no longer keep sending groups nobody accepts.
 - **Draining a route and shutting down end a subscribe still waiting for its first group (gomoqt v0.24.2).** Quiet tracks now fail over on drain, and `qumo hls` waiting for a catalog exits on SIGTERM.
 - **Subscribers of a quiet track are no longer dropped after 30 seconds (gomoqt v0.24.1).** Tracks with no group yet (an idle event track, a muted speaker) no longer fail with `subscription timed out`.

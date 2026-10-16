@@ -1,4 +1,32 @@
 import { parseCatalog } from "@qumo/moq/msf";
+import type { Track } from "./source.ts";
+
+/**
+ * Reads catalog groups from track and hands each catalog payload to apply,
+ * until the track ends or `done` resolves; returns the error acceptGroup
+ * ended with. The publisher sends the whole catalog again on every change,
+ * each group on its own stream, so an older catalog can arrive after a newer
+ * one: it is skipped, and the catalog applied last is always the newest seen.
+ */
+export async function readCatalogs(
+	track: Track,
+	done: Promise<void>,
+	apply: (payload: Uint8Array) => void,
+): Promise<Error> {
+	let newest: number | undefined;
+	for (;;) {
+		const [group, err] = await track.acceptGroup(done);
+		if (group === undefined) return err;
+		if (newest !== undefined && group.sequence <= newest) {
+			group.cancel();
+			continue;
+		}
+		newest = group.sequence;
+		for await (const frame of group.frames()) {
+			apply(frame.bytes);
+		}
+	}
+}
 
 /** Decoder configurations carried by one catalog payload. */
 export interface DecoderConfigs {
