@@ -1,7 +1,6 @@
 package relay
 
 import (
-	"cmp"
 	"context"
 	"log/slog"
 	"maps"
@@ -10,6 +9,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/qumo-dev/gomoqt/moqt"
@@ -68,8 +68,17 @@ type Server struct {
 	Tickets TicketVerifier
 
 	// AuthDeadline is how long a session that connected with no credential
-	// has to be granted a ticket before it is closed. Zero is 10 s.
+	// may hold no grant that grants something before it is closed. Zero or
+	// less is 10 s.
 	AuthDeadline time.Duration
+
+	// MaxPendingAnonymous is how many sessions that connected with no
+	// credential and hold no grant yet may be open at once; past it another
+	// is refused as unavailable. Zero or less is 1024.
+	MaxPendingAnonymous int
+
+	// pendingAnonymous counts the sessions MaxPendingAnonymous bounds.
+	pendingAnonymous atomic.Int64
 
 	// framePool recycles frame buffers for track distributors; sized from Config.FrameCapacity in init() (falling back to
 	// DefaultFramePool when unset, so a minimally-constructed Server still works).
@@ -213,6 +222,10 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 func (s *Server) serveUpgrade(w http.ResponseWriter, r *http.Request, upgrader http.Handler, g *auth.Grant, req auth.Request) {
 	a := decidedAdmission(g, req)
 	a.client = upgradeClientOf(r, req.Transport)
+	if g != nil && g.Anonymous() {
+		a.countPending(&s.pendingAnonymous)
+		defer a.unwatch()
+	}
 	upgrader.ServeHTTP(w, r.WithContext(withAdmission(r.Context(), a)))
 	// gomoqt serves the session within ServeHTTP. If the upgrade failed
 	// anyway, no session ran and none will report its end: report it here,
@@ -730,6 +743,10 @@ func (s *Server) relayPeer(sess *moqt.Session) {
 		a.decide(refusedGrant, req)
 		return
 	}
+	if g != nil && g.Anonymous() {
+		a.countPending(&s.pendingAnonymous)
+		defer a.unwatch()
+	}
 	a.decide(g, req)
 	s.serveSession(sess)
 }
@@ -753,7 +770,7 @@ func (s *Server) serveSession(sess *moqt.Session) {
 		s.sessionEnds.add()
 		defer func() {
 			defer s.sessionEnds.done()
-			s.reportEnd(sess.Context(), a.req, sess.Stats(), endReason(l, context.Cause(sess.Context())))
+			s.reportEnd(sess.Context(), a.req, sess.Stats(), sessionEndReason(a, l, context.Cause(sess.Context())))
 		}()
 	}
 	// Registered before the close below, so that it runs after it, with the
@@ -764,7 +781,7 @@ func (s *Server) serveSession(sess *moqt.Session) {
 	metricSessionsTotal.WithLabelValues(transport, class).Inc()
 	defer func() {
 		stats := sess.Stats()
-		reason := endReason(l, context.Cause(sess.Context()))
+		reason := sessionEndReason(a, l, context.Cause(sess.Context()))
 		metricSessionBytes.WithLabelValues(transport, class, "sent").Add(float64(stats.BytesSent))
 		metricSessionBytes.WithLabelValues(transport, class, "received").Add(float64(stats.BytesReceived))
 		metricSessionsClosed.WithLabelValues(transport, class, reason).Inc()
@@ -776,15 +793,12 @@ func (s *Server) serveSession(sess *moqt.Session) {
 			defer l.stop()
 		}
 		if a.grant.Anonymous() {
-			deadline := time.AfterFunc(cmp.Or(s.AuthDeadline, authDeadline), func() {
-				if a.granted.Load() {
-					return
-				}
+			a.watch(s.authDeadline(), func() {
 				metricSessionsEnded.WithLabelValues(endUnbound).Inc()
-				slog.Info("relay: session closed: no credential presented in time", "id", a.req.ID, "remote", a.req.Remote)
+				slog.Info("relay: session closed: it held no credential in time", "id", a.req.ID, "remote", a.req.Remote)
 				_ = sess.CloseWithError(moqt.UnauthorizedSessionErrorCode, endUnboundMessage) // not actionable: the session is ending either way
 			})
-			defer deadline.Stop()
+			defer a.unwatch()
 		}
 	}
 

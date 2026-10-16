@@ -773,13 +773,13 @@ func TestVerifier_Ticket(t *testing.T) {
 		published bool
 		wantCode  int
 	}{
-		"the session's key":                  {key: session, ticket: listen, keyID: session.ID, wantCode: http.StatusOK},
-		"the session's key, to publish":      {key: session, ticket: speak, keyID: session.ID, wantCode: http.StatusOK},
-		"another trusted key":                {key: other, ticket: listen, keyID: session.ID, wantCode: http.StatusForbidden},
-		"a key not in the set":               {key: gone, ticket: listen, keyID: gone.ID, wantCode: http.StatusUnauthorized},
-		"an anonymous session not yet bound": {key: other, ticket: listen, keyID: "", wantCode: http.StatusOK},
-		"a paused key, a ticket to publish":  {key: paused, ticket: speak, keyID: paused.ID, wantCode: http.StatusForbidden},
-		"a paused key, a ticket to listen":   {key: paused, ticket: listen, keyID: paused.ID, wantCode: http.StatusOK},
+		"the session's key":                 {key: session, ticket: listen, keyID: session.ID, wantCode: http.StatusOK},
+		"the session's key, to publish":     {key: session, ticket: speak, keyID: session.ID, wantCode: http.StatusOK},
+		"another trusted key":               {key: other, ticket: listen, keyID: session.ID, wantCode: http.StatusForbidden},
+		"a key not in the set":              {key: gone, ticket: listen, keyID: gone.ID, wantCode: http.StatusUnauthorized},
+		"a session admitted by no key":      {key: session, ticket: listen, keyID: "", wantCode: http.StatusForbidden},
+		"a paused key, a ticket to publish": {key: paused, ticket: speak, keyID: paused.ID, wantCode: http.StatusForbidden},
+		"a paused key, a ticket to listen":  {key: paused, ticket: listen, keyID: paused.ID, wantCode: http.StatusOK},
 		// A pause stops what is new: a publisher on air renews its grant.
 		"a paused key, a publisher renewing": {key: paused, ticket: speak, keyID: paused.ID, published: true, wantCode: http.StatusOK},
 	}
@@ -793,7 +793,7 @@ func TestVerifier_Ticket(t *testing.T) {
 				return
 			}
 			require.NotNil(t, g)
-			assert.Equal(t, tt.key.ID, g.KeyID())
+			assert.Equal(t, tt.keyID, g.KeyID())
 			assert.WithinDuration(t, time.Now().Add(10*time.Minute), g.Expires(), 2*time.Second)
 			assert.Equal(t, tt.ticket, g.grant)
 		})
@@ -966,7 +966,7 @@ func TestVerifier_AnonymousUsage(t *testing.T) {
 	require.NoError(t, err)
 	assert.Empty(t, v.usage.sessions, "an anonymous session is not counted at connect")
 
-	v.Bind("s1", k.ID)
+	v.Bind("s1", k.ID, false)
 	v.Publishing("s1")
 	req := sessionReq(EventRevalidate, "")
 	req.Bytes = Bytes{Received: 40}
@@ -980,4 +980,60 @@ func TestVerifier_AnonymousUsage(t *testing.T) {
 		got = append(got, string(rec.Type))
 	}
 	assert.ElementsMatch(t, []string{"session_open", "usage"}, got)
+}
+
+// The first ticket of an anonymous session may be signed by any key in the
+// set, verified as a connect is: a key paused for publishing refuses one
+// that may publish, since the session has published nothing.
+func TestVerifier_FirstTicket(t *testing.T) {
+	session, other, gone := genKey(t, "acme/app"), genKey(t, "acme/app"), genKey(t, "acme/app")
+	paused := genKey(t, "acme/app")
+	v := verifierWith(t, keySetJSON(t, []token.SigningKey{session, other, paused}, paused), time.Now())
+	listen := token.Grant{Root: "/acme/app/room/42/", Subscribe: []string{"/"}}
+	speak := token.Grant{Root: "/acme/app/room/42/", Publish: []string{"/7"}}
+	tests := map[string]struct {
+		key      token.SigningKey
+		ticket   token.Grant
+		wantCode int
+	}{
+		"a trusted key":                     {key: session, ticket: listen, wantCode: http.StatusOK},
+		"another trusted key":               {key: other, ticket: speak, wantCode: http.StatusOK},
+		"a key not in the set":              {key: gone, ticket: listen, wantCode: http.StatusUnauthorized},
+		"a paused key, a ticket to publish": {key: paused, ticket: speak, wantCode: http.StatusForbidden},
+		"a paused key, a ticket to listen":  {key: paused, ticket: listen, wantCode: http.StatusOK},
+	}
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			g, err := v.FirstTicket(sign(t, tt.key, tt.ticket))
+
+			assert.Equal(t, tt.wantCode, statusOf(err), "%v", err)
+			if tt.wantCode != http.StatusOK {
+				assert.Nil(t, g)
+				return
+			}
+			require.NotNil(t, g)
+			assert.Equal(t, tt.key.ID, g.KeyID())
+			assert.Equal(t, tt.ticket, g.grant)
+		})
+	}
+}
+
+// A session bound to a key after it ended, by a ticket granted as it
+// closed, is not brought back into usage, until the relay forgets it.
+func TestUsageReporter_OpenAfterClose(t *testing.T) {
+	sink := &fakeUsageSink{}
+	r := newTestUsage(t, sink)
+	now := time.Now()
+	r.now = func() time.Time { return now }
+
+	r.close("s1", Bytes{}, "closed")
+	r.open("s1", usageSession{kid: "k1", publishes: true})
+	r.publishing("s1")
+
+	assert.Empty(t, r.sessions, "an open after the close is ignored")
+	assert.Empty(t, r.events)
+
+	now = now.Add(sessionGrace + time.Second)
+	r.forgetStale()
+	assert.Empty(t, r.closed, "a closed session is forgotten as a stale one is")
 }

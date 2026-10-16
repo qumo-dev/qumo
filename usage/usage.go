@@ -58,6 +58,9 @@ const (
 	// ReasonUpgradeFailed is a WebTransport session that was admitted but
 	// whose upgrade then failed, so it never started.
 	ReasonUpgradeFailed = "upgrade_failed"
+	// ReasonUnauthenticated is a session that connected with no credential and
+	// that the relay closed because it held no grant for its deadline.
+	ReasonUnauthenticated = "no_credential"
 )
 
 // Record is one record of a report.

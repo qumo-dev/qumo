@@ -40,7 +40,7 @@ type VerifierConfig struct {
 //
 // A session may connect with no credential (no jwt query parameter): it is
 // admitted anonymous, granted nothing, and binds itself to a key with the
-// first ticket it is granted (Ticket, Bind). A session's credential (the jwt
+// first ticket it is granted (FirstTicket, Bind). A session's credential (the jwt
 // query parameter of its connect URL) must be signed by a key in the set, have its root within the key's prefix, and be
 // within its validity (token.Verify). Its grant lasts until it expires, as a
 // ticket's does: the relay applies the expiry to the grant, not to the
@@ -173,8 +173,8 @@ func (v *Verifier) Check(credential string, action token.Action, path moqt.Broad
 // Ticket verifies credential, a ticket presented on an Auth Stream of a
 // session whose own credential keyID signed, as a connect is. The ticket must
 // be signed by that same key, so that everything a session may do is its
-// key's tenant's to grant and is reported under it. An empty keyID, for an
-// anonymous session no ticket has bound yet, takes any trusted key. A key paused for
+// key's tenant's to grant and is reported under it; an empty keyID, a
+// session no key admitted, is refused. A key paused for
 // publishing refuses one that may publish, unless the session has published
 // already (published): a pause stops what is new, and a publisher on air
 // renews its grant.
@@ -183,7 +183,10 @@ func (v *Verifier) Ticket(credential, keyID string, published bool) (*Grant, err
 	if err != nil {
 		return nil, err
 	}
-	if keyID != "" && g.keyID != keyID {
+	if keyID == "" {
+		return nil, refuse(http.StatusForbidden, "the session was admitted by no key")
+	}
+	if g.keyID != keyID {
 		return nil, refuse(http.StatusForbidden, "the ticket is signed by key %s, not by the session's", g.keyID)
 	}
 	return g, nil
@@ -203,11 +206,22 @@ func (v *Verifier) Trusts(g *Grant) (bool, error) {
 	return ok && key.Holds(g.grant.Root), nil
 }
 
+// FirstTicket verifies credential, the first ticket of an anonymous session,
+// which no key binds yet: as Ticket does, signed by any key in the set. The
+// session is then bound to that key (Bind), and Ticket verifies its later
+// tickets against it. A key paused for publishing refuses one that may
+// publish: the session has published nothing yet.
+func (v *Verifier) FirstTicket(credential string) (*Grant, error) {
+	g, _, err := v.decide(credential, nil, true, func(g *Grant) bool { return publishesBroadcast(g.grant) })
+	return g, err
+}
+
 // Bind records that the anonymous session id is bound to keyID by the first
-// ticket granted on it: its usage is reported under that key from then on.
-func (v *Verifier) Bind(id, keyID string) {
+// ticket granted on it, which publishes or not: its usage is reported under
+// that key from then on. A session that has ended is not brought back.
+func (v *Verifier) Bind(id, keyID string, publishes bool) {
 	if v.usage != nil {
-		v.usage.open(id, usageSession{kid: keyID})
+		v.usage.open(id, usageSession{kid: keyID, publishes: publishes})
 	}
 }
 
