@@ -744,7 +744,7 @@ func TestVerifier_UsagePublishes(t *testing.T) {
 	}
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
-			_, s, err := v.decide(tt.jwt, nil, true, func(*Grant) bool { return false })
+			_, s, err := v.decide(tt.jwt, nil, true, func(*Grant) bool { return false }, false)
 
 			require.NoError(t, err)
 			assert.Equal(t, tt.want, s.publishes)
@@ -902,4 +902,38 @@ func TestVerifier_GrantMoQ(t *testing.T) {
 
 	require.NoError(t, err)
 	assert.Equal(t, moqt.Grant{Root: "/acme/app/", Subscribe: []string{"/"}}, g.MoQ())
+}
+
+// A ticket admits no session as its credential, where its grant would
+// outlive its expiry, but adds to a live session's.
+func TestVerifier_TicketIsNoCredential(t *testing.T) {
+	k := genKey(t, "acme/app")
+	v := verifierWith(t, keySetJSON(t, []token.SigningKey{k}), time.Now())
+	ticket, err := token.SignTicket(k, token.Grant{Root: "acme/app/room/42", Subscribe: []string{"/"}}, time.Minute)
+	require.NoError(t, err)
+
+	plain := sign(t, k, token.Grant{Root: "acme/app/room/42", Subscribe: []string{"/"}})
+	_, err = v.Authorize(context.Background(), sessionReq(EventConnect, plain))
+	require.NoError(t, err, "a token that is no ticket connects")
+
+	_, err = v.Authorize(context.Background(), sessionReq(EventConnect, ticket))
+	assert.Equal(t, http.StatusUnauthorized, statusOf(err), "at connect: %v", err)
+	_, err = v.Authorize(context.Background(), sessionReq(EventRevalidate, ticket))
+	assert.Equal(t, http.StatusUnauthorized, statusOf(err), "at revalidate: %v", err)
+	g, err := v.Ticket(ticket, k.ID)
+	require.NoError(t, err, "on a live session")
+	assert.Equal(t, "acme/app/room/42", g.grant.Root)
+}
+
+// A ticket presented at connect is refused for being a ticket, whatever its
+// key's pause.
+func TestVerifier_TicketIsNoCredential_Paused(t *testing.T) {
+	k := genKey(t, "acme/app")
+	v := verifierWith(t, keySetJSON(t, []token.SigningKey{k}, k), time.Now())
+	ticket, err := token.SignTicket(k, token.Grant{Root: "acme/app/room/42", Publish: []string{"/7"}}, time.Minute)
+	require.NoError(t, err)
+
+	_, err = v.Authorize(context.Background(), sessionReq(EventConnect, ticket))
+
+	assert.Equal(t, http.StatusUnauthorized, statusOf(err), "%v", err)
 }

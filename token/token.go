@@ -74,13 +74,23 @@ var allowedClaims = map[string]bool{
 var grantClaims = []string{"root", "publish", "subscribe", "create", "post", "redact"}
 
 // Claims are a verified token's: its grant, normalized and confined to its
-// key's prefix, when it expires, its jti if any, and the key that signed it.
+// key's prefix, when it expires, its jti if any, the key that signed it, and
+// whether it is a ticket (SignTicket).
 type Claims struct {
 	Grant
 	ExpiresAt time.Time
 	ID        string
 	Key       Key
+	Ticket    bool
 }
+
+// TicketType is the typ header of a ticket (SignTicket), after RFC 8725's
+// explicit typing: it marks a token meant only to add its grant to a live
+// session, so a relay refuses one presented at connect.
+const TicketType = "ticket+jwt"
+
+// jwtType is the typ header of every other token Sign writes.
+const jwtType = "JWT"
 
 // pathAuth is the capability claim of other MoQ implementations, per the
 // @moq/token convention: root plus pub or sub. A nil Pub or Sub grants
@@ -122,10 +132,18 @@ func (c claims) grant() Grant {
 // as a root outside key's prefix or a pattern that doesn't parse, is refused
 // here. A grant of no patterns names the key's tenant alone.
 func Sign(key SigningKey, g Grant, ttl time.Duration) (string, error) {
-	return signAt(key, g, ttl, time.Now())
+	return signAt(key, g, ttl, time.Now(), jwtType)
 }
 
-func signAt(key SigningKey, g Grant, ttl time.Duration, now time.Time) (string, error) {
+// SignTicket signs g as Sign does, as a ticket: a token a client presents on
+// a session it already holds, such as on a MoQ Auth Stream, to add g to it
+// until the ticket expires. A relay refuses a ticket as the credential a
+// session connects with, where its grant would outlive its expiry.
+func SignTicket(key SigningKey, g Grant, ttl time.Duration) (string, error) {
+	return signAt(key, g, ttl, time.Now(), TicketType)
+}
+
+func signAt(key SigningKey, g Grant, ttl time.Duration, now time.Time, typ string) (string, error) {
 	if ttl <= 0 || ttl > MaxLifetime {
 		return "", fmt.Errorf("token: ttl %s must be positive and at most %s", ttl, MaxLifetime)
 	}
@@ -142,7 +160,7 @@ func signAt(key SigningKey, g Grant, ttl time.Duration, now time.Time) (string, 
 	exp := float64(now.Add(ttl).Unix())
 	c.IssuedAt, c.NotBefore, c.ExpiresAt = &iat, &iat, &exp
 
-	header, err := json.Marshal(map[string]string{"alg": "EdDSA", "kid": key.ID, "typ": "JWT"})
+	header, err := json.Marshal(map[string]string{"alg": "EdDSA", "kid": key.ID, "typ": typ})
 	if err != nil {
 		return "", fmt.Errorf("token: encode header: %w", err)
 	}
@@ -247,7 +265,7 @@ func verify(token string, keys map[string]Key, now time.Time, expiry bool) (Clai
 	if err != nil {
 		return Claims{}, err
 	}
-	return Claims{Grant: g, ExpiresAt: exp, ID: c.ID, Key: key}, nil
+	return Claims{Grant: g, ExpiresAt: exp, ID: c.ID, Key: key, Ticket: isTicket(header.Typ)}, nil
 }
 
 // grantOf reads path_auth as a grant: its root as the root, pub as publish,
@@ -321,4 +339,14 @@ func decodeSegment(seg string, v any) error {
 		return fmt.Errorf("not base64url: %w", err)
 	}
 	return json.UnmarshalRead(bytes.NewReader(raw), v)
+}
+
+// isTicket reports whether typ marks a ticket. RFC 7515 4.1.9 compares a typ
+// ignoring case, and with or without its "application/" prefix.
+func isTicket(typ string) bool {
+	const prefix = "application/"
+	if len(typ) > len(prefix) && strings.EqualFold(typ[:len(prefix)], prefix) {
+		typ = typ[len(prefix):]
+	}
+	return strings.EqualFold(typ, TicketType)
 }
