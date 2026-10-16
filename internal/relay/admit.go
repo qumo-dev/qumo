@@ -39,10 +39,10 @@ type admission struct {
 	// client is what the upgrade request said about its client, set before
 	// the session starts. Zero for a native-QUIC session.
 	client upgradeClient
-	// tickets counts the tickets the session holds, and plain the
-	// credentials presented with no token, its connection's own among them
-	// (ServeAuth).
-	tickets, plain atomic.Int32
+	// credentials counts the credentials the session holds: its
+	// connection's own, each presented again with no token, and its
+	// tickets (ServeAuth).
+	credentials atomic.Int32
 }
 
 type admissionKey struct{}
@@ -257,13 +257,17 @@ type TicketVerifier interface {
 }
 
 const (
-	// maxTickets bounds the tickets one session may hold at once, so a
-	// client can't make the relay keep any number of them. The connection's
-	// own credential is not one of them.
-	maxTickets = 32
+	// maxCredentials bounds the credentials one session may hold at once:
+	// its connection's own and the tickets it presents, so a client can't
+	// make the relay keep any number of them.
+	maxCredentials = 33
 	// ticketRevalidateEvery is how often a ticket in force is checked again,
 	// so that a key leaving the set ends it, as it ends a session.
 	ticketRevalidateEvery = 30 * time.Second
+	// revokeMargin is how long a handler outlives its grant's MaxAge, so that
+	// gomoqt revokes the grant first and tells the presenter: a handler that
+	// returned first would end it silently.
+	revokeMargin = time.Second
 )
 
 // everything is the grant of a session the relay checks nothing for: a relay
@@ -274,54 +278,116 @@ var everything = moqt.Grant{Root: "/", Publish: []string{"/"}, Subscribe: []stri
 // connection carried, presented with no token, is granted what the session
 // was admitted with (admit.go), and a session checked for nothing is granted
 // everything. A ticket presented on an Auth Stream adds its grant to the
-// session's, while it is in force (serveTicket).
+// session's (serveTicket). Every grant of a verified credential lasts until
+// its token expires, wherever the token was presented: a client that stays
+// longer presents a fresh one before then.
 //
-// A client may present no token on an Auth Stream too, and gets the same
-// grant again, which adds nothing. A session holds at most maxTickets
-// tickets, and as many credentials of no token beside its connection's own;
-// those it presents first may crowd out its connection's own, which leaves
-// only that client's session without its grant.
+// A client may present no token on an Auth Stream too, and gets its
+// connection's grant again, for what is left of it, which adds nothing. A
+// session holds at most maxCredentials credentials at once; those it
+// presents first may crowd out its connection's own, which leaves only that
+// client's session without its grant.
 func (s *Server) ServeAuth(w *moqt.AuthWriter, r *moqt.AuthRequest) {
 	if a := admissionFrom(r.Context()); a != nil {
-		held, limit := &a.plain, int32(maxTickets+1)
-		if len(r.Token) > 0 {
-			held, limit = &a.tickets, maxTickets
-		}
-		if held.Add(1) > limit {
-			held.Add(-1)
+		if a.credentials.Add(1) > maxCredentials {
+			a.credentials.Add(-1)
 			metricTickets.WithLabelValues(ticketRefused).Inc()
 			slog.Info("relay: credential refused: too many held", "id", a.req.ID)
-			_ = w.Refuse(moqt.UnauthorizedSessionErrorCode, "too many tickets")
+			_ = w.Refuse(moqt.UnauthorizedSessionErrorCode, "too many credentials")
 			return
 		}
-		defer held.Add(-1)
+		defer a.credentials.Add(-1)
 	}
 	if len(r.Token) > 0 {
 		s.serveTicket(w, r)
 		return
 	}
-	g, err := sessionGrant(r.Context())
+	s.serveConnection(w, r)
+}
+
+// serveConnection grants the session's own credential, presented with no
+// token: what it was admitted with, until the credential's token expires.
+func (s *Server) serveConnection(w *moqt.AuthWriter, r *moqt.AuthRequest) {
+	ctx := r.Context()
+	g, err := sessionGrant(ctx)
 	if err != nil {
 		return // the session ended before its admission was decided
 	}
-	if err := w.Grant(connectionGrant(g)); err != nil {
-		id := ""
-		if a := admissionFrom(r.Context()); a != nil {
-			id = a.req.ID
+	id := ""
+	if a := admissionFrom(ctx); a != nil {
+		id = a.req.ID
+	}
+	grant, lapses := everything, time.Time{}
+	if g != nil {
+		grant, lapses = g.Token().Grant, lapsesAt(g)
+	}
+	if !lapses.IsZero() {
+		left := time.Until(lapses)
+		if left <= 0 {
+			_ = w.Refuse(moqt.UnauthorizedSessionErrorCode, "credential expired")
+			return
 		}
+		grant.MaxAge = left
+	}
+	if err := w.Grant(grant); err != nil {
 		slog.Error("relay: the session's grant could not be applied; it may do nothing", "id", id, "error", err)
 		return
 	}
-	<-r.Context().Done()
+	// The session's lease checks the credential again while it lives, and
+	// ends the session when its key leaves the set.
+	if hold(ctx, lapses, nil) == heldLapsed {
+		slog.Info("relay: the session's credential expired", "id", id)
+	}
 }
 
-// connectionGrant is what a session admitted with g may do: what g grants,
-// or everything for a session checked for nothing (nil).
-func connectionGrant(g *auth.Grant) moqt.Grant {
-	if g == nil {
-		return everything
+// lapsesAt is when g's grant lapses: its token's expiry, judged with the
+// leeway as token.Verify judges exp, or the zero time for a grant with no
+// expiry.
+func lapsesAt(g *auth.Grant) time.Time {
+	if g.Expires().IsZero() {
+		return time.Time{}
 	}
-	return g.MoQ()
+	return g.Expires().Add(token.Leeway)
+}
+
+// How a grant held by hold ended.
+type heldOutcome int
+
+const (
+	heldEnded   heldOutcome = iota // withdrawn, or the session ended
+	heldLapsed                     // its MaxAge passed; gomoqt revoked it
+	heldRevoked                    // revalidate refused it
+)
+
+// hold keeps a grant in force until ctx ends; until revokeMargin after
+// lapses, so that gomoqt revokes it at its MaxAge first (a zero lapses never
+// lapses); or until revalidate, called every ticketRevalidateEvery when set,
+// reports it no longer trusted.
+func hold(ctx context.Context, lapses time.Time, revalidate func() bool) heldOutcome {
+	var lapsed <-chan time.Time
+	if !lapses.IsZero() {
+		lapse := time.NewTimer(time.Until(lapses) + revokeMargin)
+		defer lapse.Stop()
+		lapsed = lapse.C
+	}
+	var recheck <-chan time.Time
+	if revalidate != nil {
+		ticker := time.NewTicker(ticketRevalidateEvery)
+		defer ticker.Stop()
+		recheck = ticker.C
+	}
+	for {
+		select {
+		case <-ctx.Done():
+			return heldEnded
+		case <-lapsed:
+			return heldLapsed
+		case <-recheck:
+			if !revalidate() {
+				return heldRevoked
+			}
+		}
+	}
 }
 
 // serveTicket verifies a ticket and grants it until it expires, its presenter
@@ -355,11 +421,11 @@ func (s *Server) serveTicket(w *moqt.AuthWriter, r *moqt.AuthRequest) {
 		_ = w.Refuse(moqt.UnauthorizedSessionErrorCode, "ticket refused")
 		return
 	}
-	// Judged with the leeway, as token.Verify judges exp. AUTH_OK tells the
-	// presenter when, so it can present a fresh ticket in time.
-	expires := tg.Expires().Add(token.Leeway)
-	grant := tg.MoQ()
-	grant.MaxAge = max(time.Until(expires), time.Millisecond)
+	// AUTH_OK tells the presenter when it lapses, so it can present a fresh
+	// ticket in time.
+	lapses := lapsesAt(tg)
+	grant := tg.Token().Grant
+	grant.MaxAge = max(time.Until(lapses), time.Millisecond)
 	if err := w.Grant(grant); err != nil {
 		metricTickets.WithLabelValues(ticketRefused).Inc()
 		slog.Info("relay: ticket not granted", "id", a.req.ID, "error", err)
@@ -374,31 +440,19 @@ func (s *Server) serveTicket(w *moqt.AuthWriter, r *moqt.AuthRequest) {
 		s.Tickets.Publishing(a.req.ID)
 	}
 
-	// A second after MaxAge, so gomoqt revokes the grant first and tells the
-	// presenter: a handler that returned first would end it silently.
-	lapse := time.NewTimer(time.Until(expires) + time.Second)
-	defer lapse.Stop()
-	revalidate := time.NewTicker(ticketRevalidateEvery)
-	defer revalidate.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-lapse.C:
-			// MaxAge has revoked it, telling the presenter so.
-			metricTickets.WithLabelValues(ticketExpired).Inc()
-			return
-		case <-revalidate.C:
-			trusted, err := s.Tickets.Trusts(tg)
-			if err == nil && !trusted {
-				metricTickets.WithLabelValues(ticketRevoked).Inc()
-				slog.Info("relay: ticket revoked: its key left the set", "id", a.req.ID, "kid", tg.KeyID())
-				_ = w.Refuse(moqt.UnauthorizedSessionErrorCode, "ticket revoked")
-				return
-			}
-			// A ticket that could not be checked just now stays in force, as
-			// a session does, and is checked again.
-		}
+	switch hold(ctx, lapses, func() bool {
+		// A ticket that could not be checked just now stays in force, as a
+		// session does, and is checked again.
+		trusted, err := s.Tickets.Trusts(tg)
+		return err != nil || trusted
+	}) {
+	case heldLapsed:
+		// MaxAge has revoked it, telling the presenter so.
+		metricTickets.WithLabelValues(ticketExpired).Inc()
+	case heldRevoked:
+		metricTickets.WithLabelValues(ticketRevoked).Inc()
+		slog.Info("relay: ticket revoked: its key left the set", "id", a.req.ID, "kid", tg.KeyID())
+		_ = w.Refuse(moqt.UnauthorizedSessionErrorCode, "ticket revoked")
 	}
 }
 

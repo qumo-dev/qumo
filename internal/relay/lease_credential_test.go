@@ -36,7 +36,7 @@ func writeKeyFile(t *testing.T, path string, keys ...token.Key) {
 // as the relay does, and starts its lease.
 func verifiedSession(t *testing.T, v *auth.Verifier, key token.SigningKey) (*fakeLeasedSession, *lease) {
 	t.Helper()
-	jwt, err := token.Sign(key, token.Grant{Root: "acme/app", Subscribe: []string{"/"}}, credentialTTL)
+	jwt, err := token.Sign(key, token.Grant{Root: "/acme/app/", Subscribe: []string{"/"}}, credentialTTL)
 	require.NoError(t, err)
 	req := auth.Request{ID: "00ff", Event: auth.EventConnect, Path: "/", Query: url.Values{"jwt": {jwt}}.Encode()}
 	g, err := v.Authorize(t.Context(), req)

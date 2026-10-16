@@ -55,7 +55,7 @@ func TestParseKeySet(t *testing.T) {
 	set, err := parseKeySet(keySetJSON(t, []token.SigningKey{active, limited}, limited))
 	require.NoError(t, err)
 	assert.Len(t, set.keys, 2)
-	assert.Equal(t, "acme/app", set.keys[active.ID].Prefix)
+	assert.Equal(t, "/acme/app/", set.keys[active.ID].Prefix)
 	assert.False(t, set.keys[active.ID].Pauses(token.ActionPublish))
 	assert.True(t, set.keys[limited.ID].Pauses(token.ActionPublish))
 
@@ -187,7 +187,7 @@ func TestVerifier_Decisions(t *testing.T) {
 		"key not in the set":      {jwt: sign(t, other, pathGrant("", "acme/app")), wantConnect: 401, wantRevalidate: 401},
 		"root outside the prefix": {jwt: sign(t, unconfined, publishAll("globex/app")), wantConnect: 403, wantRevalidate: 403},
 		"prefix's sibling":        {jwt: sign(t, unconfined, publishAll("acme/application")), wantConnect: 403, wantRevalidate: 403},
-		"root above the prefix":   {jwt: sign(t, unconfined, token.Grant{Root: "acme", Publish: []string{"/app/"}}), wantConnect: 403, wantRevalidate: 403},
+		"root above the prefix":   {jwt: sign(t, unconfined, token.Grant{Root: "/acme/", Publish: []string{"/app/"}}), wantConnect: 403, wantRevalidate: 403},
 		"no credential":           {jwt: "", wantConnect: 401, wantRevalidate: 401},
 		"not a credential":        {jwt: "not.a.jwt", wantConnect: 401, wantRevalidate: 401},
 	}
@@ -621,15 +621,15 @@ func writeKeySet(t *testing.T, keys ...token.SigningKey) string {
 	return path
 }
 
-// testRoot is the root of the grants pathGrant makes: the prefix of the keys
-// the tests sign with.
+// testRoot is the path of the root of the grants pathGrant makes: the prefix
+// of the keys the tests sign with.
 const testRoot = "acme/app"
 
 // pathGrant grants, under testRoot, what a path_auth credential of pub and
 // sub would: each non-empty path at or beneath testRoot and every path
 // beneath it, publish for pub, and subscribe for sub.
 func pathGrant(pub, sub string) token.Grant {
-	g := token.Grant{Root: testRoot}
+	g := token.Grant{Root: "/" + testRoot + "/"}
 	if pub != "" {
 		g.Publish = relAndBeneath(pub)
 	}
@@ -655,12 +655,13 @@ func relAndBeneath(path string) []string {
 // is the key's prefix, and pub and sub, at or beneath it, are relative to it.
 func signPathAuth(tb testing.TB, key token.SigningKey, pub, sub string) string {
 	tb.Helper()
-	pathAuth := map[string]string{"root": key.Prefix}
+	root := strings.Trim(key.Prefix, "/")
+	pathAuth := map[string]string{"root": root}
 	if pub != "" {
-		pathAuth["pub"] = strings.TrimPrefix(pub, key.Prefix)
+		pathAuth["pub"] = strings.TrimPrefix(pub, root)
 	}
 	if sub != "" {
-		pathAuth["sub"] = strings.TrimPrefix(sub, key.Prefix)
+		pathAuth["sub"] = strings.TrimPrefix(sub, root)
 	}
 	now := time.Now().Unix()
 	header, err := json.Marshal(map[string]string{"alg": "EdDSA", "kid": key.ID, "typ": "JWT"})
@@ -679,9 +680,13 @@ func sign(tb testing.TB, key token.SigningKey, g token.Grant) string {
 	return tok
 }
 
-// publishAll grants publishing everything beneath root.
+// publishAll grants publishing everything beneath root, a path.
 func publishAll(root string) token.Grant {
-	return token.Grant{Root: root, Publish: []string{"/"}}
+	dir, err := token.Directory(root)
+	if err != nil {
+		panic(err)
+	}
+	return token.Grant{Root: dir, Publish: []string{"/"}}
 }
 
 // A path_auth credential, as other MoQ implementations sign it, is admitted
@@ -705,7 +710,7 @@ func TestVerifier_PatternGrant(t *testing.T) {
 	k := genKey(t, "acme/app")
 	v := verifierWith(t, keySetJSON(t, []token.SigningKey{k}), time.Now())
 	jwt := sign(t, k, token.Grant{
-		Root: "acme/app/room/123", Subject: "42",
+		Root: "/acme/app/room/123/", Subject: "42",
 		Publish: []string{"/comments"}, Subscribe: []string{"/"},
 	})
 
@@ -744,7 +749,7 @@ func TestVerifier_UsagePublishes(t *testing.T) {
 	}
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
-			_, s, err := v.decide(tt.jwt, nil, true, func(*Grant) bool { return false }, false)
+			_, s, err := v.decide(tt.jwt, nil, true, func(*Grant) bool { return false })
 
 			require.NoError(t, err)
 			assert.Equal(t, tt.want, s.publishes)
@@ -758,8 +763,8 @@ func TestVerifier_Ticket(t *testing.T) {
 	session, other, gone := genKey(t, "acme/app"), genKey(t, "acme/app"), genKey(t, "acme/app")
 	paused := genKey(t, "acme/app")
 	v := verifierWith(t, keySetJSON(t, []token.SigningKey{session, other, paused}, paused), time.Now())
-	listen := token.Grant{Root: "acme/app/room/42", Subscribe: []string{"/"}}
-	speak := token.Grant{Root: "acme/app/room/42", Publish: []string{"/7"}}
+	listen := token.Grant{Root: "/acme/app/room/42/", Subscribe: []string{"/"}}
+	speak := token.Grant{Root: "/acme/app/room/42/", Publish: []string{"/7"}}
 	tests := map[string]struct {
 		key      token.SigningKey
 		ticket   token.Grant
@@ -893,7 +898,7 @@ func TestVerifier_Ticket_PublishingPromotesAViewer(t *testing.T) {
 		"what it moved since it was last counted as a viewer")
 }
 
-// A verified grant's MoQ grant is its token's root and patterns, unchanged.
+// A verified grant's MoQ grant is its token's, unchanged.
 func TestVerifier_GrantMoQ(t *testing.T) {
 	k := genKey(t, "acme/app")
 	v := verifierWith(t, keySetJSON(t, []token.SigningKey{k}), time.Now())
@@ -901,39 +906,21 @@ func TestVerifier_GrantMoQ(t *testing.T) {
 	g, err := v.Authorize(context.Background(), sessionReq(EventConnect, sign(t, k, pathGrant("", "acme/app"))))
 
 	require.NoError(t, err)
-	assert.Equal(t, moqt.Grant{Root: "/acme/app/", Subscribe: []string{"/"}}, g.MoQ())
+	assert.Equal(t, moqt.Grant{Root: "/acme/app/", Subscribe: []string{"/"}}, g.Token().Grant)
 }
 
-// A ticket admits no session as its credential, where its grant would
-// outlive its expiry, but adds to a live session's.
-func TestVerifier_TicketIsNoCredential(t *testing.T) {
+// Any token admits a session and is a ticket on a live one alike: what it
+// is for is where it is presented.
+func TestVerifier_TokenAdmitsAndIsATicket(t *testing.T) {
 	k := genKey(t, "acme/app")
 	v := verifierWith(t, keySetJSON(t, []token.SigningKey{k}), time.Now())
-	ticket, err := token.SignTicket(k, token.Grant{Root: "acme/app/room/42", Subscribe: []string{"/"}}, time.Minute)
-	require.NoError(t, err)
+	jwt := sign(t, k, token.Grant{Root: "/acme/app/room/42/", Subscribe: []string{"/"}})
 
-	plain := sign(t, k, token.Grant{Root: "acme/app/room/42", Subscribe: []string{"/"}})
-	_, err = v.Authorize(context.Background(), sessionReq(EventConnect, plain))
-	require.NoError(t, err, "a token that is no ticket connects")
-
-	_, err = v.Authorize(context.Background(), sessionReq(EventConnect, ticket))
-	assert.Equal(t, http.StatusUnauthorized, statusOf(err), "at connect: %v", err)
-	_, err = v.Authorize(context.Background(), sessionReq(EventRevalidate, ticket))
-	assert.Equal(t, http.StatusUnauthorized, statusOf(err), "at revalidate: %v", err)
-	g, err := v.Ticket(ticket, k.ID)
+	_, err := v.Authorize(context.Background(), sessionReq(EventConnect, jwt))
+	require.NoError(t, err, "at connect")
+	_, err = v.Authorize(context.Background(), sessionReq(EventRevalidate, jwt))
+	require.NoError(t, err, "at revalidate")
+	g, err := v.Ticket(jwt, k.ID)
 	require.NoError(t, err, "on a live session")
-	assert.Equal(t, "acme/app/room/42", g.grant.Root)
-}
-
-// A ticket presented at connect is refused for being a ticket, whatever its
-// key's pause.
-func TestVerifier_TicketIsNoCredential_Paused(t *testing.T) {
-	k := genKey(t, "acme/app")
-	v := verifierWith(t, keySetJSON(t, []token.SigningKey{k}, k), time.Now())
-	ticket, err := token.SignTicket(k, token.Grant{Root: "acme/app/room/42", Publish: []string{"/7"}}, time.Minute)
-	require.NoError(t, err)
-
-	_, err = v.Authorize(context.Background(), sessionReq(EventConnect, ticket))
-
-	assert.Equal(t, http.StatusUnauthorized, statusOf(err), "%v", err)
+	assert.Equal(t, "/acme/app/room/42/", g.grant.Root)
 }

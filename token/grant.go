@@ -2,7 +2,6 @@ package token
 
 import (
 	"fmt"
-	"slices"
 	"strings"
 
 	"github.com/qumo-dev/gomoqt/moqt"
@@ -36,27 +35,21 @@ const (
 	ActionCreate Action = "create"
 )
 
-// Grant is what a token allows its bearer, in the shape of a MoQ grant
-// (moqt.Grant): a root, the directory of broadcast paths it applies to, and
-// for each action the path patterns beneath it the bearer may act on. A
-// pattern is read as moqt.Grant reads it, relative to the root: with Root
-// "acme/room/42", "/7" is the broadcast "/acme/room/42/7" alone, "/7/" every
-// broadcast beneath it, "/" every broadcast beneath the root, and a segment
-// may be a wildcard ("/{user}/audio"). Whatever no pattern matches is denied.
+// Grant is what a token allows its bearer: a MoQ grant (moqt.Grant), which a
+// relay applies to the bearer's session as it is, and the actions only a
+// funnel reads. Its Root is the directory of broadcast paths it applies to,
+// in MoQ's form ("/acme/room/42/"), and each action's patterns are read as
+// moqt.Grant reads them, relative to the root: with Root "/acme/room/42/",
+// "/7" is the broadcast "/acme/room/42/7" alone, "/7/" every broadcast
+// beneath it, "/" every broadcast beneath the root, and a segment may be a
+// wildcard ("/{user}/audio"). Whatever no pattern matches is denied.
 //
 // In a token, Root lies at or beneath the signing key's prefix, so every
-// pattern does too. A grant with no patterns grants nothing: it names its
-// key's tenant alone, as a relay session's credential does when its grants
-// come later.
+// pattern does too. A grant with no root and no patterns grants nothing, as
+// moqt.Grant{} does: it names its key's tenant alone. MaxAge is never part of
+// a token, whose expiry is its exp; a relay sets it from that.
 type Grant struct {
-	// Root is a broadcast path without a leading or trailing "/", such as
-	// "acme/room/42"; empty is the root of every path.
-	Root string
-	// Publish matches the broadcasts the bearer may publish through a relay.
-	Publish []string
-	// Subscribe matches the broadcasts the bearer may receive, live or as
-	// history.
-	Subscribe []string
+	moqt.Grant
 	// Create matches the broadcasts the bearer may create tracks of at a
 	// funnel.
 	Create []string
@@ -104,9 +97,8 @@ func (g Grant) Allows(action Action, path string) bool {
 		return false
 	}
 	bp := moqt.BroadcastPath("/" + p)
-	root := moqRoot(g.Root)
 	for _, s := range g.Patterns(action) {
-		pattern, err := moqt.ParseGrantPattern(root, s)
+		pattern, err := moqt.ParseGrantPattern(g.Root, s)
 		if err == nil && pattern.Match(bp) {
 			return true
 		}
@@ -114,53 +106,40 @@ func (g Grant) Allows(action Action, path string) bool {
 	return false
 }
 
-// MoQ returns what the grant lets a relay session do, as a MoQ grant: its
-// root, and its publish and subscribe patterns unchanged. Every other action
-// is not the relay's, and a grant with no publish or subscribe pattern
-// grants a relay session nothing (moqt.Grant{}).
-func (g Grant) MoQ() moqt.Grant {
-	if len(g.Publish) == 0 && len(g.Subscribe) == 0 {
-		return moqt.Grant{}
-	}
-	return moqt.Grant{
-		Root:      moqRoot(g.Root),
-		Publish:   slices.Clone(g.Publish),
-		Subscribe: slices.Clone(g.Subscribe),
-	}
-}
-
-// moqRoot is root as a MoQ grant's root: "/acme/room/42/", or "/" for the
-// empty root.
-func moqRoot(root string) string {
-	if root == "" {
-		return "/"
-	}
-	return "/" + root + "/"
-}
-
-// checked returns g with its root normalized, refusing a root that isn't a
-// path (ErrInvalid) or lies outside prefix (ErrForbidden), and a pattern
-// moqt.ParseGrantPattern refuses or holding a "." or ".." segment
-// (ErrInvalid).
+// checked returns g if a token may carry it under a key confined to prefix:
+// a MoQ grant moqt.Grant.Validate accepts, with no MaxAge and its root in
+// Directory's form (ErrInvalid); every other action's patterns parsed as
+// moqt.ParseGrantPattern reads them (ErrInvalid); no "." or ".." segment in
+// any pattern (ErrInvalid); and a root at or beneath prefix (ErrForbidden).
 func (g Grant) checked(prefix string) (Grant, error) {
-	root, err := normalizePath(g.Root)
-	if err != nil {
-		return Grant{}, invalid("root %q: %v", g.Root, err)
+	if g.MaxAge != 0 {
+		return Grant{}, invalid("max age %s: a token's expiry is its exp", g.MaxAge)
 	}
-	g.Root = root
-	patterns := false
+	if g.Root == "" {
+		for _, a := range Actions() {
+			if len(g.Patterns(a)) > 0 {
+				return Grant{}, invalid("%s patterns without a root", a)
+			}
+		}
+		// It grants nothing, so it lies within every prefix.
+		return g, nil
+	}
+	if root, err := Directory(g.Root); err != nil || root != g.Root {
+		return Grant{}, invalid("root %q is not a directory such as %q", g.Root, "/acme/room/")
+	}
 	for _, a := range Actions() {
 		for _, s := range g.Patterns(a) {
-			if err := checkPattern(root, s); err != nil {
+			if err := checkPattern(g.Root, s); err != nil {
 				return Grant{}, invalid("%s pattern %q: %v", a, s, err)
 			}
-			patterns = true
 		}
 	}
-	// A grant of no patterns may leave its root out: it names its key's
-	// tenant alone.
-	if (root != "" || patterns) && !within(root, prefix) {
-		return Grant{}, forbidden("root %q lies outside the signing key's prefix %q", root, prefix)
+	// What is left to refuse is a grant too large for a relay to send.
+	if err := g.Validate(); err != nil {
+		return Grant{}, invalid("%v", err)
+	}
+	if !within(g.Root, prefix) {
+		return Grant{}, forbidden("root %q lies outside the signing key's prefix %q", g.Root, prefix)
 	}
 	return g, nil
 }
@@ -169,7 +148,7 @@ func (g Grant) checked(prefix string) (Grant, error) {
 // segment is refused: MoQ would read it literally, while a path elsewhere,
 // such as a URL, might resolve it out of the root.
 func checkPattern(root, s string) error {
-	if _, err := moqt.ParseGrantPattern(moqRoot(root), s); err != nil {
+	if _, err := moqt.ParseGrantPattern(root, s); err != nil {
 		return err
 	}
 	for seg := range strings.SplitSeq(s, "/") {

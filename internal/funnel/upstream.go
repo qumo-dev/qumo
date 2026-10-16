@@ -12,6 +12,7 @@ import (
 	"github.com/quic-go/quic-go"
 	"github.com/qumo-dev/gomoqt/moqt"
 
+	"github.com/qumo-dev/qumo/internal/relaycred"
 	"github.com/qumo-dev/qumo/internal/tlsclient"
 	"github.com/qumo-dev/qumo/token"
 )
@@ -31,7 +32,8 @@ type upstream struct {
 	// defaults.
 	quic *quic.Config
 	// key, when set, signs a credential for each session that grants
-	// publishing at publish, replacing any ?jwt= in url.
+	// publishing beneath publish, a directory, replacing any ?jwt= in url,
+	// and a fresh one on the session before its grant lapses.
 	key     *token.SigningKey
 	publish string
 }
@@ -47,8 +49,11 @@ type RelayConfig struct {
 	CAFile   string
 	Insecure bool
 	// SigningKeyFile and Publish, set together, make the funnel sign a fresh
-	// credential granting publishing at Publish for every session, in place
-	// of any ?jwt= in URL.
+	// credential granting publishing beneath Publish for every session, in
+	// place of any ?jwt= in URL, and present a fresh one on the session
+	// before its grant lapses. A credential fixed in URL can't be renewed:
+	// once it expires the session publishes nothing, so a funnel that runs
+	// for longer than its lifetime needs a signing key.
 	SigningKeyFile string
 	Publish        string
 	// QUIC is the QUIC configuration of the session, whether moqt:// or
@@ -92,19 +97,23 @@ func newUpstream(cfg RelayConfig) (*upstream, error) {
 		if err != nil {
 			return nil, fmt.Errorf("RELAY_SIGNING_KEY: %w", err)
 		}
-		// Signing one now refuses a grant outside the key's prefix at startup
-		// rather than at the first dial.
-		if _, err := token.Sign(key, publishGrant(cfg.Publish), token.MaxLifetime); err != nil {
+		publish, err := token.Directory(cfg.Publish)
+		if err != nil {
 			return nil, fmt.Errorf("RELAY_PUBLISH: %w", err)
 		}
-		u.key, u.publish = &key, cfg.Publish
+		// Signing one now refuses a grant outside the key's prefix at startup
+		// rather than at the first dial.
+		if _, err := token.Sign(key, publishGrant(publish), token.MaxLifetime); err != nil {
+			return nil, fmt.Errorf("RELAY_PUBLISH: %w", err)
+		}
+		u.key, u.publish = &key, publish
 	}
 	return u, nil
 }
 
-// publishBeneath returns the path the funnel's own relay credential grants
-// publishing beneath, or "" when it signs none (no RELAY_SIGNING_KEY) or
-// publishes through no relay.
+// publishBeneath returns the directory the funnel's own relay credential
+// grants publishing beneath, such as "/acme/comments/", or "" when it signs
+// none (no RELAY_SIGNING_KEY) or publishes through no relay.
 func (u *upstream) publishBeneath() string {
 	if u == nil {
 		return ""
@@ -112,20 +121,24 @@ func (u *upstream) publishBeneath() string {
 	return u.publish
 }
 
-// publishGrant grants publishing every track of every broadcast beneath path,
-// which is its root.
-func publishGrant(path string) token.Grant {
-	return token.Grant{Root: path, Publish: []string{"/"}}
+// publishGrant grants publishing every track of every broadcast beneath dir,
+// a directory, which is its root.
+func publishGrant(dir string) token.Grant {
+	return token.Grant{Root: dir, Publish: []string{"/"}}
 }
 
 // run keeps a session to the relay open until ctx ends, dialing again after
-// each one ends, with a signed credential fresh on every dial.
+// each one ends, with a signed credential fresh on every dial and renewed on
+// the session before its grant lapses.
 func (u *upstream) run(ctx context.Context, mux *moqt.TrackMux) {
 	for {
 		sess, err := u.dial(ctx, mux)
 		switch {
 		case err == nil:
 			slog.Info("funnel: publishing through the relay")
+			if u.key != nil {
+				go relaycred.Keep(sess, u.sign, token.MaxLifetime)
+			}
 			select {
 			case <-ctx.Done():
 				// not actionable: the funnel is stopping.
@@ -164,9 +177,9 @@ func (u *upstream) target() (string, error) {
 	if u.key == nil {
 		return u.url, nil
 	}
-	credential, err := token.Sign(*u.key, publishGrant(u.publish), token.MaxLifetime)
+	credential, err := u.sign()
 	if err != nil {
-		return "", fmt.Errorf("sign relay credential: %w", err)
+		return "", err
 	}
 	parsed, err := url.Parse(u.url)
 	if err != nil {
@@ -176,4 +189,13 @@ func (u *upstream) target() (string, error) {
 	query.Set("jwt", credential)
 	parsed.RawQuery = query.Encode()
 	return parsed.String(), nil
+}
+
+// sign signs a credential granting what the upstream publishes.
+func (u *upstream) sign() (string, error) {
+	credential, err := token.Sign(*u.key, publishGrant(u.publish), token.MaxLifetime)
+	if err != nil {
+		return "", fmt.Errorf("sign relay credential: %w", err)
+	}
+	return credential, nil
 }

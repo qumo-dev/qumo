@@ -25,6 +25,21 @@ func normalizePath(p string) (string, error) {
 	return strings.Join(kept, "/"), nil
 }
 
+// Directory returns p as a MoQ directory, the form a grant's root and a key's
+// prefix take: "acme/room", "/acme/room" and "/acme/room/" are all
+// "/acme/room/", and "" is "/". It refuses a "." or ".." segment, and "*",
+// "{" or "}" in a segment.
+func Directory(p string) (string, error) {
+	n, err := normalizePath(p)
+	if err != nil {
+		return "", err
+	}
+	if n == "" {
+		return "/", nil
+	}
+	return "/" + n + "/", nil
+}
+
 // atAndBeneath returns the patterns, relative to a root, matching the path
 // suffix and every path beneath it, or everything beneath the root ("/") for
 // an empty suffix.
@@ -39,9 +54,9 @@ func atAndBeneath(suffix string) ([]string, error) {
 	return []string{"/" + s, "/" + s + "/"}, nil
 }
 
-// within reports whether path lies at or beneath prefix at a "/" boundary; an
-// empty prefix contains everything. A key's prefix confines a grant's root
-// this way.
-func within(path, prefix string) bool {
-	return prefix == "" || path == prefix || strings.HasPrefix(path, prefix+"/")
+// within reports whether root, a MoQ directory, lies at or beneath prefix,
+// another one. Both are in Directory's form, so a plain prefix comparison
+// holds at a "/" boundary; "/" contains every root.
+func within(root, prefix string) bool {
+	return strings.HasPrefix(root, prefix)
 }

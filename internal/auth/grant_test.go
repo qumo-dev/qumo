@@ -11,7 +11,7 @@ import (
 )
 
 func TestNewGrant(t *testing.T) {
-	tg := token.Grant{Root: "acme/app", Publish: []string{"/"}, Subject: "42"}
+	tg := token.Grant{Root: "/acme/app/", Publish: []string{"/"}, Subject: "42"}
 
 	g := NewGrant(tg, 30*time.Second)
 
@@ -23,11 +23,11 @@ func TestNewGrant(t *testing.T) {
 
 func TestGrant_Allows(t *testing.T) {
 	room := NewGrant(token.Grant{
-		Root:      "room/123",
+		Root:      "/room/123/",
 		Publish:   []string{"/comments"},
 		Subscribe: []string{"/"},
 	}, 0)
-	everything := NewGrant(token.Grant{Subscribe: []string{"/"}}, 0)
+	everything := NewGrant(token.Grant{Root: "/", Subscribe: []string{"/"}}, 0)
 	tests := map[string]struct {
 		grant  *Grant
 		action token.Action
@@ -52,30 +52,13 @@ func TestGrant_Allows(t *testing.T) {
 	}
 }
 
-// A relay session's MoQ grant is its token's root and publish and subscribe
-// patterns, unchanged.
-func TestGrant_MoQ(t *testing.T) {
-	tests := map[string]struct {
-		grant token.Grant
-		want  moqt.Grant
-	}{
-		"a voice room: subscribe beneath the room, publish one broadcast": {
-			grant: token.Grant{Root: "room/42", Publish: []string{"/7"}, Subscribe: []string{"/"}},
-			want:  moqt.Grant{Root: "/room/42/", Publish: []string{"/7"}, Subscribe: []string{"/"}},
-		},
-		"the empty root": {
-			grant: token.Grant{Publish: []string{"/live"}},
-			want:  moqt.Grant{Root: "/", Publish: []string{"/live"}},
-		},
-		"a funnel's actions alone grant nothing": {
-			grant: token.Grant{Root: "room/42", Create: []string{"/comments"}, Post: []string{"/comments"}, Redact: []string{"/"}},
-			want:  moqt.Grant{},
-		},
-		"no patterns": {grant: token.Grant{Root: "room/42"}, want: moqt.Grant{}},
-	}
-	for name, tt := range tests {
-		t.Run(name, func(t *testing.T) {
-			assert.Equal(t, tt.want, NewGrant(tt.grant, 0).MoQ())
-		})
-	}
+// A relay session's MoQ grant is its token's embedded one, as it is: the
+// funnel's actions are no part of it.
+func TestGrant_Token(t *testing.T) {
+	tg := token.Grant{Root: "/room/42/", Publish: []string{"/7"}, Subscribe: []string{"/"}, Post: []string{"/comments"}}
+
+	got := NewGrant(tg, 0).Token()
+
+	assert.Equal(t, tg, got)
+	assert.Equal(t, moqt.Grant{Root: "/room/42/", Publish: []string{"/7"}, Subscribe: []string{"/"}}, got.Grant)
 }
