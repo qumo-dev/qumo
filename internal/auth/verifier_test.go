@@ -722,10 +722,11 @@ func TestVerifier_UsagePublishes(t *testing.T) {
 		"post only":             {jwt: sign(t, k, scoped(token.ActionPost)), want: false},
 		"a viewer who may post": {jwt: sign(t, k, scoped(token.ActionPost, token.ActionSubscribe)), want: false},
 		"post and publish":      {jwt: sign(t, k, scoped(token.ActionPost, token.ActionPublish)), want: true},
+		"create only":           {jwt: sign(t, k, scoped(token.ActionCreate)), want: true},
 	}
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
-			_, s, err := v.decide(sessionReq(EventConnect, tt.jwt))
+			_, s, err := v.decide(sessionReq(EventConnect, tt.jwt), func(token.Grant) bool { return false })
 
 			require.NoError(t, err)
 			assert.Equal(t, tt.want, s.publishes)

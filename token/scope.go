@@ -14,9 +14,7 @@ type Action string
 
 // The actions a scope may list. Any other is refused.
 const (
-	// ActionPublish is putting out a broadcast: sending its tracks' groups
-	// through a relay, or creating a track of it at a funnel, which the
-	// funnel publishes.
+	// ActionPublish is sending a broadcast's tracks through a relay.
 	ActionPublish Action = "publish"
 	// ActionSubscribe is receiving a track live.
 	ActionSubscribe Action = "subscribe"
@@ -24,7 +22,7 @@ const (
 	ActionFetch Action = "fetch"
 	// ActionPost is sending one message into a track at a funnel, which
 	// gathers many senders' messages into that one track and publishes it.
-	// The track must exist: posting never creates one. A relay never reads it
+	// The track must exist: posting never creates one (ActionCreate). A relay never reads it
 	// as publishing, so a credential that posts can't send into the relay
 	// directly.
 	ActionPost Action = "post"
@@ -33,11 +31,16 @@ const (
 	// which record is the app's to decide, so it belongs in credentials the
 	// app keeps to itself, not in a sender's.
 	ActionRedact Action = "redact"
+	// ActionCreate is creating a track of a broadcast at a funnel, which the
+	// funnel then publishes. It is for the app, which decides which tracks a
+	// broadcast has; senders post only into the tracks it made. A relay
+	// never reads it as publishing.
+	ActionCreate Action = "create"
 )
 
 func (a Action) known() bool {
 	switch a {
-	case ActionPublish, ActionSubscribe, ActionFetch, ActionPost, ActionRedact:
+	case ActionPublish, ActionSubscribe, ActionFetch, ActionPost, ActionRedact, ActionCreate:
 		return true
 	}
 	return false

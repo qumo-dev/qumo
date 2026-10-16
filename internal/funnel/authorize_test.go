@@ -23,9 +23,18 @@ import (
 // newVerifier returns a Verifier trusting a fresh key, and the key.
 func newVerifier(tb testing.TB) (*auth.Verifier, token.SigningKey) {
 	tb.Helper()
+	return newVerifierPausing(tb)
+}
+
+// newVerifierPausing returns a Verifier trusting a fresh key that pauses
+// pause, and the key.
+func newVerifierPausing(tb testing.TB, pause ...token.Action) (*auth.Verifier, token.SigningKey) {
+	tb.Helper()
 	key, err := token.GenerateKey("")
 	require.NoError(tb, err)
-	set, err := token.MarshalKeySet(key.Public())
+	public := key.Public()
+	public.Pause = pause
+	set, err := token.MarshalKeySet(public)
 	require.NoError(tb, err)
 	keys := filepath.Join(tb.TempDir(), "keys.json")
 	require.NoError(tb, os.WriteFile(keys, set, 0o600))
@@ -62,7 +71,7 @@ func signPathAuth(tb testing.TB, key token.SigningKey, pub, sub string) string {
 }
 
 // A path_auth credential is read as scopes: sub reads at its path and beneath
-// it, and pub, being publish, creates tracks there but never writes.
+// it, and pub, being publish, which sends through a relay, permits nothing.
 func TestAuthorizer_PathAuth(t *testing.T) {
 	v, key := newVerifier(t)
 	other, err := token.GenerateKey("")
@@ -91,7 +100,7 @@ func TestAuthorizer_PathAuth(t *testing.T) {
 		"reading with a publisher's":        {header: pub("room/123"), access: ingest.Read, wantErr: true},
 		"reading another room":              {header: sub("room/9"), access: ingest.Read, wantErr: true},
 		"reading one segment beneath pub":   {header: pub("room/123/comments/user-42"), access: ingest.Read, wantErr: true},
-		"creating with pub":                 {header: pub("room/123"), access: ingest.Create},
+		"creating with pub":                 {header: pub("room/123"), access: ingest.Create, wantErr: true},
 		"creating with sub":                 {header: sub("room/123"), access: ingest.Create, wantErr: true},
 	}
 	authorize := authorizer(v)
@@ -150,7 +159,7 @@ func TestAuthorizer_Scopes(t *testing.T) {
 			header:  bearerOf("42", scope("room/12", true, token.ActionPost)),
 			wantErr: true,
 		},
-		"posting with publish, which creates tracks but never posts": {
+		"posting with publish, which sends through a relay": {
 			header:  bearerOf("42", scope("room/123/comments", false, token.ActionPublish)),
 			wantErr: true,
 		},
@@ -180,13 +189,22 @@ func TestAuthorizer_Scopes(t *testing.T) {
 			access:  ingest.Read,
 			wantErr: true,
 		},
-		"creating with publish": {
-			header: bearerOf("app", scope("room/123/comments", false, token.ActionPublish)),
+		"creating with create": {
+			header: bearerOf("app", scope("room/123/comments", false, token.ActionCreate)),
 			access: ingest.Create,
 		},
-		"creating under a publish prefix": {
-			header: bearerOf("", scope("room", true, token.ActionPublish)),
+		"creating under a create prefix": {
+			header: bearerOf("", scope("room", true, token.ActionCreate)),
 			access: ingest.Create,
+		},
+		"creating with publish, which sends through a relay": {
+			header:  bearerOf("", scope("room/123/comments", false, token.ActionPublish)),
+			access:  ingest.Create,
+			wantErr: true,
+		},
+		"posting with create only": {
+			header:  bearerOf("42", scope("room/123/comments", false, token.ActionCreate)),
+			wantErr: true,
 		},
 		"creating with post only": {
 			header:  bearerOf("42", scope("room/123/comments", false, token.ActionPost)),
@@ -195,7 +213,7 @@ func TestAuthorizer_Scopes(t *testing.T) {
 		},
 		"creating with every other action": {
 			header: bearerOf("", scope("room", true,
-				token.ActionSubscribe, token.ActionFetch, token.ActionPost, token.ActionRedact)),
+				token.ActionPublish, token.ActionSubscribe, token.ActionFetch, token.ActionPost, token.ActionRedact)),
 			access:  ingest.Create,
 			wantErr: true,
 		},
@@ -216,7 +234,7 @@ func TestAuthorizer_Scopes(t *testing.T) {
 		},
 		"redacting with every other action": {
 			header: bearerOf("", scope("room", true,
-				token.ActionPublish, token.ActionSubscribe, token.ActionFetch, token.ActionPost)),
+				token.ActionPublish, token.ActionSubscribe, token.ActionFetch, token.ActionPost, token.ActionCreate)),
 			access:  ingest.Redact,
 			wantErr: true,
 		},
@@ -246,6 +264,29 @@ func TestAuthorizer_Scopes(t *testing.T) {
 			require.NoError(t, err)
 			assert.Equal(t, tt.wantSender, sender)
 		})
+	}
+}
+
+// A key paused for publishing refuses creating tracks, and only that: the
+// same credential still reads, posts and redacts in the tracks there are.
+func TestAuthorizer_PausedKeyCreatesNothing(t *testing.T) {
+	v, key := newVerifierPausing(t, token.ActionPublish)
+	chat := ingest.Track{BroadcastPath: "/room/123/comments", TrackName: "chat"}
+	app := "Bearer " + sign(t, key, token.Grant{Scopes: []token.Scope{{
+		Actions:   []token.Action{token.ActionCreate, token.ActionPost, token.ActionFetch, token.ActionRedact},
+		Broadcast: "room/123/comments",
+	}}})
+	authorize := authorizer(v)
+
+	for access, wantErr := range map[ingest.Access]bool{
+		ingest.Create: true, ingest.Write: false, ingest.Read: false, ingest.Redact: false,
+	} {
+		r := httptest.NewRequest(http.MethodPost, "/tracks/room/123/comments/chat", nil)
+		r.Header.Set("Authorization", app)
+
+		_, err := authorize(r, chat, access)
+
+		assert.Equal(t, wantErr, err != nil, "access %d: %v", access, err)
 	}
 }
 

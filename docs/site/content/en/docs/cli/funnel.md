@@ -94,10 +94,12 @@ verified against the same key set. Its scopes
 ([auth](../auth/#what-a-token-grants)) name the broadcasts it reaches, and
 each reaches every track of them:
 
-- **Creating** a track (`PUT`) needs a `publish` scope matching the broadcast
-  path: the funnel publishes the track. It is for the app, which decides
-  which tracks a broadcast has; a sender's credential has none, so senders
-  record only into the tracks the app made.
+- **Creating** a track (`PUT`) needs a `create` scope matching the broadcast
+  path; the funnel then publishes the track. It is for the app, which
+  decides which tracks a broadcast has; a sender's credential has none, so
+  senders record only into the tracks the app made. A `publish` scope, which
+  sends through a relay, creates nothing here, so a publisher can't make
+  funnel tracks under its own broadcast.
 - **Posting** (`POST`) needs a `post` scope matching the broadcast path. The
   record's sender is the credential's `sub`, whatever the payload claims; a
   credential without `sub` posts with no sender. A `publish` scope does not
@@ -125,11 +127,12 @@ posts as `alice` into the tracks the app made of `/room/123/comments`, and
 reads any track of `/room/123` and the broadcasts beneath it.
 
 A `path_auth` credential is read as the scopes it amounts to: its `sub` reads
-any track at or beneath its path, and its `pub` creates tracks there. It
-posts nothing.
+any track at or beneath its path. Its `pub` is publishing, so it creates
+and posts nothing.
 
 The credential is checked on every request: once it expires or its key leaves
-the key set, it is refused. A missing or invalid credential answers `401` with
+the key set, it is refused. A key paused with `"pause": ["publish"]` creates no
+track, and its credentials still post, read and redact. A missing or invalid credential answers `401` with
 `WWW-Authenticate: Bearer`, and one that does not cover the broadcast `403`.
 
 ## Publishing through a relay

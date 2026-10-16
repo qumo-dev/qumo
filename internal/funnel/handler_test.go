@@ -57,10 +57,10 @@ func postAs(subject, path string) token.Grant {
 	}}
 }
 
-// publishOn grants creating tracks of the broadcast at path.
-func publishOn(path string) token.Grant {
+// createOn grants creating tracks of the broadcast at path.
+func createOn(path string) token.Grant {
 	return token.Grant{Scopes: []token.Scope{
-		{Actions: []token.Action{token.ActionPublish}, Broadcast: path},
+		{Actions: []token.Action{token.ActionCreate}, Broadcast: path},
 	}}
 }
 
@@ -69,7 +69,7 @@ func TestNewHandler_SenderComesFromTheCredential(t *testing.T) {
 	mux := moqt.NewTrackMux(0)
 	h, err := NewHandler(t.Context(), mem.New(), mux, HandlerOptions{Verifier: v})
 	require.NoError(t, err)
-	require.Equal(t, http.StatusCreated, serve(h, http.MethodPut, chatURL, "", sign(t, key, publishOn("room/123"))).Code)
+	require.Equal(t, http.StatusCreated, serve(h, http.MethodPut, chatURL, "", sign(t, key, createOn("room/123"))).Code)
 
 	rr := serve(h, http.MethodPost, chatURL, `{"user":"mallory","text":"hi"}`,
 		sign(t, key, postAs("user-42", "room/123")))
@@ -133,7 +133,7 @@ func TestNewHandler_HistoryNeedsASubscriber(t *testing.T) {
 	v, key := newVerifier(t)
 	h, err := NewHandler(t.Context(), mem.New(), moqt.NewTrackMux(0), HandlerOptions{Verifier: v})
 	require.NoError(t, err)
-	require.Equal(t, http.StatusCreated, serve(h, http.MethodPut, chatURL, "", sign(t, key, publishOn("room/123"))).Code)
+	require.Equal(t, http.StatusCreated, serve(h, http.MethodPut, chatURL, "", sign(t, key, createOn("room/123"))).Code)
 	require.Equal(t, http.StatusCreated,
 		serve(h, http.MethodPost, chatURL, `"hello"`, sign(t, key, postAs("user-42", "room/123"))).Code)
 

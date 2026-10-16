@@ -44,7 +44,7 @@ type VerifierConfig struct {
 // (token.VerifyLive): a key that has left the set ends its sessions. The
 // credential's expiry decides only whether the session may start. A key
 // marked "pause": ["publish"] starts no new sessions that may publish (a
-// credential with a publish scope, at a relay or a funnel); it
+// credential with a publish or create scope); it
 // never ends a live one, since it pauses what is new rather than what is on
 // air. The key set is kept when a refresh fails (fail-static): after 6 h
 // without one, new sessions are refused, while live ones continue on the
@@ -119,7 +119,8 @@ func refuse(status int, format string, args ...any) error {
 // set, and ends when its key has left the set. The bytes of a revalidate are
 // reported whatever it decides, since they were sent.
 func (v *Verifier) Authorize(_ context.Context, req Request) (*Grant, error) {
-	g, s, err := v.decide(req)
+	connect := req.Event == EventConnect
+	g, s, err := v.decide(req, func(g token.Grant) bool { return connect && publishesBroadcast(g) })
 	if v.usage != nil {
 		// A session is learned only when it is admitted at connect. A
 		// revalidate never adds one: it can finish after the session's end
@@ -137,7 +138,20 @@ func (v *Verifier) Authorize(_ context.Context, req Request) (*Grant, error) {
 	return g, err
 }
 
-func (v *Verifier) decide(req Request) (*Grant, usageSession, error) {
+// Check verifies credential, presented with one request that needs action,
+// such as a funnel's: as Authorize verifies a connect, except that the key's
+// pause refuses it only when action is publish or create, so a paused key's
+// credentials still read, post and redact. It reports no usage.
+func (v *Verifier) Check(credential string, action token.Action) (*Grant, error) {
+	req := Request{Event: EventConnect, Query: url.Values{"jwt": {credential}}.Encode()}
+	pausable := action == token.ActionPublish || action == token.ActionCreate
+	g, _, err := v.decide(req, func(token.Grant) bool { return pausable })
+	return g, err
+}
+
+// decide verifies req's credential. A key paused for publishing refuses it
+// when paused reports true for its grant.
+func (v *Verifier) decide(req Request, paused func(token.Grant) bool) (*Grant, usageSession, error) {
 	now := v.now()
 	connect := req.Event == EventConnect
 	set, fresh := v.store.current(now)
@@ -169,24 +183,22 @@ func (v *Verifier) decide(req Request) (*Grant, usageSession, error) {
 		}
 		return nil, usageSession{}, refuse(status, "%v", err)
 	}
-	publishes := publishesBroadcast(c.Grant)
-	if connect && publishes && c.Key.Pauses(token.ActionPublish) {
+	if c.Key.Pauses(token.ActionPublish) && paused(c.Grant) {
 		return nil, usageSession{}, refuse(http.StatusForbidden,
 			"signing key %s starts no new publishing sessions", c.Key.ID)
 	}
 
 	g := &Grant{scopes: c.Scopes, subject: c.Subject, revalidate: revalidateEvery}
-	return g, usageSession{kid: c.Key.ID, publishes: publishes}, nil
+	return g, usageSession{kid: c.Key.ID, publishes: publishesBroadcast(c.Grant)}, nil
 }
 
 // publishesBroadcast reports whether g lets its bearer publish a broadcast: a
-// scope permitting publish. Through a relay it announces the broadcast, and
-// at a funnel it may create tracks of it, which the funnel publishes. A
-// bearer that may only post is a viewer, such as a chat sender posting into a
-// funnel's track.
+// scope permitting publish, which announces it through a relay, or create,
+// which makes tracks of it that a funnel publishes. A bearer that may only
+// post is a viewer, such as a chat sender posting into a funnel's track.
 func publishesBroadcast(g token.Grant) bool {
 	return slices.ContainsFunc(g.Scopes, func(s token.Scope) bool {
-		return slices.Contains(s.Actions, token.ActionPublish)
+		return slices.Contains(s.Actions, token.ActionPublish) || slices.Contains(s.Actions, token.ActionCreate)
 	})
 }
 

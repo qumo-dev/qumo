@@ -154,7 +154,7 @@ func runToken(args []string, out, info io.Writer) error {
 	subscribe := fs.String("subscribe", "", "the path the bearer may subscribe at or beneath: short for -scope subscribe,fetch:PATH/**")
 	var scopes []token.Scope
 	fs.Func("scope", "a scope, `ACTIONS:BROADCAST` (repeatable):\n"+
-		"ACTIONS is a comma-separated list of publish, subscribe, fetch, post and redact;\n"+
+		"ACTIONS is a comma-separated list of publish, subscribe, fetch, create, post and redact;\n"+
 		"BROADCAST is a path, or a/b/** for it and every path beneath it",
 		func(v string) error {
 			s, err := parseScope(v)
