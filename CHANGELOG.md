@@ -17,11 +17,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 > **Breaking for the HLS egress.** A relay-CA certificate without the peering name no longer admits a session; give the egress `RELAY_SIGNING_KEY` (new) or a peer certificate.
 
-> **Breaking for apps and funnels.** Tokens now carry a `root` plus path patterns per action (`publish`, `subscribe`, `create`, `post`, `redact`) and a token with `scopes` is refused; move relays, funnels and token signers together.
+> **Breaking for apps and funnels.** Tokens now carry a `root` plus path patterns per action (`publish`, `subscribe`, `create`, `post`, `redact`) and a token with `scopes` is refused; move relays, funnels and token signers together. `qumo_relay_announcements_refused_total` and `qumo_relay_subscribe_authorizations_total` are gone.
 
 ### Added
 
-- **Tickets: a session's grants can grow (`internal/relay`, `internal/auth`).** A client presents extra tokens signed with `token.SignTicket` (signed by the same key as the session's credential, at most 32, each expiring at its `exp`) on MoQ Auth Streams, so an app keeps one session per client and grants rooms as the client joins; counted by `qumo_relay_tickets_total{result}`.
+- **Tickets: a session's grants can grow (`internal/relay`, `internal/auth`).** A client presents extra tokens signed with `token.SignTicket` (signed by the same key as the session's credential, at most 32, each expiring at its `exp`) on MoQ Auth Streams, so an app keeps one session per client and grants rooms as the client joins; counted by `qumo_relay_tickets_total{result}`. A ticket that can't be checked (key set unusable) is answered `INTERNAL` (retryable), a refused one `UNAUTHORIZED`, and with auth off or for a relay peer `NOT_SUPPORTED`; a ticket is refused as a session's credential.
 - **A token may grant nothing (`token`).** A token with no patterns (and no `root`) admits a session that can do nothing until a ticket grants it.
 - **The HLS egress signs its own relay credential (`internal/hls`).** With `RELAY_SIGNING_KEY`, `qumo hls` signs a fresh `subscribe`-only credential for `RELAY_TRACK_PATH` on every connect, fixing egresses that stopped reconnecting after their fixed `?jwt=` token expired; contradictory or unusable credential settings now stop it at startup.
 - **Richer session logs (`internal/relay`).** `relay: new session` now logs `id`, `class`, `transport`, `path`, `sub`, `moq`, `alpn`, `tls`, `sni` (plus `offered`, `user_agent`, `origin` for HTTP upgrades); a new `relay: session ended` line gives `reason`, `duration` and bytes.
@@ -34,8 +34,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Tokens carry a root and path patterns per action, matching gomoqt's `moqt.Grant` (`token`, `qumo auth token`, `internal/auth`, `internal/funnel`, `internal/hls`).** `root` must lie at or beneath the signing key's prefix, patterns are relative to it (`/7`, `/7/`, `/`, `{name}` wildcards), `subscribe` also covers history (no `fetch`), and the root's own path is not a broadcast.
   - To move over: `qumo auth token` takes `-root` and repeatable `-publish`, `-subscribe`, `-create`, `-post`, `-redact` in place of `-scope`; in Go, `token.Grant` replaces `token.Scope` and `auth.NewGrant` takes a `token.Grant`.
   - `path_auth` is read as a grant (`root`, `pub`→`publish`, `sub`→`subscribe`).
-- **gomoqt now enforces each relay session's grants (`internal/relay`).** Subscriptions, TRACK and FETCH outside the grants are refused with `UNAUTHORIZED` (not `NotFound`), announcements are listed only within a grant's root, and what an ending ticket covered is cancelled.
-- **gomoqt v0.25.0 (`go.mod`, `playground`).** Closing an announce stream sends no ENDED (web clients need `@qumo/moq` 0.25.0), `https://` sessions a command dials now honour `QUIC_*`, and with `QUIC_KEEPALIVE=0` WebSocket sessions no longer ping.
+  - The funnel's own relay credential has `RELAY_PUBLISH` as its root and publishes every path beneath it, no longer the path itself.
+- **gomoqt now enforces each relay session's grants (`internal/relay`).** Subscriptions, TRACK and FETCH outside the grants are refused with `UNAUTHORIZED` (not `NotFound`), announcements are listed only within a grant's root, and what an ending ticket covered is cancelled. `qumo_relay_announcements_refused_total` and `qumo_relay_subscribe_authorizations_total` are removed.
+- **gomoqt v0.25.0 (`go.mod`, `playground`).** Closing an announce stream sends no ENDED (web clients need `@qumo/moq` 0.25.0), `https://` sessions a command dials now honour `QUIC_*`, with `QUIC_KEEPALIVE=0` WebSocket sessions no longer ping, and a fetch the relay can't serve is reset with `InternalGroupErrorCode`, not `FetchErrorCodeInternal`.
 - **Session metrics split transport from class (`internal/relay`).** `qumo_relay_sessions_total`, `qumo_relay_sessions_closed_total` and `qumo_relay_session_bytes_total` gain `class` (`client`/`peer`) and `transport` is only `webtransport`, `websocket` or `quic`; use `class="peer"` for `transport="peer"` and add `class="client"` to old `transport="quic"` queries.
 - **`"publish": false` is no longer read (`token`, `internal/auth`).** Key-set servers must write `"pause": ["publish"]` before relays upgrade, or paused keys stop being paused.
 - **Usage records have no `role` (`internal/auth`, `usage`).** Sessions with a `publish` pattern are reported on their own; every other session is a viewer counted in a `viewers` record with `run` and `kid`, which also stops empty-role records making receivers drop whole batches.
@@ -115,7 +116,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **`qumo funnel`: many HTTP senders publish JSON records into one MoQT track (`internal/funnel`).** Each record is stored in qumo-ledger (`LEDGER_URI`: file, Postgres/CockroachDB, S3 or memory) before it is sent, optionally through a relay (`RELAY_URL`); see the funnel docs for the API and configuration.
+- **`qumo funnel`: many HTTP senders publish JSON records into one MoQT track (`internal/funnel`).** Each record is stored in qumo-ledger (`LEDGER_URI`: file, Postgres/CockroachDB, S3 or memory) before it is sent, optionally through a relay (`RELAY_URL`, with `RELAY_SIGNING_KEY`/`RELAY_PUBLISH`, `RELAY_CA_FILE`, `RELAY_TLS_INSECURE`). Configured by `FUNNEL_ADDR` (default `:8090`), `FUNNEL_SERVE_ADDR`, `FUNNEL_SENDER_LIMIT` and `FUNNEL_TRACK_LIMIT`; its HTTP listener is plain HTTP, so terminate TLS in front of it.
 - **The playground's DevTools timeline can be zoomed, dragged back in time, and returned to live (`playground/src/devtools/view.ts`).**
 - **The playground can publish a test pattern with no camera (`playground/src/publish/pattern.ts`).** It shows a clock and beeps with a flash each second, for checking A/V sync and delay.
 
@@ -142,16 +143,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **The relay verifies credentials itself against a key set (`QUMO_AUTH_KEYS`).** Give it a file path, `file://` or `https://` URL (re-read or polled every 30 s), from `qumo auth keygen`; a session whose key leaves the set ends within about a minute, and after 6 h without a successful refresh new sessions are refused.
-- **Key-set and usage options for the relay.** `QUMO_AUTH_KEYS_CACHE` keeps the last downloaded set so a restart works while the URL is down, `"publish": false` on a key stops new publishing sessions without locking viewers out, and `QUMO_USAGE_URL` receives per-session usage as JSON (viewer-only sessions are summed per key, `session_id` `viewers.<run>.<kid>`).
+- **The relay verifies credentials itself against a key set (`QUMO_AUTH_KEYS`).** Give it a file path, `file://` or `https://` URL (re-read, or polled every 30 s with `QUMO_RELAY_TOKEN` as a bearer token), from `qumo auth keygen`; a session whose key leaves the set ends within about a minute, and after 6 h without a successful refresh new sessions are refused.
+- **Key-set and usage options for the relay.** `QUMO_AUTH_KEYS_CACHE` keeps the last downloaded set so a restart works while the URL is down, `"publish": false` on a key stops new publishing sessions without locking viewers out, and `QUMO_USAGE_URL` receives per-session usage as JSON, sent with the same bearer token (viewer-only sessions are summed per key, `session_id` `viewers.<run>.<kid>`).
 - **An unreadable key-set file now stops the relay at startup** instead of refusing every session.
 - **The playground's DevTools panel says in words how playback is going (`playground/src/devtools`).** A status line, a copyable log grouped into incidents with their likely cause, a clearer legend, and three timeline lanes.
 
-### Fixed
+### Changed
 
-- **A playground opened at a host other than localhost dials that host (#456).** The relay address and the ffmpeg push commands shown for RTMP and RTSP now use the host from `/config`.
-- **The playground's viewer no longer drops seconds of audio as it starts.**
-- **Raising the playback delay interrupts the sound less often.**
+- **The playground's viewer decodes and plays audio and video itself and no longer uses `@okdaichi/av-nodes` (`playground/src/player`).** Its playback delay now adapts to measured arrival jitter (up to 500 ms), and a lost audio frame is one frame of silence instead of shrinking the buffer.
+- **The playground's DevTools panel shows playback delay, arrival jitter and an audio-output lane, and is drawn on canvas (`playground/src/devtools`).** The panel no longer stalls the audio it shows.
 
 ### Removed
 
@@ -160,14 +160,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - A relay with `QUMO_AUTH_URL` still set refuses to start. `qumo auth` needs `keygen` or `token`; `QUMO_AUTH_ADDR` and `QUMO_AUTH_KEYS_FILE` are no longer read.
   - The `invalid` result of `qumo_relay_auth_requests_total` and `invalid` reason of `qumo_relay_sessions_ended_total` are gone.
 
-### Changed
+### Fixed
 
-- **The playground's viewer decodes and plays audio and video itself and no longer uses `@okdaichi/av-nodes` (`playground/src/player`).** Its playback delay now adapts to measured arrival jitter (up to 500 ms), and a lost audio frame is one frame of silence instead of shrinking the buffer.
-- **The playground's DevTools panel shows playback delay, arrival jitter and an audio-output lane, and is drawn on canvas (`playground/src/devtools`).** The panel no longer stalls the audio it shows.
+- **A playground opened at a host other than localhost dials that host (#456).** The relay address and the ffmpeg push commands shown for RTMP and RTSP now use the host from `/config`.
+- **The playground's viewer no longer drops seconds of audio as it starts.**
+- **Raising the playback delay interrupts the sound less often.**
 
 ## [v0.10.261005] - 2026-10-05
 
 > **Breaking for operators.** `qumo_relay_sessions_expired_total` is replaced by `qumo_relay_sessions_ended_total{reason}`; use `reason="expired"` for the old count. Not yet authorized: which paths a session can discover through announce interest and TRACK_INFO (#450).
+
+### Changed (breaking)
+
+- **`qumo_relay_sessions_expired_total` is replaced by `qumo_relay_sessions_ended_total{reason}`** (`expired`, `refused`, `invalid`); use `reason="expired"` for the old count. `qumo_relay_auth_requests_total{event}` now also counts `revalidate`.
 
 ### Added
 
@@ -191,17 +196,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **A relay URL's credential is never logged (#432)** by `loadgen`, `smoketest` or the HLS egress.
 
-### Changed (breaking)
-
-- **`qumo_relay_sessions_expired_total` is replaced by `qumo_relay_sessions_ended_total{reason}`** (`expired`, `refused`, `invalid`); use `reason="expired"` for the old count. `qumo_relay_auth_requests_total{event}` now also counts `revalidate`.
-
 ## [v0.9.261004] - 2026-10-04
 
-> **Breaking for operators.** Session auth now goes through an external auth server (`QUMO_AUTH_URL`; unset means auth off) and introspection is removed; `PEER_CIDRS`, `MTLS_REQUIRED` and `UPSTREAM_ADDR` are removed in favour of `CA_FILE` and `PEERS`.
+> **Breaking for operators.** Session auth now goes through an external auth server (`QUMO_AUTH_URL`; unset means auth off) and introspection is removed; `PEER_CIDRS`, `MTLS_REQUIRED` and `UPSTREAM_ADDR` are removed in favour of `CA_FILE` and `PEERS`. Sessions now end at their grant's `expires`; revalidation (#419) and announce/TRACK_INFO discovery (#418) are not yet enforced.
 
 ### Changed (breaking)
 
-- **Relays ask an auth server when a session connects; introspection is removed (#417).** Set `QUMO_AUTH_URL`; without it auth is off (every session admitted, with a startup warning) and `QUMO_AUTH_PUBLIC` is gone (#441).
+- **Relays ask an auth server when a session connects; introspection is removed (#417).** Set `QUMO_AUTH_URL`; without it auth is off (every session admitted, with a startup warning) and `QUMO_AUTH_PUBLIC` is gone (#441). Trusted peers are never asked, and peers this relay dials (`PEERS`) are now trusted too.
   - Removed: introspection (`POST /v1/credentials/introspect`), the `auth` track, `internal/credential`, `QUMO_CREDENTIAL_URL`, `QUMO_RELAY_TOKEN`, `QUMO_RELAY_AUDIENCE`, `QUMO_CREDENTIAL_ISSUER`, and usage reporting to `POST /v1/usage/events`.
   - New metrics: `qumo_relay_auth_requests_total{event,result}`, `qumo_relay_announcements_refused_total`. Requires gomoqt v0.21.0.
 - **Subscriptions are checked against the session's grant (#418).** An uncovered SUBSCRIBE is refused with `NotFound`; new metric `qumo_relay_subscribe_authorizations_total{result}`. Path names and TRACK_INFO are still discoverable.
@@ -239,10 +240,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [v0.7.260922] - 2026-09-22
 
-### Changed
-
-- **Ingest fan-out to many subscribers is much cheaper per frame (`internal/ingest`).** Frame notification no longer walks one channel per subscriber, so cost stays flat as subscriber count grows.
-
 ### Added
 
 - **One-line installation scripts (`install.ps1`, `install.sh`).** They detect OS and architecture, verify SHA-256 checksums from GitHub Releases, install to `~/.qumo/bin` and set up `PATH`; also served from the docs site at `/install.ps1` and `/install.sh`.
@@ -250,14 +247,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`/routes` endpoint shows a snapshot of active routes (`internal/relay`).** Lists each broadcast path's upstream source, hop count, RTT, bitrate and last route update, for incident investigation.
 - **`UPSTREAM_ADDR` connects edge and hierarchical relays to upstream relays (`internal/relay`).** A DNS hostname (e.g. `role-hub.qumo-relay.service.consul:4433`) connects to every resolved A/AAAA record, with automatic reconnect and backoff.
 
+### Changed
+
+- **Ingest fan-out to many subscribers is much cheaper per frame (`internal/ingest`).** Frame notification no longer walks one channel per subscriber, so cost stays flat as subscriber count grows.
+- **Bumped `github.com/qumo-dev/gomoqt` to v0.20.0 (via v0.18.0, #392) and the playground's `@qumo/moq` to `^0.20.0`.** The relay now speaks moq-lite draft-05, answers `TRACK_INFO` requests, and emits `draft-ietf-moq-msf-01` catalogs (`InitRef` into `InitDataList`); clients on `@qumo/moq` 0.17 can no longer play from it.
+- **Hubs dial all remote hubs, not just the first (`internal/relay`).** Removes a single point of failure in cross-cluster links; the remote resolver now sends `?hub=<RELAY_NAME>` as a proper query parameter and logs peer-resolution failures.
+
 ### Removed
 
 - **`LocalResolver` and `RemoteResolver` are gone (`internal/relay`).** Peer discovery now uses DNS or static configuration (`UPSTREAM_ADDR` / `PEERS`) instead of control-plane microservices and Nomad API polling.
-
-### Changed
-
-- **Bumped `github.com/qumo-dev/gomoqt` to v0.20.0 (via v0.18.0, #392) and the playground's `@qumo/moq` to `^0.20.0`.** The relay now speaks moq-lite draft-05, answers `TRACK_INFO` requests, and emits `draft-ietf-moq-msf-01` catalogs (`InitRef` into `InitDataList`); clients on `@qumo/moq` 0.17 can no longer play from it.
-- **Hubs dial all remote hubs, not just the first (`internal/relay`).** Removes a single point of failure in cross-cluster links; the remote resolver now sends `?hub=<RELAY_NAME>` as a proper query parameter and logs peer-resolution failures.
 
 ### Fixed
 
@@ -284,7 +282,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Go 1.27 is now required to build qumo.** CI's golangci-lint moves to v2.13.2 to match.
 - **Dependency bumps: gomoqt v0.17.0 (quic-go v0.61.0) and golang.org/x/crypto v0.55.0.** The x/crypto bump fixes CVE-2026-56854; qumo's own code needs no changes.
 - **The Docker runtime image now upgrades its base packages (`docker/Dockerfile`).** This picks up OpenSSL 3.5.8-r0, which fixes CVE-2026-14456.
-- **Edges switch hubs less often (`internal/relay`).** A new route must be clearly better on bitrate or RTT before an edge moves, and `metricRouteReplacements` now has a `reason` label.
+- **Edges switch hubs less often (`internal/relay`).** A new route must be clearly better on bitrate or RTT before an edge moves, and `qumo_relay_route_replacements_total` now has a `reason` label.
 
 ### Removed
 
@@ -304,10 +302,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Measured capacity (WSL2 single host, not a bare-metal claim).** About 13K concurrent subscriber sessions held (about 15K at the establishment peak) and at least 200K objects/sec at 2000 subscribers; bare-metal and distributed-load checks are still open (#341, #342, #343, #344).
 - **Opt-in tuning, defaults unchanged.** `RELAY_GOGC` raises the session ceiling on bare metal, `RELAY_UDP_RCVBUF` sets the UDP receive buffer (raise `net.core.rmem_max` on Linux), and `RELAY_PPROF` should be enabled only on a trusted interface.
 
-### Fixed
-
-- **RTSP sessions no longer pile up on a long-lived connection (`internal/ingest`).** Each new ANNOUNCE on the same RTSP connection now closes the previous session instead of keeping it open until the TCP connection ends.
-
 ### Added
 
 - **Opt-in pprof endpoint `RELAY_PPROF=1` (#339, `internal/relay`).** Serves `/debug/pprof/*` on the relay's HTTP mux next to `/metrics`; it is off by default and exposes runtime internals, so enable it only on a trusted or loopback interface.
@@ -318,12 +312,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **One-file benchmark dashboard `results/index.html` (`scripts/relay_bench_report.ts`).** It shows the capacity headline, decision summary and every plot offline, and `--paramexp <dir>` adds the paramexp findings.
 - **Opt-in GC tuning `RELAY_GOGC` (`internal/gctune`).** Values of 600–1600 reached about 18–20K concurrent sessions on a bare-metal 8-core host, against about 13–15K at the default; it is unset by default, `GOGC` always wins, an invalid value warns and is ignored, and `GOMEMLIMIT` is not used.
 - **`qumo doctor` explains the runtime config without changing anything.** It prints the effective GC target, the inputs (`GOGC`, `RELAY_GOGC`, `GOMEMLIMIT`), which one won, and any warnings.
+- **`tools/paramexp` measures relay jitter.** The fan-out bench now reports `jitter_ms`.
+- **Nightly relay tuning sweep in CI (`bench-relay.yml` `paramexp` job).** It uses `example/relay/params.yaml` and uploads the `relay-paramexp` artifact; workflow inputs `px_samples` and `px_replicates` set its size.
+- **`tools/paramexp` Bayesian-optimization scheduler.** Use `--scheduler bo --acquisition ei|ucb|variance`, with yaml knobs `bo_rounds`, `bo_batch`, `bo_acquisition`, `bo_kappa`, `bo_xi`; the report lists suggested next measurements.
+- **`tools/paramexp` replicates and variance.** Each vector can run N times (`replicates:` / `--replicates`), and reports show mean ± 95% CI, unstable configs, and the configs that cannot be told apart from the best.
+- **The relay fan-out benchmark can be swept by `tools/paramexp`.** Knobs `RELAY_RING`, `RELAY_FRAME`, `RELAY_NOTIFY_TIMEOUT_MS`, plus the `example/relay/{params.yaml,bench.sh}` harness.
+- **Automated parameter exploration tool (`tools/paramexp`).** It runs a benchmark over a parameter space (params as `PARAM_<NAME>` env vars, JSON metrics on stdout), stores results in SQLite, and reports knees, parameter importance, interactions and regressions; new dependency `modernc.org/sqlite`.
+- **Relay-chain benchmark suite with JSONL results and plots (#284).** It writes results to `BENCH_RESULTS_DIR` and accepts a `FANOUT_KS` override, `scripts/relay_bench_report.ts` draws the plots, `bench-relay.yml` runs it nightly and on demand, and the per-PR gate now skips the `TestRelayChain_*` tests.
+- **A publisher that loses a route election takes over when the current one ends (#279, `internal/relay`).** Previously the losing route was discarded, so the path went dark when the incumbent ended; new metrics `qumo_relay_routes_retained`, `qumo_relay_route_promotions_total`.
+- **GOAWAY handling (#280, `internal/relay`).** GOAWAY from an upstream peer is now logged and counted (`qumo_relay_peer_goaway_received_total{redirect}`), and on graceful shutdown the relay advertises the `GOAWAY_REDIRECT_URI` env as its redirect.
 
 ### Changed
 
 - **Relay metric sampling runs on one goroutine (`internal/relay`).** Metric meanings are unchanged, but the per-address `session_rtt_seconds` histogram series is now deleted when a session ends instead of leaking.
 - **`qumo loadgen subscribe` no longer accepts `--ramp` (#327).** All sessions now start at once and spread out through dial backoff; the settle timeout is fixed at 30s.
 - **deps: `github.com/qumo-dev/gomoqt` `v0.16.1` → `v0.16.2-0.20260718145816-7bc42f96aec4`.** Each subscriber connection now uses about 2–3 fewer goroutines; `TrackWriter.Updated()` was replaced by `TrackWriter.ReadUpdate()`, which qumo did not use.
+- **`tools/paramexp` packages cut from 11 to 7.** `encoding` moved into `experiment`, `provenance` into `storage`, `visualization` into `report`, and `scheduler` into `sampler`.
+- **`tools/paramexp` rebuilt as a performance-landscape framework.** It adds a Gaussian-process surrogate with uncertainty, typed parameters (continuous, discrete or categorical), response-surface plots, and run provenance, retries and timeouts; new dependency `gonum.org/v1/gonum`.
+- **Broadcast notification cost no longer grows with subscriber count (#332, `internal/relay`).** This also fixes a short delay that could hold back an in-flight frame.
+- **Egress byte counter updates once per group (#333, `internal/relay`).** Bytes are still counted when a write fails partway through a group, so metering stays accurate.
 
 ### Removed
 
@@ -332,58 +339,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **RTSP sessions no longer pile up on a long-lived connection (`internal/ingest`).** Each new ANNOUNCE on the same RTSP connection now closes the previous session instead of keeping it open until the TCP connection ends.
 - **A subscriber that hits the peer's stream limit no longer blocks forever (`internal/relay`).** Opening a group now waits at most 30ms and then drops the group; the relay's `MaxIncomingUniStreams` / `MaxIncomingStreams` go back to the quic-go defaults (about 100).
-
-### Fixed
-
 - **`tools/paramexp` statistics and selection fixes (#297, #298).** Suggested points are no longer duplicates or already measured, small discrete spaces no longer end the search early, and confidence intervals now use sample variance and t-values, so they hold at small N.
-
-### Added
-
-- **`tools/paramexp` measures relay jitter.** The fan-out bench now reports `jitter_ms`.
-- **Nightly relay tuning sweep in CI (`bench-relay.yml` `paramexp` job).** It uses `example/relay/params.yaml` and uploads the `relay-paramexp` artifact; workflow inputs `px_samples` and `px_replicates` set its size.
-- **`tools/paramexp` Bayesian-optimization scheduler.** Use `--scheduler bo --acquisition ei|ucb|variance`, with yaml knobs `bo_rounds`, `bo_batch`, `bo_acquisition`, `bo_kappa`, `bo_xi`; the report lists suggested next measurements.
-
-### Added
-
-- **`tools/paramexp` replicates and variance.** Each vector can run N times (`replicates:` / `--replicates`), and reports show mean ± 95% CI, unstable configs, and the configs that cannot be told apart from the best.
-- **The relay fan-out benchmark can be swept by `tools/paramexp`.** Knobs `RELAY_RING`, `RELAY_FRAME`, `RELAY_NOTIFY_TIMEOUT_MS`, plus the `example/relay/{params.yaml,bench.sh}` harness.
-
-### Fixed
-
 - **`tools/paramexp` no longer writes an empty `report.json`.** Near-constant data used to produce NaN confidence intervals, which broke the JSON output without any error.
-
-### Changed
-
-- **`tools/paramexp` packages cut from 11 to 7.** `encoding` moved into `experiment`, `provenance` into `storage`, `visualization` into `report`, and `scheduler` into `sampler`.
-
-### Fixed
-
 - **`tools/paramexp` builds again (#294 regression).** The default report output directory is now `report_out/`, so the `report` source package is no longer gitignored.
 - **`tools/paramexp` model and analysis fixes.** The GP surrogate math is corrected, knees are now found on concave curves, regression results are deterministic, telemetry keys no longer leak into metrics, and `:memory:` storage keeps its pragmas.
-
-### Changed
-
-- **`tools/paramexp` rebuilt as a performance-landscape framework.** It adds a Gaussian-process surrogate with uncertainty, typed parameters (continuous, discrete or categorical), response-surface plots, and run provenance, retries and timeouts; new dependency `gonum.org/v1/gonum`.
-
-### Added
-
-- **Automated parameter exploration tool (`tools/paramexp`).** It runs a benchmark over a parameter space (params as `PARAM_<NAME>` env vars, JSON metrics on stdout), stores results in SQLite, and reports knees, parameter importance, interactions and regressions; new dependency `modernc.org/sqlite`.
-
-### Fixed
-
 - **Subscriber teardown no longer hangs (#286, `internal/relay`).** A subscriber that had fallen behind could ignore cancellation, which hung `Server.Shutdown`/`Close` and leaked goroutines during churn.
-
-### Added
-
-- **Relay-chain benchmark suite with JSONL results and plots (#284).** It writes results to `BENCH_RESULTS_DIR` and accepts a `FANOUT_KS` override, `scripts/relay_bench_report.ts` draws the plots, `bench-relay.yml` runs it nightly and on demand, and the per-PR gate now skips the `TestRelayChain_*` tests.
-- **A publisher that loses a route election takes over when the current one ends (#279, `internal/relay`).** Previously the losing route was discarded, so the path went dark when the incumbent ended; new metrics `qumo_relay_routes_retained`, `qumo_relay_route_promotions_total`.
-- **GOAWAY handling (#280, `internal/relay`).** GOAWAY from an upstream peer is now logged and counted (`qumo_relay_peer_goaway_received_total{redirect}`), and on graceful shutdown the relay advertises the `GOAWAY_REDIRECT_URI` env as its redirect.
-
-### Changed
-
-- **Broadcast notification cost no longer grows with subscriber count (#332, `internal/relay`).** This also fixes a short delay that could hold back an in-flight frame.
-- **Egress byte counter updates once per group (#333, `internal/relay`).** Bytes are still counted when a write fails partway through a group, so metering stays accurate.
 
 ## [v0.4.0] - 2026-07-08
 
@@ -406,6 +368,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Relay `GROUP_CACHE_SIZE` and `FRAME_CAPACITY` now take effect (`internal/relay`).** They were previously ignored; the example `GROUP_CACHE_SIZE` default is corrected from 100 to 8 to match actual behaviour.
 - **Unused relay `REGION` env var removed (`internal/relay`).**
 - **Dependency refresh, minor/patch (`go.mod`, `playground`).** `@qumo/moq` 0.16.2, `solid-js` 1.9.14, `@types/node` 25.9, `vite` 7.3.6 and Go indirects.
+- **Major frontend bumps (`playground`).** `typescript` 6.0, `vite` 8.1, `@types/node` 26.
+- **Relay default `RELAY_ADDR` is now `:4433` (dual-stack IPv4+IPv6) (`internal/relay`, `magefiles`).** `mage relay` also defaults `ADVERTISE_ADDR=localhost:4433` and dev CORS origins so it works with `mage web` out of the box; refs #234.
+- **`mage cert` prefers mkcert for a trusted long-lived local cert (`magefiles`).** The new `CERT_HOSTS` env var adds extra SANs; without mkcert it falls back to the 14-day self-signed cert and `VITE_CERT_HASH`; closes #196.
+- **Release binaries and the Docker image now embed the real playground UI (`docker`, `.github`).**
+- **RTMP/RTSP ingest now forward AVCC video (`avc1`) with Base64 catalog `initData` (`internal/ingest`).** Ingested streams now match the browser-publish wire format and decode in browsers.
+- **gomoqt bumped to v0.16.1 (`go.mod`).** It fixes an OOM denial-of-service from unbounded varint allocation, a `Server.Close()` hang and a `Session.CloseWithError` deadlock (#205); `OpenGroup`/`OpenGroupAt` now take a `context.Context`.
+- **Web demo directory renamed `solid-deno` → `playground`.**
+- **Demo deps bumped (`playground`).** `@okdaichi/av-nodes` 0.10.4, `@okdaichi/golikejs` 0.10.0.
+
+### Removed
+
+- **Bootstrap server and `qumo bootstrap` command removed (`internal/bootstrap`).** This functionality is moving to a separate control-plane service.
+- **Stale `examples/web-demo/` removed.** The web demo lives in `playground/`.
 
 ### Fixed
 
@@ -421,26 +396,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`qumo version` no longer reports a `-dirty` suffix on clean builds (`magefiles`).**
 - **Playground fixes (`playground`).** The production UI build works again, a subscribe to an empty path says "No stream at this path yet" instead of a connection failure, mkcert users get no false cert warning, and the `mage web` console is quieter.
 
-### Changed
-
-- **Major frontend bumps (`playground`).** `typescript` 6.0, `vite` 8.1, `@types/node` 26.
-- **Relay default `RELAY_ADDR` is now `:4433` (dual-stack IPv4+IPv6) (`internal/relay`, `magefiles`).** `mage relay` also defaults `ADVERTISE_ADDR=localhost:4433` and dev CORS origins so it works with `mage web` out of the box; refs #234.
-- **`mage cert` prefers mkcert for a trusted long-lived local cert (`magefiles`).** The new `CERT_HOSTS` env var adds extra SANs; without mkcert it falls back to the 14-day self-signed cert and `VITE_CERT_HASH`; closes #196.
-- **Release binaries and the Docker image now embed the real playground UI (`docker`, `.github`).**
-- **RTMP/RTSP ingest now forward AVCC video (`avc1`) with Base64 catalog `initData` (`internal/ingest`).** Ingested streams now match the browser-publish wire format and decode in browsers.
-- **gomoqt bumped to v0.16.1 (`go.mod`).** It fixes an OOM denial-of-service from unbounded varint allocation, a `Server.Close()` hang and a `Session.CloseWithError` deadlock (#205); `OpenGroup`/`OpenGroupAt` now take a `context.Context`.
-- **Web demo directory renamed `solid-deno` → `playground`.**
-- **Demo deps bumped (`playground`).** `@okdaichi/av-nodes` 0.10.4, `@okdaichi/golikejs` 0.10.0.
-
-### Removed
-
-- **Bootstrap server and `qumo bootstrap` command removed (`internal/bootstrap`).** This functionality is moving to a separate control-plane service.
-- **Stale `examples/web-demo/` removed.** The web demo lives in `playground/`.
-
 ### Security
 
 - **RTMP listener resists handshake stalls (`internal/rtmp`).** A stalled or bad client now times out (10s default) and is skipped instead of blocking or crashing the ingest server.
 - **`golang.org/x/crypto` bumped to v0.53.0 (`go.mod`).** This clears CVE-2026-39829, -39830, -39832, -39835, -42508, -46595 and -46597; `golang.org/x/sys` is now v0.46.0 and `golang.org/x/text` v0.38.0.
 - **Ingest servers check WebTransport origins against `CORS_ALLOWED_ORIGINS` (`internal/ingest`).** This closes a cross-site request forgery risk; `*` and a same-origin fallback are supported.
 - **TLS configuration hardened (`internal/relay`):** Removed `InsecureSkipVerify` from the relay dialer, so outgoing relay connections verify TLS.
-

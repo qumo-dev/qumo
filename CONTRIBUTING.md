@@ -157,8 +157,9 @@ When in doubt, prefer `internal/integration`. A test that needs an unexported sy
 
 `CHANGELOG.md` follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/). Write for someone deciding whether to upgrade, not for a reviewer:
 
-- One line per entry, two sentences at most: what changed and who it affects, with the PR number, e.g. ``- **`qumo rtsp` pulls a stream from an IP camera and publishes it (#123).**``
-- Name new or changed commands, flags and environment variables exactly; keep CVE ids.
+- One line per entry, two sentences at most: what changed and who it affects, e.g. ``- **`qumo rtsp` pulls a stream from an IP camera and publishes it (#123).**``
+- Name new or changed commands, flags, environment variables and metrics exactly (the Prometheus name, not the Go variable); keep CVE ids. A PR or issue number is optional.
+- One `###` heading per type per release, in the order Added, Changed, Deprecated, Removed, Fixed, Security.
 - A breaking change gets a `> **Breaking for …**` line at the top of the release and up to three sub-bullets on how to move over.
 - Leave out how it works, benchmark figures, refactors and test-only changes; those belong in the PR description and the docs.
 
