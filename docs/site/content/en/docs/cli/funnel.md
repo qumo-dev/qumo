@@ -145,7 +145,10 @@ uses the `?jwt=` in `RELAY_URL`, or, with `RELAY_SIGNING_KEY` and
 `RELAY_PUBLISH`, signs a fresh one for every session, whose root is
 `RELAY_PUBLISH` and which grants `publish` on every path beneath it
 (`"publish": ["/"]`), from a key the relay's key set trusts
-(`qumo auth keygen`, ideally confined with `-prefix`). A credential
+(`qumo auth keygen`, ideally confined with `-prefix`). A track is then
+created only beneath `RELAY_PUBLISH`, where the relay takes the funnel's
+announcements: a `PUT` for one elsewhere, or at `RELAY_PUBLISH` itself, is
+answered `403`. A credential
 lasts at most an hour, so one in `RELAY_URL` admits sessions only until then;
 a long-running funnel signs its own.
 

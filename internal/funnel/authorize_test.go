@@ -302,6 +302,32 @@ func TestAuthorizer_PausedKeyCreatesNothing(t *testing.T) {
 	assert.Contains(t, err.Error(), "may not create", "a credential that may not create is refused for that, paused or not")
 }
 
+// With RELAY_PUBLISH, a track is created only beneath it, where the relay
+// takes the funnel's announcements; other requests are left to authorize.
+func TestPublishedBeneath(t *testing.T) {
+	check := publishedBeneath("room", nil)
+	r := httptest.NewRequest(http.MethodPut, "/tracks/x", nil)
+	tests := map[string]struct {
+		broadcast string
+		access    ingest.Access
+		wantErr   bool
+	}{
+		"creating beneath":          {broadcast: "/room/123/comments", access: ingest.Create},
+		"creating at the path":      {broadcast: "/room", access: ingest.Create, wantErr: true},
+		"creating beside it":        {broadcast: "/rooms/1", access: ingest.Create, wantErr: true},
+		"creating elsewhere":        {broadcast: "/other/1", access: ingest.Create, wantErr: true},
+		"posting elsewhere is left": {broadcast: "/other/1", access: ingest.Write},
+	}
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			_, err := check(r, ingest.Track{BroadcastPath: tt.broadcast, TrackName: "chat"}, tt.access)
+
+			assert.Equal(t, tt.wantErr, err != nil, "%v", err)
+		})
+	}
+	assert.Nil(t, publishedBeneath("", nil), "no RELAY_PUBLISH checks nothing")
+}
+
 func TestAuthorizer_NoVerifierChecksNothing(t *testing.T) {
 	assert.Nil(t, authorizer(nil))
 }

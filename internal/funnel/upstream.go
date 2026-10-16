@@ -102,6 +102,16 @@ func newUpstream(cfg RelayConfig) (*upstream, error) {
 	return u, nil
 }
 
+// publishBeneath returns the path the funnel's own relay credential grants
+// publishing beneath, or "" when it signs none (no RELAY_SIGNING_KEY) or
+// publishes through no relay.
+func (u *upstream) publishBeneath() string {
+	if u == nil {
+		return ""
+	}
+	return u.publish
+}
+
 // publishGrant grants publishing every track of every broadcast beneath path,
 // which is its root.
 func publishGrant(path string) token.Grant {

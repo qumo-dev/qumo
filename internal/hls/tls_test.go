@@ -109,6 +109,8 @@ func TestFeedConfig_Validate(t *testing.T) {
 	unnamedCert, unnamedKey := writeLeaf(t, ca, devcert.Leaf{CommonName: "egress-2", Validity: time.Hour})
 	key, err := token.GenerateKey("hls")
 	require.NoError(t, err)
+	exact, err := token.GenerateKey("hls/live")
+	require.NoError(t, err)
 
 	tests := map[string]struct {
 		cfg     feedConfig
@@ -148,6 +150,12 @@ func TestFeedConfig_Validate(t *testing.T) {
 		"a signing key confined elsewhere": {
 			cfg:     feedConfig{relayURL: "https://relay:4433", trackPath: "/room/1", signingKey: &key},
 			wantErr: "RELAY_TRACK_PATH",
+		},
+		// The grant's root is the path's directory: a key confined to the
+		// path itself can't grant it.
+		"a signing key confined to the path itself": {
+			cfg:     feedConfig{relayURL: "https://relay:4433", trackPath: "/hls/live", signingKey: &exact},
+			wantErr: "must lie beneath the key's prefix",
 		},
 	}
 	for name, tt := range tests {

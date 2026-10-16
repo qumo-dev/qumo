@@ -128,6 +128,12 @@ func (c feedConfig) validate() error {
 		// Signing one now refuses a path outside the key's prefix at
 		// startup rather than at the first dial.
 		if _, err := token.Sign(*c.signingKey, subscribeGrant(c.trackPath), token.MaxLifetime); err != nil {
+			if errors.Is(err, token.ErrForbidden) {
+				// The grant's root is the path's directory, which must lie
+				// at or beneath the key's prefix.
+				return fmt.Errorf("RELAY_SIGNING_KEY can't grant RELAY_TRACK_PATH %q: it must lie beneath the key's prefix %q, since a root's own path is not a broadcast: %w",
+					c.trackPath, c.signingKey.Prefix, err)
+			}
 			return fmt.Errorf("RELAY_SIGNING_KEY can't grant RELAY_TRACK_PATH: %w", err)
 		}
 		return nil

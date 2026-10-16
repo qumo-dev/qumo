@@ -150,9 +150,10 @@ func Run(_ []string) error {
 
 	trackMux := moqt.NewTrackMux(0)
 	handler, err := NewHandler(ctx, objects, trackMux, HandlerOptions{
-		Verifier:    verifier,
-		SenderLimit: senderLimit,
-		TrackLimit:  trackLimit,
+		Verifier:       verifier,
+		SenderLimit:    senderLimit,
+		TrackLimit:     trackLimit,
+		PublishBeneath: up.publishBeneath(),
 	})
 	if err != nil {
 		return err
@@ -265,7 +266,7 @@ func NewHandler(ctx context.Context, objects store.Store, trackMux *moqt.TrackMu
 		slog.Info("funnel: restored recorded tracks", "tracks", restored)
 	}
 	return ingest.NewHandler(objects, ingest.Options{
-		Authorize:   authorizer(opts.Verifier),
+		Authorize:   publishedBeneath(opts.PublishBeneath, authorizer(opts.Verifier)),
 		Challenge:   "Bearer",
 		SenderLimit: opts.SenderLimit,
 		TrackLimit:  opts.TrackLimit,
@@ -291,6 +292,11 @@ type HandlerOptions struct {
 	// all of a track's.
 	SenderLimit ingest.Limit
 	TrackLimit  ingest.Limit
+	// PublishBeneath, when set, is the path the funnel's relay credential
+	// grants publishing beneath (RELAY_PUBLISH): a track whose broadcast
+	// does not lie beneath it is not created, since the relay would not take
+	// its announcement.
+	PublishBeneath string
 }
 
 // parseLimit reads a limit written "RATE,BURST", records per second and at

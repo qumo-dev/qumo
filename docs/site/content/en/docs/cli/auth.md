@@ -49,7 +49,7 @@ Signs a token granting, beneath `-root`, each action on the path patterns its fl
 
 A token grants what a MoQ grant does: a **`root`**, the directory of broadcast paths it applies to, and for each action the **path patterns** beneath the root its bearer may act on, on every track of each broadcast they match. It is the shape of gomoqt's `moqt.Grant`, so the relay hands the root and the `publish` and `subscribe` patterns to the session unchanged.
 
-- **`root`**: a broadcast path such as `acme/app/rooms/42` (surrounding slashes are trimmed). It must lie at or beneath the key's prefix, and may not hold a `.` or `..` segment, `*`, `{` or `}`. Every pattern lies beneath it, so it confines what the token grants to the key's tenant.
+- **`root`**: a broadcast path such as `acme/app/rooms/42` (surrounding slashes are trimmed). It must lie at or beneath the key's prefix, and may not hold a `.` or `..` segment, `*`, `{` or `}`. Every pattern lies beneath it, so it confines what the token grants to the key's tenant. The root is a directory, and its own path is not a broadcast: no pattern reaches it, so give each broadcast a path beneath a root, as a file lies in a directory. A key confined to `acme/app` can't grant the broadcast `/acme/app` itself.
 - **`publish`**, **`subscribe`**, **`fetch`**, **`create`**, **`post`**, **`redact`**: each a list of patterns relative to the root, matching broadcast paths as `moqt.Grant` reads them, the way an `http.ServeMux` pattern matches URL paths. With the root `acme/app/rooms/42`, `/7` matches `/acme/app/rooms/42/7` alone, `/7/` every path beneath it, and `/` every path beneath the root (not the root itself). A segment may be a wildcard: `{name}` matches any one segment (`/{user}/audio`), `{name...}` as the last segment the rest of the path, and `{$}` as the last segment only the `/` before it. A pattern starts with `/` and may not hold a `.` or `..` segment; one that doesn't parse refuses the token.
 
 The actions are `publish` (sending a broadcast's tracks through a relay), `subscribe` (live), `fetch` (history: a funnel's `GET`), `post` (sending one message into a track that exists at a funnel, which gathers many senders into it and publishes it; a relay never reads it as publishing), `redact` (taking a record out of a funnel's track; for credentials the app keeps to itself) and `create` (creating a track at a [funnel](../funnel/#credentials), which the funnel then publishes; for the app, which decides which tracks a broadcast has).
@@ -62,7 +62,7 @@ A token may grant no pattern at all, and may then leave out `root`. Whatever no 
  "iat": 1791370000, "nbf": 1791370000, "exp": 1791370600, "jti": "…"}
 ```
 
-**`path_auth` tokens are accepted too**, as other MoQ implementations sign them (the `@moq/token` convention), and read as the grant they amount to: their `root` as the root, `pub` as `publish`, and `sub` as `subscribe` and `fetch`, each on its path and every path beneath it (`/` for an empty one), on every track. So
+**`path_auth` tokens are accepted too**, as other MoQ implementations sign them (the `@moq/token` convention), and read as the grant they amount to: their `root` as the root, `pub` as `publish`, and `sub` as `subscribe` and `fetch`, each on its path and every path beneath it, on every track; an empty `pub` or `sub` grants what lies beneath the root, not the root's own path. So
 
 ```json
 {"path_auth": {"root": "acme/app/rooms/42", "pub": "alice", "sub": ""}, "iat": …, "nbf": …, "exp": …}
