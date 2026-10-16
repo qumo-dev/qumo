@@ -20,7 +20,7 @@ import (
 	"github.com/qumo-dev/qumo/token"
 
 	"github.com/okdaichi/qumo-ledger/ledger"
-	"github.com/okdaichi/qumo-ledger/ledger/store/fs"
+	"github.com/okdaichi/qumo-ledger/ledger/store"
 	"github.com/okdaichi/qumo-ledger/stream"
 )
 
@@ -32,7 +32,8 @@ import (
 // Configuration is read from environment variables (qumo convention):
 //
 //	HLS_ADDR           - HTTP listen address (default ":8080")
-//	LEDGER_ROOT        - qumo-ledger filesystem store directory (default "./ledger")
+//	LEDGER_URI         - qumo-ledger store URI (default "file:ledger";
+//	                     s3://, file://, postgres://, mem:)
 //	LEDGER_TRACK       - ledger track path (default "live/cam1/video")
 //	RELAY_URL          - MoQ relay URL, e.g. "https://host:4433" (default "https://localhost:4433").
 //	                     Use "moqt://host:4433" with RELAY_CERT_FILE.
@@ -84,7 +85,7 @@ import (
 //	                     e.g. "http://localhost:5173" for the playground.
 func Run(_ []string) error {
 	addr := envconfig.String("HLS_ADDR", ":8080")
-	root := envconfig.String("LEDGER_ROOT", "./ledger")
+	ledgerURI := envconfig.String("LEDGER_URI", defaultLedgerURI)
 	ledgerTrack := ledger.TrackPath(envconfig.String("LEDGER_TRACK", "live/cam1/video"))
 
 	window, err := envUint("HLS_WINDOW", 12)
@@ -132,9 +133,9 @@ func Run(_ []string) error {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
-	store, err := fs.New(root)
+	store, storeName, err := openStore(ctx, ledgerURI)
 	if err != nil {
-		return fmt.Errorf("hls: open ledger store: %w", err)
+		return fmt.Errorf("hls: %w", err)
 	}
 
 	// Read the catalog before opening the track or building the handler: the
@@ -215,7 +216,7 @@ func Run(_ []string) error {
 		}
 	}()
 
-	slog.Info("hls: serving", "addr", addr, "track", ledgerTrack)
+	slog.Info("hls: serving", "addr", addr, "track", ledgerTrack, "store", storeName)
 
 	<-ctx.Done()
 
@@ -231,7 +232,7 @@ func Run(_ []string) error {
 // Wallclock from its own clock). The second result reports that an existing
 // track was adopted rather than created, which the caller needs because a track
 // with someone else's groups in it cannot simply be written to.
-func openTrack(ctx context.Context, store *fs.Store, path ledger.TrackPath, schema ledger.TrackSchema) (*ledger.Track, bool, error) {
+func openTrack(ctx context.Context, store store.Store, path ledger.TrackPath, schema ledger.TrackSchema) (*ledger.Track, bool, error) {
 	track, err := ledger.Create(ctx, store, path, schema, ledger.Config{})
 	if err == nil {
 		return track, false, nil

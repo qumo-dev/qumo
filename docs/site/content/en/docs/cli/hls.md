@@ -46,6 +46,18 @@ the playlist URL — `hls.js` for HLS in a browser, or any HLS/DASH-capable
 player. If the playground is running (its UI also binds `:8080`), set
 `HLS_ADDR` to another port.
 
+## Storage: S3 object storage or filesystem
+
+By default the egress writes fragments into a local filesystem directory (`./ledger`). For production deployments (e.g. multi-node egress with Cloudflare R2 or Amazon S3), configure `LEDGER_URI`:
+
+```bash
+# Cloudflare R2, Amazon S3, or MinIO
+LEDGER_URI="s3://my-bucket/hls-streams?region=auto&endpoint=https://<account>.r2.cloudflarestorage.com" qumo hls
+
+# Local filesystem directory
+LEDGER_URI="file:///var/lib/qumo/ledger" qumo hls
+```
+
 ## TLS
 
 The egress verifies the relay's certificate against the system root store by
@@ -124,7 +136,7 @@ All configuration is via environment variables:
 | `RELAY_URL` | `https://localhost:4433` | MoQ relay URL to subscribe to. Use `moqt://…` with `RELAY_CERT_FILE`. |
 | `RELAY_TRACK_PATH` | `/hls/live` | MoQ broadcast path whose catalog to read. |
 | `RELAY_TRACK_NAME` | `video` | Media track name in the catalog to relay. |
-| `LEDGER_ROOT` | `./ledger` | qumo-ledger filesystem store directory. |
+| `LEDGER_URI` | `file:ledger` | qumo-ledger store URI: `s3://bucket/prefix?region=...` (Amazon S3, Cloudflare R2, MinIO), `file:///path`, `postgres://...`, or `mem:`. |
 | `LEDGER_TRACK` | `live/cam1/video` | Ledger track path to write groups into. |
 | `HLS_WINDOW` | `12` | Segments kept in the manifest — the live window, and how far back a viewer can seek. `0` lists the whole track, making it a recording rather than a live stream. |
 | `HLS_LIVE_TIMEOUT_S` | `10` | Seconds of silence after which the publisher is treated as gone; the feed reconnects and manifests answer `503`. |
