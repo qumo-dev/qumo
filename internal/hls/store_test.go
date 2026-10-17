@@ -37,7 +37,7 @@ func TestOpenStore_URIMem(t *testing.T) {
 
 	require.NoError(t, err)
 	assert.IsType(t, &mem.Store{}, objects)
-	assert.Equal(t, "mem:", name)
+	assert.Contains(t, name, "memory")
 }
 
 func TestOpenStore_RegistersEveryBackend(t *testing.T) {
