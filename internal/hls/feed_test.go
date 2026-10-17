@@ -3,10 +3,12 @@ package hls
 import (
 	"context"
 	"encoding/base64"
+	"errors"
 	"testing"
 	"testing/synctest"
 	"time"
 
+	"github.com/qumo-dev/gomoqt/moqt"
 	"github.com/qumo-dev/gomoqt/msf"
 
 	"github.com/okdaichi/qumo-ledger/ledger"
@@ -296,5 +298,118 @@ func TestFeedMedia_TreatsSilenceAsPublisherGone(t *testing.T) {
 		assert.ErrorContains(t, err, "treating the publisher as gone",
 			"silence past the live timeout ends the feed as the publisher leaving")
 		assert.Empty(t, appender.appended, "no group arrived, so nothing was committed")
+	})
+}
+
+// announcedFeedCfg gives a silent publisher a short live timeout, so a feed
+// that delivered its groups ends well inside the announcement.
+func announcedFeedCfg() feedConfig { return feedConfig{liveTimeout: 500 * time.Millisecond} }
+
+// silentFeeder delivers n valid groups numbered from zero, then goes quiet:
+// with no tail, AcceptGroup blocks until the live timeout ends the feed.
+func silentFeeder(n int) *fakeFeeder {
+	f := &fakeFeeder{}
+	for i := range n {
+		f.groups = append(f.groups, acceptResult{group: &fakeGroup{
+			seq:    moqt.GroupSequence(i),
+			bodies: validGroupBodies(uint64(i)*1_000_000, 33_333, 30),
+		}})
+	}
+	return f
+}
+
+// A track whose subscribe keeps failing retries for the whole announcement
+// but writes nothing, so it must not open an empty epoch on every retry.
+func TestFeedAnnouncedTrack_RepeatedSubscribeFailureClosesNoEpoch(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		appender := &fakeAppender{}
+		sub := &fakeSubscriber{err: errSubscribe}
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+
+		feedAnnouncedTrack(ctx, sub, newBroadcastEntry("/live"), testMediaInfo(t), appender, &liveness{}, announcedFeedCfg())
+
+		assert.Greater(t, sub.subscribes, 1, "the refused subscribe is retried while the broadcast is announced")
+		assert.Empty(t, appender.epochMarks, "feeds that wrote nothing close no epoch")
+	})
+}
+
+// A feed that wrote groups closes its epoch once; the empty retries after it
+// keep resubscribing without closing more.
+func TestFeedAnnouncedTrack_ClosesEpochOnlyAfterFeedThatWrote(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		appender := &fakeAppender{}
+		sub := &fakeSubscriber{results: []subscribeResult{
+			{err: errSubscribe},
+			// Repeats once reached: later subscribes find a quiet publisher.
+			{feeder: silentFeeder(2)},
+		}}
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+
+		feedAnnouncedTrack(ctx, sub, newBroadcastEntry("/live"), testMediaInfo(t), appender, &liveness{}, announcedFeedCfg())
+
+		assert.Len(t, appender.appended, 2)
+		assert.Equal(t, []int{2}, appender.epochMarks, "exactly one epoch, closed after the feed that wrote")
+		assert.Greater(t, sub.subscribes, 2, "it keeps resubscribing until the announcement ends")
+	})
+}
+
+// An announcement that ends mid-feed still closes the epoch its groups went
+// into, exactly once.
+func TestFeedAnnouncedTrack_ClosesEpochWhenAnnouncementEndsMidFeed(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		appender := &fakeAppender{}
+		sub := &fakeSubscriber{feeder: silentFeeder(2)}
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+
+		// The live timeout outlasts the announcement, so ctx ends the feed.
+		feedAnnouncedTrack(ctx, sub, newBroadcastEntry("/live"), testMediaInfo(t), appender, &liveness{},
+			feedConfig{liveTimeout: time.Minute})
+
+		assert.Equal(t, 1, sub.subscribes)
+		assert.Equal(t, []int{2}, appender.epochMarks, "the written epoch is closed once on return")
+	})
+}
+
+// A publisher that goes silent and comes back puts each run of groups in its
+// own epoch, so the restarted sequence numbers cannot collide.
+func TestFeedAnnouncedTrack_EachPublisherRunGetsItsOwnEpoch(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		appender := &fakeAppender{}
+		sub := &fakeSubscriber{results: []subscribeResult{
+			{feeder: silentFeeder(2)},
+			{feeder: silentFeeder(3)},
+		}}
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		defer cancel()
+
+		feedAnnouncedTrack(ctx, sub, newBroadcastEntry("/live"), testMediaInfo(t), appender, &liveness{}, announcedFeedCfg())
+
+		assert.Len(t, appender.appended, 5)
+		assert.Equal(t, []int{2, 5}, appender.epochMarks,
+			"the first publisher's two groups and the second's three each end in their own epoch")
+	})
+}
+
+// A written epoch the ledger refuses to close unlists the track rather than
+// serving stale segments, and the feed stops retrying.
+func TestFeedAnnouncedTrack_UnlistsTrackWhenEpochCannotClose(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		appender := &fakeAppender{epochErr: errors.New("ledger down")}
+		sub := &fakeSubscriber{feeder: silentFeeder(1)}
+		m := testMediaInfo(t)
+		b := newBroadcastEntry("/live")
+		b.AddTrack(trackEntry{info: trackInfo{Name: string(m.name)}})
+		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+		defer cancel()
+
+		feedAnnouncedTrack(ctx, sub, b, m, appender, &liveness{}, announcedFeedCfg())
+
+		_, listed := b.getTrack(string(m.name))
+		assert.False(t, listed, "the track is unlisted")
+		assert.Equal(t, 1, sub.subscribes, "the feed stops instead of resubscribing")
+		assert.NoError(t, ctx.Err(), "it returns before the announcement ends")
 	})
 }
