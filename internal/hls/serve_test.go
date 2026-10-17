@@ -8,7 +8,7 @@ import (
 
 	"github.com/okdaichi/qumo-ledger/ledger"
 	"github.com/okdaichi/qumo-ledger/ledger/store/mem"
-	"github.com/okdaichi/qumo-ledger/stream"
+	"github.com/qumo-dev/qumo/internal/hls/stream"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

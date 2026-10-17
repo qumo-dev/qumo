@@ -22,7 +22,7 @@ import (
 
 	"github.com/okdaichi/qumo-ledger/ledger"
 	"github.com/okdaichi/qumo-ledger/ledger/store"
-	"github.com/okdaichi/qumo-ledger/stream"
+	"github.com/qumo-dev/qumo/internal/hls/stream"
 
 	"github.com/qumo-dev/qumo/internal/cmaf"
 	"github.com/qumo-dev/qumo/internal/relay"
