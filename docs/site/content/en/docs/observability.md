@@ -136,6 +136,7 @@ upstream setup are deduplicated.
 | `qumo_relay_group_fills_inflight` | Gauge | Fill goroutines currently running across all track distributors. |
 | `qumo_relay_group_delivery_seconds{track}` | Histogram | Time to deliver a complete group to a subscriber. |
 | `qumo_relay_subscriber_skips_total` | Counter | Subscribers skipped forward after falling behind the ring buffer. |
+| `qumo_relay_subscriber_drops_lost_total` | Counter | Upstream drop notifications a subscriber never received because newer ones overwrote them first. |
 | `qumo_relay_subscribe_errors_total{code}` | Counter | Failed subscription requests, by error code. |
 
 ## `qumo doctor`

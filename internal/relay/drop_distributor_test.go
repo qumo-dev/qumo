@@ -1,6 +1,7 @@
 package relay
 
 import (
+	"sync"
 	"testing"
 
 	"github.com/qumo-dev/gomoqt/moqt"
@@ -8,77 +9,150 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestDropDistributor_RecordAndSince(t *testing.T) {
-	dist := newDropDistributor(4)
-	require.NotNil(t, dist)
-
-	// Initially empty
-	drops, pos := dist.since(0)
-	assert.Nil(t, drops)
-	assert.Equal(t, uint64(0), pos)
-
-	// Record drop 1
-	d1 := moqt.SubscribeDrop{StartGroup: 1, EndGroup: 2, ErrorCode: moqt.SubscribeErrorCodeInternal}
-	dist.record(d1)
-
-	drops, pos = dist.since(0)
-	assert.Equal(t, []moqt.SubscribeDrop{d1}, drops)
-	assert.Equal(t, uint64(1), pos)
-
-	// Consecutive since with updated pos returns nothing
-	drops, nextPos := dist.since(pos)
-	assert.Nil(t, drops)
-	assert.Equal(t, pos, nextPos)
-
-	// Record drop 2 and 3
-	d2 := moqt.SubscribeDrop{StartGroup: 3, EndGroup: 4, ErrorCode: moqt.SubscribeErrorCodeInternal}
-	d3 := moqt.SubscribeDrop{StartGroup: 5, EndGroup: 6, ErrorCode: moqt.SubscribeErrorCodeInternal}
-	dist.record(d2)
-	dist.record(d3)
-
-	drops, pos = dist.since(pos)
-	assert.Equal(t, []moqt.SubscribeDrop{d2, d3}, drops)
-	assert.Equal(t, uint64(3), pos)
+// testDrop returns a drop whose StartGroup and EndGroup are both seq, so a
+// test can tell recorded drops apart by sequence.
+func testDrop(seq moqt.GroupSequence) moqt.SubscribeDrop {
+	return moqt.SubscribeDrop{StartGroup: seq, EndGroup: seq, ErrorCode: moqt.SubscribeErrorCodeInternal}
 }
 
-func TestDropDistributor_CircularBufferWrap(t *testing.T) {
-	const size = 3
-	dist := newDropDistributor(size)
-
-	d1 := moqt.SubscribeDrop{StartGroup: 1, EndGroup: 1}
-	d2 := moqt.SubscribeDrop{StartGroup: 2, EndGroup: 2}
-	d3 := moqt.SubscribeDrop{StartGroup: 3, EndGroup: 3}
-	d4 := moqt.SubscribeDrop{StartGroup: 4, EndGroup: 4}
-	d5 := moqt.SubscribeDrop{StartGroup: 5, EndGroup: 5}
-
-	dist.record(d1)
-	dist.record(d2)
-	dist.record(d3)
-	dist.record(d4)
-	dist.record(d5)
-
-	// Buffer capacity is 3, so only d3, d4, d5 are retained.
-	// A reader that fell behind at pos 0 is clamped to earliest retained (pos 3).
-	drops, pos := dist.since(0)
-	assert.Equal(t, uint64(5), pos)
-	assert.Equal(t, []moqt.SubscribeDrop{d3, d4, d5}, drops)
+func TestNewDropDistributor(t *testing.T) {
+	tests := map[string]struct {
+		size     int
+		wantSize int
+	}{
+		"positive size is kept":      {size: 3, wantSize: 3},
+		"size one is kept":           {size: 1, wantSize: 1},
+		"zero falls back to default": {size: 0, wantSize: dropRingSize},
+		"negative falls back":        {size: -1, wantSize: dropRingSize},
+	}
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			d := newDropDistributor(tt.size)
+			require.NotNil(t, d)
+			assert.Len(t, d.drops, tt.wantSize)
+			assert.Equal(t, uint64(0), d.head())
+		})
+	}
 }
 
-func TestDropDistributor_NotificationWakeup(t *testing.T) {
-	dist := newDropDistributor(4)
+func TestDropDistributor_Record(t *testing.T) {
+	d := newDropDistributor(2)
 
-	state := dist.notify.listen()
-	assert.NotNil(t, state.ch)
-
-	dist.record(moqt.SubscribeDrop{StartGroup: 1, EndGroup: 2})
-
-	select {
-	case <-state.ch:
-		// Notified successfully
-	default:
-		t.Fatal("expected notification channel to be closed after record")
+	for seq := moqt.GroupSequence(1); seq <= 3; seq++ {
+		d.record(testDrop(seq))
+		assert.Equal(t, uint64(seq), d.head())
 	}
 
-	nextState := dist.notify.listen()
-	assert.Greater(t, nextState.seq, state.seq)
+	// The third drop overwrote the first; the newest two remain.
+	got, _, _ := d.since(0, nil)
+	assert.Equal(t, []moqt.SubscribeDrop{testDrop(2), testDrop(3)}, got)
+}
+
+func TestDropDistributor_Since(t *testing.T) {
+	tests := map[string]struct {
+		size     int
+		recorded int
+		lastPos  uint64
+		buf      []moqt.SubscribeDrop
+		want     []moqt.SubscribeDrop
+		wantPos  uint64
+		wantLost uint64
+	}{
+		"empty distributor": {
+			size: 4, recorded: 0, lastPos: 0,
+			want: nil, wantPos: 0,
+		},
+		"all drops from the start": {
+			size: 4, recorded: 3, lastPos: 0,
+			want: []moqt.SubscribeDrop{testDrop(1), testDrop(2), testDrop(3)}, wantPos: 3,
+		},
+		"only drops after lastPos": {
+			size: 4, recorded: 3, lastPos: 1,
+			want: []moqt.SubscribeDrop{testDrop(2), testDrop(3)}, wantPos: 3,
+		},
+		"caught up returns nothing": {
+			size: 4, recorded: 3, lastPos: 3,
+			want: nil, wantPos: 3,
+		},
+		"lastPos ahead of head is kept": {
+			size: 4, recorded: 2, lastPos: 5,
+			want: nil, wantPos: 5,
+		},
+		"buffer exactly full loses nothing": {
+			size: 3, recorded: 3, lastPos: 0,
+			want: []moqt.SubscribeDrop{testDrop(1), testDrop(2), testDrop(3)}, wantPos: 3,
+		},
+		"overwritten drops are counted as lost": {
+			size: 3, recorded: 5, lastPos: 0,
+			want: []moqt.SubscribeDrop{testDrop(3), testDrop(4), testDrop(5)}, wantPos: 5, wantLost: 2,
+		},
+		"reader one behind the overwrite loses one": {
+			size: 3, recorded: 5, lastPos: 1,
+			want: []moqt.SubscribeDrop{testDrop(3), testDrop(4), testDrop(5)}, wantPos: 5, wantLost: 1,
+		},
+		"reader at the oldest kept drop loses nothing": {
+			size: 3, recorded: 5, lastPos: 2,
+			want: []moqt.SubscribeDrop{testDrop(3), testDrop(4), testDrop(5)}, wantPos: 5,
+		},
+		"appends to the given buffer": {
+			size: 4, recorded: 1, lastPos: 0,
+			buf:  []moqt.SubscribeDrop{testDrop(9)},
+			want: []moqt.SubscribeDrop{testDrop(9), testDrop(1)}, wantPos: 1,
+		},
+	}
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			d := newDropDistributor(tt.size)
+			for seq := 1; seq <= tt.recorded; seq++ {
+				d.record(testDrop(moqt.GroupSequence(seq)))
+			}
+
+			got, pos, lost := d.since(tt.lastPos, tt.buf)
+
+			assert.Equal(t, tt.want, got)
+			assert.Equal(t, tt.wantPos, pos)
+			assert.Equal(t, tt.wantLost, lost)
+		})
+	}
+}
+
+// A reader running alongside a writer always sees a consistent window: the
+// drops it gets are the newest ones up to the position it is given, and
+// together with the lost count they account for every drop since its last
+// position. Run with -race.
+func TestDropDistributor_Since_ConcurrentRecord(t *testing.T) {
+	const (
+		size  = 4
+		total = 5000
+	)
+	d := newDropDistributor(size)
+
+	var wg sync.WaitGroup
+	wg.Go(func() {
+		for seq := 1; seq <= total; seq++ {
+			d.record(testDrop(moqt.GroupSequence(seq)))
+		}
+	})
+
+	var (
+		pos uint64
+		buf []moqt.SubscribeDrop
+	)
+	for pos < total {
+		var (
+			next uint64
+			lost uint64
+		)
+		buf, next, lost = d.since(pos, buf[:0])
+		if next == pos {
+			continue
+		}
+		require.Equal(t, next-pos, uint64(len(buf))+lost, "drops plus lost must cover every position since the last read")
+		for i, drop := range buf {
+			want := moqt.GroupSequence(next - uint64(len(buf)) + uint64(i) + 1)
+			require.Equal(t, want, drop.StartGroup, "drop at index %d of read ending at %d", i, next)
+		}
+		pos = next
+	}
+	wg.Wait()
 }

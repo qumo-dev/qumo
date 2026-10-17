@@ -7,78 +7,71 @@ import (
 	"github.com/qumo-dev/gomoqt/moqt"
 )
 
-// DefaultDropRingSize is the number of drop notifications retained in the
-// distributor's circular buffer for subscribers.
-const DefaultDropRingSize = 64
+// dropRingSize is the number of upstream drop notifications a track keeps for
+// its subscribers.
+const dropRingSize = 64
 
-// dropDistributor is a dedicated, standalone circular buffer and broadcast
-// mechanism for MoQT SUBSCRIBE_DROP control messages. It is decoupled from
-// groupRing and frame delivery: drops carry only metadata ranges on the
-// bidirectional control stream, with no frame payloads or pool allocations.
+// dropDistributor keeps the most recent SUBSCRIBE_DROP notifications a track
+// received from upstream so each subscriber can forward them. It holds only
+// group ranges, never frame payloads, and is separate from groupRing.
+//
+// It does not wake subscribers itself: the caller of record broadcasts on the
+// track's notify, which egress already waits on.
 type dropDistributor struct {
-	mu     sync.RWMutex
-	drops  []moqt.SubscribeDrop
-	size   int
-	head   atomic.Uint64
-	notify broadcastNotify
+	mu    sync.RWMutex
+	drops []moqt.SubscribeDrop
+
+	// pos counts every drop ever recorded. It is written under mu and also
+	// read without it by head, so a subscriber can check for new drops after
+	// every group without taking the lock.
+	pos atomic.Uint64
 }
 
 func newDropDistributor(size int) *dropDistributor {
 	if size <= 0 {
-		size = DefaultDropRingSize
+		size = dropRingSize
 	}
-	d := &dropDistributor{
-		drops: make([]moqt.SubscribeDrop, size),
-		size:  size,
-	}
-	d.notify.init()
-	return d
+	return &dropDistributor{drops: make([]moqt.SubscribeDrop, size)}
 }
 
-// record appends a drop notification to the circular buffer and notifies
-// all listening subscriber egress routines.
+// record stores drop, overwriting the oldest entry once the buffer is full.
 func (d *dropDistributor) record(drop moqt.SubscribeDrop) {
 	d.mu.Lock()
-	pos := d.head.Add(1)
-	idx := int((pos - 1) % uint64(d.size))
-	d.drops[idx] = drop
-	d.mu.Unlock()
+	defer d.mu.Unlock()
 
-	d.notify.notify()
+	pos := d.pos.Load() + 1
+	d.drops[(pos-1)%uint64(len(d.drops))] = drop
+	d.pos.Store(pos)
 }
 
-// since returns any drops recorded with sequence > lastPos, up to the current
-// head, along with the updated head sequence.
-func (d *dropDistributor) since(lastPos uint64) ([]moqt.SubscribeDrop, uint64) {
+// head returns the number of drops recorded so far.
+func (d *dropDistributor) head() uint64 {
+	return d.pos.Load()
+}
+
+// since appends to buf the drops recorded after position lastPos and returns
+// buf, the position to pass next time, and how many of those drops were
+// overwritten before this call could read them.
+func (d *dropDistributor) since(lastPos uint64, buf []moqt.SubscribeDrop) ([]moqt.SubscribeDrop, uint64, uint64) {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
 
-	currentHead := d.head.Load()
-	if currentHead <= lastPos {
-		return nil, lastPos
+	head := d.pos.Load()
+	if head <= lastPos {
+		return buf, lastPos, 0
 	}
 
-	// If the subscriber has fallen behind more than the buffer capacity,
-	// clamp to the oldest available drop in the buffer.
-	earliest := uint64(1)
-	if currentHead > uint64(d.size) {
-		earliest = currentHead - uint64(d.size) + 1
-	}
-	startPos := lastPos + 1
-	if startPos < earliest {
-		startPos = earliest
+	size := uint64(len(d.drops))
+	start := lastPos + 1
+	var lost uint64
+	if head > size && start <= head-size {
+		oldest := head - size + 1
+		lost = oldest - start
+		start = oldest
 	}
 
-	count := int(currentHead - startPos + 1)
-	if count <= 0 {
-		return nil, currentHead
+	for pos := start; pos <= head; pos++ {
+		buf = append(buf, d.drops[(pos-1)%size])
 	}
-
-	res := make([]moqt.SubscribeDrop, count)
-	for i := range count {
-		pos := startPos + uint64(i)
-		idx := int((pos - 1) % uint64(d.size))
-		res[i] = d.drops[idx]
-	}
-	return res, currentHead
+	return buf, head, lost
 }

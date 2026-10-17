@@ -4,9 +4,8 @@ package relay
 
 import (
 	"context"
+	"crypto/x509"
 	"io"
-	"log/slog"
-	"sync"
 	"testing"
 	"time"
 
@@ -76,246 +75,254 @@ func TestRelayChain_KeepsPublisherSequences(t *testing.T) {
 	}
 }
 
-// A publisher reports dropped groups upstream via DropGroups. Through two relays,
-// a subscriber receives every drop notification and its track ends promptly
-// (AcceptGroup returns io.EOF) when the publisher ends the track.
-func TestRelayChain_ForwardsDrops(t *testing.T) {
-	cert, pool := chainCert(t)
+// startRelayChain starts an origin relay and a leaf relay peered to it, and
+// returns them with the pool that trusts their certificate.
+func startRelayChain(tb testing.TB, ctx context.Context) (*Server, *Server, *x509.CertPool) {
+	tb.Helper()
+	cert, pool := chainCert(tb)
 	quicCfg := &quic.Config{EnableDatagrams: true, KeepAlivePeriod: 5 * time.Second, MaxIdleTimeout: 30 * time.Second}
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-	defer cancel()
-
-	origin := spinRelay(t, "origin", chainFreeAddr(t), cert, pool, quicCfg)
-	leaf := spinRelay(t, "leaf", chainFreeAddr(t), cert, pool, quicCfg)
+	origin := spinRelay(tb, "origin", chainFreeAddr(tb), cert, pool, quicCfg)
+	leaf := spinRelay(tb, "leaf", chainFreeAddr(tb), cert, pool, quicCfg)
 	leaf.Config.Peers = []Peer{{Address: origin.MOQServer.Addr}}
 	go leaf.ConnectPeers(ctx) //nolint:errcheck // ends with ctx
-
-	pubMux := moqt.NewTrackMux(moqt.NewHopID())
-	pubMux.PublishFunc(ctx, chainBroadcastPath, func(tw *moqt.TrackWriter) {
-		// Send group 1
-		gw, err := tw.OpenGroupAt(ctx, 1)
-		if err != nil {
-			return
-		}
-		frame := moqt.NewFrame(8)
-		_, _ = frame.Write([]byte("payload1"))
-		_ = gw.WriteFrame(frame)
-		_ = gw.Close()
-
-		// Drop groups 2..4
-		err = tw.DropGroups(moqt.SubscribeDrop{StartGroup: 2, EndGroup: 4, ErrorCode: moqt.SubscribeErrorCodeInternal})
-		if err != nil {
-			return
-		}
-
-		// Send group 5
-		gw, err = tw.OpenGroupAt(ctx, 5)
-		if err != nil {
-			return
-		}
-		frame = moqt.NewFrame(8)
-		_, _ = frame.Write([]byte("payload5"))
-		_ = gw.WriteFrame(frame)
-		_ = gw.Close()
-
-		// Drop groups 6..8
-		err = tw.DropGroups(moqt.SubscribeDrop{StartGroup: 6, EndGroup: 8, ErrorCode: moqt.SubscribeErrorCodeInternal})
-		if err != nil {
-			return
-		}
-
-		// Send group 9
-		gw, err = tw.OpenGroupAt(ctx, 9)
-		if err != nil {
-			return
-		}
-		frame = moqt.NewFrame(8)
-		_, _ = frame.Write([]byte("payload9"))
-		_ = gw.WriteFrame(frame)
-		_ = gw.Close()
-	})
-	pubSess, err := (&moqt.Dialer{TLSConfig: chainDialerTLS(pool), QUICConfig: &quic.Config{EnableDatagrams: true}}).Dial(ctx, "moqt://"+origin.MOQServer.Addr, pubMux)
-	require.NoError(t, err)
-	defer pubSess.CloseWithError(moqt.NoError, "done") //nolint:errcheck // test teardown
-	waitForHandler(t, leaf, chainBroadcastPath)
-
-	sess, err := (&moqt.Dialer{TLSConfig: chainDialerTLS(pool), QUICConfig: &quic.Config{EnableDatagrams: true}}).Dial(ctx, "moqt://"+leaf.MOQServer.Addr, moqt.NewTrackMux(0))
-	require.NoError(t, err)
-	defer sess.CloseWithError(moqt.NoError, "done") //nolint:errcheck // test teardown
-	tr, err := sess.Subscribe(ctx, chainBroadcastPath, chainTrackName, nil)
-	require.NoError(t, err)
-	defer tr.Close() //nolint:errcheck // test teardown
-
-	var (
-		dropsMu  sync.Mutex
-		gotDrops []moqt.SubscribeDrop
-	)
-	dropCtx, dropCancel := context.WithCancel(ctx)
-	defer dropCancel()
-	go func() {
-		for drop := range tr.Drops(dropCtx) {
-			dropsMu.Lock()
-			gotDrops = append(gotDrops, drop)
-			dropsMu.Unlock()
-		}
-	}()
-
-	var gotSeqs []moqt.GroupSequence
-	for {
-		gr, err := tr.AcceptGroup(ctx)
-		if err != nil {
-			assert.ErrorIs(t, err, io.EOF)
-			break
-		}
-		gotSeqs = append(gotSeqs, gr.GroupSequence())
-	}
-
-	assert.ElementsMatch(t, []moqt.GroupSequence{1, 5, 9}, gotSeqs)
-
-	assert.Eventually(t, func() bool {
-		dropsMu.Lock()
-		defer dropsMu.Unlock()
-		return len(gotDrops) == 2
-	}, 3*time.Second, 10*time.Millisecond)
-
-	dropsMu.Lock()
-	defer dropsMu.Unlock()
-	assert.Equal(t, []moqt.SubscribeDrop{
-		{StartGroup: 2, EndGroup: 4, ErrorCode: moqt.SubscribeErrorCodeInternal},
-		{StartGroup: 6, EndGroup: 8, ErrorCode: moqt.SubscribeErrorCodeInternal},
-	}, gotDrops)
+	return origin, leaf, pool
 }
 
-// When a subscriber falls behind, the relay skips groups and reports those
-// dropped sequences via DropGroups. The subscriber receives the drops and
-// settles cleanly at the end of the track.
-func TestRelayChain_ReportsSubscriberSkips(t *testing.T) {
-	t.Setenv("RELAY_RING", "2")
-	cert, pool := chainCert(t)
-	quicCfg := &quic.Config{EnableDatagrams: true, KeepAlivePeriod: 5 * time.Second, MaxIdleTimeout: 30 * time.Second}
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-	defer cancel()
-
-	origin := spinRelay(t, "origin", chainFreeAddr(t), cert, pool, quicCfg)
-	leaf := spinRelay(t, "leaf", chainFreeAddr(t), cert, pool, quicCfg)
-	leaf.Config.Peers = []Peer{{Address: origin.MOQServer.Addr}}
-	go leaf.ConnectPeers(ctx) //nolint:errcheck // ends with ctx
-
-	pubDone := make(chan struct{})
-	pubGate := make(chan struct{})
+// publishToChain dials origin as a publisher whose track runs publish, and
+// waits until leaf has the announcement.
+func publishToChain(tb testing.TB, ctx context.Context, origin, leaf *Server, pool *x509.CertPool, publish func(tw *moqt.TrackWriter)) {
+	tb.Helper()
 	pubMux := moqt.NewTrackMux(moqt.NewHopID())
-	pubMux.PublishFunc(ctx, chainBroadcastPath, func(tw *moqt.TrackWriter) {
-		// Send group 1
-		gw, err := tw.OpenGroupAt(ctx, 1)
-		if err != nil {
-			return
-		}
-		frame := moqt.NewFrame(8)
-		_, _ = frame.Write([]byte("group1"))
-		_ = gw.WriteFrame(frame)
-		_ = gw.Close()
-
-		// Wait until subscriber has received group 1
-		select {
-		case <-pubGate:
-		case <-ctx.Done():
-			return
-		}
-
-		// Burst groups 2 through 10 to overflow the cache (size 2) and force a skip
-		for i := uint64(2); i <= 10; i++ {
-			gw, err := tw.OpenGroupAt(ctx, moqt.GroupSequence(i))
-			if err != nil {
-				slog.Info("publisher OpenGroupAt failed", "seq", i, "err", err)
-				return
-			}
-			f := moqt.NewFrame(8)
-			_, _ = f.Write([]byte("payload"))
-			_ = gw.WriteFrame(f)
-			_ = gw.Close()
-			time.Sleep(10 * time.Millisecond)
-		}
-		close(pubDone)
-	})
+	pubMux.PublishFunc(ctx, chainBroadcastPath, publish)
 	pubSess, err := (&moqt.Dialer{TLSConfig: chainDialerTLS(pool), QUICConfig: &quic.Config{EnableDatagrams: true}}).Dial(ctx, "moqt://"+origin.MOQServer.Addr, pubMux)
-	require.NoError(t, err)
-	defer pubSess.CloseWithError(moqt.NoError, "done") //nolint:errcheck // test teardown
-	waitForHandler(t, leaf, chainBroadcastPath)
+	require.NoError(tb, err)
+	tb.Cleanup(func() { _ = pubSess.CloseWithError(moqt.NoError, "done") }) // not actionable: test teardown
+	waitForHandler(tb, leaf, chainBroadcastPath)
+}
 
-	subQUICCfg := &quic.Config{
-		EnableDatagrams:       true,
-		MaxIncomingUniStreams: 2,
-	}
-	sess, err := (&moqt.Dialer{TLSConfig: chainDialerTLS(pool), QUICConfig: subQUICCfg}).Dial(ctx, "moqt://"+leaf.MOQServer.Addr, moqt.NewTrackMux(0))
-	require.NoError(t, err)
-	defer sess.CloseWithError(moqt.NoError, "done") //nolint:errcheck // test teardown
+// subscribeToChain dials leaf with quicCfg and subscribes to the test track.
+func subscribeToChain(tb testing.TB, ctx context.Context, leaf *Server, pool *x509.CertPool, quicCfg *quic.Config) *moqt.TrackReader {
+	tb.Helper()
+	sess, err := (&moqt.Dialer{TLSConfig: chainDialerTLS(pool), QUICConfig: quicCfg}).Dial(ctx, "moqt://"+leaf.MOQServer.Addr, moqt.NewTrackMux(0))
+	require.NoError(tb, err)
+	tb.Cleanup(func() { _ = sess.CloseWithError(moqt.NoError, "done") }) // not actionable: test teardown
 	tr, err := sess.Subscribe(ctx, chainBroadcastPath, chainTrackName, nil)
-	require.NoError(t, err)
-	defer tr.Close() //nolint:errcheck // test teardown
+	require.NoError(tb, err)
+	tb.Cleanup(func() { _ = tr.Close() }) // not actionable: test teardown
+	return tr
+}
 
-	var (
-		dropsMu  sync.Mutex
-		gotDrops []moqt.SubscribeDrop
-	)
-	dropCtx, dropCancel := context.WithCancel(ctx)
-	defer dropCancel()
-	go func() {
-		for drop := range tr.Drops(dropCtx) {
-			dropsMu.Lock()
-			gotDrops = append(gotDrops, drop)
-			dropsMu.Unlock()
-		}
-	}()
-
-	// Read group 1
-	gr, err := tr.AcceptGroup(ctx)
-	require.NoError(t, err)
-	assert.Equal(t, moqt.GroupSequence(1), gr.GroupSequence())
-
-	// Signal publisher to send groups 2 through 10
-	close(pubGate)
-
-	// Wait until publisher has pushed all groups to origin, ensuring the
-	// subscriber (holding max 2 uni-streams) falls behind the ring of size 2.
-	select {
-	case <-pubDone:
-	case <-ctx.Done():
-		t.Fatal("publisher timed out")
+// writeGroup writes one single-frame group with sequence seq.
+func writeGroup(ctx context.Context, tw *moqt.TrackWriter, seq moqt.GroupSequence) error {
+	gw, err := tw.OpenGroupAt(ctx, seq)
+	if err != nil {
+		return err
 	}
+	defer gw.Close() //nolint:errcheck // the frame is already written
+	frame := moqt.NewFrame(8)
+	_, _ = frame.Write([]byte("payload")) // not actionable: writes to memory
+	return gw.WriteFrame(frame)
+}
 
-	// Now read the rest of the groups until EOF
-	var gotSeqs []moqt.GroupSequence
-	gotSeqs = append(gotSeqs, gr.GroupSequence())
+// readGroup reads every frame of gr so its stream finishes and the
+// subscriber can accept another.
+func readGroup(gr *moqt.GroupReader) {
+	for range gr.Frames(nil) {
+	}
+}
+
+// readToEOF accepts and reads groups until the track ends and returns their
+// sequences in arrival order.
+func readToEOF(tb testing.TB, ctx context.Context, tr *moqt.TrackReader) []moqt.GroupSequence {
+	tb.Helper()
+	var seqs []moqt.GroupSequence
 	for {
 		gr, err := tr.AcceptGroup(ctx)
 		if err != nil {
-			assert.ErrorIs(t, err, io.EOF)
-			break
+			require.ErrorIs(tb, err, io.EOF, "received %v before the error", seqs)
+			return seqs
 		}
-		gotSeqs = append(gotSeqs, gr.GroupSequence())
+		seqs = append(seqs, gr.GroupSequence())
+		readGroup(gr)
+	}
+}
+
+// waitGate blocks until gate is closed and reports false if ctx ends first.
+func waitGate(ctx context.Context, gate <-chan struct{}) bool {
+	select {
+	case <-gate:
+		return true
+	case <-ctx.Done():
+		return false
+	}
+}
+
+// queuedDrops returns the drops tr has received and not yet returned. It
+// does not wait: the context is already cancelled, and Drops yields queued
+// drops before it checks the context. SUBSCRIBE_DROP and SUBSCRIBE_END travel
+// in order on the subscribe stream, so once AcceptGroup has returned io.EOF
+// every drop is queued.
+func queuedDrops(tr *moqt.TrackReader) []moqt.SubscribeDrop {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	var drops []moqt.SubscribeDrop
+	for drop := range tr.Drops(ctx) {
+		drops = append(drops, drop)
+	}
+	return drops
+}
+
+// A publisher reports dropped groups upstream via DropGroups. Through two
+// relays, a subscriber receives each drop once, with the publisher's range and
+// error code, and its track ends (io.EOF) without waiting out the grace period.
+//
+// Group streams can reach a relay out of order, and gomoqt starts a
+// subscription at the first group opened; drops below that start are not
+// forwarded because the subscriber does not wait for them. The publisher
+// therefore holds everything after group 1 until the subscriber has it, so
+// the start is group 1 at every hop.
+func TestRelayChain_ForwardsDrops(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	origin, leaf, pool := startRelayChain(t, ctx)
+
+	gotFirst := make(chan struct{})
+	publishToChain(t, ctx, origin, leaf, pool, func(tw *moqt.TrackWriter) {
+		if writeGroup(ctx, tw, 1) != nil || !waitGate(ctx, gotFirst) {
+			return
+		}
+		if tw.DropGroups(dropRange(2, 4, moqt.SubscribeErrorCodeInternal)) != nil {
+			return
+		}
+		if writeGroup(ctx, tw, 5) != nil {
+			return
+		}
+		if tw.DropGroups(dropRange(6, 8, moqt.SubscribeErrorCodeTimeout)) != nil {
+			return
+		}
+		_ = writeGroup(ctx, tw, 9) // not actionable: the subscriber checks what arrived
+	})
+	tr := subscribeToChain(t, ctx, leaf, pool, &quic.Config{EnableDatagrams: true})
+	first, err := tr.AcceptGroup(ctx)
+	require.NoError(t, err)
+	require.Equal(t, moqt.GroupSequence(1), first.GroupSequence())
+	readGroup(first)
+	close(gotFirst)
+
+	gotSeqs := readToEOF(t, ctx, tr)
+
+	assert.ElementsMatch(t, []moqt.GroupSequence{5, 9}, gotSeqs)
+	assert.Equal(t, []moqt.SubscribeDrop{
+		dropRange(2, 4, moqt.SubscribeErrorCodeInternal),
+		dropRange(6, 8, moqt.SubscribeErrorCodeTimeout),
+	}, queuedDrops(tr))
+}
+
+// A subscriber that joins after the relay forwarded drops starts at the
+// newest group and is not sent the earlier drops, which are below its start.
+func TestRelayChain_LateSubscriberGetsNoEarlierDrops(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	origin, leaf, pool := startRelayChain(t, ctx)
+
+	gotFirst := make(chan struct{})
+	resume := make(chan struct{})
+	publishToChain(t, ctx, origin, leaf, pool, func(tw *moqt.TrackWriter) {
+		if writeGroup(ctx, tw, 1) != nil || !waitGate(ctx, gotFirst) {
+			return
+		}
+		if tw.DropGroups(dropRange(2, 4, moqt.SubscribeErrorCodeInternal)) != nil {
+			return
+		}
+		if writeGroup(ctx, tw, 5) != nil || !waitGate(ctx, resume) {
+			return
+		}
+		_ = writeGroup(ctx, tw, 6) // not actionable: the subscribers check what arrived
+	})
+
+	// The first subscriber makes the leaf hold the track and record the drop.
+	// Group 1 reaches it before anything else, so its start is group 1.
+	first := subscribeToChain(t, ctx, leaf, pool, &quic.Config{EnableDatagrams: true})
+	for _, want := range []moqt.GroupSequence{1, 5} {
+		gr, err := first.AcceptGroup(ctx)
+		require.NoError(t, err)
+		require.Equal(t, want, gr.GroupSequence())
+		readGroup(gr)
+		if want == 1 {
+			close(gotFirst)
+		}
 	}
 
-	t.Logf("gotSeqs: %v, gotDrops: %v", gotSeqs, gotDrops)
+	// The second subscriber joins at group 5, after drop 2..4.
+	late := subscribeToChain(t, ctx, leaf, pool, &quic.Config{EnableDatagrams: true})
+	gr, err := late.AcceptGroup(ctx)
+	require.NoError(t, err)
+	require.Equal(t, moqt.GroupSequence(5), gr.GroupSequence())
+	readGroup(gr)
+	close(resume)
 
-	// Subscriber should have received the initial group, skipped some groups,
-	// and received drop notifications for all missing sequences.
-	assert.Contains(t, gotSeqs, moqt.GroupSequence(1))
-	assert.Less(t, len(gotSeqs), 10, "some groups should have been dropped under backpressure")
+	assert.Equal(t, []moqt.GroupSequence{6}, readToEOF(t, ctx, late))
+	assert.Empty(t, queuedDrops(late))
+	assert.Equal(t, []moqt.GroupSequence{6}, readToEOF(t, ctx, first))
+	assert.Equal(t, []moqt.SubscribeDrop{dropRange(2, 4, moqt.SubscribeErrorCodeInternal)}, queuedDrops(first))
+}
 
-	dropsMu.Lock()
-	defer dropsMu.Unlock()
-	assert.NotEmpty(t, gotDrops, "subscriber should have received drop notifications for skipped groups")
+// A subscriber that cannot accept new group streams falls behind: the relay
+// times out opening groups and skips ahead in its ring, and reports every
+// group it does not deliver. Each of the publisher's groups then reaches the
+// subscriber exactly once, either delivered or inside one drop, and the track
+// ends without waiting out the grace period.
+func TestRelayChain_ReportsSubscriberSkips(t *testing.T) {
+	const lastGroup = 10
+	t.Setenv("RELAY_RING", "2")
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	origin, leaf, pool := startRelayChain(t, ctx)
 
-	accounted := make(map[moqt.GroupSequence]bool)
+	burst := make(chan struct{})
+	publishToChain(t, ctx, origin, leaf, pool, func(tw *moqt.TrackWriter) {
+		if writeGroup(ctx, tw, 1) != nil || !waitGate(ctx, burst) {
+			return
+		}
+		for seq := moqt.GroupSequence(2); seq <= lastGroup; seq++ {
+			if writeGroup(ctx, tw, seq) != nil {
+				return
+			}
+		}
+	})
+
+	// Two incoming streams and no reading: the relay can open at most groups
+	// 1 and 2, and every later open times out.
+	tr := subscribeToChain(t, ctx, leaf, pool, &quic.Config{EnableDatagrams: true, MaxIncomingUniStreams: 2})
+	first, err := tr.AcceptGroup(ctx)
+	require.NoError(t, err)
+	require.Equal(t, moqt.GroupSequence(1), first.GroupSequence())
+	close(burst)
+
+	// Hold group 1 open until the relay has reported a drop, so the subscriber
+	// has certainly fallen behind before it starts reading.
+	var gotDrops []moqt.SubscribeDrop
+	require.Eventually(t, func() bool {
+		gotDrops = append(gotDrops, queuedDrops(tr)...)
+		return len(gotDrops) > 0
+	}, 10*time.Second, 10*time.Millisecond, "the relay never reported a drop")
+	readGroup(first)
+
+	gotSeqs := append([]moqt.GroupSequence{1}, readToEOF(t, ctx, tr)...)
+	gotDrops = append(gotDrops, queuedDrops(tr)...)
+
+	seen := make(map[moqt.GroupSequence]int)
 	for _, seq := range gotSeqs {
-		accounted[seq] = true
+		seen[seq]++
 	}
 	for _, drop := range gotDrops {
-		for s := drop.StartGroup; s <= drop.EndGroup; s++ {
-			accounted[s] = true
+		assert.Contains(t, []moqt.SubscribeErrorCode{moqt.SubscribeErrorCodeInternal, moqt.SubscribeErrorCodeTimeout}, drop.ErrorCode, "drop %+v", drop)
+		for seq := drop.StartGroup; seq <= drop.EndGroup; seq++ {
+			seen[seq]++
 		}
 	}
-	for i := uint64(1); i <= 10; i++ {
-		assert.True(t, accounted[moqt.GroupSequence(i)], "group sequence %d should be accounted for", i)
+	for seq := moqt.GroupSequence(1); seq <= lastGroup; seq++ {
+		assert.Equal(t, 1, seen[seq], "group %d: delivered %v, dropped %v", seq, gotSeqs, gotDrops)
 	}
+	assert.Len(t, seen, lastGroup, "no group outside 1..%d is delivered or dropped", lastGroup)
 }

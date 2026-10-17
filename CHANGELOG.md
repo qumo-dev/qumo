@@ -54,7 +54,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- **The relay reports dropped groups to subscribers (`internal/relay`, #516).** Drops reported upstream by a publisher are forwarded to subscribers, and drops resulting from relay-side subscriber skips or stream timeouts under backpressure are reported via `DropGroups`, allowing subscriber `TrackReader`s to settle end-of-track promptly without waiting for the grace period to expire.
+- **The relay reports dropped groups to subscribers (`internal/relay`, #516),** so a subscriber's track ends without waiting out the grace period: it forwards a publisher's drops, reports groups it skips for a subscriber that fell behind (`SubscribeErrorCodeInternal`) or could not open in time (`SubscribeErrorCodeTimeout`), and reports each group at most once; new counter `qumo_relay_subscriber_drops_lost_total`.
 - **A viewer that subscribes before a publisher’s tracks are known now gets them (gomoqt v0.26.0, `@qumo/moq` 0.26.0).** An ingest’s catalog subscription stays open and receives each change, so a player no longer stays on an empty catalog; the playground applies the newest catalog when updates arrive out of order.
 - **The relay closes an upstream subscription when it stops forwarding a track,** so publishers no longer keep sending groups nobody accepts.
 - **Draining a route and shutting down end a subscribe still waiting for its first group (gomoqt v0.24.2).** Quiet tracks now fail over on drain, and `qumo hls` waiting for a catalog exits on SIGTERM.

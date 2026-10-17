@@ -228,6 +228,10 @@ type groupRing struct {
 	pos    atomic.Uint64
 	gcPool sync.Pool
 
+	// maxSeq is the highest group sequence reserved so far. Groups arrive out
+	// of sequence order, so it is not the sequence at head().
+	maxSeq atomic.Uint64
+
 	// stages is the stage-latency collector shared with the owning distributor
 	// (set in newTrackDistributor). Nil-safe no-op in the default build.
 	stages *stageCollector
@@ -252,6 +256,9 @@ func (ring *groupRing) reserve(seq moqt.GroupSequence) *groupCache {
 	// instrument-only field; the instrument build re-stamps in processGroup).
 	ring.stages.clearArrival(cache)
 
+	if uint64(seq) > ring.maxSeq.Load() {
+		ring.maxSeq.Store(uint64(seq)) // single writer: no CAS needed
+	}
 	pos := ring.pos.Add(1)
 	cache.pos = ringPosition(pos)
 	idx := int(pos % uint64(ring.size))
@@ -374,4 +381,9 @@ func (ring *groupRing) earliestAvailable() ringPosition {
 		return 1
 	}
 	return head - ringPosition(ring.size) + 1
+}
+
+// highestSeq returns the highest group sequence reserved so far.
+func (ring *groupRing) highestSeq() moqt.GroupSequence {
+	return moqt.GroupSequence(ring.maxSeq.Load())
 }

@@ -692,3 +692,26 @@ func TestGroupRing_Stress(t *testing.T) {
 
 	wg.Wait()
 }
+
+func TestGroupRing_HighestSeq(t *testing.T) {
+	tests := map[string]struct {
+		reserved []moqt.GroupSequence
+		want     moqt.GroupSequence
+	}{
+		"empty ring":            {reserved: nil, want: 0},
+		"in order":              {reserved: []moqt.GroupSequence{1, 2, 3}, want: 3},
+		"out of order":          {reserved: []moqt.GroupSequence{3, 7, 5}, want: 7},
+		"kept after eviction":   {reserved: []moqt.GroupSequence{9, 1, 2, 3, 4}, want: 9},
+		"single group past one": {reserved: []moqt.GroupSequence{40}, want: 40},
+	}
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			ring := newGroupRing(2, DefaultFramePool)
+			for _, seq := range tt.reserved {
+				ring.reserve(seq)
+			}
+
+			assert.Equal(t, tt.want, ring.highestSeq())
+		})
+	}
+}
