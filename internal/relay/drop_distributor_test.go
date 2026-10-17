@@ -35,6 +35,34 @@ func TestNewDropDistributor(t *testing.T) {
 	}
 }
 
+func TestDropDistributor_Oldest(t *testing.T) {
+	tests := map[string]struct {
+		recorded int
+		want     uint64
+	}{
+		"empty":          {recorded: 0, want: 0},
+		"partly filled":  {recorded: 2, want: 0},
+		"exactly full":   {recorded: 3, want: 0},
+		"wrapped once":   {recorded: 4, want: 1},
+		"wrapped deeply": {recorded: 10, want: 7},
+	}
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			d := newDropDistributor(3)
+			for i := range tt.recorded {
+				seq := moqt.GroupSequence(i + 1)
+				d.record(moqt.SubscribeDrop{StartGroup: seq, EndGroup: seq})
+			}
+
+			got := d.oldest()
+
+			assert.Equal(t, tt.want, got)
+			_, _, lost := d.since(got, nil)
+			assert.Zero(t, lost, "reading from oldest loses nothing")
+		})
+	}
+}
+
 func TestDropDistributor_Record(t *testing.T) {
 	d := newDropDistributor(2)
 

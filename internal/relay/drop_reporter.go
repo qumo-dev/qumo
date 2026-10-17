@@ -55,8 +55,11 @@ type dropReporter struct {
 	handled []groupSpan
 }
 
+// newDropReporter starts reading src at its oldest held drop: drops recorded
+// before the subscriber joined may still cover groups from its start onward,
+// and those overwritten before it joined were never its to lose.
 func newDropReporter(w dropWriter, src *dropDistributor) *dropReporter {
-	return &dropReporter{w: w, src: src}
+	return &dropReporter{w: w, src: src, pos: src.oldest()}
 }
 
 // sent records that group seq was delivered. The first call sets the

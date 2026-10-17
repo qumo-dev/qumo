@@ -49,6 +49,17 @@ func (d *dropDistributor) head() uint64 {
 	return d.pos.Load()
 }
 
+// oldest returns the position just before the oldest drop still held: a reader
+// starting there reads every held drop and loses none of those overwritten
+// before it started.
+func (d *dropDistributor) oldest() uint64 {
+	head := d.pos.Load()
+	if size := uint64(len(d.drops)); head > size {
+		return head - size
+	}
+	return 0
+}
+
 // since appends to buf the drops recorded after position lastPos and returns
 // buf, the position to pass next time, and how many of those drops were
 // overwritten before this call could read them.

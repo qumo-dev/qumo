@@ -360,6 +360,24 @@ func TestDropReporter_Flush_OnlyNewDrops(t *testing.T) {
 
 func TestDropReporter_Flush_CountsLostDrops(t *testing.T) {
 	src := newDropDistributor(2)
+	w := &fakeDropWriter{}
+	r := newDropReporter(w, src)
+	r.sent(1)
+	for seq := moqt.GroupSequence(2); seq <= 6; seq++ {
+		src.record(dropRange(seq, seq, codeInternal))
+	}
+	before := testutil.ToFloat64(metricSubscriberDropsLostTotal)
+
+	r.flush()
+
+	assert.Equal(t, []moqt.SubscribeDrop{dropRange(5, 5, codeInternal), dropRange(6, 6, codeInternal)}, w.sent)
+	assert.InDelta(t, 3, testutil.ToFloat64(metricSubscriberDropsLostTotal)-before, 0)
+}
+
+// Drops overwritten before a subscriber joined were never its to forward, so a
+// late subscriber reads the held ones without counting the rest as lost.
+func TestDropReporter_Flush_LateSubscriberLosesNothing(t *testing.T) {
+	src := newDropDistributor(2)
 	for seq := moqt.GroupSequence(2); seq <= 6; seq++ {
 		src.record(dropRange(seq, seq, codeInternal))
 	}
@@ -371,7 +389,7 @@ func TestDropReporter_Flush_CountsLostDrops(t *testing.T) {
 	r.flush()
 
 	assert.Equal(t, []moqt.SubscribeDrop{dropRange(5, 5, codeInternal), dropRange(6, 6, codeInternal)}, w.sent)
-	assert.InDelta(t, 3, testutil.ToFloat64(metricSubscriberDropsLostTotal)-before, 0)
+	assert.InDelta(t, 0, testutil.ToFloat64(metricSubscriberDropsLostTotal)-before, 0)
 }
 
 // A skip that overlaps an upstream drop already forwarded sends only the

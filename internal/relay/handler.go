@@ -665,9 +665,12 @@ func (d *trackDistributor) egress(tw *moqt.TrackWriter) {
 				if skipped {
 					// Which groups were evicted is unknown, and groups arrive
 					// out of order, so an evicted group may be above seq. Report
-					// every group the ring has seen that was neither sent nor
-					// reported, except seq, which is sent next.
-					drops.reportSkipped(seq, d.ring.highestSeq(), moqt.SubscribeErrorCodeInternal)
+					// every group reserved up to this one that was neither sent
+					// nor reported, except seq, which is sent next. The bound is
+					// the cache's own highestSeq, not the ring's: groups that
+					// arrived after this one are still in the ring and will be
+					// sent.
+					drops.reportSkipped(seq, cache.highestSeq, moqt.SubscribeErrorCodeInternal)
 					skipped = false
 				}
 
