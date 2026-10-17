@@ -109,6 +109,8 @@ func TestFeedConfig_Validate(t *testing.T) {
 	unnamedCert, unnamedKey := writeLeaf(t, ca, devcert.Leaf{CommonName: "egress-2", Validity: time.Hour})
 	key, err := token.GenerateKey("hls")
 	require.NoError(t, err)
+	whole, err := token.GenerateKey("")
+	require.NoError(t, err)
 	exact, err := token.GenerateKey("hls/live")
 	require.NoError(t, err)
 
@@ -153,6 +155,15 @@ func TestFeedConfig_Validate(t *testing.T) {
 		},
 		// The grant's root is the path's directory: a key confined to the
 		// path itself can't grant it.
+		// Announce mode subscribes beneath HLS_ANNOUNCE_PREFIX and at the
+		// stripped broadcast path, which only a whole-namespace key covers.
+		"announce mode with a confined signing key": {
+			cfg:     feedConfig{relayURL: "https://relay:4433", announcePrefix: "/.hls/", signingKey: &key},
+			wantErr: "HLS_ANNOUNCE_PREFIX",
+		},
+		"announce mode with a whole-namespace signing key": {
+			cfg: feedConfig{relayURL: "https://relay:4433", announcePrefix: "/.hls/", signingKey: &whole},
+		},
 		"a signing key confined to the path itself": {
 			cfg:     feedConfig{relayURL: "https://relay:4433", trackPath: "/hls/live", signingKey: &exact},
 			wantErr: "must lie beneath the key's prefix",

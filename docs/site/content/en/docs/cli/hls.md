@@ -14,7 +14,7 @@ Publishers opt into HLS egress by announcing their broadcast path with the `/.hl
 prefix (e.g. `ANNOUNCE /.hls/live/cam1`). Media frames are **not double-published**:
 the publisher uploads media only once to its canonical broadcast path (`/live/cam1`).
 The egress listens for announcements, strips the `/.hls` prefix, reads the catalog at
-`/live/cam1`, discovers all media tracks (video variants, audio), packages them into
+`/live/cam1`, discovers its video tracks (audio tracks are not packaged yet), packages them into
 independent ledger tracks, and dynamically mounts HTTP endpoints.
 
 It verifies the relay's certificate by default.
@@ -53,7 +53,8 @@ Segments are shared by both formats and addressed by group id
 (`http://localhost:8080/live/cam1/video/<group-id>.m4s`); the fMP4 init segment is served at
 `/live/cam1/video/init.m4s` and referenced from the playlist's `#EXT-X-MAP`. Point an HLS player
 (such as `hls.js` or Safari) at `http://localhost:8080/live/cam1/playlist.m3u8`. If only a single
-broadcast is active, root requests (`http://localhost:8080/playlist.m3u8`) alias to it automatically.
+broadcast is active, root requests (`http://localhost:8080/playlist.m3u8`) redirect to its master playlist.
+The broadcast-level `manifest.mpd` redirects to the default track's (`video`, else any) MPD.
 
 ## Storage: S3 object storage or filesystem
 

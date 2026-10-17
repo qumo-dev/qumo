@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func Test_broadcastPathFromAnnounce(t *testing.T) {
@@ -186,12 +187,21 @@ func Test_streamMux_Routing(t *testing.T) {
 	assert.Equal(t, http.StatusOK, rec.Code)
 	assert.Equal(t, "video-track-ok:/live/cam1/video/e000000-g00000000.m4s", rec.Body.String())
 
-	// 5. Root alias when single broadcast is active
+	// 5. Root alias when single broadcast is active: redirected, so the master
+	// playlist's relative variant URIs resolve beneath the broadcast.
 	req = httptest.NewRequest(http.MethodGet, "/playlist.m3u8", nil)
 	rec = httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)
-	assert.Equal(t, http.StatusOK, rec.Code)
-	assert.Contains(t, rec.Body.String(), "video/playlist.m3u8")
+	assert.Equal(t, http.StatusFound, rec.Code)
+	assert.Equal(t, "/live/cam1/master.m3u8", rec.Header().Get("Location"))
+
+	// 5b. Broadcast-level DASH MPD: redirected to the default track's MPD, whose
+	// relative init and segment URIs resolve beneath the track.
+	req = httptest.NewRequest(http.MethodGet, "/live/cam1/manifest.mpd", nil)
+	rec = httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	assert.Equal(t, http.StatusFound, rec.Code)
+	assert.Equal(t, "/live/cam1/video/manifest.mpd", rec.Header().Get("Location"))
 
 	// 6. Unknown broadcast -> 404
 	req = httptest.NewRequest(http.MethodGet, "/nonexistent/master.m3u8", nil)
@@ -208,4 +218,26 @@ func Test_streamMux_Routing(t *testing.T) {
 	rec = httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)
 	assert.Equal(t, http.StatusServiceUnavailable, rec.Code)
+}
+
+// An ending announcement unmounts only its own entry, not the one a newer
+// announcement of the same broadcast mounted since.
+func Test_streamMux_UnregisterBroadcast(t *testing.T) {
+	t.Run("own entry is removed", func(t *testing.T) {
+		mux := newStreamMux(10*time.Second, nil)
+		b := mux.RegisterBroadcast("/live/cam1")
+		mux.UnregisterBroadcast(b)
+		_, ok := mux.getBroadcast("/live/cam1")
+		assert.False(t, ok)
+	})
+
+	t.Run("successor's entry survives", func(t *testing.T) {
+		mux := newStreamMux(10*time.Second, nil)
+		older := mux.RegisterBroadcast("/live/cam1")
+		newer := mux.RegisterBroadcast("/live/cam1")
+		mux.UnregisterBroadcast(older)
+		got, ok := mux.getBroadcast("/live/cam1")
+		require.True(t, ok)
+		assert.Same(t, newer, got)
+	})
 }

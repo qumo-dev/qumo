@@ -15,6 +15,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 > **Breaking for web clients.** Relays on gomoqt v0.25.0 send no ENDED when closing an announce stream; move browsers to `@qumo/moq` 0.25.0 first.
 
+> **Breaking for the HLS egress.** `qumo hls` now serves announced broadcasts (`HLS_ANNOUNCE_PREFIX`, default `/.hls/`) and ignores `RELAY_TRACK_PATH`/`RELAY_TRACK_NAME`/`LEDGER_TRACK`; set `HLS_ANNOUNCE_PREFIX=` to keep serving one track at `/playlist.m3u8`.
+
 > **Breaking for the HLS egress.** A relay-CA certificate without the peering name no longer admits a session; give the egress `RELAY_SIGNING_KEY` (new) or a peer certificate.
 
 > **Breaking for apps, funnels and long-lived clients.** A token's `root` and a key's `prefix` are MoQ directories (`/acme/room/42/`), and every grant, a session's own included, lapses at its token's `exp`; a client that stays longer presents a fresh token on the session's Auth Stream.
@@ -23,7 +25,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **Announce-driven multi-track HLS/DASH egress (`internal/hls`).** `qumo hls` accepts announcements on `HLS_ANNOUNCE_PREFIX` (default `/.hls/`), discovers media tracks from the canonical broadcast's catalog without double-publishing, and dynamically serves multi-variant HLS (`master.m3u8`, `playlist.m3u8`, `{track}/playlist.m3u8`) and DASH (`manifest.mpd`) over HTTP.
+- **Announce-driven multi-track HLS/DASH egress (`internal/hls`).** `qumo hls` accepts announcements on `HLS_ANNOUNCE_PREFIX` (default `/.hls/`), discovers video tracks from the canonical broadcast's catalog without double-publishing, and serves multi-variant HLS (`master.m3u8`, `playlist.m3u8`, `{track}/playlist.m3u8`) and DASH (`{track}/manifest.mpd`) over HTTP; with `RELAY_SIGNING_KEY` it needs a key with prefix `/`.
 
 - **Tickets: a session's grants can grow (`internal/relay`, `internal/auth`).** A client presents further tokens on MoQ Auth Streams (any `token.Sign` token, signed by the key of the session's credential, each lasting until its `exp`, at most 33 credentials per session including its own), so an app keeps one session per client and grants rooms as the client joins; counted by `qumo_relay_tickets_total{result}`. A ticket that can't be checked (key set unusable) is answered `INTERNAL` (retryable), a refused one `UNAUTHORIZED`, and with auth off or for a relay peer `NOT_SUPPORTED`. A paused key still renews a grant that may publish the session already holds.
 - **A token may grant nothing (`token`).** A token with no root and no patterns admits a session that can do nothing until a ticket grants it.

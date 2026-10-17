@@ -152,11 +152,22 @@ func Run(_ []string) error {
 
 	// If announce mode is enabled (default "/.hls/"), start announce egress.
 	// Otherwise, fall back to the legacy single-track feed.
-	if cfg.announcePrefix != "" {
-		go runAnnounceEgress(ctx, cancel, store, mux, window, cfg)
-	} else {
-		go runStaticFeed(ctx, cancel, store, mux, ledgerTrack, window, cfg)
-	}
+	// fed reports the feed's fatal error, nil when it stopped with ctx.
+	fed := make(chan error, 1)
+	go func() {
+		var err error
+		if cfg.announcePrefix != "" {
+			runAnnounceEgress(ctx, store, mux, window, cfg)
+		} else {
+			err = runStaticFeed(ctx, cancel, store, mux, ledgerTrack, window, cfg)
+		}
+		if err != nil {
+			// Stop serving: cancelling the root context shuts the HTTP
+			// server down too, and Run reports err.
+			cancel()
+		}
+		fed <- err
+	}()
 
 	httpServer := &http.Server{
 		Addr: addr,
@@ -181,61 +192,68 @@ func Run(_ []string) error {
 	defer shutdownCancel()
 	// not actionable: a shutdown error only reports a closed listener on exit.
 	_ = httpServer.Shutdown(shutdownCtx)
-	return nil
+	// Wait for the feed, so its epochs close before the process exits, and
+	// exit non-zero when it is what stopped the egress.
+	return <-fed
 }
 
 // runStaticFeed feeds a single static track configured via RELAY_TRACK_PATH and
-// mounts it on mux.fallback, for backward compatibility when announce mode is
-// disabled.
-func runStaticFeed(ctx context.Context, cancel context.CancelFunc, store store.Store, mux *streamMux, ledgerTrack ledger.TrackPath, window uint64, cfg feedConfig) {
+// mounts it on mux's fallback, for backward compatibility when announce mode is
+// disabled. It returns an error when the egress cannot go on, nil once ctx is
+// done.
+func runStaticFeed(ctx context.Context, cancel context.CancelFunc, store store.Store, mux *streamMux, ledgerTrack ledger.TrackPath, window uint64, cfg feedConfig) error {
 	var live liveness
 
+	// The publisher and the egress start independently, so a broadcast that
+	// does not exist yet — or a catalog without its init segment yet — is
+	// expected at startup, not fatal: connectWithRetry backs off until the
+	// publisher is ready.
 	session, media, err := connectWithRetry(ctx, cfg)
 	if err != nil {
-		return
+		// ctx was cancelled while waiting for the publisher.
+		return nil
 	}
 	defer func() {
+		// not actionable: the egress is stopping regardless of the close outcome.
 		_ = session.CloseWithError(moqt.NoError, "hls egress stopped")
 	}()
 
 	track, adopted, err := openTrack(ctx, store, ledgerTrack, media.schema)
 	if err != nil {
-		slog.Error("hls: open static track", "err", err)
-		cancel()
-		return
+		return err
 	}
 	writer, err := track.Writer(ctx)
 	if err != nil {
-		slog.Error("hls: open writer", "err", err)
-		cancel()
-		return
+		return fmt.Errorf("hls: open writer: %w", err)
 	}
 
+	// A track that already held groups was filled by an earlier run, and this
+	// publisher numbers its own groups from zero; continuing that epoch would
+	// collide with the sealed groups already committed. Opening an epoch gives
+	// this producer its own sequence space.
 	if adopted {
 		if err := writer.NewEpoch(ctx); err != nil {
-			slog.Error("hls: begin epoch on an existing track", "err", err)
-			cancel()
-			return
+			return fmt.Errorf("hls: begin epoch on an existing track: %w", err)
 		}
 		slog.Info("hls: adopted an existing track, new epoch opened", "track", ledgerTrack)
 	}
 
+	// The window keeps the manifest at the live edge rather than listing the
+	// whole ledger track. EpochWindow 1: this egress opens an epoch per
+	// producer lifetime, so anything older is a session that has ended.
 	handler, err := stream.NewHandler(track, stream.Options{
 		InitSegment: stream.InitSegment{Bytes: media.packager.Init()},
 		Window:      int(window),
 		EpochWindow: 1,
 	})
 	if err != nil {
-		slog.Error("hls: build stream handler", "err", err)
-		cancel()
-		return
+		return fmt.Errorf("hls: build stream handler: %w", err)
 	}
 
-	mux.mu.Lock()
-	mux.fallback = withLiveness(handler, &live, cfg.liveTimeout)
-	mux.mu.Unlock()
+	mux.setFallback(withLiveness(handler, &live, cfg.liveTimeout))
 
 	runFeed(ctx, cancel, session, media, writer, &live, cfg)
+	return nil
 }
 
 // openTrack creates the ledger track if absent, adopting an existing one. The

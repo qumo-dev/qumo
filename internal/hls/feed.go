@@ -136,6 +136,13 @@ func (c feedConfig) validate() error {
 		if c.signingKey == nil {
 			return nil
 		}
+		// Announce mode subscribes beneath announcePrefix and at the
+		// broadcast it names with that prefix stripped: no root short of
+		// "/" holds both.
+		if p := c.signingKey.Prefix; c.announcePrefix != "" && p != "" && p != "/" {
+			return fmt.Errorf("RELAY_SIGNING_KEY is confined to %q, but HLS_ANNOUNCE_PREFIX %q needs a key for the whole namespace (prefix \"/\"): use one, or set HLS_ANNOUNCE_PREFIX= to serve RELAY_TRACK_PATH",
+				c.signingKey.Prefix, c.announcePrefix)
+		}
 		// Signing one now refuses a path outside the key's prefix at
 		// startup rather than at the first dial.
 		if _, err := token.Sign(*c.signingKey, c.grant(), token.MaxLifetime); err != nil {
@@ -189,13 +196,10 @@ func checkPeerCertificate(certFile, keyFile string) error {
 // alone in direct mode.
 func (c feedConfig) grant() token.Grant {
 	if c.announcePrefix != "" {
-		root := "/"
-		if c.signingKey != nil && c.signingKey.Prefix != "" {
-			if r, err := token.Directory(c.signingKey.Prefix); err == nil {
-				root = r
-			}
-		}
-		return token.Grant{Root: root, Subscribe: []string{"/"}}
+		// The announcements under announcePrefix and the broadcasts they name
+		// both have to lie within the root, so it is the whole namespace;
+		// validate refuses a key confined to less.
+		return token.Grant{Root: "/", Subscribe: []string{"/"}}
 	}
 	return subscribeGrant(c.trackPath)
 }
@@ -334,35 +338,40 @@ func connect(ctx context.Context, cfg feedConfig) (*moqt.Session, mediaInfo, err
 		"track", track.Name, "packaging", track.Packaging,
 		"codec", track.Codec, "initBytes", len(packager.Init()))
 
+	return session, newMediaInfo(cfg.trackPath, track, packager), nil
+}
+
+// newMediaInfo describes catalog track t of the broadcast at path, packaged by
+// packager.
+func newMediaInfo(path string, t *msf.Track, packager *cmaf.Packager) mediaInfo {
 	var w, h uint16
-	if track.Width != nil {
-		w = uint16(*track.Width)
+	if t.Width != nil {
+		w = uint16(*t.Width)
 	}
-	if track.Height != nil {
-		h = uint16(*track.Height)
+	if t.Height != nil {
+		h = uint16(*t.Height)
 	}
 	var br int64
-	if track.Bitrate != nil {
-		br = *track.Bitrate
-	} else if track.AvgBitrate != nil {
-		br = *track.AvgBitrate
+	if t.Bitrate != nil {
+		br = *t.Bitrate
+	} else if t.AvgBitrate != nil {
+		br = *t.AvgBitrate
 	}
-	role := string(track.Role)
+	role := string(t.Role)
 	if role == "" {
 		role = "video"
 	}
-
-	return session, mediaInfo{
-		path:     moqt.BroadcastPath(cfg.trackPath),
-		name:     moqt.TrackName(cfg.trackName),
-		schema:   trackSchema(track),
+	return mediaInfo{
+		path:     moqt.BroadcastPath(path),
+		name:     moqt.TrackName(t.Name),
+		schema:   trackSchema(t),
 		packager: packager,
 		role:     role,
-		codec:    track.Codec,
+		codec:    t.Codec,
 		width:    w,
 		height:   h,
 		bitrate:  br,
-	}, nil
+	}
 }
 
 // fetchCatalogWithRetry subscribes to the catalog track with short retries to
@@ -396,34 +405,7 @@ func discoverMediaTracks(c msf.Catalog, broadcastPath string) []mediaInfo {
 		if err != nil {
 			continue
 		}
-		var w, h uint16
-		if t.Width != nil {
-			w = uint16(*t.Width)
-		}
-		if t.Height != nil {
-			h = uint16(*t.Height)
-		}
-		var br int64
-		if t.Bitrate != nil {
-			br = *t.Bitrate
-		} else if t.AvgBitrate != nil {
-			br = *t.AvgBitrate
-		}
-		role := string(t.Role)
-		if role == "" {
-			role = "video"
-		}
-		infos = append(infos, mediaInfo{
-			path:     moqt.BroadcastPath(broadcastPath),
-			name:     moqt.TrackName(t.Name),
-			schema:   trackSchema(t),
-			packager: packager,
-			role:     role,
-			codec:    t.Codec,
-			width:    w,
-			height:   h,
-			bitrate:  br,
-		})
+		infos = append(infos, newMediaInfo(broadcastPath, t, packager))
 	}
 	return infos
 }
@@ -461,7 +443,7 @@ func handleAnnouncement(ctx context.Context, session *moqt.Session, ann *moqt.An
 	}
 
 	bEntry := mux.RegisterBroadcast(realBroadcast)
-	defer mux.UnregisterBroadcast(realBroadcast)
+	defer mux.UnregisterBroadcast(bEntry)
 
 	type activeTrack struct {
 		m      mediaInfo
@@ -531,12 +513,7 @@ func handleAnnouncement(ctx context.Context, session *moqt.Session, ann *moqt.An
 		wg.Add(1)
 		go func(at activeTrack) {
 			defer wg.Done()
-			defer func() {
-				_ = at.writer.NewEpoch(context.Background())
-			}()
-			if err := feedMedia(annCtx, sessionSubscriber{session}, at.m, at.writer, at.live, cfg); err != nil && annCtx.Err() == nil {
-				slog.Warn("hls: track feed ended", "broadcast", realBroadcast, "track", at.m.name, "err", err)
-			}
+			feedAnnouncedTrack(annCtx, session, bEntry, at.m, at.writer, at.live, cfg)
 		}(at)
 	}
 
@@ -545,10 +522,53 @@ func handleAnnouncement(ctx context.Context, session *moqt.Session, ann *moqt.An
 	slog.Info("hls: announcement finished", "broadcast", realBroadcast)
 }
 
+// epochCloseTimeout bounds closing a finished feed's epoch once its
+// announcement has ended, when no other context limits the ledger write.
+const epochCloseTimeout = 10 * time.Second
+
+// feedAnnouncedTrack feeds one track of an announced broadcast for as long as
+// the announcement (ctx) lasts. A feed that ends while the broadcast is still
+// announced — a silent publisher, a refused subscribe — closes its epoch and
+// subscribes again, as runFeed does in static mode, rather than leaving the
+// track listed in the master playlist with nothing behind it. On return the
+// last epoch is closed, so the manifest stops listing a finished session.
+func feedAnnouncedTrack(ctx context.Context, session *moqt.Session, b *broadcastEntry, m mediaInfo, w *ledger.Writer, live *liveness, cfg feedConfig) {
+	defer func() {
+		closeCtx, cancel := context.WithTimeout(context.Background(), epochCloseTimeout)
+		defer cancel()
+		if err := w.NewEpoch(closeCtx); err != nil {
+			slog.Warn("hls: cannot close the finished track's epoch", "broadcast", m.path, "track", m.name, "err", err)
+		}
+	}()
+	for {
+		if err := feedMedia(ctx, sessionSubscriber{session}, m, w, live, cfg); err != nil && ctx.Err() == nil {
+			slog.Warn("hls: track feed ended", "broadcast", m.path, "track", m.name, "err", err)
+		}
+		if ctx.Err() != nil {
+			return
+		}
+		if err := w.NewEpoch(ctx); err != nil {
+			// The ledger can't take a restarted feed's groups: unlist the
+			// track rather than serve its stale segments.
+			slog.Error("hls: cannot close the track's epoch; unlisting it", "broadcast", m.path, "track", m.name, "err", err)
+			b.RemoveTrack(string(m.name))
+			return
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(connectRetryInterval):
+		}
+	}
+}
+
 // runAnnounceEgress dials the relay and listens for announcements with
 // announcePrefix. Each announced broadcast is dynamically packaged and served
-// over HTTP until the announcement closes or the session ends.
-func runAnnounceEgress(ctx context.Context, cancel context.CancelFunc, store store.Store, mux *streamMux, window uint64, cfg feedConfig) {
+// over HTTP until the announcement closes or the session ends. It returns once
+// ctx is done and every announcement it started has finished.
+func runAnnounceEgress(ctx context.Context, store store.Store, mux *streamMux, window uint64, cfg feedConfig) {
+	var handlers sync.WaitGroup
+	defer handlers.Wait()
 	for {
 		session, err := dialRelayWithRetry(ctx, cfg)
 		if err != nil {
@@ -559,32 +579,31 @@ func runAnnounceEgress(ctx context.Context, cancel context.CancelFunc, store sto
 		announced, err := session.AcceptAnnounce(cfg.announcePrefix)
 		if err != nil {
 			slog.Warn("hls: accept announce failed", "err", err)
+			// not actionable: the session is being abandoned either way.
 			_ = session.CloseWithError(moqt.NoError, "accept announce failed")
-			select {
-			case <-ctx.Done():
-				return
-			case <-time.After(connectRetryInterval):
-				continue
-			}
-		}
-
-		sessCtx := session.Context()
-		for {
-			ann, err := announced.ReceiveAnnouncement(sessCtx)
-			if err != nil {
-				if ctx.Err() != nil {
-					return
+		} else {
+			// Ends with the session or with ctx, so shutting down reaches the
+			// receive loop and every announcement's feeds.
+			sessCtx, stop := context.WithCancel(ctx)
+			stopWithSession := context.AfterFunc(session.Context(), stop)
+			for {
+				ann, err := announced.ReceiveAnnouncement(sessCtx)
+				if err != nil {
+					if ctx.Err() == nil {
+						slog.Warn("hls: announce stream ended", "err", err)
+					}
+					break
 				}
-				slog.Warn("hls: announce stream ended", "err", err)
-				break
+				handlers.Go(func() {
+					handleAnnouncement(sessCtx, session, ann, store, mux, window, cfg)
+				})
 			}
-			go handleAnnouncement(sessCtx, session, ann, store, mux, window, cfg)
+			stopWithSession()
+			stop()
+			// not actionable: the session is being abandoned either way.
+			_ = session.CloseWithError(moqt.NoError, "reconnecting")
 		}
 
-		_ = session.CloseWithError(moqt.NoError, "reconnecting")
-		if ctx.Err() != nil {
-			return
-		}
 		select {
 		case <-ctx.Done():
 			return

@@ -143,25 +143,39 @@ func newStreamMux(liveTimeout time.Duration, fallback http.Handler) *streamMux {
 	}
 }
 
-// RegisterBroadcast registers or retrieves a broadcast entry.
+// RegisterBroadcast mounts a fresh, empty entry for p, replacing any entry an
+// earlier announcement of the same broadcast left mounted: the newest
+// announcement owns the path.
 func (m *streamMux) RegisterBroadcast(p string) *broadcastEntry {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	clean := path.Clean(p)
-	b, ok := m.broadcasts[clean]
-	if !ok {
-		b = newBroadcastEntry(clean)
-		m.broadcasts[clean] = b
-	}
+	b := newBroadcastEntry(path.Clean(p))
+	m.broadcasts[b.path] = b
 	return b
 }
 
-// UnregisterBroadcast unregisters an active broadcast.
-func (m *streamMux) UnregisterBroadcast(p string) {
+// UnregisterBroadcast unmounts b, unless a newer announcement of the same
+// broadcast has replaced it since — an ending announcement must not take down
+// its successor's routes.
+func (m *streamMux) UnregisterBroadcast(b *broadcastEntry) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	clean := path.Clean(p)
-	delete(m.broadcasts, clean)
+	if m.broadcasts[b.path] == b {
+		delete(m.broadcasts, b.path)
+	}
+}
+
+// setFallback mounts h for requests no announced broadcast claims.
+func (m *streamMux) setFallback(h http.Handler) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.fallback = h
+}
+
+func (m *streamMux) getFallback() http.Handler {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.fallback
 }
 
 func (m *streamMux) getBroadcast(p string) (*broadcastEntry, bool) {
@@ -170,13 +184,6 @@ func (m *streamMux) getBroadcast(p string) (*broadcastEntry, bool) {
 	clean := path.Clean(p)
 	b, ok := m.broadcasts[clean]
 	return b, ok
-}
-
-// activeBroadcastCount returns the number of active broadcasts.
-func (m *streamMux) activeBroadcastCount() int {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	return len(m.broadcasts)
 }
 
 // singleBroadcast returns the only registered broadcast if exactly one exists.
@@ -224,27 +231,31 @@ func (m *streamMux) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// 4. Broadcast-level DASH MPD: /{broadcast}/manifest.mpd
+	// 4. Broadcast-level DASH MPD: /{broadcast}/manifest.mpd. The track's MPD
+	// names its init and segments relative to itself, so it is redirected to,
+	// not served here, where those names would resolve outside the track.
 	if base == "manifest.mpd" {
 		broadcastPath := path.Dir(cleanPath)
 		if b, ok := m.getBroadcast(broadcastPath); ok {
 			if t, ok := b.defaultTrack(); ok {
-				t.handler.ServeHTTP(w, r)
+				http.Redirect(w, r, path.Join(b.path, t.info.Name, "manifest.mpd"), http.StatusFound)
 				return
 			}
 		}
 	}
 
-	// 5. Root fallback for single broadcast or configured fallback handler
-	if m.fallback != nil {
-		m.fallback.ServeHTTP(w, r)
+	// 5. Configured fallback handler (static mode).
+	if fallback := m.getFallback(); fallback != nil {
+		fallback.ServeHTTP(w, r)
 		return
 	}
 
-	// When exactly one broadcast is active, root requests alias to it.
+	// When exactly one broadcast is active, root requests alias to it. A
+	// redirect, since the master playlist's variant URIs are relative to the
+	// broadcast's directory, not the root.
 	if (base == "playlist.m3u8" || base == "master.m3u8") && cleanPath == "/"+base {
 		if single := m.singleBroadcast(); single != nil {
-			m.serveMasterPlaylist(w, r, single)
+			http.Redirect(w, r, path.Join(single.path, "master.m3u8"), http.StatusFound)
 			return
 		}
 	}
