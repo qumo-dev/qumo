@@ -201,6 +201,7 @@ func TestRelayChain_ReportsSubscriberSkips(t *testing.T) {
 	leaf.Config.Peers = []Peer{{Address: origin.MOQServer.Addr}}
 	go leaf.ConnectPeers(ctx) //nolint:errcheck // ends with ctx
 
+	pubDone := make(chan struct{})
 	pubGate := make(chan struct{})
 	pubMux := moqt.NewTrackMux(moqt.NewHopID())
 	pubMux.PublishFunc(ctx, chainBroadcastPath, func(tw *moqt.TrackWriter) {
@@ -234,6 +235,7 @@ func TestRelayChain_ReportsSubscriberSkips(t *testing.T) {
 			_ = gw.Close()
 			time.Sleep(10 * time.Millisecond)
 		}
+		close(pubDone)
 	})
 	pubSess, err := (&moqt.Dialer{TLSConfig: chainDialerTLS(pool), QUICConfig: &quic.Config{EnableDatagrams: true}}).Dial(ctx, "moqt://"+origin.MOQServer.Addr, pubMux)
 	require.NoError(t, err)
@@ -270,11 +272,16 @@ func TestRelayChain_ReportsSubscriberSkips(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, moqt.GroupSequence(1), gr.GroupSequence())
 
-	// Signal publisher to send groups 2 through 15
+	// Signal publisher to send groups 2 through 10
 	close(pubGate)
 
-	// Sleep to let publisher produce groups and force subscriber to fall behind in the ring
-	time.Sleep(300 * time.Millisecond)
+	// Wait until publisher has pushed all groups to origin, ensuring the
+	// subscriber (holding max 2 uni-streams) falls behind the ring of size 2.
+	select {
+	case <-pubDone:
+	case <-ctx.Done():
+		t.Fatal("publisher timed out")
+	}
 
 	// Now read the rest of the groups until EOF
 	var gotSeqs []moqt.GroupSequence

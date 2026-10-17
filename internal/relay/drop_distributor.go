@@ -50,13 +50,13 @@ func (d *dropDistributor) record(drop moqt.SubscribeDrop) {
 // since returns any drops recorded with sequence > lastPos, up to the current
 // head, along with the updated head sequence.
 func (d *dropDistributor) since(lastPos uint64) ([]moqt.SubscribeDrop, uint64) {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+
 	currentHead := d.head.Load()
 	if currentHead <= lastPos {
 		return nil, lastPos
 	}
-
-	d.mu.RLock()
-	defer d.mu.RUnlock()
 
 	// If the subscriber has fallen behind more than the buffer capacity,
 	// clamp to the oldest available drop in the buffer.

@@ -606,19 +606,29 @@ func (d *trackDistributor) egress(tw *moqt.TrackWriter) {
 	metricTrackSubscriptionsActive.WithLabelValues(path, track).Inc()
 	defer metricTrackSubscriptionsActive.WithLabelValues(path, track).Dec()
 
+	var (
+		firstSeq  moqt.GroupSequence
+		firstOnce sync.Once
+	)
 	firstOpened := make(chan struct{})
-	var once sync.Once
-	markFirstOpened := func() {
-		once.Do(func() { close(firstOpened) })
+	markFirstOpened := func(seq moqt.GroupSequence) {
+		firstOnce.Do(func() {
+			firstSeq = seq
+			close(firstOpened)
+		})
 	}
 
+	egressDone := make(chan struct{})
 	var dropWg sync.WaitGroup
 	dropWg.Add(1)
 	go func() {
 		defer dropWg.Done()
-		d.egressDrops(tw, twCtx, firstOpened)
+		d.egressDrops(tw, twCtx, egressDone, firstOpened, &firstSeq)
 	}()
-	defer dropWg.Wait()
+	defer func() {
+		close(egressDone)
+		dropWg.Wait()
+	}()
 
 	// Track the last seen notify sequence so we can detect new data without
 	// per-subscriber channels or RWMutex contention. Each call to broadcast()
@@ -669,7 +679,7 @@ func (d *trackDistributor) egress(tw *moqt.TrackWriter) {
 
 			if cache := d.ring.get(last); cache != nil {
 				if skipped {
-					if hasLastSent && lastSent+1 <= cache.seq-1 {
+					if hasLastSent && cache.seq > 0 && lastSent+1 <= cache.seq-1 {
 						_ = tw.DropGroups(moqt.SubscribeDrop{
 							StartGroup: lastSent + 1,
 							EndGroup:   cache.seq - 1,
@@ -679,10 +689,9 @@ func (d *trackDistributor) egress(tw *moqt.TrackWriter) {
 					skipped = false
 				}
 
-				if d.deliverGroup(tw, twCtx, openTO, woken, cache) {
+				if d.deliverGroup(tw, twCtx, openTO, woken, cache, hasLastSent, markFirstOpened) {
 					return
 				}
-				markFirstOpened()
 				lastSent = cache.seq
 				hasLastSent = true
 				woken = false // a subsequent direct iteration means we are behind
@@ -733,13 +742,31 @@ func (d *trackDistributor) egress(tw *moqt.TrackWriter) {
 // subscriber's initial group: gomoqt's receiveSubscribeStream treats drops
 // called before responseStarted as implicit leading drops folded into
 // SUBSCRIBE_OK's start group, skipping explicit SUBSCRIBE_DROP frames.
-func (d *trackDistributor) egressDrops(tw *moqt.TrackWriter, twCtx context.Context, firstOpened <-chan struct{}) {
+//
+// It monitors egressDone so that when egress exits on delivery error,
+// egressDrops unblocks immediately rather than pinning dropWg.Wait() until the
+// upstream track ends. It filters out historical drops with EndGroup < *firstSeq
+// so newly arriving subscribers are not replayed stale historical drops.
+func (d *trackDistributor) egressDrops(tw *moqt.TrackWriter, twCtx context.Context, egressDone <-chan struct{}, firstOpened <-chan struct{}, firstSeq *moqt.GroupSequence) {
 	select {
 	case <-firstOpened:
+	case <-egressDone:
+		return
 	case <-d.done:
 		return
 	case <-twCtx.Done():
 		return
+	}
+
+	startSeq := *firstSeq
+	sendDrop := func(drop moqt.SubscribeDrop) {
+		if drop.EndGroup < startSeq {
+			return
+		}
+		if drop.StartGroup < startSeq {
+			drop.StartGroup = startSeq
+		}
+		_ = tw.DropGroups(drop) // not actionable: subscriber session errors handled on delivery
 	}
 
 	var lastPos uint64
@@ -750,7 +777,7 @@ func (d *trackDistributor) egressDrops(tw *moqt.TrackWriter, twCtx context.Conte
 		if newPos > lastPos {
 			lastPos = newPos
 			for _, drop := range drops {
-				_ = tw.DropGroups(drop) // not actionable: subscriber session errors handled on delivery
+				sendDrop(drop)
 			}
 		}
 
@@ -763,11 +790,13 @@ func (d *trackDistributor) egressDrops(tw *moqt.TrackWriter, twCtx context.Conte
 		select {
 		case <-state.ch:
 			lastState = d.drops.notify.listen()
+		case <-egressDone:
+			return
 		case <-d.done:
 			// Ingest ended: deliver any final drop notifications before exiting.
 			drops, _ := d.drops.since(lastPos)
 			for _, drop := range drops {
-				_ = tw.DropGroups(drop) // not actionable: subscriber session errors handled on delivery
+				sendDrop(drop)
 			}
 			return
 		case <-twCtx.Done():
@@ -780,7 +809,7 @@ func (d *trackDistributor) egressDrops(tw *moqt.TrackWriter, twCtx context.Conte
 // returns true if the egress loop should exit — the subscribe stream was closed
 // or cancelled (OpenGroupAt/WriteFrame error, twCtx.Done, or d.done) — or false
 // if the group was delivered completely and the loop should advance to the next.
-func (d *trackDistributor) deliverGroup(tw *moqt.TrackWriter, twCtx context.Context, openTO *openTimeout, woken bool, cache *groupCache) bool {
+func (d *trackDistributor) deliverGroup(tw *moqt.TrackWriter, twCtx context.Context, openTO *openTimeout, woken bool, cache *groupCache, hasLastSent bool, markFirstOpened func(moqt.GroupSequence)) bool {
 	// Stage stamps (no-op in the default build): tEnter closes the R stage
 	// (group arrival → egress pickup) and opens the O stage (OpenGroupAt).
 	// enterDeliver/exitDeliver bracket the concurrent-delivery gauge and the
@@ -812,11 +841,13 @@ func (d *trackDistributor) deliverGroup(tw *moqt.TrackWriter, twCtx context.Cont
 			// fast with timedOut=false and terminates, so a dead session costs
 			// at most one extra loop iteration.
 			metricSubscriberSkipsTotal.Inc()
-			_ = tw.DropGroups(moqt.SubscribeDrop{
-				StartGroup: cache.seq,
-				EndGroup:   cache.seq,
-				ErrorCode:  moqt.SubscribeErrorCodeInternal,
-			}) // not actionable: subscriber session errors handled on delivery
+			if hasLastSent {
+				_ = tw.DropGroups(moqt.SubscribeDrop{
+					StartGroup: cache.seq,
+					EndGroup:   cache.seq,
+					ErrorCode:  moqt.SubscribeErrorCodeInternal,
+				}) // not actionable: subscriber session errors handled on delivery
+			}
 			return false
 		}
 		// Non-timeout error (connection closed, session dead): terminate egress.
@@ -824,6 +855,8 @@ func (d *trackDistributor) deliverGroup(tw *moqt.TrackWriter, twCtx context.Cont
 	}
 	defer gw.Close()
 	defer d.ring.decrRef(cache)
+
+	markFirstOpened(cache.seq)
 
 	d.stages.groupOpen(tEnter)
 
