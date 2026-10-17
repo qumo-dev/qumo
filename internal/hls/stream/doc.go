@@ -1,5 +1,6 @@
-// Package stream renders a [ledger] track of fMP4 fragments over HTTP as HLS
-// and DASH.
+// Package stream renders a [ledger] track over HTTP as HLS and DASH, packaging
+// each stored group — its frames as MoQ carried them — into a CMAF fragment
+// when it is asked for.
 //
 // Both are derived views over the same track, never the storage format itself:
 // a Group is one segment, [ledger.GroupInfo.Duration] becomes HLS EXTINF and

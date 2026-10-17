@@ -3,8 +3,10 @@ package stream
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"net/http"
 	"path"
 	"slices"
@@ -12,6 +14,9 @@ import (
 	"strings"
 
 	"github.com/okdaichi/qumo-ledger/ledger"
+
+	"github.com/qumo-dev/qumo/internal/cmaf"
+	"github.com/qumo-dev/qumo/internal/moqframe"
 )
 
 // Handler serves one track over HTTP as both HLS and DASH. It routes by the
@@ -23,13 +28,17 @@ import (
 //	.../<group-id>.m4s                  one segment — shared by both formats
 //	.../init.m4s                        the init segment
 //
+// The track stores each group as the frames MoQ carried (moq-lite-05, their
+// bodies LOC); a segment is that group packaged into a CMAF fragment when it
+// is asked for.
+//
 // A fresh [*ledger.Reader] is opened per request. A Reader is single-consumer,
 // and concurrent consumers each opening their own is the documented cheap
 // pattern, so the handler does that rather than share one.
 type Handler struct {
 	track       *ledger.Track
 	schema      ledger.TrackSchema
-	init        []byte
+	packager    *cmaf.Packager
 	window      int
 	epochWindow int
 	queryParam  string
@@ -39,16 +48,18 @@ type Handler struct {
 // segExt is the extension segments are named with: each is a CMAF fragment.
 const segExt = ".m4s"
 
+// segmentMIME is the media type of the init segment and every fragment.
+const segmentMIME = "video/mp4"
+
 // initName is the name, relative to the track, of the init segment.
 const initName = "init" + segExt
 
 // Options configures a [Handler].
 type Options struct {
-	// Init is the track's fMP4 initialization segment (ftyp + moov), served at
-	// init.m4s and referenced as HLS #EXT-X-MAP and DASH Initialization. It is
-	// required: segments are moof+mdat and carry no codec configuration, so a
-	// manifest without one is unplayable.
-	Init []byte
+	// Packager packages the track's groups into CMAF fragments, and holds the
+	// initialization segment (ftyp + moov) served at init.m4s and referenced as
+	// HLS #EXT-X-MAP and DASH Initialization. It is required.
+	Packager *cmaf.Packager
 
 	// Window caps how many of the most recent segments a manifest lists. Zero
 	// lists every committed segment.
@@ -101,19 +112,23 @@ type Options struct {
 	QueryParam string
 }
 
-// NewHandler builds a [Handler] over track, whose segments are fMP4 fragments
-// that opts.Init describes.
+// NewHandler builds a [Handler] over track, whose groups opts.Packager
+// packages. The track's media time is the packager's: [cmaf.Timescale].
 func NewHandler(track *ledger.Track, opts Options) (*Handler, error) {
 	if track == nil {
 		return nil, errors.New("stream: nil track")
 	}
-	if len(opts.Init) == 0 {
-		return nil, errors.New("stream: no init segment")
+	if opts.Packager == nil {
+		return nil, errors.New("stream: no packager")
+	}
+	schema := track.Root().TrackSchema
+	if schema.Timescale != cmaf.Timescale {
+		return nil, fmt.Errorf("stream: track timescale %d is not the packager's %d", schema.Timescale, cmaf.Timescale)
 	}
 	return &Handler{
 		track:       track,
-		schema:      track.Root().TrackSchema,
-		init:        opts.Init,
+		schema:      schema,
+		packager:    opts.Packager,
 		window:      opts.Window,
 		epochWindow: opts.EpochWindow,
 		queryParam:  opts.QueryParam,
@@ -184,13 +199,15 @@ func (h *Handler) serveDASH(w http.ResponseWriter, r *http.Request) {
 
 // serveInit writes the init segment.
 func (h *Handler) serveInit(w http.ResponseWriter) {
-	w.Header().Set("Content-Type", h.schema.MIME)
-	w.Header().Set("Content-Length", strconv.Itoa(len(h.init)))
-	_, _ = w.Write(h.init) // not actionable: once the body write fails the client is gone
+	init := h.packager.Init()
+	w.Header().Set("Content-Type", segmentMIME)
+	w.Header().Set("Content-Length", strconv.Itoa(len(init)))
+	_, _ = w.Write(init) // not actionable: once the body write fails the client is gone
 }
 
-// serveSegment reads a segment by its GroupID out of the ledger. One handler
-// serves both HLS and DASH, since both address segments by GroupID.
+// serveSegment reads a group by its GroupID out of the ledger and packages it
+// into the segment. One handler serves both HLS and DASH, since both address
+// segments by GroupID.
 func (h *Handler) serveSegment(w http.ResponseWriter, r *http.Request) {
 	id, ok := parseSegmentID(path.Base(r.URL.Path))
 	if !ok {
@@ -220,19 +237,53 @@ func (h *Handler) serveSegment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	data, err := reader.ReadGroup(r.Context(), group.ObjectKey)
+	payload, err := reader.ReadGroup(r.Context(), group.ObjectKey)
 	if err != nil {
 		h.internalError(w, r, "read segment", err)
 		return
 	}
-
-	mime := group.MIME
-	if mime == "" {
-		mime = h.schema.MIME
+	data, err := h.fragment(group, payload)
+	if err != nil {
+		h.internalError(w, r, "package segment", err)
+		return
 	}
-	w.Header().Set("Content-Type", mime)
+
+	w.Header().Set("Content-Type", segmentMIME)
+	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("Content-Length", strconv.Itoa(len(data)))
+	//nolint:gosec // G705: a CMAF fragment of stored media, typed video/mp4 and not sniffed, not request input reflected back.
 	_, _ = w.Write(data) // not actionable: once the body write fails the client is gone
+}
+
+// fragment packages a stored group, whose frames payload holds, into the CMAF
+// fragment the manifests list it as: placed at its MediaTime and covering its
+// Duration. The last frame's duration is what the writer stated, the part of
+// Duration its frames' timestamps do not span, so the fragment's extent is
+// the EXTINF exactly.
+func (h *Handler) fragment(g ledger.GroupInfo, payload []byte) ([]byte, error) {
+	var bodies [][]byte
+	for f, err := range moqframe.All(payload) {
+		if err != nil {
+			return nil, err
+		}
+		bodies = append(bodies, f.Body)
+	}
+	frames, err := cmaf.FramesFromLOC(bodies)
+	if err != nil {
+		return nil, err
+	}
+	if len(frames) == 0 {
+		return nil, fmt.Errorf("group %s has no frames", g.ID)
+	}
+	span := int64(frames[len(frames)-1].Timestamp - frames[0].Timestamp)
+	last := g.Duration - span
+	if last <= 0 || last > math.MaxUint32 {
+		return nil, fmt.Errorf("group %s: duration %d does not cover its frames' %d", g.ID, g.Duration, span)
+	}
+	// The producer's sequence numbers the fragment: it is what orders the
+	// track's fragments, and restarts with an epoch, as a new session does.
+	data, _, err := h.packager.Fragment(uint32(g.ID.Sequence())+1, frames, uint64(g.MediaTime), uint32(last))
+	return data, err
 }
 
 // manifestWindow is what the renderers need about a track: the groups to list,

@@ -23,6 +23,7 @@ import (
 	"github.com/okdaichi/qumo-ledger/ledger"
 	"github.com/okdaichi/qumo-ledger/ledger/store"
 	"github.com/qumo-dev/qumo/internal/hls/stream"
+	"github.com/qumo-dev/qumo/internal/moqframe"
 
 	"github.com/qumo-dev/qumo/internal/cmaf"
 	"github.com/qumo-dev/qumo/internal/relay"
@@ -431,7 +432,7 @@ func handleAnnouncement(ctx context.Context, session *moqt.Session, ann *moqt.An
 
 		live := &liveness{}
 		handler, err := stream.NewHandler(track, stream.Options{
-			Init:        m.packager.Init(),
+			Packager:    m.packager,
 			Window:      int(window),
 			EpochWindow: 1,
 			QueryParam:  mux.access.param,
@@ -652,21 +653,18 @@ func fetchCatalog(ctx context.Context, session *moqt.Session, path string) (msf.
 
 // trackSchema projects an MSF catalog track onto a ledger [ledger.TrackSchema].
 //
-// The payloads this egress stores are the fragments it packages, not the frames
-// it received, so the schema describes those: fragmented MP4 in the packager's
-// timescale. Reading a timescale off the wire would describe the wrong thing —
-// the media as it arrived, rather than as it is stored.
+// The payloads are the group's frames as received (moq-lite-05), and the media
+// timeline is the egress's own, in the packager's microsecond timescale: the
+// LOC timestamps the frames carry are microseconds, and the media time the
+// ledger records is the running total of the groups stored. MIME is the
+// catalog's, when it states one.
 func trackSchema(t *msf.Track) ledger.TrackSchema {
-	s := ledger.TrackSchema{
+	return ledger.TrackSchema{
 		Timescale:  cmaf.Timescale,
 		TimeSource: ledger.TimeSourceIngest,
-		MIME:       "video/mp4",
-		Encoding:   "fmp4",
+		MIME:       t.MimeType,
+		Encoding:   moqframe.Encoding,
 	}
-	if t.MimeType != "" {
-		s.MIME = t.MimeType
-	}
-	return s
 }
 
 // initFromTrack base64-decodes the fMP4 init data the track's initRef points
@@ -791,15 +789,16 @@ var (
 	_ groupAppender   = (*countingAppender)(nil)
 )
 
-// feedMedia subscribes to the media track and relays each received group into
+// feedMedia subscribes to the media track and stores each received group in
 // the ledger as a sealed group. It blocks until ctx is cancelled or the
 // subscription fails.
 //
-// Each group is a run of LOC frames the publisher sent; drainGroup decodes
-// them and the packager turns them into one CMAF (fMP4) fragment, so the
-// ledger segment is what the player fetches. MediaTime/Duration are still
-// derived (gomoqt v0.15.0 carries no per-frame timestamp); the Timescale now
-// comes from the catalog.
+// A group is stored as the publisher sent it — its frames in the moq-lite-05
+// encoding (qumo-ledger decision 15) — and packaged into CMAF only when a
+// viewer asks for it. Its timing comes from the LOC timestamps inside the
+// frames, since publishers leave the moq-lite frame timestamp at zero: the
+// gaps between frames, plus the last frame's duration, which this writer
+// states as the group's mean interval.
 func feedMedia(ctx context.Context, sub mediaSubscriber, m mediaInfo, w groupAppender, live *liveness, cfg feedConfig) error {
 	src, err := sub.SubscribeMedia(ctx, m)
 	if err != nil {
@@ -840,21 +839,18 @@ func feedMedia(ctx context.Context, sub mediaSubscriber, m mediaInfo, w groupApp
 			return fmt.Errorf("hls: accept group: %w", err)
 		}
 
-		frames, err := drainGroup(gr, frame)
+		raw, err := drainGroup(gr, frame)
 		if err != nil {
 			slog.Warn("hls: read group, skipping", "group", gr.GroupSequence(), "err", err)
 			continue
 		}
-		if len(frames) == 0 {
+		if len(raw) == 0 {
 			continue
 		}
-
-		// The ledger's running media time places the fragment, so the fragment
-		// and the segment listing cannot disagree about where it belongs — and
-		// a group the ledger refuses below advances neither.
-		payload, units, err := m.packager.Fragment(frames, uint64(mediaTime))
+		payload, duration, err := storedGroup(raw)
 		if err != nil {
-			slog.Warn("hls: package group, skipping", "group", gr.GroupSequence(), "err", err)
+			// A group that cannot be measured could not be packaged either.
+			slog.Warn("hls: measure group, skipping", "group", gr.GroupSequence(), "err", err)
 			continue
 		}
 
@@ -868,8 +864,10 @@ func feedMedia(ctx context.Context, sub mediaSubscriber, m mediaInfo, w groupApp
 		if anchor.IsZero() {
 			anchor = now
 		}
-		duration := int64(units)
-		info := groupInfo(uint64(gr.GroupSequence()), mediaTime, duration, uint64(len(frames)),
+		// The ledger's running media time places the group, so the fragment
+		// built from it and the segment listing cannot disagree about where it
+		// belongs — and a group the ledger refuses below advances neither.
+		info := groupInfo(uint64(gr.GroupSequence()), mediaTime, duration, uint64(len(raw)),
 			wallclockAt(anchor, mediaTime, m.schema.Timescale))
 		if _, err := w.AppendGroup(ctx, info, payload); err != nil {
 			// A sealed group is immutable; a duplicate or ordering refusal is
@@ -900,17 +898,10 @@ func drainRaw(gr *moqt.GroupReader, frame *moqt.Frame) ([]byte, error) {
 	}
 }
 
-// drainGroup reads every frame of a group and decodes each as LOC.
-//
-// One MoQ frame is one LOC frame, so they are read individually rather than
-// concatenated: the group's payload is a run of self-delimiting frames, and
-// treating it as one buffer would only mean re-splitting it. io.EOF ends the
-// group cleanly.
-//
-// The first frame of a group is the sync sample. A MoQ group begins at each
-// keyframe, so the boundary carries what LOC itself does not state.
-func drainGroup(gr receivedGroup, frame *moqt.Frame) ([]cmaf.Frame, error) {
-	var frames []cmaf.Frame
+// drainGroup reads every frame of a group as it arrived: its moq-lite
+// timestamp and its body. io.EOF ends the group cleanly.
+func drainGroup(gr receivedGroup, frame *moqt.Frame) ([]moqframe.Frame, error) {
+	var frames []moqframe.Frame
 	for {
 		if err := gr.ReadFrame(frame); err != nil {
 			if err == io.EOF {
@@ -918,19 +909,39 @@ func drainGroup(gr receivedGroup, frame *moqt.Frame) ([]cmaf.Frame, error) {
 			}
 			return nil, err
 		}
-
-		timestamp, payload, err := cmaf.DecodeLOC(frame.Body())
-		if err != nil {
-			return nil, err
-		}
-		frames = append(frames, cmaf.Frame{
-			Timestamp: timestamp,
-			Sync:      len(frames) == 0,
-			// ReadFrame reuses its buffer, so the payload is copied out before
-			// the next read overwrites it.
-			Data: bytes.Clone(payload),
+		frames = append(frames, moqframe.Frame{
+			Timestamp: frame.Timestamp,
+			// ReadFrame reuses its buffer, so the body is copied out before the
+			// next read overwrites it.
+			Body: bytes.Clone(frame.Body()),
 		})
 	}
+}
+
+// storedGroup returns raw, a group's frames as received, as the payload the
+// ledger stores, with the media extent it covers: from its first LOC
+// timestamp to the end of its last frame, whose duration is the group's mean
+// frame interval. A group whose frames are not LOC, or whose timestamps cannot
+// be measured, is an error: the packager would refuse it on read.
+func storedGroup(raw []moqframe.Frame) (payload []byte, duration int64, err error) {
+	bodies := make([][]byte, len(raw))
+	for i, f := range raw {
+		bodies[i] = f.Body
+	}
+	frames, err := cmaf.FramesFromLOC(bodies)
+	if err != nil {
+		return nil, 0, err
+	}
+	last, err := cmaf.MeanInterval(frames)
+	if err != nil {
+		return nil, 0, err
+	}
+	payload, err = moqframe.Encode(raw)
+	if err != nil {
+		return nil, 0, err
+	}
+	span := frames[len(frames)-1].Timestamp - frames[0].Timestamp
+	return payload, int64(span) + int64(last), nil
 }
 
 // groupInfo maps a MoQ group to a ledger [ledger.GroupInfo]. seq is the group's
