@@ -875,8 +875,21 @@ func TestServer_MaxPendingAnonymous(t *testing.T) {
 		}
 	}
 
+	// refused reports whether a session holding no grant is turned away. The
+	// relay may refuse it while the dial is still opening it, or close it
+	// just after: either is the refusal.
+	refused := func() bool {
+		sess, err := dialWebSocket(t, srv, "/acme")
+		if err != nil {
+			assert.ErrorContains(t, err, "unavailable", "refused as busy, not failed otherwise")
+			return true
+		}
+		t.Cleanup(func() { _ = sess.CloseWithError(moqt.NoError, "done") })
+		return !stays(sess)
+	}
+
 	first := dialTest(t, srv, "")
-	assert.False(t, stays(dialTest(t, srv, "")), "a second session holding no grant is refused")
+	assert.True(t, refused(), "a second session holding no grant is refused")
 
 	_, err := authTest(t, first, signTest(t, keys.session, listenRoom))
 	require.NoError(t, err)
