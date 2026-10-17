@@ -129,7 +129,8 @@ func (b *broadcastEntry) isLive(now time.Time, timeout time.Duration) bool {
 //	/{broadcast}/{track}/<group>.m4s  - media segment for {track}
 //	/{broadcast}/manifest.mpd         - DASH MPD for default track
 //
-// Every request for a broadcast passes access first.
+// Every request passes access first, a request for no live broadcast
+// included.
 type streamMux struct {
 	mu          sync.RWMutex
 	broadcasts  map[string]*broadcastEntry
@@ -254,7 +255,11 @@ func (m *streamMux) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	http.NotFound(w, r)
+	// Checked here too, so a viewer can't tell a live broadcast it may not
+	// watch from one that isn't there: both are refused alike.
+	if m.access.admit(w, r, path.Dir(cleanPath)) {
+		http.NotFound(w, r)
+	}
 }
 
 func (m *streamMux) serveMasterPlaylist(w http.ResponseWriter, _ *http.Request, b *broadcastEntry) {

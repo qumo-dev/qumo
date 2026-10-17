@@ -211,7 +211,7 @@ All configuration is via environment variables:
 | `RELAY_CERT_FILE`, `RELAY_KEY_FILE` | _unset_ | A peer certificate and key (PEM) for the egress, from the private CA the relay trusts as `CA_FILE`, with the peering name. It must be the egress's own, not the relay's. The relay serves the egress as a relay peer: no credential, no expiry, nothing checked. Not with `RELAY_SIGNING_KEY` or `?jwt=`. Set both or neither; they need a `moqt://` `RELAY_URL`. |
 | `QUMO_AUTH_KEYS` | _unset_ | The key set viewers' tokens are verified against, as the relay reads it (a file or URL): every request needs a token that may `subscribe` to its broadcast. Unset lets every viewer in. See [Viewers](#viewers). |
 | `QUMO_AUTH_KEYS_CACHE` / `QUMO_RELAY_TOKEN` | _unset_ | A file a downloaded key set is kept in, and the bearer token sent to a key-set URL. |
-| `HLS_TOKEN_PARAM` | `jwt` with `QUMO_AUTH_KEYS`, else _unset_ | The query parameter a viewer's token travels in, carried by the manifests onto every URL they name. Set it alone for a CDN that checks its own tokens. |
+| `HLS_TOKEN_PARAM` | `jwt` with `QUMO_AUTH_KEYS`, else _unset_ | The query parameter a viewer's token travels in, carried by the manifests onto every URL they name: letters, digits, `-` and `_`. Set it alone for a CDN that checks its own tokens. |
 | `CORS_ALLOWED_ORIGINS` | _unset_ | Comma-separated origins allowed to fetch manifests and segments, or `*` for any. Unset disables CORS. Required when the player is served from another origin (e.g. `http://localhost:5173` for the playground). |
 
 ## See also

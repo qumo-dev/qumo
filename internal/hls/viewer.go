@@ -36,7 +36,7 @@ var errNoViewerCredential = errors.New("hls: no credential")
 //	QUMO_AUTH_KEYS       - the key set viewers' tokens are verified against, as the relay reads it: every request needs a token that may subscribe to its broadcast (default: none, every viewer is let in)
 //	QUMO_AUTH_KEYS_CACHE - a file a downloaded key set is kept in between runs
 //	QUMO_RELAY_TOKEN     - bearer token sent to a key-set URL
-//	HLS_TOKEN_PARAM      - the query parameter a viewer's token travels in, carried onto every URL the manifests name (default "jwt" with QUMO_AUTH_KEYS, else none: set it for a CDN that checks its own tokens)
+//	HLS_TOKEN_PARAM      - the query parameter a viewer's token travels in, carried onto every URL the manifests name (default "jwt" with QUMO_AUTH_KEYS, else none: set it for a CDN that checks its own tokens); an HLS variable name: letters, digits, '-' and '_'
 //
 // The key set is refreshed until ctx ends.
 func viewerAccessFromEnv(ctx context.Context) (viewerAccess, string, error) {
@@ -46,11 +46,11 @@ func viewerAccessFromEnv(ctx context.Context) (viewerAccess, string, error) {
 		defaultParam = "jwt"
 	}
 	access := viewerAccess{param: envconfig.String("HLS_TOKEN_PARAM", defaultParam)}
+	if access.param != "" && !isVariableName(access.param) {
+		return viewerAccess{}, "", fmt.Errorf("hls: HLS_TOKEN_PARAM %q is not an HLS variable name (letters, digits, '-', '_')", access.param)
+	}
 	if keys == "" {
 		return access, "off: every viewer is let in", nil
-	}
-	if access.param == "" {
-		return viewerAccess{}, "", errors.New("hls: QUMO_AUTH_KEYS needs HLS_TOKEN_PARAM, the query parameter viewers' tokens travel in")
 	}
 	v, err := auth.NewVerifier(auth.VerifierConfig{
 		Keys:      keys,
@@ -63,6 +63,23 @@ func viewerAccessFromEnv(ctx context.Context) (viewerAccess, string, error) {
 	go v.Run(ctx)
 	access.check = subscribeCheck(v)
 	return access, v.Source(), nil
+}
+
+// isVariableName reports whether s is an HLS variable name (RFC 8216bis
+// EXT-X-DEFINE): one or more letters, digits, '-' or '_'. The manifests
+// declare the token parameter as one and splice it into every URI they name.
+func isVariableName(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, c := range s {
+		switch {
+		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9', c == '-', c == '_':
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 // subscribeCheck returns the check a viewer's token passes: v verifies it,

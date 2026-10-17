@@ -83,6 +83,30 @@ func TestStreamMux_ViewerAccess(t *testing.T) {
 	}
 }
 
+// A request for no live broadcast is refused like one for a broadcast the
+// viewer may not watch, so refusals don't reveal which broadcasts are live.
+func TestStreamMux_ViewerAccess_UnknownBroadcast(t *testing.T) {
+	tests := map[string]struct {
+		err        error
+		wantStatus int
+	}{
+		"no credential": {err: errNoViewerCredential, wantStatus: http.StatusUnauthorized},
+		"refused":       {err: refused(http.StatusForbidden, "no"), wantStatus: http.StatusForbidden},
+		"admitted":      {wantStatus: http.StatusNotFound},
+	}
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			check := &fakeViewerCheck{err: tt.err}
+			mux := newViewerMux(t, "jwt", check)
+
+			rec := serve(mux, "/live/cam2/master.m3u8?jwt=t")
+
+			assert.Equal(t, tt.wantStatus, rec.Code)
+			assert.Equal(t, []viewerAsk{{credential: "t", path: "/live/cam2"}}, check.questions())
+		})
+	}
+}
+
 func TestStreamMux_ViewerAccess_Admitted(t *testing.T) {
 	check := &fakeViewerCheck{}
 	mux := newViewerMux(t, "jwt", check)
@@ -196,11 +220,16 @@ func TestViewerAccessFromEnv(t *testing.T) {
 		keys, param string
 		wantParam   string
 		wantCheck   bool
+		wantErr     bool
 	}{
 		"off":                       {},
-		"a parameter for a CDN":     {param: "token", wantParam: "token"},
+		"a parameter for a CDN":     {param: "cdn-token_2", wantParam: "cdn-token_2"},
 		"a key set":                 {keys: keys, wantParam: "jwt", wantCheck: true},
 		"a key set and a parameter": {keys: keys, param: "token", wantParam: "token", wantCheck: true},
+		// The manifests splice the name into every URI they name.
+		"a character it bars":  {param: "jwt=", wantErr: true},
+		"a space":              {keys: keys, param: "my token", wantErr: true},
+		"a substitution brace": {param: "{$jwt}", wantErr: true},
 	}
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
@@ -209,6 +238,10 @@ func TestViewerAccessFromEnv(t *testing.T) {
 
 			access, _, err := viewerAccessFromEnv(t.Context())
 
+			if tt.wantErr {
+				assert.Error(t, err)
+				return
+			}
 			require.NoError(t, err)
 			assert.Equal(t, tt.wantParam, access.param)
 			assert.Equal(t, tt.wantCheck, access.check != nil)
