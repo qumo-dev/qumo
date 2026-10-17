@@ -9,7 +9,6 @@ of LOC frames into CMAF (fMP4) fragments, writes them into qumo-ledger tracks,
 and serves multi-track HLS and DASH over HTTP. Packaging happens at the subscriber:
 the publisher sends LOC over MoQ, not CMAF.
 
-By default, the egress operates in **announce-driven mode** (`HLS_ANNOUNCE_PREFIX=/.hls/`).
 Publishers opt into HLS egress by announcing their broadcast path with the `/.hls/`
 prefix (e.g. `ANNOUNCE /.hls/live/cam1`). Media frames are **not double-published**:
 the publisher uploads media only once to its canonical broadcast path (`/live/cam1`).
@@ -87,10 +86,12 @@ CDN or application, not by the relay. Against a relay with auth on
 (`QUMO_AUTH_KEYS`), the egress itself connects in one of two ways:
 
 - **With a signing key** (`RELAY_SIGNING_KEY`), like any client. The egress
-  signs itself a fresh credential on every connect, granting `subscribe` on
-  `RELAY_TRACK_PATH` and nothing else. The key is one the relay's key set
-  trusts, made with `qumo auth keygen`; confine it with `-prefix` to the paths
-  the egress serves. The relay reports the session's usage under that key.
+  signs itself a fresh credential on every connect, granting `subscribe` and
+  nothing else. It reads announcements under `/.hls/` and the broadcasts they
+  name, so the key is one for the whole namespace (no `-prefix`) that the
+  relay's key set trusts, made with `qumo auth keygen`; the egress refuses to
+  start with a confined one. The relay reports the session's usage under that
+  key.
 - **As a relay peer** (`RELAY_CERT_FILE`, `RELAY_KEY_FILE`). The egress
   presents a peer certificate from the relay CA that the relay trusts as
   `CA_FILE`, one that carries the peering name. The relay then never checks
@@ -130,11 +131,9 @@ RELAY_CA_FILE=/secrets/relay-ca.crt qumo hls
   short-lived one renewed on disk is picked up without a restart. The signing
   key is read once, at startup.
 
-`cmd/seed-moq`, the dev seeder, is a standalone server (not a relay), presents
-an ephemeral self-signed certificate, and publishes under `/live/cam1`. Against
-it, set `RELAY_TLS_INSECURE=true` and `RELAY_TRACK_PATH=/live/cam1` (the egress
-defaults to `/hls/live`, which suits the playground); the default
-`RELAY_URL=https://localhost:4433` already matches seed-moq.
+The playground's HLS scenario opts its broadcast in by announcing it under
+`/.hls/` as well. `cmd/seed-moq`, the dev seeder, announces nothing under
+`/.hls/`, so the egress does not serve it.
 
 ## Configuration
 
@@ -143,17 +142,13 @@ All configuration is via environment variables:
 | Variable | Default | Description |
 |---|---|---|
 | `HLS_ADDR` | `:8080` | HTTP listen address. |
-| `HLS_ANNOUNCE_PREFIX` | `/.hls/` | Announce prefix to accept for dynamic multi-track egress. Publishers announce beneath this prefix (e.g. `/.hls/live/cam1`); egress strips it to read the broadcast catalog at `/live/cam1`. Unset or empty disables announce listening and uses `RELAY_TRACK_PATH`. |
 | `RELAY_URL` | `https://localhost:4433` | MoQ relay URL to subscribe to. Use `moqt://…` with `RELAY_CERT_FILE`. |
-| `RELAY_TRACK_PATH` | `/hls/live` | MoQ broadcast path whose catalog to read when announce mode is disabled. |
-| `RELAY_TRACK_NAME` | `video` | Media track name in the catalog to relay when announce mode is disabled. |
 | `LEDGER_URI` | `file:ledger` | qumo-ledger store URI: `s3://bucket/prefix?region=...` (Amazon S3, Cloudflare R2, MinIO), `file:///path`, `postgres://...`, or `mem:`. |
-| `LEDGER_TRACK` | `live/cam1/video` | Ledger track path to write groups into when announce mode is disabled. In announce mode, tracks are written to `<broadcast>/<track>`. |
 | `HLS_WINDOW` | `12` | Segments kept in the manifest — the live window, and how far back a viewer can seek. `0` lists the whole track, making it a recording rather than a live stream. |
-| `HLS_LIVE_TIMEOUT_S` | `10` | Seconds of silence after which the publisher is treated as gone; the feed reconnects and manifests answer `503`. |
+| `HLS_LIVE_TIMEOUT_S` | `10` | Seconds of silence after which the publisher is treated as gone; the feed resubscribes and manifests answer `503`. |
 | `RELAY_CA_FILE` | _unset_ | PEM cert to trust as the relay's root, overriding the system roots. Unset means verify against the system root store. |
 | `RELAY_TLS_INSECURE` | `false` | Skip relay TLS verification entirely. Dominates `RELAY_CA_FILE` when both are set. |
-| `RELAY_SIGNING_KEY` | _unset_ | A signing key file (`qumo auth keygen`) the relay's key set trusts. The egress signs a fresh credential on every connect, granting `subscribe` on `RELAY_TRACK_PATH` alone, in place of any `?jwt=` in `RELAY_URL`, and renews it on the session before it expires. Not with `RELAY_CERT_FILE`. |
+| `RELAY_SIGNING_KEY` | _unset_ | A signing key file (`qumo auth keygen`) the relay's key set trusts. The egress signs a fresh `subscribe`-only credential on every connect, in place of any `?jwt=` in `RELAY_URL`, and renews it on the session before it expires. The key must cover the whole namespace (no `-prefix`). Not with `RELAY_CERT_FILE`. |
 | `RELAY_CERT_FILE`, `RELAY_KEY_FILE` | _unset_ | A peer certificate and key (PEM) for the egress, from the private CA the relay trusts as `CA_FILE`, with the peering name. It must be the egress's own, not the relay's. The relay serves the egress as a relay peer: no credential, no expiry, nothing checked. Not with `RELAY_SIGNING_KEY` or `?jwt=`. Set both or neither; they need a `moqt://` `RELAY_URL`. |
 | `CORS_ALLOWED_ORIGINS` | _unset_ | Comma-separated origins allowed to fetch manifests and segments, or `*` for any. Unset disables CORS. Required when the player is served from another origin (e.g. `http://localhost:5173` for the playground). |
 

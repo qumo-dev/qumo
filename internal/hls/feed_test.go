@@ -156,15 +156,6 @@ func Test_wallclockAt(t *testing.T) {
 	}
 }
 
-// findTrack selects a track by name from the catalog.
-func Test_findTrack(t *testing.T) {
-	c := msf.Catalog{Tracks: []msf.Track{{Name: "video"}, {Name: "audio"}}}
-
-	require.NotNil(t, findTrack(c, "video"))
-	assert.Equal(t, "video", findTrack(c, "video").Name)
-	assert.Nil(t, findTrack(c, "missing"))
-}
-
 // testMediaInfo is a media track the real VP9 packager can describe, so the
 // orchestration tests exercise packaging rather than a stub. VP9 carries its
 // config in the codec string, so no fMP4 init (Description) is needed.

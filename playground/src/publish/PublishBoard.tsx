@@ -63,7 +63,7 @@ const SOURCES: { id: MediaSourceType; label: string; icon: Component<{ class?: s
 ];
 
 export function PublishBoard(
-	props: { mux: TrackMux; path: Accessor<string>; recorder?: Recorder },
+	props: { mux: TrackMux; path: Accessor<string>; hls?: boolean; recorder?: Recorder },
 ) {
 	const mux = props.mux;
 
@@ -143,6 +143,7 @@ export function PublishBoard(
 		try {
 			const picture = await publisher.start(stream, {
 				path: props.path(),
+				hls: props.hls,
 				framerate: framerate(),
 				bitrate: bitrate(),
 			});

@@ -131,14 +131,12 @@ func (b *broadcastEntry) isLive(now time.Time, timeout time.Duration) bool {
 type streamMux struct {
 	mu          sync.RWMutex
 	broadcasts  map[string]*broadcastEntry
-	fallback    http.Handler
 	liveTimeout time.Duration
 }
 
-func newStreamMux(liveTimeout time.Duration, fallback http.Handler) *streamMux {
+func newStreamMux(liveTimeout time.Duration) *streamMux {
 	return &streamMux{
 		broadcasts:  make(map[string]*broadcastEntry),
-		fallback:    fallback,
 		liveTimeout: liveTimeout,
 	}
 }
@@ -163,19 +161,6 @@ func (m *streamMux) UnregisterBroadcast(b *broadcastEntry) {
 	if m.broadcasts[b.path] == b {
 		delete(m.broadcasts, b.path)
 	}
-}
-
-// setFallback mounts h for requests no announced broadcast claims.
-func (m *streamMux) setFallback(h http.Handler) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.fallback = h
-}
-
-func (m *streamMux) getFallback() http.Handler {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	return m.fallback
 }
 
 func (m *streamMux) getBroadcast(p string) (*broadcastEntry, bool) {
@@ -242,12 +227,6 @@ func (m *streamMux) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
-	}
-
-	// 5. Configured fallback handler (static mode).
-	if fallback := m.getFallback(); fallback != nil {
-		fallback.ServeHTTP(w, r)
-		return
 	}
 
 	// When exactly one broadcast is active, root requests alias to it. A

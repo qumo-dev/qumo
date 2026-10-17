@@ -134,7 +134,7 @@ func Test_renderMasterPlaylist(t *testing.T) {
 }
 
 func Test_streamMux_Routing(t *testing.T) {
-	mux := newStreamMux(10*time.Second, nil)
+	mux := newStreamMux(10 * time.Second)
 	b := mux.RegisterBroadcast("/live/cam1")
 
 	liveVideo := &liveness{}
@@ -224,7 +224,7 @@ func Test_streamMux_Routing(t *testing.T) {
 // announcement of the same broadcast mounted since.
 func Test_streamMux_UnregisterBroadcast(t *testing.T) {
 	t.Run("own entry is removed", func(t *testing.T) {
-		mux := newStreamMux(10*time.Second, nil)
+		mux := newStreamMux(10 * time.Second)
 		b := mux.RegisterBroadcast("/live/cam1")
 		mux.UnregisterBroadcast(b)
 		_, ok := mux.getBroadcast("/live/cam1")
@@ -232,7 +232,7 @@ func Test_streamMux_UnregisterBroadcast(t *testing.T) {
 	})
 
 	t.Run("successor's entry survives", func(t *testing.T) {
-		mux := newStreamMux(10*time.Second, nil)
+		mux := newStreamMux(10 * time.Second)
 		older := mux.RegisterBroadcast("/live/cam1")
 		newer := mux.RegisterBroadcast("/live/cam1")
 		mux.UnregisterBroadcast(older)

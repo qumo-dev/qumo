@@ -1,4 +1,4 @@
-import type { BroadcastPath, TrackMux, TrackWriter } from "@qumo/moq";
+import { type BroadcastPath, NotFound, type TrackMux, type TrackWriter } from "@qumo/moq";
 import { Broadcast, type Track } from "@qumo/moq/msf";
 import { background, withCancel } from "@okdaichi/golikejs/context";
 import { createMediaLogger, MediaTags } from "@okdaichi/media-log";
@@ -43,7 +43,19 @@ export interface PublisherInit {
 export interface PublishSettings extends VideoWanted {
 	/** The broadcast's path on the relay. */
 	path: string;
+	/**
+	 * Also announce the path beneath {@link HLS_OPT_IN_PREFIX}, asking the HLS
+	 * egress (`qumo hls`) to serve the broadcast.
+	 */
+	hls?: boolean;
 }
+
+/**
+ * Where a publisher opts into the HLS egress: announcing `/.hls/hls/x` asks it
+ * to serve the broadcast `/hls/x`. The announcement carries no tracks; the
+ * egress reads the media from the broadcast itself.
+ */
+const HLS_OPT_IN_PREFIX = "/.hls";
 
 /** The size of the picture being published, in pixels. */
 export interface Picture {
@@ -284,6 +296,19 @@ export class Publisher {
 					this.onerror?.(err);
 				});
 			announced = true;
+			if (settings.hls === true) {
+				const optIn = `${HLS_OPT_IN_PREFIX}${settings.path}`;
+				log.info("publish: opting into the HLS egress", { path: optIn });
+				// reason: built from the user's path, as above.
+				this.#init.mux.publish(context.done(), optIn as BroadcastPath, {
+					serveTrack: NotFound,
+				})
+					.catch((err: unknown) => {
+						if (run.stopped) return;
+						// The broadcast itself is up: only the HLS view is lost.
+						log.error("publish: the HLS opt-in was not announced", { err });
+					});
+			}
 
 			return { width: video.config.width, height: video.config.height };
 		} catch (err) {

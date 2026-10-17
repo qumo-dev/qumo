@@ -173,6 +173,7 @@ export function ScenarioView(props: {
 					<PublishBoard
 						mux={mux}
 						path={props.path}
+						hls={isHls}
 						recorder={recorder}
 					/>
 				</Show>

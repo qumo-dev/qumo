@@ -111,8 +111,6 @@ func TestFeedConfig_Validate(t *testing.T) {
 	require.NoError(t, err)
 	whole, err := token.GenerateKey("")
 	require.NoError(t, err)
-	exact, err := token.GenerateKey("hls/live")
-	require.NoError(t, err)
 
 	tests := map[string]struct {
 		cfg     feedConfig
@@ -146,27 +144,14 @@ func TestFeedConfig_Validate(t *testing.T) {
 			cfg:     feedConfig{relayURL: "moqt://relay:4433", certFile: peerCert, keyFile: peerKey, signingKey: &key},
 			wantErr: "set one",
 		},
-		"a signing key that covers the path": {
-			cfg: feedConfig{relayURL: "https://relay:4433", trackPath: "/hls/live", signingKey: &key},
+		// The egress subscribes beneath announcePrefix and at the stripped
+		// broadcast path, which only a whole-namespace key covers.
+		"a signing key confined to a prefix": {
+			cfg:     feedConfig{relayURL: "https://relay:4433", signingKey: &key},
+			wantErr: "whole namespace",
 		},
-		"a signing key confined elsewhere": {
-			cfg:     feedConfig{relayURL: "https://relay:4433", trackPath: "/room/1", signingKey: &key},
-			wantErr: "RELAY_TRACK_PATH",
-		},
-		// The grant's root is the path's directory: a key confined to the
-		// path itself can't grant it.
-		// Announce mode subscribes beneath HLS_ANNOUNCE_PREFIX and at the
-		// stripped broadcast path, which only a whole-namespace key covers.
-		"announce mode with a confined signing key": {
-			cfg:     feedConfig{relayURL: "https://relay:4433", announcePrefix: "/.hls/", signingKey: &key},
-			wantErr: "HLS_ANNOUNCE_PREFIX",
-		},
-		"announce mode with a whole-namespace signing key": {
-			cfg: feedConfig{relayURL: "https://relay:4433", announcePrefix: "/.hls/", signingKey: &whole},
-		},
-		"a signing key confined to the path itself": {
-			cfg:     feedConfig{relayURL: "https://relay:4433", trackPath: "/hls/live", signingKey: &exact},
-			wantErr: "must lie beneath the key's prefix",
+		"a whole-namespace signing key": {
+			cfg: feedConfig{relayURL: "https://relay:4433", signingKey: &whole},
 		},
 	}
 	for name, tt := range tests {
@@ -209,11 +194,11 @@ func writeLeaf(tb testing.TB, ca *devcert.CA, leaf devcert.Leaf) (certFile, keyF
 }
 
 func TestFeedConfig_Target(t *testing.T) {
-	key, err := token.GenerateKey("hls")
+	whole, err := token.GenerateKey("")
 	require.NoError(t, err)
 
 	t.Run("without a signing key the URL is dialed as it is", func(t *testing.T) {
-		cfg := feedConfig{relayURL: "https://relay:4433/?jwt=h.p.s", trackPath: "/hls/live"}
+		cfg := feedConfig{relayURL: "https://relay:4433/?jwt=h.p.s"}
 
 		got, _, err := cfg.target()
 
@@ -221,8 +206,8 @@ func TestFeedConfig_Target(t *testing.T) {
 		assert.Equal(t, cfg.relayURL, got)
 	})
 
-	t.Run("a signing key replaces the credential with one for the path alone", func(t *testing.T) {
-		cfg := feedConfig{relayURL: "https://relay:4433/?jwt=h.p.s&x=1", trackPath: "/hls/live", signingKey: &key}
+	t.Run("a signing key replaces the credential with a subscribe-only one", func(t *testing.T) {
+		cfg := feedConfig{relayURL: "https://relay:4433/?jwt=h.p.s&x=1", signingKey: &whole}
 
 		got, _, err := cfg.target()
 
@@ -230,18 +215,17 @@ func TestFeedConfig_Target(t *testing.T) {
 		u, err := url.Parse(got)
 		require.NoError(t, err)
 		assert.Equal(t, "1", u.Query().Get("x"), "the rest of the query is kept")
-		claims, err := token.Verify(u.Query().Get("jwt"), map[string]token.Key{key.ID: key.Public()}, time.Now())
+		claims, err := token.Verify(u.Query().Get("jwt"), map[string]token.Key{whole.ID: whole.Public()}, time.Now())
 		require.NoError(t, err)
 		g := claims.Grant
-		assert.Equal(t, token.Grant{Root: "/hls/", Subscribe: []string{"/live"}}, g)
-		assert.True(t, g.Allows(token.ActionSubscribe, "hls/live"))
-		assert.False(t, g.Allows(token.ActionSubscribe, "hls/other"), "no other broadcast")
-		assert.False(t, g.Allows(token.ActionSubscribe, "hls/live/deeper"), "nothing beneath it")
-		assert.False(t, g.Allows(token.ActionPublish, "hls/live"), "it publishes nothing")
+		assert.Equal(t, token.Grant{Root: "/", Subscribe: []string{"/"}}, g)
+		assert.True(t, g.Allows(token.ActionSubscribe, ".hls/live/cam1"), "announcements")
+		assert.True(t, g.Allows(token.ActionSubscribe, "live/cam1"), "the broadcasts they name")
+		assert.False(t, g.Allows(token.ActionPublish, "live/cam1"), "it publishes nothing")
 	})
 
 	t.Run("each connect signs a new one", func(t *testing.T) {
-		cfg := feedConfig{relayURL: "https://relay:4433", trackPath: "/hls/live", signingKey: &key}
+		cfg := feedConfig{relayURL: "https://relay:4433", signingKey: &whole}
 
 		first, _, err := cfg.target()
 		require.NoError(t, err)
@@ -250,20 +234,4 @@ func TestFeedConfig_Target(t *testing.T) {
 
 		assert.NotEqual(t, first, second)
 	})
-}
-
-func TestSubscribeGrant(t *testing.T) {
-	tests := map[string]struct {
-		path string
-		want token.Grant
-	}{
-		"beneath a directory": {path: "/acme/room/42/7", want: token.Grant{Root: "/acme/room/42/", Subscribe: []string{"/7"}}},
-		"one segment":         {path: "/live", want: token.Grant{Root: "/", Subscribe: []string{"/live"}}},
-		"no leading slash":    {path: "hls/live", want: token.Grant{Root: "/hls/", Subscribe: []string{"/live"}}},
-	}
-	for name, tt := range tests {
-		t.Run(name, func(t *testing.T) {
-			assert.Equal(t, tt.want, subscribeGrant(tt.path))
-		})
-	}
 }

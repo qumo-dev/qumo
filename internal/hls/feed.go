@@ -31,13 +31,14 @@ import (
 	"github.com/qumo-dev/qumo/token"
 )
 
+// announcePrefix is where publishers opt into the egress: announcing
+// /.hls/live/cam1 asks it to serve the broadcast /live/cam1.
+const announcePrefix = "/.hls/"
+
 // feedConfig carries the relay subscription parameters, resolved from
 // environment by [Run].
 type feedConfig struct {
-	relayURL       string // relay URL, e.g. "https://host:4433"
-	announcePrefix string // prefix to listen on for announcements, e.g. "/.hls/"
-	trackPath      string // MoQ broadcast path (fallback catalog and media track live under it)
-	trackName      string // MoQ track name to relay, selected from the catalog
+	relayURL string // relay URL, e.g. "https://host:4433"
 	// caFile, when set, is a PEM cert trusted as the relay's root, overriding
 	// the system roots. Empty means verify against the system root store.
 	caFile string
@@ -53,7 +54,7 @@ type feedConfig struct {
 	certFile, keyFile string
 	// signingKey, when set, signs the egress's credential: a fresh one on
 	// every connect, in place of any ?jwt= in relayURL, granting subscribe
-	// on trackPath alone, and a fresh one on the session before its grant
+	// on the whole namespace, and a fresh one on the session before its grant
 	// lapses. A token lives an hour at most, and its grant with it, so one
 	// fixed in relayURL lets the egress subscribe for that hour alone.
 	signingKey *token.SigningKey
@@ -88,40 +89,14 @@ type mediaInfo struct {
 	bitrate int64
 }
 
-// connectRetryInterval is how long connectWithRetry waits between attempts to
-// reach the relay and find the publisher's catalog.
+// connectRetryInterval is how long the egress waits between attempts to reach
+// the relay, and before resubscribing a track whose feed ended.
 const connectRetryInterval = 2 * time.Second
-
-// connectWithRetry calls connect repeatedly until it succeeds or ctx is
-// cancelled. The egress and the publisher start as independent processes with
-// no ordering guarantee between them — the publisher's catalog track may not
-// exist yet, or the relay may not be reachable yet — so neither is treated as
-// fatal on startup; only ctx cancellation stops retrying.
-func connectWithRetry(ctx context.Context, cfg feedConfig) (*moqt.Session, mediaInfo, error) {
-	for attempt := 1; ; attempt++ {
-		session, media, err := connect(ctx, cfg)
-		if err == nil {
-			return session, media, nil
-		}
-		if ctx.Err() != nil {
-			return nil, mediaInfo{}, ctx.Err()
-		}
-
-		slog.Warn("hls: waiting for publisher, retrying",
-			"attempt", attempt, "path", cfg.trackPath, "err", err)
-
-		select {
-		case <-ctx.Done():
-			return nil, mediaInfo{}, ctx.Err()
-		case <-time.After(connectRetryInterval):
-		}
-	}
-}
 
 // validate checks the settings that would otherwise fail only at the first
 // dial, or silently: a client certificate the relay would never see or take
 // for a peer's, a credential beside a certificate that makes the relay
-// ignore it, a signing key that can't grant the egress its path.
+// ignore it, a signing key that can't grant the egress the namespace.
 func (c feedConfig) validate() error {
 	u, err := url.Parse(c.relayURL)
 	if err != nil {
@@ -136,21 +111,17 @@ func (c feedConfig) validate() error {
 		if c.signingKey == nil {
 			return nil
 		}
-		// Announce mode subscribes beneath announcePrefix and at the
-		// broadcast it names with that prefix stripped: no root short of
-		// "/" holds both.
-		if p := c.signingKey.Prefix; c.announcePrefix != "" && p != "" && p != "/" {
-			return fmt.Errorf("RELAY_SIGNING_KEY is confined to %q, but HLS_ANNOUNCE_PREFIX %q needs a key for the whole namespace (prefix \"/\"): use one, or set HLS_ANNOUNCE_PREFIX= to serve RELAY_TRACK_PATH",
-				c.signingKey.Prefix, c.announcePrefix)
+		// The egress subscribes beneath announcePrefix and at the broadcast
+		// each announcement names with that prefix stripped: no root short
+		// of "/" holds both.
+		if p := c.signingKey.Prefix; p != "" && p != "/" {
+			return fmt.Errorf("RELAY_SIGNING_KEY is confined to %q, but the egress reads announcements under %q and the broadcasts they name: use a key for the whole namespace (prefix \"/\")",
+				p, announcePrefix)
 		}
-		// Signing one now refuses a path outside the key's prefix at
-		// startup rather than at the first dial.
+		// Signing one now reports an unusable key at startup rather than
+		// at the first dial.
 		if _, err := token.Sign(*c.signingKey, c.grant(), token.MaxLifetime); err != nil {
-			if errors.Is(err, token.ErrForbidden) {
-				return fmt.Errorf("RELAY_SIGNING_KEY can't grant RELAY_TRACK_PATH %q: it must lie beneath the key's prefix %q, since a root's own path is not a broadcast: %w",
-					c.trackPath, c.signingKey.Prefix, err)
-			}
-			return fmt.Errorf("RELAY_SIGNING_KEY can't grant RELAY_TRACK_PATH: %w", err)
+			return fmt.Errorf("RELAY_SIGNING_KEY: %w", err)
 		}
 		return nil
 	}
@@ -191,32 +162,12 @@ func checkPeerCertificate(certFile, keyFile string) error {
 	return nil
 }
 
-// grant returns the token grant needed for this feed's session: subscribing to
-// every broadcast under the key's prefix in announce-driven mode, or to trackPath
-// alone in direct mode.
+// grant returns the token grant the egress's session needs: subscribing
+// anywhere. The announcements under announcePrefix and the broadcasts they name
+// both have to lie within the root, so it is the whole namespace; validate
+// refuses a key confined to less.
 func (c feedConfig) grant() token.Grant {
-	if c.announcePrefix != "" {
-		// The announcements under announcePrefix and the broadcasts they name
-		// both have to lie within the root, so it is the whole namespace;
-		// validate refuses a key confined to less.
-		return token.Grant{Root: "/", Subscribe: []string{"/"}}
-	}
-	return subscribeGrant(c.trackPath)
-}
-
-// subscribeGrant grants what the egress does at path: subscribing to every
-// track of that broadcast, and of no other.
-// The grant's root is the directory path lies in, "/" for a path of one
-// segment.
-func subscribeGrant(path string) token.Grant {
-	dir, base := "", strings.Trim(path, "/")
-	if i := strings.LastIndex(base, "/"); i >= 0 {
-		dir, base = base[:i], base[i+1:]
-	}
-	// A path that isn't one, which a token would refuse, roots nowhere: the
-	// grant is refused when signed.
-	root, _ := token.Directory(dir)
-	return token.Grant{Root: root, Subscribe: []string{"/" + base}}
+	return token.Grant{Root: "/", Subscribe: []string{"/"}}
 }
 
 // target returns the URL to dial, with a freshly signed credential when the
@@ -297,50 +248,6 @@ func dialRelayWithRetry(ctx context.Context, cfg feedConfig) (*moqt.Session, err
 	}
 }
 
-// connect dials the relay, reads the MSF catalog, and returns the selected
-// media track's identity, ledger schema, and fMP4 init. The session stays open
-// for [feedMedia] to subscribe on.
-func connect(ctx context.Context, cfg feedConfig) (*moqt.Session, mediaInfo, error) {
-	session, err := dialRelay(ctx, cfg)
-	if err != nil {
-		return nil, mediaInfo{}, err
-	}
-
-	catalog, err := fetchCatalog(ctx, session, cfg.trackPath)
-	if err != nil {
-		err = sessionRefusal(session, err)
-		// not actionable: the close outcome is irrelevant once the catalog read failed.
-		_ = session.CloseWithError(moqt.NoError, "catalog fetch failed")
-		return nil, mediaInfo{}, err
-	}
-
-	track := findTrack(catalog, cfg.trackName)
-	if track == nil {
-		// not actionable: the close outcome is irrelevant once the track was not found.
-		_ = session.CloseWithError(moqt.NoError, "track not found")
-		return nil, mediaInfo{}, fmt.Errorf("hls: track %q not in catalog", cfg.trackName)
-	}
-
-	// Everything needed to describe the track is stated in the catalog, so the
-	// packager — and with it the init segment — is built here, before a single
-	// frame arrives. A catalog that cannot describe its track is a publisher
-	// that is not ready yet rather than a usable feed, and failing the connect
-	// lets connectWithRetry wait with the same backoff it uses for a missing
-	// broadcast.
-	packager, err := packagerForTrack(catalog, track)
-	if err != nil {
-		// not actionable: the close outcome is irrelevant once the catalog could not describe the track.
-		_ = session.CloseWithError(moqt.NoError, "catalog cannot describe the track")
-		return nil, mediaInfo{}, err
-	}
-
-	slog.Info("hls: catalog loaded",
-		"track", track.Name, "packaging", track.Packaging,
-		"codec", track.Codec, "initBytes", len(packager.Init()))
-
-	return session, newMediaInfo(cfg.trackPath, track, packager), nil
-}
-
 // newMediaInfo describes catalog track t of the broadcast at path, packaged by
 // packager.
 func newMediaInfo(path string, t *msf.Track, packager *cmaf.Packager) mediaInfo {
@@ -396,7 +303,9 @@ func fetchCatalogWithRetry(ctx context.Context, session *moqt.Session, path stri
 }
 
 // discoverMediaTracks finds all packageable media tracks described in the MSF
-// catalog.
+// catalog. Everything needed to describe a track is stated in the catalog, so
+// its packager — and with it the init segment — is built here, before a single
+// frame arrives.
 func discoverMediaTracks(c msf.Catalog, broadcastPath string) []mediaInfo {
 	var infos []mediaInfo
 	for i := range c.Tracks {
@@ -416,7 +325,7 @@ func discoverMediaTracks(c msf.Catalog, broadcastPath string) []mediaInfo {
 // them into ledger tracks until the announcement ends.
 func handleAnnouncement(ctx context.Context, session *moqt.Session, ann *moqt.Announcement, store store.Store, mux *streamMux, window uint64, cfg feedConfig) {
 	annPath := string(ann.BroadcastPath())
-	realBroadcast := broadcastPathFromAnnounce(annPath, cfg.announcePrefix)
+	realBroadcast := broadcastPathFromAnnounce(annPath, announcePrefix)
 	slog.Info("hls: received announcement", "announce", annPath, "broadcast", realBroadcast)
 
 	annCtx, cancelAnn := context.WithCancel(ctx)
@@ -529,8 +438,11 @@ const epochCloseTimeout = 10 * time.Second
 // feedAnnouncedTrack feeds one track of an announced broadcast for as long as
 // the announcement (ctx) lasts. A feed that ends while the broadcast is still
 // announced — a silent publisher, a refused subscribe — closes its epoch and
-// subscribes again, as runFeed does in static mode, rather than leaving the
-// track listed in the master playlist with nothing behind it. On return the
+// subscribes again, rather than leaving the track listed in the master
+// playlist with nothing behind it. Closing the epoch as soon as the feed stops
+// empties a manifest scoped to the current lifetime, and gives the next feed
+// its own sequence space: a publisher numbers groups from zero, and appending
+// those to a filled epoch collides with IDs already committed. On return the
 // last epoch is closed, so the manifest stops listing a finished session.
 func feedAnnouncedTrack(ctx context.Context, session *moqt.Session, b *broadcastEntry, m mediaInfo, w *ledger.Writer, live *liveness, cfg feedConfig) {
 	defer func() {
@@ -562,7 +474,7 @@ func feedAnnouncedTrack(ctx context.Context, session *moqt.Session, b *broadcast
 	}
 }
 
-// runAnnounceEgress dials the relay and listens for announcements with
+// runAnnounceEgress dials the relay and listens for announcements beneath
 // announcePrefix. Each announced broadcast is dynamically packaged and served
 // over HTTP until the announcement closes or the session ends. It returns once
 // ctx is done and every announcement it started has finished.
@@ -575,10 +487,10 @@ func runAnnounceEgress(ctx context.Context, store store.Store, mux *streamMux, w
 			return
 		}
 
-		slog.Info("hls: connected to relay, accepting announcements", "prefix", cfg.announcePrefix)
-		announced, err := session.AcceptAnnounce(cfg.announcePrefix)
+		slog.Info("hls: connected to relay, accepting announcements", "prefix", announcePrefix)
+		announced, err := session.AcceptAnnounce(announcePrefix)
 		if err != nil {
-			slog.Warn("hls: accept announce failed", "err", err)
+			slog.Warn("hls: accept announce failed", "err", sessionRefusal(session, err))
 			// not actionable: the session is being abandoned either way.
 			_ = session.CloseWithError(moqt.NoError, "accept announce failed")
 		} else {
@@ -675,16 +587,6 @@ func fetchCatalog(ctx context.Context, session *moqt.Session, path string) (msf.
 	return catalog, nil
 }
 
-// findTrack returns the named track in the catalog, or nil.
-func findTrack(c msf.Catalog, name string) *msf.Track {
-	for i := range c.Tracks {
-		if c.Tracks[i].Name == name {
-			return &c.Tracks[i]
-		}
-	}
-	return nil
-}
-
 // trackSchema projects an MSF catalog track onto a ledger [ledger.TrackSchema].
 //
 // The payloads this egress stores are the fragments it packages, not the frames
@@ -729,61 +631,6 @@ func initFromTrack(c msf.Catalog, t *msf.Track) []byte {
 		return nil
 	}
 	return b
-}
-
-// runFeed owns the MoQ session across the lifetime of the process: it feeds
-// media through the already-connected session, and on any failure (the
-// publisher stops, the connection drops, a subscribe is rejected) reconnects
-// via connectWithRetry rather than giving up. This is what lets a publisher
-// restart (stop/start in the browser, a crash, a network blip) recover
-// without restarting the egress. It returns when ctx is cancelled, and cancels
-// ctx itself if the ledger cannot close a finished epoch — a feed that cannot
-// reopen has no recovery path.
-//
-// session/media is the already-connected catalog handoff from [Run]'s initial
-// connectWithRetry call, so the very first iteration feeds immediately without
-// reconnecting; every iteration after a feed failure reconnects first.
-func runFeed(ctx context.Context, cancel context.CancelFunc, session *moqt.Session, media mediaInfo, w *ledger.Writer, live *liveness, cfg feedConfig) {
-	for {
-		if err := feedMedia(ctx, sessionSubscriber{session}, media, w, live, cfg); err != nil && ctx.Err() == nil {
-			slog.Warn("hls: feed ended", "err", err)
-		}
-		// not actionable: the session already failed or ctx is ending; either
-		// way nothing depends on how the close resolves.
-		_ = session.CloseWithError(moqt.NoError, "hls feed reconnecting")
-
-		if ctx.Err() != nil {
-			return
-		}
-
-		// The lifetime ends here, not when the next one begins. Closing the
-		// epoch as soon as the feed stops is what makes that visible: the groups
-		// just written stop being the newest epoch, so a manifest scoped to the
-		// current lifetime empties immediately instead of going on listing a
-		// session that has finished until someone else starts one. It also gives
-		// whoever connects next its own sequence space — a publisher numbers
-		// groups from zero, and appending those to a filled epoch collides with
-		// IDs already committed, which a sealed group will not accept.
-		if err := w.NewEpoch(ctx); err != nil {
-			// A ledger that cannot close an epoch cannot accept a restarted
-			// publisher's groups either, so the feed has no recovery path.
-			// Stop the egress — cancelling the root context shuts the HTTP
-			// server down too — and let a supervisor restart it, rather than
-			// staying up serving stale segments.
-			slog.Error("hls: cannot close the finished publisher's epoch; stopping the egress", "err", err)
-			cancel()
-			return
-		}
-		slog.Info("hls: publisher finished, epoch closed")
-
-		var err error
-		session, media, err = connectWithRetry(ctx, cfg)
-		if err != nil {
-			// ctx was cancelled while waiting to reconnect.
-			return
-		}
-		slog.Info("hls: publisher connected, feeding the new epoch")
-	}
 }
 
 // The feed talks to two libraries it cannot stand up in a test — a MoQ session
