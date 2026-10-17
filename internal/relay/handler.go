@@ -549,7 +549,8 @@ type trackDistributor struct {
 	// default build — see stage_latency.go). Shared with ring for ingress stamps.
 	stages *stageCollector
 
-	done chan struct{} // closed when ingest returns
+	drops *dropDistributor
+	done  chan struct{} // closed when ingest returns
 }
 
 func newTrackDistributor(manager *trackManager, trackID string, sampler *statsSampler) *trackDistributor {
@@ -557,6 +558,7 @@ func newTrackDistributor(manager *trackManager, trackID string, sampler *statsSa
 	d := &trackDistributor{
 		trackID:           trackID,
 		ring:              newGroupRing(manager.cacheSize, manager.pool),
+		drops:             newDropDistributor(DefaultDropRingSize),
 		manager:           manager,
 		ingressCounter:    metricRelayIngressBytesTotal.WithLabelValues(trackID),
 		egressCounter:     metricRelayEgressBytesTotal.WithLabelValues(trackID),
@@ -594,14 +596,6 @@ func (d *trackDistributor) sampleCacheDepth() {
 	metricBufferDepthGroups.WithLabelValues(d.trackID).Set(float64(depth))
 }
 
-// recordDrop allocates a drop slot in the distributor's group ring and notifies
-// all egress goroutines via broadcast(), distributing drops in the same way as
-// groups and frames.
-func (d *trackDistributor) recordDrop(drop moqt.SubscribeDrop) {
-	d.ring.reserveDrop(drop)
-	d.broadcast()
-}
-
 func (d *trackDistributor) egress(tw *moqt.TrackWriter) {
 	twCtx := tw.Context()
 
@@ -611,6 +605,20 @@ func (d *trackDistributor) egress(tw *moqt.TrackWriter) {
 	track := string(tw.TrackName)
 	metricTrackSubscriptionsActive.WithLabelValues(path, track).Inc()
 	defer metricTrackSubscriptionsActive.WithLabelValues(path, track).Dec()
+
+	firstOpened := make(chan struct{})
+	var once sync.Once
+	markFirstOpened := func() {
+		once.Do(func() { close(firstOpened) })
+	}
+
+	var dropWg sync.WaitGroup
+	dropWg.Add(1)
+	go func() {
+		defer dropWg.Done()
+		d.egressDrops(tw, twCtx, firstOpened)
+	}()
+	defer dropWg.Wait()
 
 	// Track the last seen notify sequence so we can detect new data without
 	// per-subscriber channels or RWMutex contention. Each call to broadcast()
@@ -671,18 +679,10 @@ func (d *trackDistributor) egress(tw *moqt.TrackWriter) {
 					skipped = false
 				}
 
-				if cache.isDrop {
-					_ = tw.DropGroups(cache.drop) // not actionable: subscriber session errors handled on delivery
-					d.ring.decrRef(cache)
-					lastSent = cache.drop.EndGroup
-					hasLastSent = true
-					woken = false
-					continue
-				}
-
 				if d.deliverGroup(tw, twCtx, openTO, woken, cache) {
 					return
 				}
+				markFirstOpened()
 				lastSent = cache.seq
 				hasLastSent = true
 				woken = false // a subsequent direct iteration means we are behind
@@ -719,6 +719,56 @@ func (d *trackDistributor) egress(tw *moqt.TrackWriter) {
 			lastState = d.notify.listen()
 			woken = true // reached the next group via a wait (caught up)
 		case <-d.done:
+			return
+		case <-twCtx.Done():
+			return
+		}
+	}
+}
+
+// egressDrops delivers SUBSCRIBE_DROP notifications from the dropDistributor to
+// the subscriber over the control stream.
+//
+// Delivery waits for firstOpened so that tw.DropGroups does not precede the
+// subscriber's initial group: gomoqt's receiveSubscribeStream treats drops
+// called before responseStarted as implicit leading drops folded into
+// SUBSCRIBE_OK's start group, skipping explicit SUBSCRIBE_DROP frames.
+func (d *trackDistributor) egressDrops(tw *moqt.TrackWriter, twCtx context.Context, firstOpened <-chan struct{}) {
+	select {
+	case <-firstOpened:
+	case <-d.done:
+		return
+	case <-twCtx.Done():
+		return
+	}
+
+	var lastPos uint64
+	lastState := d.drops.notify.listen()
+
+	for {
+		drops, newPos := d.drops.since(lastPos)
+		if newPos > lastPos {
+			lastPos = newPos
+			for _, drop := range drops {
+				_ = tw.DropGroups(drop) // not actionable: subscriber session errors handled on delivery
+			}
+		}
+
+		state := d.drops.notify.listen()
+		if state.seq > lastState.seq {
+			lastState = state
+			continue
+		}
+
+		select {
+		case <-state.ch:
+			lastState = d.drops.notify.listen()
+		case <-d.done:
+			// Ingest ended: deliver any final drop notifications before exiting.
+			drops, _ := d.drops.since(lastPos)
+			for _, drop := range drops {
+				_ = tw.DropGroups(drop) // not actionable: subscriber session errors handled on delivery
+			}
 			return
 		case <-twCtx.Done():
 			return
@@ -853,7 +903,7 @@ func (d *trackDistributor) ingest(ctx context.Context, src *moqt.TrackReader) {
 	go func() {
 		defer dropWg.Done()
 		for drop := range src.Drops(ctx) {
-			d.recordDrop(drop)
+			d.drops.record(drop)
 		}
 	}()
 
