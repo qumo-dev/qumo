@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/quic-go/quic-go"
@@ -20,6 +21,8 @@ import (
 	"github.com/qumo-dev/gomoqt/msf"
 
 	"github.com/okdaichi/qumo-ledger/ledger"
+	"github.com/okdaichi/qumo-ledger/ledger/store"
+	"github.com/okdaichi/qumo-ledger/stream"
 
 	"github.com/qumo-dev/qumo/internal/cmaf"
 	"github.com/qumo-dev/qumo/internal/relay"
@@ -31,9 +34,10 @@ import (
 // feedConfig carries the relay subscription parameters, resolved from
 // environment by [Run].
 type feedConfig struct {
-	relayURL  string // relay URL, e.g. "https://host:4433"
-	trackPath string // MoQ broadcast path (catalog and media track live under it)
-	trackName string // MoQ track name to relay, selected from the catalog
+	relayURL       string // relay URL, e.g. "https://host:4433"
+	announcePrefix string // prefix to listen on for announcements, e.g. "/.hls/"
+	trackPath      string // MoQ broadcast path (fallback catalog and media track live under it)
+	trackName      string // MoQ track name to relay, selected from the catalog
 	// caFile, when set, is a PEM cert trusted as the relay's root, overriding
 	// the system roots. Empty means verify against the system root store.
 	caFile string
@@ -76,6 +80,12 @@ type mediaInfo struct {
 	// from the catalog rather than receiving — so it exists before any media
 	// does, and the feed never waits on a publisher to describe itself twice.
 	packager *cmaf.Packager
+
+	role    string
+	codec   string
+	width   uint16
+	height  uint16
+	bitrate int64
 }
 
 // connectRetryInterval is how long connectWithRetry waits between attempts to
@@ -128,10 +138,8 @@ func (c feedConfig) validate() error {
 		}
 		// Signing one now refuses a path outside the key's prefix at
 		// startup rather than at the first dial.
-		if _, err := token.Sign(*c.signingKey, subscribeGrant(c.trackPath), token.MaxLifetime); err != nil {
+		if _, err := token.Sign(*c.signingKey, c.grant(), token.MaxLifetime); err != nil {
 			if errors.Is(err, token.ErrForbidden) {
-				// The grant's root is the path's directory, which must lie
-				// at or beneath the key's prefix.
 				return fmt.Errorf("RELAY_SIGNING_KEY can't grant RELAY_TRACK_PATH %q: it must lie beneath the key's prefix %q, since a root's own path is not a broadcast: %w",
 					c.trackPath, c.signingKey.Prefix, err)
 			}
@@ -176,6 +184,22 @@ func checkPeerCertificate(certFile, keyFile string) error {
 	return nil
 }
 
+// grant returns the token grant needed for this feed's session: subscribing to
+// every broadcast under the key's prefix in announce-driven mode, or to trackPath
+// alone in direct mode.
+func (c feedConfig) grant() token.Grant {
+	if c.announcePrefix != "" {
+		root := "/"
+		if c.signingKey != nil && c.signingKey.Prefix != "" {
+			if r, err := token.Directory(c.signingKey.Prefix); err == nil {
+				root = r
+			}
+		}
+		return token.Grant{Root: root, Subscribe: []string{"/"}}
+	}
+	return subscribeGrant(c.trackPath)
+}
+
 // subscribeGrant grants what the egress does at path: subscribing to every
 // track of that broadcast, and of no other.
 // The grant's root is the directory path lies in, "/" for a path of one
@@ -197,7 +221,7 @@ func (c feedConfig) target() (string, time.Time, error) {
 	if c.signingKey == nil {
 		return c.relayURL, time.Time{}, nil
 	}
-	credential, lapses, err := relaycred.Sign(*c.signingKey, subscribeGrant(c.trackPath))
+	credential, lapses, err := relaycred.Sign(*c.signingKey, c.grant())
 	if err != nil {
 		return "", time.Time{}, err
 	}
@@ -225,26 +249,57 @@ func relayTLSConfig(caFile string, insecure bool) (*tls.Config, error) {
 	return tc, nil
 }
 
+// dialRelay dials the relay session and registers credential renewal when
+// signingKey is set.
+func dialRelay(ctx context.Context, cfg feedConfig) (*moqt.Session, error) {
+	tc, err := relayTLSConfig(cfg.caFile, cfg.insecure)
+	if err != nil {
+		return nil, fmt.Errorf("hls: relay TLS config: %w", err)
+	}
+	if err := tlsclient.ApplyClientCert(tc, cfg.certFile, cfg.keyFile); err != nil {
+		return nil, fmt.Errorf("hls: relay client certificate: %w", err)
+	}
+	target, lapses, err := cfg.target()
+	if err != nil {
+		return nil, fmt.Errorf("hls: %w", err)
+	}
+	session, err := (&moqt.Dialer{TLSConfig: tc, QUICConfig: cfg.quic}).Dial(ctx, target, moqt.NewTrackMux(0))
+	if err != nil {
+		return nil, fmt.Errorf("hls: dial relay: %w", err)
+	}
+	if cfg.signingKey != nil {
+		go relaycred.Keep(session, *cfg.signingKey, cfg.grant(), lapses)
+	}
+	return session, nil
+}
+
+// dialRelayWithRetry calls dialRelay repeatedly until it succeeds or ctx is
+// cancelled.
+func dialRelayWithRetry(ctx context.Context, cfg feedConfig) (*moqt.Session, error) {
+	for attempt := 1; ; attempt++ {
+		session, err := dialRelay(ctx, cfg)
+		if err == nil {
+			return session, nil
+		}
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		slog.Warn("hls: waiting for relay, retrying", "attempt", attempt, "url", cfg.relayURL, "err", err)
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(connectRetryInterval):
+		}
+	}
+}
+
 // connect dials the relay, reads the MSF catalog, and returns the selected
 // media track's identity, ledger schema, and fMP4 init. The session stays open
 // for [feedMedia] to subscribe on.
 func connect(ctx context.Context, cfg feedConfig) (*moqt.Session, mediaInfo, error) {
-	tc, err := relayTLSConfig(cfg.caFile, cfg.insecure)
+	session, err := dialRelay(ctx, cfg)
 	if err != nil {
-		return nil, mediaInfo{}, fmt.Errorf("hls: relay TLS config: %w", err)
-	}
-	// Loaded on every connect, so a short-lived certificate renewed on disk
-	// is presented at the next reconnect.
-	if err := tlsclient.ApplyClientCert(tc, cfg.certFile, cfg.keyFile); err != nil {
-		return nil, mediaInfo{}, fmt.Errorf("hls: relay client certificate: %w", err)
-	}
-	target, lapses, err := cfg.target()
-	if err != nil {
-		return nil, mediaInfo{}, fmt.Errorf("hls: %w", err)
-	}
-	session, err := (&moqt.Dialer{TLSConfig: tc, QUICConfig: cfg.quic}).Dial(ctx, target, moqt.NewTrackMux(0))
-	if err != nil {
-		return nil, mediaInfo{}, fmt.Errorf("hls: dial relay: %w", err)
+		return nil, mediaInfo{}, err
 	}
 
 	catalog, err := fetchCatalog(ctx, session, cfg.trackPath)
@@ -275,20 +330,267 @@ func connect(ctx context.Context, cfg feedConfig) (*moqt.Session, mediaInfo, err
 		return nil, mediaInfo{}, err
 	}
 
-	if cfg.signingKey != nil {
-		go relaycred.Keep(session, *cfg.signingKey, subscribeGrant(cfg.trackPath), lapses)
-	}
-
 	slog.Info("hls: catalog loaded",
 		"track", track.Name, "packaging", track.Packaging,
 		"codec", track.Codec, "initBytes", len(packager.Init()))
+
+	var w, h uint16
+	if track.Width != nil {
+		w = uint16(*track.Width)
+	}
+	if track.Height != nil {
+		h = uint16(*track.Height)
+	}
+	var br int64
+	if track.Bitrate != nil {
+		br = *track.Bitrate
+	} else if track.AvgBitrate != nil {
+		br = *track.AvgBitrate
+	}
+	role := string(track.Role)
+	if role == "" {
+		role = "video"
+	}
 
 	return session, mediaInfo{
 		path:     moqt.BroadcastPath(cfg.trackPath),
 		name:     moqt.TrackName(cfg.trackName),
 		schema:   trackSchema(track),
 		packager: packager,
+		role:     role,
+		codec:    track.Codec,
+		width:    w,
+		height:   h,
+		bitrate:  br,
 	}, nil
+}
+
+// fetchCatalogWithRetry subscribes to the catalog track with short retries to
+// accommodate any startup race between announcement arrival and the publisher's
+// catalog publication.
+func fetchCatalogWithRetry(ctx context.Context, session *moqt.Session, path string) (msf.Catalog, error) {
+	for attempt := 1; attempt <= 10; attempt++ {
+		cat, err := fetchCatalog(ctx, session, path)
+		if err == nil {
+			return cat, nil
+		}
+		if ctx.Err() != nil {
+			return msf.Catalog{}, ctx.Err()
+		}
+		select {
+		case <-ctx.Done():
+			return msf.Catalog{}, ctx.Err()
+		case <-time.After(200 * time.Millisecond):
+		}
+	}
+	return fetchCatalog(ctx, session, path)
+}
+
+// discoverMediaTracks finds all packageable media tracks described in the MSF
+// catalog.
+func discoverMediaTracks(c msf.Catalog, broadcastPath string) []mediaInfo {
+	var infos []mediaInfo
+	for i := range c.Tracks {
+		t := &c.Tracks[i]
+		packager, err := packagerForTrack(c, t)
+		if err != nil {
+			continue
+		}
+		var w, h uint16
+		if t.Width != nil {
+			w = uint16(*t.Width)
+		}
+		if t.Height != nil {
+			h = uint16(*t.Height)
+		}
+		var br int64
+		if t.Bitrate != nil {
+			br = *t.Bitrate
+		} else if t.AvgBitrate != nil {
+			br = *t.AvgBitrate
+		}
+		role := string(t.Role)
+		if role == "" {
+			role = "video"
+		}
+		infos = append(infos, mediaInfo{
+			path:     moqt.BroadcastPath(broadcastPath),
+			name:     moqt.TrackName(t.Name),
+			schema:   trackSchema(t),
+			packager: packager,
+			role:     role,
+			codec:    t.Codec,
+			width:    w,
+			height:   h,
+			bitrate:  br,
+		})
+	}
+	return infos
+}
+
+// handleAnnouncement processes an announcement for a broadcast: it strips the
+// announcement prefix to derive the real broadcast path, fetches its catalog,
+// discovers all packageable media tracks, registers them with mux, and feeds
+// them into ledger tracks until the announcement ends.
+func handleAnnouncement(ctx context.Context, session *moqt.Session, ann *moqt.Announcement, store store.Store, mux *streamMux, window uint64, cfg feedConfig) {
+	annPath := string(ann.BroadcastPath())
+	realBroadcast := broadcastPathFromAnnounce(annPath, cfg.announcePrefix)
+	slog.Info("hls: received announcement", "announce", annPath, "broadcast", realBroadcast)
+
+	annCtx, cancelAnn := context.WithCancel(ctx)
+	defer cancelAnn()
+
+	go func() {
+		select {
+		case <-ann.Done():
+			cancelAnn()
+		case <-annCtx.Done():
+		}
+	}()
+
+	catalog, err := fetchCatalogWithRetry(annCtx, session, realBroadcast)
+	if err != nil {
+		slog.Warn("hls: catalog fetch failed for announced broadcast", "broadcast", realBroadcast, "err", err)
+		return
+	}
+
+	mediaTracks := discoverMediaTracks(catalog, realBroadcast)
+	if len(mediaTracks) == 0 {
+		slog.Warn("hls: no packageable media tracks found", "broadcast", realBroadcast)
+		return
+	}
+
+	bEntry := mux.RegisterBroadcast(realBroadcast)
+	defer mux.UnregisterBroadcast(realBroadcast)
+
+	type activeTrack struct {
+		m      mediaInfo
+		writer *ledger.Writer
+		live   *liveness
+	}
+	var active []activeTrack
+
+	cleanBroadcast := strings.Trim(realBroadcast, "/")
+	for _, m := range mediaTracks {
+		ledgerTrackPath := ledger.TrackPath(cleanBroadcast + "/" + string(m.name))
+		track, adopted, err := openTrack(annCtx, store, ledgerTrackPath, m.schema)
+		if err != nil {
+			slog.Error("hls: open track error", "path", ledgerTrackPath, "err", err)
+			continue
+		}
+		writer, err := track.Writer(annCtx)
+		if err != nil {
+			slog.Error("hls: open writer error", "path", ledgerTrackPath, "err", err)
+			continue
+		}
+		if adopted {
+			if err := writer.NewEpoch(annCtx); err != nil {
+				slog.Error("hls: new epoch error", "path", ledgerTrackPath, "err", err)
+				continue
+			}
+		}
+
+		live := &liveness{}
+		handler, err := stream.NewHandler(track, stream.Options{
+			InitSegment: stream.InitSegment{Bytes: m.packager.Init()},
+			Window:      int(window),
+			EpochWindow: 1,
+		})
+		if err != nil {
+			slog.Error("hls: build stream handler error", "path", ledgerTrackPath, "err", err)
+			continue
+		}
+
+		trackHandler := withLiveness(handler, live, cfg.liveTimeout)
+		bEntry.AddTrack(trackEntry{
+			info: trackInfo{
+				Name:    string(m.name),
+				Role:    m.role,
+				Codec:   m.codec,
+				Width:   m.width,
+				Height:  m.height,
+				Bitrate: m.bitrate,
+			},
+			handler: trackHandler,
+			live:    live,
+		})
+
+		active = append(active, activeTrack{
+			m:      m,
+			writer: writer,
+			live:   live,
+		})
+	}
+
+	if len(active) == 0 {
+		return
+	}
+
+	var wg sync.WaitGroup
+	for _, at := range active {
+		wg.Add(1)
+		go func(at activeTrack) {
+			defer wg.Done()
+			defer func() {
+				_ = at.writer.NewEpoch(context.Background())
+			}()
+			if err := feedMedia(annCtx, sessionSubscriber{session}, at.m, at.writer, at.live, cfg); err != nil && annCtx.Err() == nil {
+				slog.Warn("hls: track feed ended", "broadcast", realBroadcast, "track", at.m.name, "err", err)
+			}
+		}(at)
+	}
+
+	<-annCtx.Done()
+	wg.Wait()
+	slog.Info("hls: announcement finished", "broadcast", realBroadcast)
+}
+
+// runAnnounceEgress dials the relay and listens for announcements with
+// announcePrefix. Each announced broadcast is dynamically packaged and served
+// over HTTP until the announcement closes or the session ends.
+func runAnnounceEgress(ctx context.Context, cancel context.CancelFunc, store store.Store, mux *streamMux, window uint64, cfg feedConfig) {
+	for {
+		session, err := dialRelayWithRetry(ctx, cfg)
+		if err != nil {
+			return
+		}
+
+		slog.Info("hls: connected to relay, accepting announcements", "prefix", cfg.announcePrefix)
+		announced, err := session.AcceptAnnounce(cfg.announcePrefix)
+		if err != nil {
+			slog.Warn("hls: accept announce failed", "err", err)
+			_ = session.CloseWithError(moqt.NoError, "accept announce failed")
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(connectRetryInterval):
+				continue
+			}
+		}
+
+		sessCtx := session.Context()
+		for {
+			ann, err := announced.ReceiveAnnouncement(sessCtx)
+			if err != nil {
+				if ctx.Err() != nil {
+					return
+				}
+				slog.Warn("hls: announce stream ended", "err", err)
+				break
+			}
+			go handleAnnouncement(sessCtx, session, ann, store, mux, window, cfg)
+		}
+
+		_ = session.CloseWithError(moqt.NoError, "reconnecting")
+		if ctx.Err() != nil {
+			return
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(connectRetryInterval):
+		}
+	}
 }
 
 // packagerForTrack builds the CMAF packager a catalog track describes.

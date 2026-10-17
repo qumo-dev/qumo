@@ -4,13 +4,18 @@ description: Start the HLS/DASH egress server.
 weight: 5
 ---
 
-The HLS/DASH egress: subscribes to a MoQ track's catalog to learn its schema
-and fMP4 init segment, packages each received group of LOC frames into a CMAF
-(fMP4) fragment, writes those fragments into a qumo-ledger track, and serves
-the ledger's HLS and DASH renderings over HTTP. It is a separate process from
-the relay and the publisher — run it alongside a relay that a publisher (the
-playground's HLS scenario, or `cmd/seed-moq`) is publishing to. Packaging
-happens here, at the subscriber: the publisher sends LOC, not CMAF.
+The HLS/DASH egress subscribes to MoQ broadcasts, packages each received group
+of LOC frames into CMAF (fMP4) fragments, writes them into qumo-ledger tracks,
+and serves multi-track HLS and DASH over HTTP. Packaging happens at the subscriber:
+the publisher sends LOC over MoQ, not CMAF.
+
+By default, the egress operates in **announce-driven mode** (`HLS_ANNOUNCE_PREFIX=/.hls/`).
+Publishers opt into HLS egress by announcing their broadcast path with the `/.hls/`
+prefix (e.g. `ANNOUNCE /.hls/live/cam1`). Media frames are **not double-published**:
+the publisher uploads media only once to its canonical broadcast path (`/live/cam1`).
+The egress listens for announcements, strips the `/.hls` prefix, reads the catalog at
+`/live/cam1`, discovers all media tracks (video variants, audio), packages them into
+independent ledger tracks, and dynamically mounts HTTP endpoints.
 
 It verifies the relay's certificate by default.
 
@@ -28,23 +33,27 @@ Subscribe to a relay and serve on the default address:
 
 ```console
 $ qumo hls
-INFO hls: serving addr=:8080 track=live/cam1/video
+INFO hls: serving addr=:8080 store=file:ledger announce_prefix=/.hls/
 ```
 
-The egress serves both formats from its HTTP root, routing by the request URL's
-base name:
+When a publisher announces `/.hls/live/cam1`, the egress dynamically routes endpoints
+for the broadcast and its tracks:
 
 ```console
-$ curl http://localhost:8080/playlist.m3u8   # HLS media playlist
-$ curl http://localhost:8080/manifest.mpd     # DASH MPD
+# Master playlist listing all tracks and variants
+$ curl http://localhost:8080/live/cam1/master.m3u8
+$ curl http://localhost:8080/live/cam1/playlist.m3u8   # convenience alias for players
+
+# Track-specific media playlist and DASH MPD
+$ curl http://localhost:8080/live/cam1/video/playlist.m3u8
+$ curl http://localhost:8080/live/cam1/manifest.mpd
 ```
 
 Segments are shared by both formats and addressed by group id
-(`http://localhost:8080/<group-id>.m4s`); the fMP4 init segment is served at
-`/init.m4s` and referenced from the playlist's `#EXT-X-MAP`. Point a player at
-the playlist URL — `hls.js` for HLS in a browser, or any HLS/DASH-capable
-player. If the playground is running (its UI also binds `:8080`), set
-`HLS_ADDR` to another port.
+(`http://localhost:8080/live/cam1/video/<group-id>.m4s`); the fMP4 init segment is served at
+`/live/cam1/video/init.m4s` and referenced from the playlist's `#EXT-X-MAP`. Point an HLS player
+(such as `hls.js` or Safari) at `http://localhost:8080/live/cam1/playlist.m3u8`. If only a single
+broadcast is active, root requests (`http://localhost:8080/playlist.m3u8`) alias to it automatically.
 
 ## Storage: S3 object storage or filesystem
 
@@ -133,11 +142,12 @@ All configuration is via environment variables:
 | Variable | Default | Description |
 |---|---|---|
 | `HLS_ADDR` | `:8080` | HTTP listen address. |
+| `HLS_ANNOUNCE_PREFIX` | `/.hls/` | Announce prefix to accept for dynamic multi-track egress. Publishers announce beneath this prefix (e.g. `/.hls/live/cam1`); egress strips it to read the broadcast catalog at `/live/cam1`. Unset or empty disables announce listening and uses `RELAY_TRACK_PATH`. |
 | `RELAY_URL` | `https://localhost:4433` | MoQ relay URL to subscribe to. Use `moqt://…` with `RELAY_CERT_FILE`. |
-| `RELAY_TRACK_PATH` | `/hls/live` | MoQ broadcast path whose catalog to read. |
-| `RELAY_TRACK_NAME` | `video` | Media track name in the catalog to relay. |
+| `RELAY_TRACK_PATH` | `/hls/live` | MoQ broadcast path whose catalog to read when announce mode is disabled. |
+| `RELAY_TRACK_NAME` | `video` | Media track name in the catalog to relay when announce mode is disabled. |
 | `LEDGER_URI` | `file:ledger` | qumo-ledger store URI: `s3://bucket/prefix?region=...` (Amazon S3, Cloudflare R2, MinIO), `file:///path`, `postgres://...`, or `mem:`. |
-| `LEDGER_TRACK` | `live/cam1/video` | Ledger track path to write groups into. |
+| `LEDGER_TRACK` | `live/cam1/video` | Ledger track path to write groups into when announce mode is disabled. In announce mode, tracks are written to `<broadcast>/<track>`. |
 | `HLS_WINDOW` | `12` | Segments kept in the manifest — the live window, and how far back a viewer can seek. `0` lists the whole track, making it a recording rather than a live stream. |
 | `HLS_LIVE_TIMEOUT_S` | `10` | Seconds of silence after which the publisher is treated as gone; the feed reconnects and manifests answer `503`. |
 | `RELAY_CA_FILE` | _unset_ | PEM cert to trust as the relay's root, overriding the system roots. Unset means verify against the system root store. |
