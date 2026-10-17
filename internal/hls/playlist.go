@@ -1,4 +1,4 @@
-package stream
+package hls
 
 import (
 	"fmt"
@@ -14,7 +14,7 @@ import (
 // the groups themselves.
 type renderOpts struct {
 	// queryParam names the manifest URL's query parameter clients carry onto
-	// every URI it names, "" for none (see Options.QueryParam).
+	// every URI it names, "" for none (see streamOptions.QueryParam).
 	queryParam string
 
 	// sliding reports that the groups are a window over the track rather than
@@ -53,7 +53,7 @@ type renderOpts struct {
 func renderHLS(schema ledger.TrackSchema, groups []ledger.GroupInfo, opts renderOpts) ([]byte, error) {
 	for _, g := range groups {
 		if g.Duration <= 0 {
-			return nil, fmt.Errorf("stream: group %s has no duration; HLS needs an EXTINF", g.ID)
+			return nil, fmt.Errorf("hls: group %s has no duration; HLS needs an EXTINF", g.ID)
 		}
 	}
 

@@ -1,4 +1,4 @@
-package stream
+package hls
 
 import (
 	"fmt"
@@ -21,7 +21,7 @@ import (
 func renderDASH(schema ledger.TrackSchema, groups []ledger.GroupInfo, opts renderOpts) ([]byte, error) {
 	for _, g := range groups {
 		if g.Duration <= 0 {
-			return nil, fmt.Errorf("stream: group %s has no duration; DASH needs an @d", g.ID)
+			return nil, fmt.Errorf("hls: group %s has no duration; DASH needs an @d", g.ID)
 		}
 	}
 
@@ -50,8 +50,10 @@ func renderDASH(schema ledger.TrackSchema, groups []ledger.GroupInfo, opts rende
 	b.WriteString(">\n")
 
 	b.WriteString(`  <Period id="0" start="PT0S">` + "\n")
-	fmt.Fprintf(&b, `    <AdaptationSet id="0" mimeType="%s" contentType="%s" segmentAlignment="true">`+"\n",
-		schema.MIME, dashContentType(schema.MIME))
+	// The set describes the segments served — CMAF fragments of a video track —
+	// not the stored payloads, which are the frames MoQ carried: the schema's
+	// MIME is whatever the catalog stated, if anything.
+	b.WriteString(`    <AdaptationSet id="0" mimeType="` + segmentMIME + `" contentType="video" segmentAlignment="true">` + "\n")
 	if opts.queryParam != "" {
 		// Annex I URL parameters: the client repeats the MPD URL's query on
 		// its segment requests. Essential, so a client that can't honor it
@@ -130,16 +132,4 @@ func mediaOffset(mediaTime int64, timescale uint32) time.Duration {
 // dashDuration formats a whole-second extent as an ISO 8601 period.
 func dashDuration(seconds int) string {
 	return fmt.Sprintf("PT%dS", seconds)
-}
-
-// dashContentType projects a MIME type onto DASH's coarse content classification.
-func dashContentType(mime string) string {
-	switch {
-	case strings.HasPrefix(mime, "video/"):
-		return "video"
-	case strings.HasPrefix(mime, "audio/"):
-		return "audio"
-	default:
-		return "application"
-	}
 }

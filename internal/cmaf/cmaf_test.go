@@ -88,20 +88,20 @@ func TestPackager_Fragment(t *testing.T) {
 	const interval = uint64(33_333) // ~30fps in microseconds
 	p := newPackager(t)
 
-	data, duration, err := p.Fragment(frames(1_000_000, interval, 30), 0)
+	data, duration, err := p.Fragment(1, frames(1_000_000, interval, 30), 0, uint32(interval))
 	require.NoError(t, err)
 
 	assert.Equal(t, []string{"moof", "mdat"}, boxes(t, data))
 	assert.Equal(t, uint64(30*interval), duration,
-		"29 measured gaps plus a last sample taking their mean")
+		"29 measured gaps plus the last sample's stated duration")
 
 	// Read the duration back out of the bytes rather than trusting the return.
 	traf := parseFragment(t, data).Moof.Traf
 	assert.Equal(t, duration, traf.Trun.Duration(traf.Tfhd.DefaultSampleDuration), "the reported extent is the one written into the trun")
 }
 
-// Fragments are placed by the caller's running total, not by the capture clock
-// and not by a total the packager keeps itself. A second counter would drift the
+// Fragments are placed and numbered by the caller, not by the capture clock and
+// not by a total the packager keeps itself. A second counter would drift the
 // moment the two disagreed about whether a group counted — an append the ledger
 // refused would advance one and not the other — and every later fragment would
 // claim a position the manifest does not list it at.
@@ -111,9 +111,9 @@ func TestPackager_FragmentTimeline(t *testing.T) {
 
 	// Capture timestamps start far from zero, and the second group begins well
 	// after the first one ended.
-	first, firstExtent, err := p.Fragment(frames(9_489_800, interval, 10), 0)
+	first, firstExtent, err := p.Fragment(1, frames(9_489_800, interval, 10), 0, uint32(interval))
 	require.NoError(t, err)
-	second, _, err := p.Fragment(frames(30_000_000, interval, 10), firstExtent)
+	second, _, err := p.Fragment(2, frames(30_000_000, interval, 10), firstExtent, uint32(interval))
 	require.NoError(t, err)
 
 	assert.Equal(t, uint32(1), fragmentSequence(t, first))
@@ -124,7 +124,7 @@ func TestPackager_FragmentTimeline(t *testing.T) {
 	assert.Equal(t, firstExtent, decodeTime(t, second))
 
 	// A group the caller did not count leaves the timeline where it was.
-	third, _, err := p.Fragment(frames(60_000_000, interval, 10), firstExtent)
+	third, _, err := p.Fragment(3, frames(60_000_000, interval, 10), firstExtent, uint32(interval))
 	require.NoError(t, err)
 	assert.Equal(t, firstExtent, decodeTime(t, third),
 		"the packager keeps no total of its own to drift from the ledger's")
@@ -133,7 +133,7 @@ func TestPackager_FragmentTimeline(t *testing.T) {
 // The first sample of a group is the keyframe a player seeks to; the rest are not.
 func TestPackager_SyncSample(t *testing.T) {
 	p := newPackager(t)
-	data, _, err := p.Fragment(frames(0, 33_333, 5), 0)
+	data, _, err := p.Fragment(1, frames(0, 33_333, 5), 0, 33_333)
 	require.NoError(t, err)
 
 	frag := parseFragment(t, data)
@@ -153,7 +153,6 @@ func TestPackager_SyncSample(t *testing.T) {
 func TestPackager_FragmentRejectsUnmeasurable(t *testing.T) {
 	tests := map[string][]cmaf.Frame{
 		"no frames": nil,
-		"one frame": frames(0, 33_333, 1),
 		"backwards": {
 			{Timestamp: 100_000, Sync: true, Data: []byte{1}},
 			{Timestamp: 50_000, Data: []byte{2}},
@@ -170,10 +169,46 @@ func TestPackager_FragmentRejectsUnmeasurable(t *testing.T) {
 
 	for name, f := range tests {
 		t.Run(name, func(t *testing.T) {
-			_, _, err := newPackager(t).Fragment(f, 0)
+			_, _, err := newPackager(t).Fragment(1, f, 0, 33_333)
 			assert.Error(t, err)
 		})
 	}
+}
+
+// The last frame's duration is the caller's to state, and a stated one that
+// could not be a frame's is refused like a measured one.
+func TestPackager_FragmentLastDuration(t *testing.T) {
+	tests := map[string]struct {
+		last    uint32
+		wantErr bool
+	}{
+		"stated":      {last: 40_000},
+		"none":        {last: 0, wantErr: true},
+		"implausible": {last: 11 * cmaf.Timescale, wantErr: true},
+	}
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			data, duration, err := newPackager(t).Fragment(1, frames(0, 33_333, 3), 0, tt.last)
+
+			if tt.wantErr {
+				assert.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, uint64(2*33_333)+uint64(tt.last), duration)
+			traf := parseFragment(t, data).Moof.Traf
+			assert.Equal(t, duration, traf.Trun.Duration(traf.Tfhd.DefaultSampleDuration))
+		})
+	}
+}
+
+// A single frame packages once its duration is stated: there is no gap to
+// measure, but nothing left unknown either.
+func TestPackager_FragmentSingleFrame(t *testing.T) {
+	_, duration, err := newPackager(t).Fragment(1, frames(500, 33_333, 1), 0, 33_333)
+
+	require.NoError(t, err)
+	assert.Equal(t, uint64(33_333), duration)
 }
 
 func parseFragment(tb testing.TB, data []byte) *mp4.Fragment {

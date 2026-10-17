@@ -23,10 +23,10 @@ import (
 
 // Run starts the HLS/DASH egress server. Publishers opt in by announcing their
 // broadcast beneath [announcePrefix] (ANNOUNCE /.hls/live/cam1 for /live/cam1);
-// for each announcement the egress reads the broadcast's catalog, packages each
-// received group of LOC frames of every video track into a CMAF (fMP4)
-// fragment, writes those fragments into a qumo-ledger track per media track
-// ({broadcast}/{track}), and serves the ledger's HLS/DASH renderings over HTTP:
+// for each announcement the egress reads the broadcast's catalog, stores each
+// received group of every video track, its frames as received, in a
+// qumo-ledger track per media track ({broadcast}/{track}), and serves HLS/DASH
+// over HTTP, packaging a stored group into a CMAF (fMP4) fragment per request:
 //
 //	/{broadcast}/master.m3u8           (HLS master playlist)
 //	/{broadcast}/playlist.m3u8         (alias of the master playlist)
@@ -196,6 +196,11 @@ func openTrack(ctx context.Context, store store.Store, path ledger.TrackPath, sc
 	track, err = ledger.Open(ctx, store, path, ledger.Config{})
 	if err != nil {
 		return nil, false, fmt.Errorf("hls: open track: %w", err)
+	}
+	// Groups in another encoding — an earlier egress stored CMAF fragments —
+	// cannot share a track with this one's, nor be served by it.
+	if got := track.Root().Encoding; got != schema.Encoding {
+		return nil, false, fmt.Errorf("hls: track %s is stored as %q, not %q: remove it from the ledger to record the broadcast again", path, got, schema.Encoding)
 	}
 	return track, true, nil
 }
