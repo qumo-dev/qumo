@@ -21,7 +21,8 @@ type Key struct {
 	ID     string
 	Public ed25519.PublicKey
 	// Prefix is the directory, in MoQ's form ("/acme/"), every root a token
-	// signed by this key may grant lies at or beneath. "/" leaves the key
+	// signed by this key may grant lies at or beneath, or at or beneath its
+	// mirror under HLSDirectory ("/.hls/acme/"). "/" leaves the key
 	// unconstrained.
 	Prefix string
 	// Pause lists what the key starts no new sessions for. Only ActionPublish
@@ -35,8 +36,9 @@ type Key struct {
 }
 
 // Holds reports whether root, a directory in MoQ's form, lies at or beneath
-// the key's prefix: whether a token the key signed may grant beneath it. The
-// empty root, which grants nothing, is every key's.
+// the key's prefix or its mirror under HLSDirectory: whether a token the key
+// signed may grant beneath it. The empty root, which grants nothing, is every
+// key's.
 func (k Key) Holds(root string) bool {
 	return root == "" || within(root, k.Prefix)
 }

@@ -228,6 +228,11 @@ func TestVerify_PathConfinement(t *testing.T) {
 			pathAuth: map[string]any{"root": "", "pub": ""},
 			want:     Grant{Root: "/", Publish: []string{"/"}},
 		},
+		"the key's prefix mirrored under /.hls/": {
+			prefix:   "acme/app",
+			pathAuth: map[string]any{"root": ".hls/acme/app/room", "pub": "cam"},
+			want:     Grant{Root: "/.hls/acme/app/room/", Publish: []string{"/cam", "/cam/"}},
+		},
 		"another tenant's path":             {prefix: "acme/app", pathAuth: map[string]any{"root": "other/app", "pub": ""}, wantErr: ErrForbidden},
 		"a sibling sharing a string prefix": {prefix: "acme/app", pathAuth: map[string]any{"root": "acme/apple", "pub": ""}, wantErr: ErrForbidden},
 		"a parent of the key's prefix":      {prefix: "acme/app", pathAuth: map[string]any{"root": "acme", "sub": "app"}, wantErr: ErrForbidden},

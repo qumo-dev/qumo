@@ -126,9 +126,9 @@ func Run(_ []string) error {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
-	objects, storeName, err := openStore(ctx, ledgerURI)
+	objects, err := store.Open(ctx, ledgerURI)
 	if err != nil {
-		return err
+		return fmt.Errorf("open LEDGER_URI: %w", err)
 	}
 
 	authName := "off: every request is accepted"
@@ -167,7 +167,7 @@ func Run(_ []string) error {
 	log.Println("	Ingest  :", ingestAddr)
 	log.Println("	Relay   :", relayName(relayURL))
 	log.Println("	Serve   :", orNone(serveAddr))
-	log.Println("	Ledger  :", storeName)
+	log.Println("	Ledger  :", objects)
 	log.Println("	Auth    :", authName)
 
 	go func() {

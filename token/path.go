@@ -54,9 +54,17 @@ func atAndBeneath(suffix string) ([]string, error) {
 	return []string{"/" + s, "/" + s + "/"}, nil
 }
 
+// HLSDirectory is where a publisher opts a broadcast into the HLS egress:
+// announcing /.hls/acme/cam asks it to serve /acme/cam. A key confined to a
+// prefix also signs for the prefix's mirror here (see [Key.Holds]), so the
+// app that grants a broadcast grants its opt-in with the same key.
+const HLSDirectory = "/.hls/"
+
 // within reports whether root, a MoQ directory, lies at or beneath prefix,
-// another one. Both are in Directory's form, so a plain prefix comparison
-// holds at a "/" boundary; "/" contains every root.
+// another one, or at or beneath prefix's mirror under HLSDirectory. Both are
+// in Directory's form, so a plain prefix comparison holds at a "/" boundary;
+// "/" contains every root.
 func within(root, prefix string) bool {
-	return strings.HasPrefix(root, prefix)
+	return strings.HasPrefix(root, prefix) ||
+		strings.HasPrefix(root, HLSDirectory+strings.TrimPrefix(prefix, "/"))
 }
