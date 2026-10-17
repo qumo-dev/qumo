@@ -141,8 +141,8 @@ func Test_streamMux_Routing(t *testing.T) {
 	liveVideo.mark(time.Now())
 
 	videoHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Served-Path", r.URL.Path)
 		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte("video-track-ok:" + r.URL.Path))
 	})
 
 	b.AddTrack(trackEntry{
@@ -178,14 +178,14 @@ func Test_streamMux_Routing(t *testing.T) {
 	rec = httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)
 	assert.Equal(t, http.StatusOK, rec.Code)
-	assert.Equal(t, "video-track-ok:/live/cam1/video/playlist.m3u8", rec.Body.String())
+	assert.Equal(t, "/live/cam1/video/playlist.m3u8", rec.Header().Get("X-Served-Path"))
 
 	// 4. Track segment: /live/cam1/video/e000000-g00000000.m4s
 	req = httptest.NewRequest(http.MethodGet, "/live/cam1/video/e000000-g00000000.m4s", nil)
 	rec = httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)
 	assert.Equal(t, http.StatusOK, rec.Code)
-	assert.Equal(t, "video-track-ok:/live/cam1/video/e000000-g00000000.m4s", rec.Body.String())
+	assert.Equal(t, "/live/cam1/video/e000000-g00000000.m4s", rec.Header().Get("X-Served-Path"))
 
 	// 5. Root alias when single broadcast is active: redirected, so the master
 	// playlist's relative variant URIs resolve beneath the broadcast.

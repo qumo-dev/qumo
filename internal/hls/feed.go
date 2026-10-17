@@ -319,11 +319,51 @@ func discoverMediaTracks(c msf.Catalog, broadcastPath string) []mediaInfo {
 	return infos
 }
 
+// broadcastGate lets one announcement handler at a time feed a broadcast. A
+// relay that reconnects or re-announces starts a new handler while the old one
+// may still be closing its ledger epochs; the new one waits, so two writers
+// never share a ledger track.
+type broadcastGate struct {
+	mu   sync.Mutex
+	held map[string]chan struct{} // closed when the holder releases
+}
+
+func newBroadcastGate() *broadcastGate {
+	return &broadcastGate{held: make(map[string]chan struct{})}
+}
+
+// acquire waits until no other handler holds broadcast, then holds it. It
+// returns the release function, or ctx's error if ctx ends first.
+func (g *broadcastGate) acquire(ctx context.Context, broadcast string) (func(), error) {
+	for {
+		g.mu.Lock()
+		held, busy := g.held[broadcast]
+		if !busy {
+			done := make(chan struct{})
+			g.held[broadcast] = done
+			g.mu.Unlock()
+			return func() {
+				g.mu.Lock()
+				defer g.mu.Unlock()
+				delete(g.held, broadcast)
+				close(done)
+			}, nil
+		}
+		g.mu.Unlock()
+
+		select {
+		case <-held:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+}
+
 // handleAnnouncement processes an announcement for a broadcast: it strips the
 // announcement prefix to derive the real broadcast path, fetches its catalog,
 // discovers all packageable media tracks, registers them with mux, and feeds
 // them into ledger tracks until the announcement ends.
-func handleAnnouncement(ctx context.Context, session *moqt.Session, ann *moqt.Announcement, store store.Store, mux *streamMux, window uint64, cfg feedConfig) {
+func handleAnnouncement(ctx context.Context, session *moqt.Session, ann *moqt.Announcement, store store.Store, mux *streamMux, gate *broadcastGate, window uint64, cfg feedConfig) {
 	annPath := string(ann.BroadcastPath())
 	realBroadcast := broadcastPathFromAnnounce(annPath, announcePrefix)
 	slog.Info("hls: received announcement", "announce", annPath, "broadcast", realBroadcast)
@@ -350,6 +390,14 @@ func handleAnnouncement(ctx context.Context, session *moqt.Session, ann *moqt.An
 		slog.Warn("hls: no packageable media tracks found", "broadcast", realBroadcast)
 		return
 	}
+
+	// Wait for an earlier handler of this broadcast to close its epochs before
+	// opening writers on the same ledger tracks.
+	release, err := gate.acquire(annCtx, realBroadcast)
+	if err != nil {
+		return
+	}
+	defer release()
 
 	bEntry := mux.RegisterBroadcast(realBroadcast)
 	defer mux.UnregisterBroadcast(bEntry)
@@ -479,6 +527,7 @@ func feedAnnouncedTrack(ctx context.Context, session *moqt.Session, b *broadcast
 // over HTTP until the announcement closes or the session ends. It returns once
 // ctx is done and every announcement it started has finished.
 func runAnnounceEgress(ctx context.Context, store store.Store, mux *streamMux, window uint64, cfg feedConfig) {
+	gate := newBroadcastGate()
 	var handlers sync.WaitGroup
 	defer handlers.Wait()
 	for {
@@ -507,7 +556,7 @@ func runAnnounceEgress(ctx context.Context, store store.Store, mux *streamMux, w
 					break
 				}
 				handlers.Go(func() {
-					handleAnnouncement(sessCtx, session, ann, store, mux, window, cfg)
+					handleAnnouncement(sessCtx, session, ann, store, mux, gate, window, cfg)
 				})
 			}
 			stopWithSession()

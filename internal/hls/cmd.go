@@ -86,7 +86,7 @@ import (
 //	                     e.g. "http://localhost:5173" for the playground.
 func Run(_ []string) error {
 	addr := envconfig.String("HLS_ADDR", ":8080")
-	ledgerURI := envconfig.String("LEDGER_URI", defaultLedgerURI)
+	ledgerURI := envconfig.String("LEDGER_URI", "file:ledger")
 
 	window, err := envUint("HLS_WINDOW", 12)
 	if err != nil {
@@ -127,9 +127,9 @@ func Run(_ []string) error {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
-	store, storeName, err := openStore(ctx, ledgerURI)
+	objects, err := store.Open(ctx, ledgerURI)
 	if err != nil {
-		return fmt.Errorf("hls: %w", err)
+		return fmt.Errorf("hls: open LEDGER_URI: %w", err)
 	}
 
 	mux := newStreamMux(liveTimeout)
@@ -138,7 +138,7 @@ func Run(_ []string) error {
 	fed := make(chan struct{})
 	go func() {
 		defer close(fed)
-		runAnnounceEgress(ctx, store, mux, window, cfg)
+		runAnnounceEgress(ctx, objects, mux, window, cfg)
 	}()
 
 	httpServer := &http.Server{
@@ -156,7 +156,7 @@ func Run(_ []string) error {
 		}
 	}()
 
-	slog.Info("hls: serving", "addr", addr, "store", storeName, "announce_prefix", announcePrefix)
+	slog.Info("hls: serving", "addr", addr, "store", fmt.Sprint(objects), "announce_prefix", announcePrefix)
 
 	<-ctx.Done()
 
