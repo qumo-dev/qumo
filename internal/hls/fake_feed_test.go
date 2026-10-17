@@ -102,7 +102,10 @@ func (f *fakeFeeder) Close() error { f.closed = true; return nil }
 type fakeGroup struct {
 	seq    moqt.GroupSequence
 	bodies [][]byte
-	idx    int
+	// timestamps are the frames' moq-lite timestamps, zero where unset, as
+	// qumo's publishers leave them.
+	timestamps []uint64
+	idx        int
 }
 
 func (g *fakeGroup) GroupSequence() moqt.GroupSequence { return g.seq }
@@ -112,6 +115,10 @@ func (g *fakeGroup) ReadFrame(f *moqt.Frame) error {
 		return io.EOF
 	}
 	f.Reset()
+	f.Timestamp = 0
+	if g.idx < len(g.timestamps) {
+		f.Timestamp = g.timestamps[g.idx]
+	}
 	_, _ = f.Write(g.bodies[g.idx])
 	g.idx++
 	return nil

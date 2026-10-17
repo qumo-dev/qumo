@@ -15,12 +15,55 @@ import (
 	"github.com/okdaichi/qumo-ledger/ledger"
 	"github.com/okdaichi/qumo-ledger/ledger/store"
 	"github.com/okdaichi/qumo-ledger/ledger/store/mem"
+	"github.com/qumo-dev/qumo/internal/cmaf"
+	"github.com/qumo-dev/qumo/internal/moqframe"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-// testInit satisfies NewHandler's init requirement.
-var testInit = []byte("init-bytes")
+// testPackager packages the fixture's groups: a VP9 track, which needs no
+// out-of-band codec configuration.
+var testPackager = func() *cmaf.Packager {
+	p, err := cmaf.NewPackager(cmaf.VideoConfig{Codec: "vp09.00.10.08", Width: 1280, Height: 720})
+	if err != nil {
+		panic(err)
+	}
+	return p
+}()
+
+// fixtureSchema is a track as the HLS egress writes one: frames as received,
+// on the packager's microsecond timeline.
+var fixtureSchema = ledger.TrackSchema{
+	Timescale: cmaf.Timescale, TimeSource: ledger.TimeSourceIngest,
+	Encoding: moqframe.Encoding,
+}
+
+// twoSeconds is a fixture group's duration.
+const twoSeconds = 2 * cmaf.Timescale
+
+// groupPayload returns a stored group of two LOC frames a second apart, whose
+// bodies carry label: its stated duration (twoSeconds) leaves the last frame a
+// second, which packages.
+func groupPayload(label string) []byte {
+	payload, err := moqframe.Encode([]moqframe.Frame{
+		{Body: cmaf.EncodeLOC(0, []byte(label+"/0"))},
+		{Body: cmaf.EncodeLOC(cmaf.Timescale, []byte(label+"/1"))},
+	})
+	if err != nil {
+		panic(err)
+	}
+	return payload
+}
+
+// assertFragment checks body is the CMAF fragment of a group whose frames
+// carry label.
+func assertFragment(tb testing.TB, body []byte, label string) {
+	tb.Helper()
+	require.GreaterOrEqual(tb, len(body), 8)
+	assert.Equal(tb, "moof", string(body[4:8]), "a fragment opens with its moof")
+	assert.True(tb, bytes.Contains(body, []byte(label+"/0")) && bytes.Contains(body, []byte(label+"/1")),
+		"the mdat carries both frames' encoded bytes")
+}
 
 // fixtureEpoch is when the fixture's presentation starts on the wall clock.
 var fixtureEpoch = time.Date(2026, 8, 4, 12, 0, 0, 0, time.UTC)
@@ -49,10 +92,7 @@ func newTrackFixtureStore(tb testing.TB, groups int64, backend store.Store) trac
 	tb.Helper()
 	ctx := context.Background()
 
-	track, err := ledger.Create(ctx, backend, "live/cam1/video", ledger.TrackSchema{
-		Timescale: 90000, TimeSource: ledger.TimeSourceFrame,
-		MIME: "video/mp4", Encoding: "fmp4",
-	}, ledger.Config{})
+	track, err := ledger.Create(ctx, backend, "live/cam1/video", fixtureSchema, ledger.Config{})
 	require.NoError(tb, err)
 
 	writer, err := track.Writer(ctx)
@@ -60,11 +100,11 @@ func newTrackFixtureStore(tb testing.TB, groups int64, backend store.Store) trac
 
 	fix := trackFixture{track: track}
 	for sequence := range groups {
-		payload := []byte("frames-" + string(rune('A'+sequence)))
+		payload := groupPayload("frames-" + string(rune('A'+sequence)))
 		meta, err := writer.AppendGroup(ctx, ledger.GroupInfo{
 			ID:        ledger.NewGroupID(0, uint64(sequence)),
-			MediaTime: sequence * 180000,
-			Duration:  180000,
+			MediaTime: sequence * twoSeconds,
+			Duration:  twoSeconds,
 			// Anchored on a fixed clock advancing with media time, so the
 			// presentation start these imply is the same for every group — which
 			// is what a stable DASH availabilityStartTime depends on.
@@ -79,7 +119,7 @@ func newTrackFixtureStore(tb testing.TB, groups int64, backend store.Store) trac
 
 func TestHandler_ServeHTTP_HLSPlaylist(t *testing.T) {
 	fix := newTrackFixture(t)
-	handler, err := NewHandler(fix.track, Options{Init: testInit})
+	handler, err := NewHandler(fix.track, Options{Packager: testPackager})
 	require.NoError(t, err)
 	ts := httptest.NewServer(handler)
 	defer ts.Close()
@@ -102,7 +142,7 @@ func TestHandler_ServeHTTP_HLSPlaylist(t *testing.T) {
 
 func TestHandler_ServeHTTP_DASHManifest(t *testing.T) {
 	fix := newTrackFixture(t)
-	handler, err := NewHandler(fix.track, Options{Init: testInit})
+	handler, err := NewHandler(fix.track, Options{Packager: testPackager})
 	require.NoError(t, err)
 	ts := httptest.NewServer(handler)
 	defer ts.Close()
@@ -123,10 +163,10 @@ func TestHandler_ServeHTTP_DASHManifest(t *testing.T) {
 		"the MPD points at segments by GroupID, the same URLs as the HLS playlist")
 }
 
-// A segment request returns the stored bytes.
-func TestHandler_ServeHTTP_SegmentProxies(t *testing.T) {
+// A segment request packages the stored group into a CMAF fragment.
+func TestHandler_ServeHTTP_Segment(t *testing.T) {
 	fix := newTrackFixture(t)
-	handler, err := NewHandler(fix.track, Options{Init: testInit})
+	handler, err := NewHandler(fix.track, Options{Packager: testPackager})
 	require.NoError(t, err)
 	ts := httptest.NewServer(handler)
 	defer ts.Close()
@@ -140,12 +180,12 @@ func TestHandler_ServeHTTP_SegmentProxies(t *testing.T) {
 
 	body, err := io.ReadAll(resp.Body)
 	require.NoError(t, err)
-	assert.Equal(t, fix.payload[0], body, "the proxy serves the exact bytes that were appended")
+	assertFragment(t, body, "frames-A")
 }
 
 func TestHandler_ServeHTTP_UnknownSegmentNotFound(t *testing.T) {
 	fix := newTrackFixture(t)
-	handler, err := NewHandler(fix.track, Options{Init: testInit})
+	handler, err := NewHandler(fix.track, Options{Packager: testPackager})
 	require.NoError(t, err)
 	ts := httptest.NewServer(handler)
 	defer ts.Close()
@@ -162,7 +202,7 @@ func TestHandler_ServeHTTP_UnknownSegmentNotFound(t *testing.T) {
 // race detector is the assertion.
 func TestHandler_ServeHTTP_ConcurrentSegments(t *testing.T) {
 	fix := newTrackFixture(t)
-	handler, err := NewHandler(fix.track, Options{Init: testInit})
+	handler, err := NewHandler(fix.track, Options{Packager: testPackager})
 	require.NoError(t, err)
 	ts := httptest.NewServer(handler)
 	defer ts.Close()
@@ -190,8 +230,9 @@ func TestNewHandler_Rejects(t *testing.T) {
 		track *ledger.Track
 		opts  Options
 	}{
-		"nil track":       {track: nil, opts: Options{Init: testInit}},
-		"no init segment": {track: fix.track, opts: Options{}},
+		"nil track":     {track: nil, opts: Options{Packager: testPackager}},
+		"no packager":   {track: fix.track, opts: Options{}},
+		"another scale": {track: ninetyKHzTrack(t), opts: Options{Packager: testPackager}},
 	}
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
@@ -211,8 +252,8 @@ func TestHandler_ServeHTTP_Window(t *testing.T) {
 	fix := newTrackFixtureGroups(t, total)
 
 	handler, err := NewHandler(fix.track, Options{
-		Init:   testInit,
-		Window: window,
+		Packager: testPackager,
+		Window:   window,
 	})
 	require.NoError(t, err)
 	ts := httptest.NewServer(handler)
@@ -253,8 +294,8 @@ func TestHandler_ServeHTTP_WindowLargerThanTrack(t *testing.T) {
 	fix := newTrackFixtureGroups(t, 2)
 
 	handler, err := NewHandler(fix.track, Options{
-		Init:   testInit,
-		Window: 10,
+		Packager: testPackager,
+		Window:   10,
 	})
 	require.NoError(t, err)
 	ts := httptest.NewServer(handler)
@@ -279,10 +320,7 @@ func TestHandler_ServeHTTP_WindowLargerThanTrack(t *testing.T) {
 func TestHandler_ServeHTTP_WindowAcrossEpochs(t *testing.T) {
 	ctx := context.Background()
 	store := mem.New()
-	track, err := ledger.Create(ctx, store, "live/cam1/video", ledger.TrackSchema{
-		Timescale: 90000, TimeSource: ledger.TimeSourceFrame,
-		MIME: "video/mp4", Encoding: "fmp4",
-	}, ledger.Config{})
+	track, err := ledger.Create(ctx, store, "live/cam1/video", fixtureSchema, ledger.Config{})
 	require.NoError(t, err)
 
 	writer, err := track.Writer(ctx)
@@ -295,9 +333,9 @@ func TestHandler_ServeHTTP_WindowAcrossEpochs(t *testing.T) {
 		for i := range n {
 			_, err := writer.AppendGroup(ctx, ledger.GroupInfo{
 				ID:        ledger.NewGroupID(0, uint64(i)),
-				MediaTime: i * 180000,
-				Duration:  180000,
-			}, []byte("frames"))
+				MediaTime: i * twoSeconds,
+				Duration:  twoSeconds,
+			}, groupPayload("frames"))
 			require.NoError(t, err)
 		}
 	}
@@ -336,10 +374,7 @@ func TestHandler_ServeHTTP_WindowAcrossEpochs(t *testing.T) {
 func TestHandler_ServeHTTP_EpochWindow(t *testing.T) {
 	ctx := context.Background()
 	store := mem.New()
-	track, err := ledger.Create(ctx, store, "live/cam1/video", ledger.TrackSchema{
-		Timescale: 90000, TimeSource: ledger.TimeSourceFrame,
-		MIME: "video/mp4", Encoding: "fmp4",
-	}, ledger.Config{})
+	track, err := ledger.Create(ctx, store, "live/cam1/video", fixtureSchema, ledger.Config{})
 	require.NoError(t, err)
 
 	writer, err := track.Writer(ctx)
@@ -350,10 +385,10 @@ func TestHandler_ServeHTTP_EpochWindow(t *testing.T) {
 		for i := range n {
 			meta, err := writer.AppendGroup(ctx, ledger.GroupInfo{
 				ID:        ledger.NewGroupID(0, uint64(i)),
-				MediaTime: i * 180000,
-				Duration:  180000,
+				MediaTime: i * twoSeconds,
+				Duration:  twoSeconds,
 				Wallclock: fixtureEpoch.Add(time.Duration(i) * 2 * time.Second).UnixNano(),
-			}, []byte("frames"))
+			}, groupPayload("frames"))
 			require.NoError(t, err)
 			out = append(out, meta)
 		}
@@ -370,7 +405,7 @@ func TestHandler_ServeHTTP_EpochWindow(t *testing.T) {
 	ended := append(append([]ledger.GroupInfo{}, oldest...), previous...)
 
 	render := func(opts Options) string {
-		opts.Init = testInit
+		opts.Packager = testPackager
 		handler, err := NewHandler(track, opts)
 		require.NoError(t, err)
 		ts := httptest.NewServer(handler)
@@ -451,10 +486,7 @@ func newEpochFixture(tb testing.TB, perEpoch ...int64) (*ledger.Track, [][]ledge
 	ctx := context.Background()
 
 	store := mem.New()
-	track, err := ledger.Create(ctx, store, "live/cam1/video", ledger.TrackSchema{
-		Timescale: 90000, TimeSource: ledger.TimeSourceFrame,
-		MIME: "video/mp4", Encoding: "fmp4",
-	}, ledger.Config{})
+	track, err := ledger.Create(ctx, store, "live/cam1/video", fixtureSchema, ledger.Config{})
 	require.NoError(tb, err)
 
 	writer, err := track.Writer(ctx)
@@ -469,10 +501,10 @@ func newEpochFixture(tb testing.TB, perEpoch ...int64) (*ledger.Track, [][]ledge
 		for i := range n {
 			meta, err := writer.AppendGroup(ctx, ledger.GroupInfo{
 				ID:        ledger.NewGroupID(0, uint64(i)),
-				MediaTime: i * 180000,
-				Duration:  180000,
+				MediaTime: i * twoSeconds,
+				Duration:  twoSeconds,
 				Wallclock: fixtureEpoch.Add(time.Duration(i) * 2 * time.Second).UnixNano(),
-			}, []byte("frames"))
+			}, groupPayload("frames"))
 			require.NoError(tb, err)
 			groups = append(groups, meta)
 		}
@@ -485,8 +517,8 @@ func newEpochFixture(tb testing.TB, perEpoch ...int64) (*ledger.Track, [][]ledge
 func renderManifest(tb testing.TB, track *ledger.Track, name string, opts Options) string {
 	tb.Helper()
 
-	if opts.Init == nil {
-		opts.Init = testInit
+	if opts.Packager == nil {
+		opts.Packager = testPackager
 	}
 	handler, err := NewHandler(track, opts)
 	require.NoError(tb, err)
@@ -580,8 +612,8 @@ func playlistFor(tb testing.TB, track *ledger.Track, window int) string {
 	tb.Helper()
 
 	handler, err := NewHandler(track, Options{
-		Init:   testInit,
-		Window: window,
+		Packager: testPackager,
+		Window:   window,
 	})
 	require.NoError(tb, err)
 	ts := httptest.NewServer(handler)
@@ -605,8 +637,8 @@ func TestHandler_ServeHTTP_WindowDASH(t *testing.T) {
 
 	manifestFor := func(window int) string {
 		handler, err := NewHandler(fix.track, Options{
-			Init:   testInit,
-			Window: window,
+			Packager: testPackager,
+			Window:   window,
 		})
 		require.NoError(t, err)
 		ts := httptest.NewServer(handler)
@@ -657,7 +689,7 @@ func availabilityStartTime(tb testing.TB, mpd string) string {
 // manifests.
 func TestHandler_ServeHTTP_InitSegment(t *testing.T) {
 	fix := newTrackFixture(t)
-	handler, err := NewHandler(fix.track, Options{Init: testInit})
+	handler, err := NewHandler(fix.track, Options{Packager: testPackager})
 	require.NoError(t, err)
 	ts := httptest.NewServer(handler)
 	defer ts.Close()
@@ -669,7 +701,8 @@ func TestHandler_ServeHTTP_InitSegment(t *testing.T) {
 
 	body, err := io.ReadAll(resp.Body)
 	require.NoError(t, err)
-	assert.Equal(t, []byte("init-bytes"), body)
+	assert.Equal(t, testPackager.Init(), body)
+	assert.Equal(t, "video/mp4", resp.Header.Get("Content-Type"))
 
 	// Both manifests reference it.
 	for _, name := range []string{"playlist.m3u8", "manifest.mpd"} {
@@ -691,7 +724,7 @@ func TestHandler_ServeHTTP_StoreFailureIsServerError(t *testing.T) {
 	fix := newTrackFixtureStore(t, 2, backend)
 	backend.failAll = true
 
-	handler, err := NewHandler(fix.track, Options{Init: testInit})
+	handler, err := NewHandler(fix.track, Options{Packager: testPackager})
 	require.NoError(t, err)
 	ts := httptest.NewServer(handler)
 	defer ts.Close()
@@ -735,14 +768,14 @@ func TestHandler_ServeHTTP_LookupFailureIsServerError(t *testing.T) {
 	restarted, err := writer.AppendGroup(ctx, ledger.GroupInfo{
 		ID:        ledger.NewGroupID(0, 1),
 		MediaTime: 0,
-		Duration:  180000,
-	}, []byte("frames"))
+		Duration:  twoSeconds,
+	}, groupPayload("frames"))
 	require.NoError(t, err)
 
 	// Armed only now: NewEpoch itself reads epoch 2's log back after writing it.
 	backend.failKey = "live/cam1/video/e000002/log.manifest"
 
-	handler, err := NewHandler(fix.track, Options{Init: testInit})
+	handler, err := NewHandler(fix.track, Options{Packager: testPackager})
 	require.NoError(t, err)
 	ts := httptest.NewServer(handler)
 	defer ts.Close()
@@ -774,7 +807,7 @@ func TestHandler_ServeHTTP_ReadGroupFailureIsServerError(t *testing.T) {
 	fix := newTrackFixtureStore(t, 2, backend)
 	backend.failKey = fix.metas[0].ObjectKey
 
-	handler, err := NewHandler(fix.track, Options{Init: testInit})
+	handler, err := NewHandler(fix.track, Options{Packager: testPackager})
 	require.NoError(t, err)
 	ts := httptest.NewServer(handler)
 	defer ts.Close()
@@ -805,14 +838,14 @@ func TestHandler_ServeHTTP_GatherFailureIsServerError(t *testing.T) {
 	_, err = writer.AppendGroup(ctx, ledger.GroupInfo{
 		ID:        ledger.NewGroupID(0, 1),
 		MediaTime: 0,
-		Duration:  180000,
-	}, []byte("frames"))
+		Duration:  twoSeconds,
+	}, groupPayload("frames"))
 	require.NoError(t, err)
 
 	// Armed only now: NewEpoch itself reads epoch 2's log back after writing it.
 	backend.failKey = "live/cam1/video/e000002/log.manifest"
 
-	handler, err := NewHandler(fix.track, Options{Init: testInit})
+	handler, err := NewHandler(fix.track, Options{Packager: testPackager})
 	require.NoError(t, err)
 	ts := httptest.NewServer(handler)
 	defer ts.Close()
@@ -845,7 +878,7 @@ func TestHandler_ServeHTTP_MalformedSegmentNotFound(t *testing.T) {
 	fix := newTrackFixtureStore(t, 2, backend)
 	backend.failAll = true
 
-	handler, err := NewHandler(fix.track, Options{Init: testInit})
+	handler, err := NewHandler(fix.track, Options{Packager: testPackager})
 	require.NoError(t, err)
 	ts := httptest.NewServer(handler)
 	defer ts.Close()
@@ -871,7 +904,7 @@ func TestHandler_ServeHTTP_GroupWithoutDurationIsServerError(t *testing.T) {
 	fix := newTrackFixture(t)
 
 	var buf bytes.Buffer
-	handler, err := NewHandler(fix.track, Options{Init: testInit})
+	handler, err := NewHandler(fix.track, Options{Packager: testPackager})
 	require.NoError(t, err)
 	handler.logger = slog.New(slog.NewTextHandler(&buf, nil))
 	ts := httptest.NewServer(handler)
@@ -895,8 +928,8 @@ func TestHandler_ServeHTTP_GroupWithoutDurationIsServerError(t *testing.T) {
 	require.NoError(t, err)
 	_, err = writer.AppendGroup(ctx, ledger.GroupInfo{
 		ID:        ledger.NewGroupID(0, 2),
-		MediaTime: 2 * 180000,
-	}, []byte("frames"))
+		MediaTime: 2 * twoSeconds,
+	}, groupPayload("frames"))
 	require.NoError(t, err)
 
 	for name, manifest := range manifests {
@@ -920,7 +953,7 @@ func TestHandler_ServeHTTP_InternalErrorsAreLogged(t *testing.T) {
 	backend.failAll = true
 
 	var buf bytes.Buffer
-	handler, err := NewHandler(fix.track, Options{Init: testInit})
+	handler, err := NewHandler(fix.track, Options{Packager: testPackager})
 	require.NoError(t, err)
 	handler.logger = slog.New(slog.NewTextHandler(&buf, nil))
 	ts := httptest.NewServer(handler)
@@ -948,7 +981,7 @@ func TestHandler_ServeHTTP_CanceledRequestNotLogged(t *testing.T) {
 	backend.err = context.Canceled
 
 	var buf bytes.Buffer
-	handler, err := NewHandler(fix.track, Options{Init: testInit})
+	handler, err := NewHandler(fix.track, Options{Packager: testPackager})
 	require.NoError(t, err)
 	handler.logger = slog.New(slog.NewTextHandler(&buf, nil))
 	ts := httptest.NewServer(handler)
@@ -966,7 +999,7 @@ func TestHandler_ServeHTTP_CanceledRequestNotLogged(t *testing.T) {
 // it serves and onto every segment.
 func TestHandler_ServeHTTP_QueryParam(t *testing.T) {
 	fix := newTrackFixture(t)
-	handler, err := NewHandler(fix.track, Options{Init: testInit, QueryParam: "jwt"})
+	handler, err := NewHandler(fix.track, Options{Packager: testPackager, QueryParam: "jwt"})
 	require.NoError(t, err)
 	segment := fix.metas[0].ID.String() + ".m4s"
 
@@ -981,5 +1014,47 @@ func TestHandler_ServeHTTP_QueryParam(t *testing.T) {
 	served := httptest.NewRecorder()
 	handler.ServeHTTP(served, httptest.NewRequest(http.MethodGet, "/track/"+segment+"?jwt=t", nil))
 	assert.Equal(t, http.StatusOK, served.Code, "a segment URL with the query still resolves")
-	assert.Equal(t, fix.payload[0], served.Body.Bytes())
+	assertFragment(t, served.Body.Bytes(), "frames-A")
+}
+
+// ninetyKHzTrack is a track on a timeline the packager does not keep.
+func ninetyKHzTrack(tb testing.TB) *ledger.Track {
+	tb.Helper()
+	track, err := ledger.Create(context.Background(), mem.New(), "live/cam1/video", ledger.TrackSchema{
+		Timescale: 90000, TimeSource: ledger.TimeSourceIngest, Encoding: moqframe.Encoding,
+	}, ledger.Config{})
+	require.NoError(tb, err)
+	return track
+}
+
+// A stored group that cannot be packaged — its stated duration short of what
+// its frames span, or a payload that is not frames — answers 500 rather than
+// a fragment that disagrees with the manifest.
+func TestHandler_ServeHTTP_UnpackageableSegment(t *testing.T) {
+	tests := map[string]struct {
+		duration int64
+		payload  []byte
+	}{
+		"a duration short of the frames": {duration: cmaf.Timescale, payload: groupPayload("x")},
+		"a payload that is not frames":   {duration: twoSeconds, payload: []byte{0x40}},
+	}
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			track, err := ledger.Create(ctx, mem.New(), "live/cam1/video", fixtureSchema, ledger.Config{})
+			require.NoError(t, err)
+			writer, err := track.Writer(ctx)
+			require.NoError(t, err)
+			meta, err := writer.AppendGroup(ctx, ledger.GroupInfo{ID: ledger.NewGroupID(0, 0), Duration: tt.duration}, tt.payload)
+			require.NoError(t, err)
+			handler, err := NewHandler(track, Options{Packager: testPackager})
+			require.NoError(t, err)
+			handler.logger = slog.New(slog.DiscardHandler)
+			rec := httptest.NewRecorder()
+
+			handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/"+meta.ID.String()+".m4s", nil))
+
+			assert.Equal(t, http.StatusInternalServerError, rec.Code)
+		})
+	}
 }

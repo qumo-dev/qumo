@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+> **Breaking for the HLS egress's ledger.** `qumo hls` stores each group as the frames MoQ carried (`Encoding: "moq-lite-05"`) and packages CMAF per segment request; a track an earlier version stored as `fmp4` is refused at announce, so remove it from `LEDGER_URI` to record the broadcast again.
+
 > **Breaking for key-set servers.** `"publish": false` no longer pauses a key; write `"pause": ["publish"]` instead.
 
 > **Breaking for usage receivers.** Usage records drop `role`, and viewer totals arrive as `viewers` records with a `run`; update receivers before relays.

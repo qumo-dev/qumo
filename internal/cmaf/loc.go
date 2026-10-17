@@ -87,3 +87,19 @@ func appendVarint(b []byte, v uint64) []byte {
 			byte(v>>24), byte(v>>16), byte(v>>8), byte(v))
 	}
 }
+
+// FramesFromLOC decodes a group's frames, each body one LOC frame, into the
+// frames [Packager.Fragment] packages, in order. The first is the sync sample:
+// a MoQ group begins at a keyframe, and LOC states no flag of its own. Each
+// Data aliases the body it came from.
+func FramesFromLOC(bodies [][]byte) ([]Frame, error) {
+	frames := make([]Frame, 0, len(bodies))
+	for i, body := range bodies {
+		timestamp, payload, err := DecodeLOC(body)
+		if err != nil {
+			return nil, fmt.Errorf("frame %d: %w", i, err)
+		}
+		frames = append(frames, Frame{Timestamp: timestamp, Sync: i == 0, Data: payload})
+	}
+	return frames, nil
+}

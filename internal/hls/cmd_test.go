@@ -6,6 +6,7 @@ import (
 
 	"github.com/okdaichi/qumo-ledger/ledger"
 	"github.com/okdaichi/qumo-ledger/ledger/store/fs"
+	"github.com/qumo-dev/gomoqt/msf"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -72,4 +73,22 @@ func TestRun_InvalidQUICSetting(t *testing.T) {
 	err := Run(nil)
 
 	assert.ErrorContains(t, err, "QUIC_INITIAL_PACKET_SIZE")
+}
+
+// A track an earlier egress stored in another encoding cannot take this one's
+// groups, so adopting it is refused with what to do about it.
+func Test_openTrack_refusesAnotherEncoding(t *testing.T) {
+	store, err := fs.New(t.TempDir())
+	require.NoError(t, err)
+	ctx := context.Background()
+	const path ledger.TrackPath = "live/cam1/video"
+	_, err = ledger.Create(ctx, store, path, ledger.TrackSchema{
+		Timescale: 1_000_000, TimeSource: ledger.TimeSourceIngest, MIME: "video/mp4", Encoding: "fmp4",
+	}, ledger.Config{})
+	require.NoError(t, err)
+
+	_, _, err = openTrack(ctx, store, path, trackSchema(&msf.Track{}))
+
+	assert.ErrorContains(t, err, `stored as "fmp4"`)
+	assert.ErrorContains(t, err, "remove it")
 }

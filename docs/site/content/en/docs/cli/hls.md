@@ -4,10 +4,11 @@ description: Start the HLS/DASH egress server.
 weight: 5
 ---
 
-The HLS/DASH egress subscribes to MoQ broadcasts, packages each received group
-of LOC frames into CMAF (fMP4) fragments, writes them into qumo-ledger tracks,
-and serves multi-track HLS and DASH over HTTP. Packaging happens at the subscriber:
-the publisher sends LOC over MoQ, not CMAF.
+The HLS/DASH egress subscribes to MoQ broadcasts, stores each received group in a
+qumo-ledger track exactly as MoQ carried it (its LOC frames, in the `moq-lite-05`
+encoding), and serves multi-track HLS and DASH over HTTP, packaging a stored group
+into a CMAF (fMP4) fragment when a viewer asks for it. The publisher sends LOC over
+MoQ, not CMAF, and the ledger keeps what it sent.
 
 Publishers opt into HLS egress by announcing their broadcast path with the `/.hls/`
 prefix (e.g. `ANNOUNCE /.hls/live/cam1`). Media frames are **not double-published**:
@@ -113,7 +114,7 @@ T=$(qumo auth token -key signing-key.jwk -root /acme/room/42/ -subscribe /cam)
 
 ## Storage: S3 object storage or filesystem
 
-By default the egress writes fragments into a local filesystem directory (`./ledger`). For production deployments (e.g. multi-node egress with Cloudflare R2 or Amazon S3), configure `LEDGER_URI`:
+By default the egress stores groups in a local filesystem directory (`./ledger`). For production deployments (e.g. multi-node egress with Cloudflare R2 or Amazon S3), configure `LEDGER_URI`:
 
 ```bash
 # Cloudflare R2, Amazon S3, or MinIO
@@ -217,6 +218,6 @@ All configuration is via environment variables:
 ## See also
 
 - [relay]({{< relref "relay" >}}) — the MoQ relay the egress subscribes to.
-- [playground]({{< relref "playground" >}}) — the local demo whose HLS scenario publishes CMAF for the egress to serve.
+- [playground]({{< relref "playground" >}}) — the local demo whose HLS scenario publishes for the egress to serve.
 - [Configuration]({{< relref "../configuration" >}}) — the shared environment variable reference.
 - [Deployment → TLS & mTLS]({{< relref "../deployment/tls" >}}) — generating the certificate the relay presents.

@@ -13,6 +13,7 @@ import (
 
 	"github.com/okdaichi/qumo-ledger/ledger"
 	"github.com/qumo-dev/qumo/internal/cmaf"
+	"github.com/qumo-dev/qumo/internal/moqframe"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -57,9 +58,9 @@ func Test_trackSchema(t *testing.T) {
 	})
 
 	assert.Equal(t, uint32(cmaf.Timescale), s.Timescale,
-		"the packager's timescale, since the packager writes the payloads")
-	assert.Equal(t, "fmp4", s.Encoding)
-	assert.Equal(t, "video/mp4", s.MIME)
+		"the packager's timescale, since the stored groups are packaged on read")
+	assert.Equal(t, moqframe.Encoding, s.Encoding, "groups are stored as the frames MoQ carried")
+	assert.Equal(t, "video/mp4", s.MIME, "the catalog's media type")
 	assert.Equal(t, ledger.TimeSourceIngest, s.TimeSource)
 }
 
@@ -233,8 +234,8 @@ func TestFeedMedia_SkipsGroupThatFailsToDecode(t *testing.T) {
 		"a skipped group leaves no gap in the timeline")
 }
 
-// A group too small to measure (a single frame) cannot be packaged and is
-// skipped; the timeline still runs on through the groups after it.
+// A group too small to measure (a single frame) states no interval for its last
+// frame and is skipped; the timeline still runs on through the groups after it.
 func TestFeedMedia_SkipsGroupThatFailsToPackage(t *testing.T) {
 	appender := &fakeAppender{}
 	sub := &fakeSubscriber{feeder: &fakeFeeder{groups: []acceptResult{
@@ -246,7 +247,7 @@ func TestFeedMedia_SkipsGroupThatFailsToPackage(t *testing.T) {
 	err := feedMedia(context.Background(), sub, testMediaInfo(t), appender, &liveness{}, feedCfg())
 	assert.ErrorIs(t, err, errFeederDone)
 
-	require.Len(t, appender.appended, 2, "the single-frame group cannot be packaged and is skipped")
+	require.Len(t, appender.appended, 2, "the single-frame group cannot be measured and is skipped")
 	prev, cur := appender.appended[0], appender.appended[1]
 	assert.Equal(t, prev.MediaTime+prev.Duration, cur.MediaTime, "the skipped group leaves no gap")
 }
@@ -412,4 +413,66 @@ func TestFeedAnnouncedTrack_UnlistsTrackWhenEpochCannotClose(t *testing.T) {
 		assert.Equal(t, 1, sub.subscribes, "the feed stops instead of resubscribing")
 		assert.NoError(t, ctx.Err(), "it returns before the announcement ends")
 	})
+}
+
+// A group is stored as it arrived — each frame's moq-lite timestamp and body,
+// in the moq-lite-05 encoding — and timed by the LOC timestamps inside it.
+func TestFeedMedia_StoresFramesAsReceived(t *testing.T) {
+	bodies := validGroupBodies(5_000_000, 33_333, 4)
+	appender := &fakeAppender{}
+	sub := &fakeSubscriber{feeder: &fakeFeeder{groups: []acceptResult{
+		{group: &fakeGroup{seq: 7, bodies: bodies, timestamps: []uint64{0, 3, 6, 9}}},
+	}, tail: errFeederDone}}
+
+	err := feedMedia(context.Background(), sub, testMediaInfo(t), appender, &liveness{}, feedCfg())
+	assert.ErrorIs(t, err, errFeederDone)
+
+	require.Len(t, appender.payloads, 1)
+	var got []moqframe.Frame
+	for f, err := range moqframe.All(appender.payloads[0]) {
+		require.NoError(t, err)
+		got = append(got, f)
+	}
+	require.Len(t, got, 4)
+	for i, f := range got {
+		assert.Equal(t, uint64(i*3), f.Timestamp, "frame %d keeps its moq-lite timestamp", i)
+		assert.Equal(t, bodies[i], f.Body, "frame %d keeps its body", i)
+	}
+	info := appender.appended[0]
+	assert.Equal(t, uint64(4), info.ObjectCount)
+	assert.Equal(t, int64(4*33_333), info.Duration, "three gaps, and the last frame the mean of them")
+}
+
+func Test_storedGroup(t *testing.T) {
+	tests := map[string]struct {
+		bodies       [][]byte
+		wantDuration int64
+		wantErr      bool
+	}{
+		"steady":      {bodies: validGroupBodies(1_000, 40_000, 3), wantDuration: 3 * 40_000},
+		"one frame":   {bodies: validGroupBodies(0, 40_000, 1), wantErr: true},
+		"not LOC":     {bodies: [][]byte{{}, {}}, wantErr: true},
+		"backwards":   {bodies: [][]byte{cmaf.EncodeLOC(100, nil), cmaf.EncodeLOC(50, nil)}, wantErr: true},
+		"a long last": {bodies: [][]byte{cmaf.EncodeLOC(0, nil), cmaf.EncodeLOC(10_000, nil), cmaf.EncodeLOC(40_000, nil)}, wantDuration: 40_000 + 20_000},
+	}
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			raw := make([]moqframe.Frame, len(tt.bodies))
+			for i, b := range tt.bodies {
+				raw[i] = moqframe.Frame{Body: b}
+			}
+
+			payload, duration, err := storedGroup(raw)
+
+			if tt.wantErr {
+				assert.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.wantDuration, duration)
+			want, err := moqframe.Encode(raw)
+			require.NoError(t, err)
+			assert.Equal(t, want, payload, "the payload is the frames, unchanged")
+		})
+	}
 }
