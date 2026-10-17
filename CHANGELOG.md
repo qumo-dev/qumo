@@ -25,6 +25,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **A key signs its broadcasts' HLS opt-ins (`token`).** A key confined to `/acme/` also signs roots beneath `/.hls/acme/` (`token.HLSDirectory`), so an app grants an opt-in with the key that grants the broadcast.
 - **Announce-driven multi-track HLS/DASH egress (`internal/hls`).** `qumo hls` accepts announcements under `/.hls/`, discovers video tracks from the canonical broadcast's catalog without double-publishing, and serves multi-variant HLS (`master.m3u8`, `playlist.m3u8`, `{track}/playlist.m3u8`) and DASH (`{track}/manifest.mpd`) over HTTP; the playground's HLS scenario announces its broadcast there.
 
 - **Tickets: a session's grants can grow (`internal/relay`, `internal/auth`).** A client presents further tokens on MoQ Auth Streams (any `token.Sign` token, signed by the key of the session's credential, each lasting until its `exp`, at most 33 credentials per session including its own), so an app keeps one session per client and grants rooms as the client joins; counted by `qumo_relay_tickets_total{result}`. A ticket that can't be checked (key set unusable) is answered `INTERNAL` (retryable), a refused one `UNAUTHORIZED`, and with auth off or for a relay peer `NOT_SUPPORTED`. A paused key still renews a grant that may publish the session already holds.

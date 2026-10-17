@@ -33,7 +33,7 @@ import (
 
 // announcePrefix is where publishers opt into the egress: announcing
 // /.hls/live/cam1 asks it to serve the broadcast /live/cam1.
-const announcePrefix = "/.hls/"
+const announcePrefix = token.HLSDirectory
 
 // feedConfig carries the relay subscription parameters, resolved from
 // environment by [Run].

@@ -59,31 +59,23 @@ The broadcast-level `manifest.mpd` redirects to the default track's (`video`, el
 
 Announcing `/.hls/<broadcast>` is what makes a broadcast public: the egress
 serves it over HTTP to anyone who reaches the egress. On a relay with auth on,
-the opt-in is therefore a grant of its own, on a dedicated token:
+the opt-in is a grant the app issues deliberately, on a token of its own:
 
-- **A token rooted under `/.hls/`.** The announcement is publishing at
+- **Rooted under `/.hls/`.** The announcement is publishing at
   `/.hls/acme/room/42/cam`, which a token rooted at `/acme/room/42/` doesn't
-  cover. The opt-in is a separate token, e.g. root `/.hls/acme/room/42/`,
+  cover; the opt-in is a token rooted at, e.g., `/.hls/acme/room/42/` with
   `publish` `/cam`.
-- **Signed by a key whose prefix covers it.** A key confined to `/acme/` can't
-  sign it; use one confined to `/.hls/acme/` (or `/`). A ticket has to be
-  signed by the key of its session's credential, so a client whose session
-  credential comes from the `/acme/` key presents the opt-in on a session of
-  its own.
-- **Issuing it is the authorization.** Nothing checks that the bearer may
-  publish or watch `/acme/room/42/cam` itself: the egress subscribes with its
-  own grant. Issue an opt-in token only for broadcasts the client is meant to
-  make public, typically alongside its own publish grant for the same path.
+- **Signed by the app's own key.** A key confined to `/acme/` also signs for
+  `/.hls/acme/`, so the opt-in needs no other key, and a client presents it
+  as a ticket on the session it publishes on.
+- **The app decides.** Neither the relay nor the egress checks that the
+  bearer publishes `/acme/room/42/cam`: the egress subscribes with its own
+  grant. Issue an opt-in only for a broadcast the app means to make public.
 
 ```bash
-# the key that signs opt-ins, confined to the app's /.hls/ directory
-qumo auth keygen -prefix /.hls/acme/ -out hls-optin.jwk -keys hls-optin-keys.json
-# an opt-in for /acme/room/42/cam
-qumo auth token -key hls-optin.jwk -root /.hls/acme/room/42/ -publish /cam
+# an opt-in for /acme/room/42/cam, signed by the app's key confined to /acme/
+qumo auth token -key signing-key.jwk -root /.hls/acme/room/42/ -publish /cam
 ```
-
-Add the opt-in key's public half (the key in `hls-optin-keys.json`) to the key
-set the relay trusts (`QUMO_AUTH_KEYS`), beside the app's key.
 
 ## Storage: S3 object storage or filesystem
 
