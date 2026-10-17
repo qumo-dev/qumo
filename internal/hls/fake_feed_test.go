@@ -10,9 +10,10 @@ import (
 	"github.com/okdaichi/qumo-ledger/ledger"
 )
 
-// Fakes for the feed's MoQ and ledger seams. feedMedia depends on
-// [mediaSubscriber]/[groupFeeder]/[receivedGroup] rather than a concrete MoQ
-// session, and on [groupAppender] rather than the ledger writer, precisely so
+// Fakes for the feed's MoQ and ledger seams. feedMedia and feedAnnouncedTrack
+// depend on [mediaSubscriber]/[groupFeeder]/[receivedGroup] rather than a
+// concrete MoQ session, and on [groupAppender]/[epochAppender] rather than the
+// ledger writer, precisely so
 // these can drive its orchestration — skip, advance, time out — without a QUIC
 // relay or a store.
 
@@ -20,7 +21,7 @@ var (
 	_ mediaSubscriber = (*fakeSubscriber)(nil)
 	_ groupFeeder     = (*fakeFeeder)(nil)
 	_ receivedGroup   = (*fakeGroup)(nil)
-	_ groupAppender   = (*fakeAppender)(nil)
+	_ epochAppender   = (*fakeAppender)(nil)
 )
 
 // Sentinels a test threads through a fake to assert feedMedia's handling.
@@ -33,13 +34,31 @@ var (
 	errSubscribe = errors.New("subscribe refused")
 )
 
-// fakeSubscriber hands out a canned feeder on subscribe, or a configured error.
-type fakeSubscriber struct {
+// subscribeResult is one SubscribeMedia outcome: a feeder, or an error.
+type subscribeResult struct {
 	feeder groupFeeder
 	err    error
 }
 
+// fakeSubscriber answers each subscribe from results in order; once the queue
+// is down to its last entry, that entry repeats for every further call. With
+// no results it hands out feeder, or err when set. subscribes counts the calls.
+type fakeSubscriber struct {
+	results    []subscribeResult
+	feeder     groupFeeder
+	err        error
+	subscribes int
+}
+
 func (s *fakeSubscriber) SubscribeMedia(context.Context, mediaInfo) (groupFeeder, error) {
+	s.subscribes++
+	if len(s.results) > 0 {
+		r := s.results[0]
+		if len(s.results) > 1 {
+			s.results = s.results[1:]
+		}
+		return r.feeder, r.err
+	}
 	if s.err != nil {
 		return nil, s.err
 	}
@@ -100,11 +119,16 @@ func (g *fakeGroup) ReadFrame(f *moqt.Frame) error {
 
 // fakeAppender records what the feed appended and can refuse a specific call to
 // exercise the skip-on-append path. A call succeeds unless its entry in errs is
-// non-nil; an exhausted errs queue means unconditional success.
+// non-nil; an exhausted errs queue means unconditional success. Each NewEpoch
+// records how many groups had been appended when it ran (epochMarks), so a
+// test can tell which groups each closed epoch holds; it fails with epochErr
+// when set.
 type fakeAppender struct {
-	appended []ledger.GroupInfo
-	payloads [][]byte
-	errs     []error
+	appended   []ledger.GroupInfo
+	payloads   [][]byte
+	errs       []error
+	epochMarks []int
+	epochErr   error
 }
 
 func (a *fakeAppender) AppendGroup(_ context.Context, meta ledger.GroupInfo, payload []byte) (ledger.GroupInfo, error) {
@@ -119,4 +143,12 @@ func (a *fakeAppender) AppendGroup(_ context.Context, meta ledger.GroupInfo, pay
 	a.appended = append(a.appended, meta)
 	a.payloads = append(a.payloads, append([]byte(nil), payload...))
 	return meta, nil
+}
+
+func (a *fakeAppender) NewEpoch(context.Context) error {
+	if a.epochErr != nil {
+		return a.epochErr
+	}
+	a.epochMarks = append(a.epochMarks, len(a.appended))
+	return nil
 }

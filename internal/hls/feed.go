@@ -470,7 +470,7 @@ func handleAnnouncement(ctx context.Context, session *moqt.Session, ann *moqt.An
 		wg.Add(1)
 		go func(at activeTrack) {
 			defer wg.Done()
-			feedAnnouncedTrack(annCtx, session, bEntry, at.m, at.writer, at.live, cfg)
+			feedAnnouncedTrack(annCtx, sessionSubscriber{session}, bEntry, at.m, at.writer, at.live, cfg)
 		}(at)
 	}
 
@@ -485,15 +485,23 @@ const epochCloseTimeout = 10 * time.Second
 
 // feedAnnouncedTrack feeds one track of an announced broadcast for as long as
 // the announcement (ctx) lasts. A feed that ends while the broadcast is still
-// announced — a silent publisher, a refused subscribe — closes its epoch and
-// subscribes again, rather than leaving the track listed in the master
-// playlist with nothing behind it. Closing the epoch as soon as the feed stops
-// empties a manifest scoped to the current lifetime, and gives the next feed
-// its own sequence space: a publisher numbers groups from zero, and appending
-// those to a filled epoch collides with IDs already committed. On return the
-// last epoch is closed, so the manifest stops listing a finished session.
-func feedAnnouncedTrack(ctx context.Context, session *moqt.Session, b *broadcastEntry, m mediaInfo, w *ledger.Writer, live *liveness, cfg feedConfig) {
+// announced — a silent publisher, a refused subscribe — subscribes again,
+// rather than leaving the track listed in the master playlist with nothing
+// behind it. A feed that committed groups closes its epoch first: that empties
+// a manifest scoped to the current lifetime, and gives the next feed its own
+// sequence space, since a publisher numbers groups from zero and appending
+// those to a filled epoch collides with IDs already committed. A feed that
+// committed nothing leaves the epoch open, so a track that keeps failing to
+// subscribe does not fill the ledger with empty epochs. On return an epoch
+// still holding groups is closed, so the manifest stops listing a finished
+// session.
+func feedAnnouncedTrack(ctx context.Context, sub mediaSubscriber, b *broadcastEntry, m mediaInfo, w epochAppender, live *liveness, cfg feedConfig) {
+	// filled records that the current epoch holds groups not yet closed off.
+	var filled bool
 	defer func() {
+		if !filled {
+			return
+		}
 		closeCtx, cancel := context.WithTimeout(context.Background(), epochCloseTimeout)
 		defer cancel()
 		if err := w.NewEpoch(closeCtx); err != nil {
@@ -501,18 +509,23 @@ func feedAnnouncedTrack(ctx context.Context, session *moqt.Session, b *broadcast
 		}
 	}()
 	for {
-		if err := feedMedia(ctx, sessionSubscriber{session}, m, w, live, cfg); err != nil && ctx.Err() == nil {
+		fed := &countingAppender{groupAppender: w}
+		if err := feedMedia(ctx, sub, m, fed, live, cfg); err != nil && ctx.Err() == nil {
 			slog.Warn("hls: track feed ended", "broadcast", m.path, "track", m.name, "err", err)
 		}
+		filled = filled || fed.appended > 0
 		if ctx.Err() != nil {
 			return
 		}
-		if err := w.NewEpoch(ctx); err != nil {
-			// The ledger can't take a restarted feed's groups: unlist the
-			// track rather than serve its stale segments.
-			slog.Error("hls: cannot close the track's epoch; unlisting it", "broadcast", m.path, "track", m.name, "err", err)
-			b.RemoveTrack(string(m.name))
-			return
+		if filled {
+			if err := w.NewEpoch(ctx); err != nil {
+				// The ledger can't take a restarted feed's groups: unlist the
+				// track rather than serve its stale segments.
+				slog.Error("hls: cannot close the track's epoch; unlisting it", "broadcast", m.path, "track", m.name, "err", err)
+				b.RemoveTrack(string(m.name))
+				return
+			}
+			filled = false
 		}
 		select {
 		case <-ctx.Done():
@@ -715,6 +728,28 @@ type groupAppender interface {
 	AppendGroup(ctx context.Context, meta ledger.GroupInfo, payload []byte) (ledger.GroupInfo, error)
 }
 
+// epochAppender is a [groupAppender] whose epochs the caller closes: the
+// announced-track loop starts a new epoch after each feed that wrote groups.
+type epochAppender interface {
+	groupAppender
+	NewEpoch(ctx context.Context) error
+}
+
+// countingAppender counts the groups one feed committed, so the caller can
+// tell a feed that wrote media from one that ended before writing any.
+type countingAppender struct {
+	groupAppender
+	appended int
+}
+
+func (c *countingAppender) AppendGroup(ctx context.Context, meta ledger.GroupInfo, payload []byte) (ledger.GroupInfo, error) {
+	info, err := c.groupAppender.AppendGroup(ctx, meta, payload)
+	if err == nil {
+		c.appended++
+	}
+	return info, err
+}
+
 // sessionSubscriber adapts [moqt.Session] to [mediaSubscriber].
 type sessionSubscriber struct{ sess *moqt.Session }
 
@@ -751,6 +786,8 @@ var (
 	_ groupFeeder     = trackFeeder{}
 	_ receivedGroup   = moqtGroup{}
 	_ groupAppender   = (*ledger.Writer)(nil)
+	_ epochAppender   = (*ledger.Writer)(nil)
+	_ groupAppender   = (*countingAppender)(nil)
 )
 
 // feedMedia subscribes to the media track and relays each received group into
