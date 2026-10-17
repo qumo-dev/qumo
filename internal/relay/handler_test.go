@@ -137,6 +137,38 @@ func TestTrackDistributor_RingBehavior(t *testing.T) {
 // RelayHandler Tests - subscribe() does not hold mu
 // ============================================================================
 
+// A subscriber that opened the upstream subscription starts at the oldest
+// group the ring holds: ingest may have reserved several groups, in any
+// sequence order, before its egress starts. A subscriber joining a running
+// track starts at the newest. startPosition is the position just before the
+// first group delivered.
+func TestTrackDistributor_StartPosition(t *testing.T) {
+	tests := map[string]struct {
+		reserved  []moqt.GroupSequence
+		fromStart bool
+		want      ringPosition
+	}{
+		"opener, empty ring":                  {fromStart: true, want: 0},
+		"joiner, empty ring":                  {fromStart: false, want: 0},
+		"opener, groups arrived out of order": {reserved: []moqt.GroupSequence{9, 8, 7}, fromStart: true, want: 0},
+		"joiner, groups arrived out of order": {reserved: []moqt.GroupSequence{9, 8, 7}, fromStart: false, want: 2},
+		"opener, ring wrapped":                {reserved: []moqt.GroupSequence{1, 2, 3, 4, 5, 6}, fromStart: true, want: 2},
+		"joiner, ring wrapped":                {reserved: []moqt.GroupSequence{1, 2, 3, 4, 5, 6}, fromStart: false, want: 5},
+	}
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			d := newTrackDistributor(newTrackManager(4, nil), "[test-node]/test/video", nil)
+			defer d.fillWg.Wait()
+			defer close(d.fillJobs)
+			for _, seq := range tt.reserved {
+				d.ring.reserve(seq)
+			}
+
+			assert.Equal(t, tt.want, d.startPosition(tt.fromStart))
+		})
+	}
+}
+
 // TestRelayHandler_ConcurrentSubscribe verifies that subscribe() can be called
 // concurrently without deadlock. This is a regression test for a bug where
 // ServeTrack held a mutex during subscribe(), which performs a blocking network
@@ -163,8 +195,9 @@ func TestRelayHandler_ConcurrentSubscribe(t *testing.T) {
 			name := moqt.TrackName(fmt.Sprintf("track-%d", i))
 
 			// Should hit the cache and return immediately
-			tr := h.subscribe(name)
-			_ = tr
+			d, opened := h.subscribe(name)
+			assert.NotNil(t, d)
+			assert.False(t, opened, "a cached distributor was not opened by this call")
 		}()
 	}
 

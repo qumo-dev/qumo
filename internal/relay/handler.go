@@ -370,7 +370,7 @@ func (h *relayHandler) ServeTrack(tw *moqt.TrackWriter) {
 	if d, ok := h.tracks.load(trackID); ok {
 		metricTrackDistributorReusesTotal.WithLabelValues(string(tw.BroadcastPath), string(tw.TrackName)).Inc()
 		logger.Debug("relay: ServeTrack fast path — reusing distributor", "track_id", trackID)
-		d.egress(tw)
+		d.egress(tw, false)
 		return
 	}
 
@@ -378,11 +378,11 @@ func (h *relayHandler) ServeTrack(tw *moqt.TrackWriter) {
 
 	// Dedup: only one upstream subscribe per track name at a time
 	ch := h.flights.DoChan(string(tw.TrackName), func() (any, error) {
-		d := h.subscribe(tw.TrackName)
+		d, opened := h.subscribe(tw.TrackName)
 		if d == nil {
 			return nil, errTrackNotFound
 		}
-		return d, nil
+		return upstreamTrack{d: d, opened: opened}, nil
 	})
 
 	select {
@@ -393,36 +393,48 @@ func (h *relayHandler) ServeTrack(tw *moqt.TrackWriter) {
 			logger.Warn("Track not found, closing track writer")
 			return
 		}
-		result.Val.(*trackDistributor).egress(tw)
+		up := result.Val.(upstreamTrack)
+		up.d.egress(tw, up.opened)
 	case <-tw.Context().Done():
 		// Client unsubscribed before we could subscribe upstream - just return
 		return
 	}
 }
 
-func (h *relayHandler) subscribe(name moqt.TrackName) *trackDistributor {
+// upstreamTrack is the result of a deduplicated upstream subscribe: the
+// distributor, and whether this flight opened its upstream subscription (as
+// opposed to finding a distributor already running).
+type upstreamTrack struct {
+	d      *trackDistributor
+	opened bool
+}
+
+// subscribe returns the distributor for name, opening the upstream
+// subscription if none is running. opened reports whether this call opened it.
+// It returns nil when the track cannot be subscribed.
+func (h *relayHandler) subscribe(name moqt.TrackName) (d *trackDistributor, opened bool) {
 	announcement := h.announcement
 	if announcement == nil {
 		slog.Warn("relay: subscribe failed: announcement is nil", "track", name)
-		return nil
+		return nil, false
 	}
 
 	trackID := "[" + h.nodeID + "]" + string(announcement.BroadcastPath()) + "/" + string(name)
 	if d, ok := h.tracks.load(trackID); ok {
-		return d
+		return d, false
 	}
 
 	session := h.session
 	if session == nil {
 		slog.Warn("relay: subscribe failed: session is nil", "track", name)
-		return nil
+		return nil, false
 	}
 
 	if !announcement.IsActive() {
 		slog.Warn("relay: subscribe failed: announcement inactive",
 			"track", name,
 			"broadcast_path", announcement.BroadcastPath())
-		return nil
+		return nil, false
 	}
 
 	slog.Debug("relay: subscribe — subscribing upstream",
@@ -446,10 +458,10 @@ func (h *relayHandler) subscribe(name moqt.TrackName) *trackDistributor {
 			"broadcast_path", announcement.BroadcastPath(),
 			"track", name,
 			"error", err)
-		return nil
+		return nil, false
 	}
 
-	d := newTrackDistributor(h.tracks, trackID, h.sampler)
+	d = newTrackDistributor(h.tracks, trackID, h.sampler)
 
 	slog.Debug("relay: starting ingest loop",
 		"node", h.nodeID,
@@ -459,7 +471,7 @@ func (h *relayHandler) subscribe(name moqt.TrackName) *trackDistributor {
 
 	h.tracks.store(trackID, d)
 
-	return d
+	return d, true
 }
 
 // trackManager manages the set of active track distributors.
@@ -596,7 +608,12 @@ func (d *trackDistributor) sampleCacheDepth() {
 	metricBufferDepthGroups.WithLabelValues(d.trackID).Set(float64(depth))
 }
 
-func (d *trackDistributor) egress(tw *moqt.TrackWriter) {
+// egress delivers the track's groups to one subscriber until it leaves or the
+// track ends. fromStart is set for the subscribers whose subscribe opened the
+// upstream subscription: they start at the oldest group the ring holds, since
+// every group in it was fetched for them. The others join at the live edge,
+// the newest group.
+func (d *trackDistributor) egress(tw *moqt.TrackWriter, fromStart bool) {
 	twCtx := tw.Context()
 
 	metricSubscribersActive.Inc()
@@ -623,10 +640,7 @@ func (d *trackDistributor) egress(tw *moqt.TrackWriter) {
 	openTO := newOpenTimeout(twCtx)
 	defer openTO.release()
 
-	last := d.ring.head()
-	if last > 0 {
-		last--
-	}
+	last := d.startPosition(fromStart)
 
 	// woken classifies how this subscriber reached the next group (mechanism
 	// instrumentation; free in the default build). true = picked up after a
@@ -742,6 +756,23 @@ func (d *trackDistributor) egress(tw *moqt.TrackWriter) {
 			return
 		}
 	}
+}
+
+// startPosition returns the ring position just before the first group a new
+// subscriber is delivered: the oldest group the ring holds when fromStart,
+// else the newest. Ingest runs from the moment the upstream subscription
+// opens, so by the time the subscriber that opened it reaches its egress the
+// ring may already hold several groups; starting it at the newest would skip
+// the rest.
+func (d *trackDistributor) startPosition(fromStart bool) ringPosition {
+	if fromStart {
+		return d.ring.earliestAvailable() - 1
+	}
+	last := d.ring.head()
+	if last > 0 {
+		last--
+	}
+	return last
 }
 
 // deliverResult is what deliverGroup did with one group.
