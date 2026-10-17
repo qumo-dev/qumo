@@ -26,7 +26,7 @@ func writeSigningKey(tb testing.TB, prefix string) (string, token.SigningKey) {
 	return file, key
 }
 
-func TestNew(t *testing.T) {
+func TestNewUpstream(t *testing.T) {
 	keyFile, _ := writeSigningKey(t, "")
 	roomKeyFile, _ := writeSigningKey(t, "room")
 	tests := map[string]struct {
@@ -44,7 +44,7 @@ func TestNew(t *testing.T) {
 	}
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
-			u, err := New(tt.cfg)
+			u, err := newUpstream(tt.cfg)
 
 			if tt.wantErr != "" {
 				assert.ErrorContains(t, err, tt.wantErr)
@@ -59,7 +59,7 @@ func TestNew(t *testing.T) {
 
 func TestUpstream_Target(t *testing.T) {
 	t.Run("the URL as given", func(t *testing.T) {
-		u, err := New(Config{URL: "https://relay:4433/?jwt=given"})
+		u, err := newUpstream(Config{URL: "https://relay:4433/?jwt=given"})
 		require.NoError(t, err)
 
 		target, _, err := u.target()
@@ -70,7 +70,7 @@ func TestUpstream_Target(t *testing.T) {
 
 	t.Run("a fresh credential on every dial", func(t *testing.T) {
 		keyFile, key := writeSigningKey(t, "")
-		u, err := New(Config{URL: "moqt://relay:4433/?jwt=stale", SigningKeyFile: keyFile, Publish: "/room"})
+		u, err := newUpstream(Config{URL: "moqt://relay:4433/?jwt=stale", SigningKeyFile: keyFile, Publish: "/room"})
 		require.NoError(t, err)
 
 		first, _, err := u.target()

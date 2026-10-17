@@ -82,7 +82,7 @@ func FromEnv(name string, quicConfig *quic.Config) (*Upstream, error) {
 	if relayURL == "" {
 		return nil, nil
 	}
-	return New(Config{
+	return newUpstream(Config{
 		Name:           name,
 		URL:            relayURL,
 		CAFile:         envconfig.String("RELAY_CA_FILE", ""),
@@ -97,7 +97,7 @@ func FromEnv(name string, quicConfig *quic.Config) (*Upstream, error) {
 // whenever one ends, so the relay can subscribe to the broadcasts published
 // on mux. It returns early only when cfg is unusable.
 func Publish(ctx context.Context, cfg Config, mux *moqt.TrackMux) error {
-	u, err := New(cfg)
+	u, err := newUpstream(cfg)
 	if err != nil {
 		return err
 	}
@@ -105,8 +105,8 @@ func Publish(ctx context.Context, cfg Config, mux *moqt.TrackMux) error {
 	return nil
 }
 
-// New checks cfg and loads what the sessions need.
-func New(cfg Config) (*Upstream, error) {
+// newUpstream checks cfg and loads what the sessions need.
+func newUpstream(cfg Config) (*Upstream, error) {
 	if _, err := url.Parse(cfg.URL); err != nil {
 		// url.Parse's *url.Error quotes the whole URL, and its query may
 		// carry a credential; report only the reason it wraps.

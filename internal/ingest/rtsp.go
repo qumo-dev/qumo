@@ -183,7 +183,6 @@ func (s *RTSPServer) handleConn(ctx context.Context, conn *rtsp.Conn) {
 				resp.StatusCode = rtsp.StatusBadRequest
 				break
 			}
-			sdp = rtsp.ParseSDP(string(body))
 			path := moqt.BroadcastPath(req.URL.Path)
 			if path == "" {
 				path = "/live/stream"
@@ -214,6 +213,9 @@ func (s *RTSPServer) handleConn(ctx context.Context, conn *rtsp.Conn) {
 					})
 				}
 			}
+			// Only an authorized ANNOUNCE replaces the description: a refused
+			// one leaves the connection as it was.
+			sdp = rtsp.ParseSDP(string(body))
 			if sess != nil {
 				sess.Close()
 			}
