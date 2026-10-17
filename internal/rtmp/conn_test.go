@@ -2,9 +2,13 @@ package rtmp
 
 import (
 	"bytes"
+	"errors"
 	"io"
 	"net"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // TestChunkBasicHeaderRoundTrip verifies all three basic-header encodings.
@@ -551,5 +555,50 @@ func TestConn_LocalRemoteAddrReal(t *testing.T) {
 	}
 	if conn.RemoteAddr() == nil {
 		t.Fatalf("expected non-nil RemoteAddr")
+	}
+}
+
+func TestConn_AcceptStreamFunc(t *testing.T) {
+	refused := errors.New("no credential")
+	tests := map[string]struct {
+		allowErr error
+		wantErr  error
+	}{
+		"allowed": {},
+		"refused": {allowErr: refused, wantErr: ErrPublishDenied},
+	}
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			serverTransport, clientTransport := net.Pipe()
+			defer serverTransport.Close()
+			defer clientTransport.Close()
+			serverConn := newConn(serverTransport)
+			clientConn := newConn(clientTransport)
+			var gotApp, gotKey string
+			accepted := make(chan error, 1)
+			go func() {
+				_, err := serverConn.AcceptStreamFunc(func(app, streamKey string) error {
+					gotApp, gotKey = app, streamKey
+					return tt.allowErr
+				})
+				accepted <- err
+			}()
+
+			_, err := clientConn.OpenStream("live", "cam?jwt=t")
+			require.NoError(t, err)
+			// The client reads no status after publishing; drain what the
+			// server answers so its write on the pipe completes.
+			go func() { _, _ = io.Copy(io.Discard, clientTransport) }()
+			err = <-accepted
+
+			if tt.wantErr != nil {
+				assert.ErrorIs(t, err, tt.wantErr)
+				assert.ErrorIs(t, err, tt.allowErr, "the check's reason is kept")
+			} else {
+				assert.NoError(t, err)
+			}
+			assert.Equal(t, "live", gotApp)
+			assert.Equal(t, "cam?jwt=t", gotKey, "the stream key as published, query and all")
+		})
 	}
 }

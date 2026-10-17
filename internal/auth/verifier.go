@@ -158,14 +158,15 @@ func (v *Verifier) anonymous(req Request) *Grant {
 }
 
 // Check verifies credential, presented with one request that needs action
-// on the broadcast at path, such as a funnel's: as Authorize verifies a
-// connect, except that the key's pause refuses only creating a track the
-// credential may create, so a paused key's credentials still read, post and
-// redact, and one that may not create is refused for that by the caller. It
-// reports no usage.
+// on the broadcast at path, such as a funnel's or an ingest server's: as
+// Authorize verifies a connect, except that the key's pause refuses only
+// starting what publishes, creating a track or publishing a broadcast the
+// credential may, so a paused key's credentials still read, post and redact,
+// and one that may not is refused for that by the caller. It reports no
+// usage.
 func (v *Verifier) Check(credential string, action token.Action, path moqt.BroadcastPath) (*Grant, error) {
 	g, _, err := v.decide(credential, nil, true, func(g *Grant) bool {
-		return action == token.ActionCreate && g.Allows(token.ActionCreate, path)
+		return (action == token.ActionCreate || action == token.ActionPublish) && g.Allows(action, path)
 	})
 	return g, err
 }

@@ -1,4 +1,4 @@
-package funnel
+package upstream
 
 import (
 	"net/url"
@@ -26,25 +26,25 @@ func writeSigningKey(tb testing.TB, prefix string) (string, token.SigningKey) {
 	return file, key
 }
 
-func TestNewUpstream(t *testing.T) {
+func TestNew(t *testing.T) {
 	keyFile, _ := writeSigningKey(t, "")
 	roomKeyFile, _ := writeSigningKey(t, "room")
 	tests := map[string]struct {
-		cfg     RelayConfig
+		cfg     Config
 		wantErr string
 	}{
-		"a URL alone":                 {cfg: RelayConfig{URL: "https://relay:4433/?jwt=abc"}},
-		"a signing key":               {cfg: RelayConfig{URL: "moqt://relay:4433", SigningKeyFile: keyFile, Publish: "room"}},
-		"an unparsable URL":           {cfg: RelayConfig{URL: "https://relay:port"}, wantErr: "RELAY_URL"},
-		"a key without a path":        {cfg: RelayConfig{URL: "https://relay", SigningKeyFile: keyFile}, wantErr: "set together"},
-		"a path without a key":        {cfg: RelayConfig{URL: "https://relay", Publish: "room"}, wantErr: "set together"},
-		"a missing key file":          {cfg: RelayConfig{URL: "https://relay", SigningKeyFile: "no-such.jwk", Publish: "room"}, wantErr: "RELAY_SIGNING_KEY"},
-		"a path outside the key":      {cfg: RelayConfig{URL: "https://relay", SigningKeyFile: roomKeyFile, Publish: "live"}, wantErr: "RELAY_PUBLISH"},
-		"a CA file that is not there": {cfg: RelayConfig{URL: "https://relay", CAFile: "no-such.pem"}, wantErr: "relay TLS"},
+		"a URL alone":                 {cfg: Config{URL: "https://relay:4433/?jwt=abc"}},
+		"a signing key":               {cfg: Config{URL: "moqt://relay:4433", SigningKeyFile: keyFile, Publish: "room"}},
+		"an unparsable URL":           {cfg: Config{URL: "https://relay:port"}, wantErr: "RELAY_URL"},
+		"a key without a path":        {cfg: Config{URL: "https://relay", SigningKeyFile: keyFile}, wantErr: "set together"},
+		"a path without a key":        {cfg: Config{URL: "https://relay", Publish: "room"}, wantErr: "set together"},
+		"a missing key file":          {cfg: Config{URL: "https://relay", SigningKeyFile: "no-such.jwk", Publish: "room"}, wantErr: "RELAY_SIGNING_KEY"},
+		"a path outside the key":      {cfg: Config{URL: "https://relay", SigningKeyFile: roomKeyFile, Publish: "live"}, wantErr: "RELAY_PUBLISH"},
+		"a CA file that is not there": {cfg: Config{URL: "https://relay", CAFile: "no-such.pem"}, wantErr: "relay TLS"},
 	}
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
-			u, err := newUpstream(tt.cfg)
+			u, err := New(tt.cfg)
 
 			if tt.wantErr != "" {
 				assert.ErrorContains(t, err, tt.wantErr)
@@ -59,7 +59,7 @@ func TestNewUpstream(t *testing.T) {
 
 func TestUpstream_Target(t *testing.T) {
 	t.Run("the URL as given", func(t *testing.T) {
-		u, err := newUpstream(RelayConfig{URL: "https://relay:4433/?jwt=given"})
+		u, err := New(Config{URL: "https://relay:4433/?jwt=given"})
 		require.NoError(t, err)
 
 		target, _, err := u.target()
@@ -70,7 +70,7 @@ func TestUpstream_Target(t *testing.T) {
 
 	t.Run("a fresh credential on every dial", func(t *testing.T) {
 		keyFile, key := writeSigningKey(t, "")
-		u, err := newUpstream(RelayConfig{URL: "moqt://relay:4433/?jwt=stale", SigningKeyFile: keyFile, Publish: "/room"})
+		u, err := New(Config{URL: "moqt://relay:4433/?jwt=stale", SigningKeyFile: keyFile, Publish: "/room"})
 		require.NoError(t, err)
 
 		first, _, err := u.target()
@@ -101,7 +101,7 @@ func TestRelayName(t *testing.T) {
 	}
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
-			assert.Equal(t, tt.want, relayName(tt.url))
+			assert.Equal(t, tt.want, RelayName(tt.url))
 		})
 	}
 }

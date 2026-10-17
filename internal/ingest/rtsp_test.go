@@ -2,6 +2,7 @@ package ingest
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net"
 	"net/url"
@@ -21,14 +22,16 @@ import (
 // server.
 const testH264SDP = "v=0\r\no=- 0 0 IN IP4 127.0.0.1\r\ns=No Name\r\nc=IN IP4 127.0.0.1\r\nt=0 0\r\na=tool:libavformat 58.76.100\r\nm=video 0 RTP/AVP 96\r\na=rtpmap:96 H264/90000\r\na=fmtp:96 packetization-mode=1; sprop-parameter-sets=Z2QAH6zZQPARab1g,aOvjyyLA; profile-level-id=4D401F\r\na=control:streamid=0\r\n"
 
-// startRTSPServer stands up an RTSPServer on an ephemeral loopback port and
-// returns the bound address once it is listening. The server (and its
+// startRTSPServer stands up an RTSPServer checking pushes with authorize (nil:
+// none) on an ephemeral loopback port and returns the bound address once it is
+// listening. The server (and its
 // ListenAndServe goroutine) are torn down on test cleanup.
-func startRTSPServer(t *testing.T) (*RTSPServer, net.Addr) {
+func startRTSPServer(t *testing.T, authorize PublishAuthorizer) (*RTSPServer, net.Addr) {
 	t.Helper()
 	server := NewRTSPServer(RTSPConfig{
-		Addr:     "127.0.0.1:0",
-		TrackMux: moqt.NewTrackMux(0),
+		Addr:      "127.0.0.1:0",
+		TrackMux:  moqt.NewTrackMux(0),
+		Authorize: authorize,
 	})
 	ctx, cancel := context.WithCancel(context.Background())
 	errCh := make(chan error, 1)
@@ -94,7 +97,7 @@ func doRequest(t *testing.T, rc *rtsp.Conn, req *rtsp.Request) *rtsp.Response {
 // is stateful), so they are not independent cases. Independent behavior is
 // covered by TestRTSPServer_RejectsBadRequests below.
 func TestRTSPServer_SessionLifecycle(t *testing.T) {
-	_, addr := startRTSPServer(t)
+	_, addr := startRTSPServer(t, nil)
 	rc := dialRTSP(t, addr)
 
 	// OPTIONS
@@ -135,7 +138,7 @@ func TestRTSPServer_SessionLifecycle(t *testing.T) {
 // paths. Each case is independent: its own connection and a single malformed
 // request, so no case depends on another's state.
 func TestRTSPServer_RejectsBadRequests(t *testing.T) {
-	_, addr := startRTSPServer(t)
+	_, addr := startRTSPServer(t, nil)
 
 	cases := map[string]struct {
 		method rtsp.Method
@@ -182,7 +185,7 @@ func TestRTSPServer_RejectsBadRequests(t *testing.T) {
 // earlier sdp/session precondition), so it is a two-request sequence rather than
 // a single-shot case.
 func TestRTSPServer_RejectsNonInterleavedTransport(t *testing.T) {
-	_, addr := startRTSPServer(t)
+	_, addr := startRTSPServer(t, nil)
 	rc := dialRTSP(t, addr)
 
 	// ANNOUNCE first so SETUP reaches the transport validation.
@@ -196,4 +199,57 @@ func TestRTSPServer_RejectsNonInterleavedTransport(t *testing.T) {
 	req = newRequest(t, rtsp.MethodSetup, addr, "/teststream/streamid=0", 2)
 	req.Header.Set("Transport", "RTP/AVP;unicast") // no interleaved=
 	assert.Equal(t, rtsp.StatusUnsupportedTransport, doRequest(t, rc, req).StatusCode)
+}
+
+// announce sends an ANNOUNCE of testH264SDP to addr/target on rc and returns
+// the response.
+func announce(t *testing.T, rc *rtsp.Conn, addr net.Addr, target string) *rtsp.Response {
+	t.Helper()
+	req := newRequest(t, rtsp.MethodAnnounce, addr, target, 1)
+	req.Header.Set("Content-Type", "application/sdp")
+	req.Header.Set("Content-Length", strconv.Itoa(len(testH264SDP)))
+	req.Body = io.NopCloser(strings.NewReader(testH264SDP))
+	return doRequest(t, rc, req)
+}
+
+func TestRTSPServer_Authorize(t *testing.T) {
+	tests := map[string]struct {
+		err        error
+		wantStatus int
+	}{
+		"accepted": {wantStatus: rtsp.StatusOK},
+		"refused":  {err: errors.New("no grant"), wantStatus: rtsp.StatusUnauthorized},
+	}
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			authorize := &fakePublishAuthorizer{err: tt.err}
+			_, addr := startRTSPServer(t, authorize.authorize)
+			rc := dialRTSP(t, addr)
+
+			resp := announce(t, rc, addr, "/live/cam?jwt=tok")
+
+			assert.Equal(t, tt.wantStatus, resp.StatusCode)
+			assert.Equal(t, []publishAsk{{credential: "tok", path: "/live/cam"}}, authorize.questions(),
+				"the credential from the URL's query, the path without it")
+		})
+	}
+}
+
+// TestRTSPServer_Authorize_CutsAtLapse verifies a push is cut when its
+// permission lapses.
+func TestRTSPServer_Authorize_CutsAtLapse(t *testing.T) {
+	authorize := &fakePublishAuthorizer{lapses: time.Now().Add(200 * time.Millisecond)}
+	_, addr := startRTSPServer(t, authorize.authorize)
+	rc := dialRTSP(t, addr)
+	require.Equal(t, rtsp.StatusOK, announce(t, rc, addr, "/live/cam?jwt=tok").StatusCode)
+
+	// The server closes the connection, so a request on it fails.
+	assert.Eventually(t, func() bool {
+		req := newRequest(t, rtsp.MethodOptions, addr, "/live/cam", 2)
+		if err := rc.WriteRequest(req); err != nil {
+			return true
+		}
+		_, _, err := rc.ReadResponse(req)
+		return err != nil
+	}, 3*time.Second, 50*time.Millisecond)
 }

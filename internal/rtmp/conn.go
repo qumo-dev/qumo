@@ -560,6 +560,16 @@ func (c *Conn) readNextCommand() (name string, txID float64, args []any, err err
 // The returned [MessageReader] exposes the application name and stream key
 // provided by the client.
 func (c *Conn) AcceptStream() (*MessageReader, error) {
+	return c.AcceptStreamFunc(nil)
+}
+
+// AcceptStreamFunc is [Conn.AcceptStream] with a check of the publish: allow
+// is called with the application name and stream key before the publish is
+// answered. An error from allow answers it with a NetStream.Publish.Denied
+// status instead of NetStream.Publish.Start, and AcceptStreamFunc returns
+// that error wrapped in [ErrPublishDenied]. A nil allow accepts every
+// publish.
+func (c *Conn) AcceptStreamFunc(allow func(app, streamKey string) error) (*MessageReader, error) {
 	var (
 		activeStreamID messageStreamID
 		app            string
@@ -616,6 +626,21 @@ func (c *Conn) AcceptStream() (*MessageReader, error) {
 			sid := msg.streamID
 			if sid == 0 {
 				sid = activeStreamID
+			}
+			if allow != nil {
+				if denied := allow(app, pubName); denied != nil {
+					// The reason stays on this side: the stream key may carry
+					// a credential, and the description is the client's to show.
+					status := map[string]any{
+						"level":       "error",
+						"code":        "NetStream.Publish.Denied",
+						"description": "publishing was refused",
+					}
+					if err := c.sendCommand(sid, commandMessageNameOnStatus, 0, nil, status); err != nil {
+						return nil, err
+					}
+					return nil, fmt.Errorf("%w: %w", ErrPublishDenied, denied)
+				}
 			}
 			if err := c.sendStreamBegin(uint32(sid)); err != nil {
 				return nil, err

@@ -32,7 +32,6 @@ import (
 	"log"
 	"log/slog"
 	"net/http"
-	"net/url"
 	"os"
 	"os/signal"
 	"strconv"
@@ -50,6 +49,7 @@ import (
 	"github.com/qumo-dev/qumo/internal/cors"
 	"github.com/qumo-dev/qumo/internal/envconfig"
 	"github.com/qumo-dev/qumo/internal/quicconfig"
+	"github.com/qumo-dev/qumo/internal/upstream"
 )
 
 const (
@@ -108,19 +108,9 @@ func Run(_ []string) error {
 	}
 	quicconfig.LogEnvSet("funnel")
 
-	var up *upstream
-	if relayURL != "" {
-		up, err = newUpstream(RelayConfig{
-			URL:            relayURL,
-			CAFile:         envconfig.String("RELAY_CA_FILE", ""),
-			Insecure:       envconfig.String("RELAY_TLS_INSECURE", "false") == "true",
-			SigningKeyFile: envconfig.String("RELAY_SIGNING_KEY", ""),
-			Publish:        envconfig.String("RELAY_PUBLISH", ""),
-			QUIC:           quicConfig,
-		})
-		if err != nil {
-			return fmt.Errorf("funnel: %w", err)
-		}
+	up, err := upstream.FromEnv("funnel", quicConfig)
+	if err != nil {
+		return fmt.Errorf("funnel: %w", err)
 	}
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -153,7 +143,7 @@ func Run(_ []string) error {
 		Verifier:       verifier,
 		SenderLimit:    senderLimit,
 		TrackLimit:     trackLimit,
-		PublishBeneath: up.publishBeneath(),
+		PublishBeneath: up.PublishBeneath(),
 	})
 	if err != nil {
 		return err
@@ -165,7 +155,7 @@ func Run(_ []string) error {
 	}
 
 	log.Println("	Ingest  :", ingestAddr)
-	log.Println("	Relay   :", relayName(relayURL))
+	log.Println("	Relay   :", upstream.RelayName(relayURL))
 	log.Println("	Serve   :", orNone(serveAddr))
 	log.Println("	Ledger  :", objects)
 	log.Println("	Auth    :", authName)
@@ -180,7 +170,7 @@ func Run(_ []string) error {
 	if up != nil {
 		go func() {
 			defer close(upstreamDone)
-			up.run(ctx, trackMux)
+			up.Run(ctx, trackMux)
 		}()
 	} else {
 		close(upstreamDone)
@@ -230,18 +220,6 @@ func newMOQTServer(addr string, trackMux *moqt.TrackMux, allowedOrigins []string
 		WebTransportServer: moqt.NewWebTransportServer(mux),
 		TrackMux:           trackMux,
 	}
-}
-
-// relayName describes RELAY_URL for the startup log without its credential.
-func relayName(relayURL string) string {
-	if relayURL == "" {
-		return "none"
-	}
-	u, err := url.Parse(relayURL)
-	if err != nil {
-		return "invalid"
-	}
-	return u.Scheme + "://" + u.Host + u.Path
 }
 
 func orNone(s string) string {

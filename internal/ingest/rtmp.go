@@ -2,8 +2,11 @@ package ingest
 
 import (
 	"context"
+	"errors"
 	"log/slog"
+	"net"
 	"sync"
+	"time"
 
 	"github.com/qumo-dev/gomoqt/moqt"
 	"github.com/qumo-dev/qumo/internal/rtmp"
@@ -16,6 +19,12 @@ type RTMPConfig struct {
 
 	// TrackMux is the MoQT multiplexer where ingested streams are announced.
 	TrackMux *moqt.TrackMux
+
+	// Authorize, when set, decides whether each publish may go ahead, from
+	// the ?jwt= its stream key (or app) carries; a refused one is answered
+	// NetStream.Publish.Denied. The stream is cut when the permission
+	// lapses. Nil accepts every publish.
+	Authorize PublishAuthorizer
 }
 
 // RTMPServer accepts RTMP publish connections and bridges each stream to
@@ -73,6 +82,18 @@ func (s *RTMPServer) ListenAndServe(ctx context.Context) error {
 	}
 }
 
+// Addr returns the address the server is listening on, or nil before
+// ListenAndServe has bound the listener. Lets a caller that configured
+// Addr ":0" learn the actual bound address.
+func (s *RTMPServer) Addr() net.Addr {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.listener == nil {
+		return nil
+	}
+	return s.listener.Addr()
+}
+
 // Close stops the RTMP listener and cancels all active connections
 // immediately.
 func (s *RTMPServer) Close() error {
@@ -122,17 +143,40 @@ func (s *RTMPServer) Shutdown(ctx context.Context) error {
 func (s *RTMPServer) handleConn(ctx context.Context, conn *rtmp.Conn) {
 	defer conn.Close()
 
-	mr, err := conn.AcceptStream()
+	var (
+		path   moqt.BroadcastPath
+		lapses time.Time
+	)
+	mr, err := conn.AcceptStreamFunc(func(app, streamKey string) error {
+		var credential string
+		path, credential = rtmpTarget(app, streamKey)
+		if s.config.Authorize == nil {
+			return nil
+		}
+		var err error
+		lapses, err = s.config.Authorize(credential, path)
+		return err
+	})
 	if err != nil {
+		// The path, never the stream key: that may carry the credential.
 		slog.Warn("failed to accept RTMP stream",
 			"remote", conn.RemoteAddr(),
+			"broadcast_path", path,
 			"error", err,
 		)
 		return
 	}
 	defer mr.Close()
 
-	path := moqt.BroadcastPath("/" + mr.App() + "/" + mr.StreamKey())
+	ctx, cancel := untilLapse(ctx, lapses)
+	defer cancel()
+	// A read blocked on the connection doesn't see ctx end; closing the
+	// connection ends it.
+	defer context.AfterFunc(ctx, func() {
+		// not actionable: the connection is being torn down either way.
+		_ = conn.Close()
+	})()
+
 	sess, err := NewSession(s.config.TrackMux, path)
 	if err != nil {
 		slog.Warn("failed to create ingest session",
@@ -158,6 +202,12 @@ func (s *RTMPServer) handleConn(ctx context.Context, conn *rtmp.Conn) {
 	)
 
 	ingestRTMP(ctx, mr, sess)
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		slog.Info("RTMP ingest cut: the publisher's credential lapsed",
+			"remote", conn.RemoteAddr(),
+			"broadcast_path", path,
+		)
+	}
 }
 
 // ingestRTMP reads frames from an RTMP MessageReader and pushes them

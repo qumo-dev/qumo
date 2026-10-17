@@ -38,11 +38,25 @@ WARN RTSP pull disconnected, reconnecting error="dial: rtsp: dial 192.168.1.50:5
 WARN RTSP pull disconnected, reconnecting error="dial: rtsp: dial 192.168.1.50:554: ..." backoff=4s
 ```
 
+## Publishing through a relay
+
+With `RELAY_URL` set, the server publishes what it ingests through that relay,
+as a client, and the relay serves viewers — and checks their credentials. It
+then opens no MoQT listener of its own unless `RTSP_SERVE_ADDR` is set: that
+listener checks no subscriber, so with auth on, viewers go through the relay.
+
+```console
+$ RELAY_URL=moqt://relay:4433 RELAY_SIGNING_KEY=ingest-key.jwk RELAY_PUBLISH=/live/ qumo rtsp rtsp://camera/stream /live/camera
+```
+
 ## Configuration
 
 | Variable | Default | Description |
 |---|---|---|
-| `RTSP_SERVE_ADDR` | `:4433` | MoQT listen address. |
+| `RTSP_SERVE_ADDR` | `:4433`; none with `RELAY_URL` | MoQT listen address for subscribers to dial directly. |
+| `RELAY_URL` | (unset) | The relay to publish through, dialed as a client (`https://…` or `moqt://…`); it may carry a credential as `?jwt=`. |
+| `RELAY_SIGNING_KEY`, `RELAY_PUBLISH` | (unset) | Set together: a signing key (`qumo auth keygen`) the server signs a fresh relay credential with on every dial and renews on the session, granting publishing beneath the directory `RELAY_PUBLISH`. A push outside it is refused. |
+| `RELAY_CA_FILE` / `RELAY_TLS_INSECURE` | (unset) / `false` | Trust this PEM as the relay's root, or skip verification for a self-signed dev relay. |
 | `CERT_FILE` / `KEY_FILE` | `certs/server.crt` / `certs/server.key` | TLS certificate and key. |
 | `CORS_ALLOWED_ORIGINS` | (unset) | Comma-separated WebTransport origins (default: same-origin only; `*` allows any). |
 
