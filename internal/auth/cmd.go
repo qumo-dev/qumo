@@ -54,14 +54,14 @@ func prefixLabel(prefix string) string {
 	if prefix == "/" {
 		return "any root (no prefix)"
 	}
-	return "a root at or beneath " + prefix
+	return "a root at or beneath " + prefix + " or its HLS opt-in " + token.HLSDirectory + strings.TrimPrefix(prefix, "/")
 }
 
 // runKeygen writes a new signing key pair: the private key, for the app that
 // signs tokens, and a key set holding its public key, for the relay.
 func runKeygen(args []string, out io.Writer) error {
 	fs := flag.NewFlagSet("qumo auth keygen", flag.ContinueOnError)
-	prefix := fs.String("prefix", "/", "confine the key to this directory (e.g. /acme/app/); / for none")
+	prefix := fs.String("prefix", "/", "confine the key to this directory (e.g. /acme/app/) and its HLS opt-in mirror (/.hls/acme/app/); / for none")
 	privPath := fs.String("out", "signing-key.jwk", "where to write the private signing key (keep it on the app's server)")
 	pubPath := fs.String("keys", "keys.json", "where to write the public key set (QUMO_AUTH_KEYS)")
 	if err := fs.Parse(args); err != nil {

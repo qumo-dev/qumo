@@ -181,7 +181,7 @@ func TestRunKeygen_SaysWhatTheKeyGrants(t *testing.T) {
 		prefix string
 		want   []string
 	}{
-		"a prefix": {prefix: "acme/app", want: []string{"a root at or beneath /acme/app/", "-root /acme/app/ -publish /demo"}},
+		"a prefix": {prefix: "acme/app", want: []string{"a root at or beneath /acme/app/ or its HLS opt-in /.hls/acme/app/", "-root /acme/app/ -publish /demo"}},
 		"none":     {want: []string{"any root (no prefix)", "-root / -publish /demo"}},
 	}
 	for name, tt := range tests {

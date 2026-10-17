@@ -33,15 +33,10 @@ function defaultPathFor(scenario: ScenarioId): string {
 			return `/rtsp/${broadcastId}`;
 		case "camera":
 			return `/live/camera`;
-		// Fixed for the same reason as camera: an out-of-band process has to
-		// find this path. `qumo hls` is configured with it before the page
-		// exists, so a per-session id would mean reconfiguring the egress after
-		// every reload — and until you did, it would sit retrying a broadcast
-		// nobody publishes to. Two people on one relay would collide here, but a
-		// single egress serves a single path anyway, so this scenario is
-		// one-at-a-time regardless; ?path= still overrides.
+		// The publisher also announces this path beneath /.hls/, which is how
+		// `qumo hls` learns to serve it: no egress configuration per path.
 		case "hls":
-			return `/hls/live`;
+			return `/hls/${broadcastId}`;
 	}
 }
 

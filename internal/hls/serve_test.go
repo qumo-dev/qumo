@@ -2,7 +2,6 @@ package hls
 
 import (
 	"context"
-	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -47,25 +46,18 @@ func Test_serve_playlist(t *testing.T) {
 		InitSegment: stream.InitSegment{Bytes: []byte("init-bytes")},
 	})
 	require.NoError(t, err)
-	ts := httptest.NewServer(handler)
-	defer ts.Close()
-
 	// The playlist references the groups by their GroupID.
-	resp, err := http.Get(ts.URL + "/playlist.m3u8")
-	require.NoError(t, err)
-	body, err := io.ReadAll(resp.Body)
-	resp.Body.Close()
-	require.NoError(t, err)
-	require.Equal(t, http.StatusOK, resp.StatusCode)
-	assert.Contains(t, string(body), "#EXT-X-PLAYLIST-TYPE:EVENT")
-	assert.Contains(t, string(body), "e000001-g00000000.m4s")
+	req := httptest.NewRequest(http.MethodGet, "/playlist.m3u8", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code)
+	assert.Contains(t, rec.Body.String(), "#EXT-X-PLAYLIST-TYPE:EVENT")
+	assert.Contains(t, rec.Body.String(), "e000001-g00000000.m4s")
 
 	// A segment request resolves to its appended bytes (proxy delivery).
-	resp, err = http.Get(ts.URL + "/e000001-g00000000.m4s")
-	require.NoError(t, err)
-	seg, err := io.ReadAll(resp.Body)
-	resp.Body.Close()
-	require.NoError(t, err)
-	assert.Equal(t, http.StatusOK, resp.StatusCode)
-	assert.Equal(t, []byte("segment-0"), seg)
+	req = httptest.NewRequest(http.MethodGet, "/e000001-g00000000.m4s", nil)
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	assert.Equal(t, http.StatusOK, rec.Code)
+	assert.Equal(t, []byte("segment-0"), rec.Body.Bytes())
 }

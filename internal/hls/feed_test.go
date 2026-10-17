@@ -77,6 +77,46 @@ func Test_packagerForTrack(t *testing.T) {
 	assert.Error(t, err, "no picture size")
 }
 
+// discoverMediaTracks finds all tracks in a catalog that can be packaged into CMAF.
+func Test_discoverMediaTracks(t *testing.T) {
+	w1, h1 := int64(1920), int64(1080)
+	w2, h2 := int64(640), int64(360)
+	br1 := int64(4_500_000)
+	cat := msf.Catalog{
+		Tracks: []msf.Track{
+			{
+				Name:      "video-high",
+				Role:      msf.RoleVideo,
+				Packaging: msf.PackagingLOC,
+				Codec:     "vp09.00.10.08",
+				Width:     &w1,
+				Height:    &h1,
+				Bitrate:   &br1,
+			},
+			{
+				Name:      "video-low",
+				Role:      msf.RoleVideo,
+				Packaging: msf.PackagingLOC,
+				Codec:     "vp09.00.10.08",
+				Width:     &w2,
+				Height:    &h2,
+			},
+			{
+				Name: "invalid-track-no-size",
+			},
+		},
+	}
+
+	tracks := discoverMediaTracks(cat, "/live/cam1")
+	require.Len(t, tracks, 2)
+	assert.Equal(t, "video-high", string(tracks[0].name))
+	assert.Equal(t, uint16(1920), tracks[0].width)
+	assert.Equal(t, uint16(1080), tracks[0].height)
+	assert.Equal(t, int64(4_500_000), tracks[0].bitrate)
+	assert.Equal(t, "video-low", string(tracks[1].name))
+	assert.Equal(t, uint16(640), tracks[1].width)
+}
+
 // initFromTrack base64-decodes the catalog's InitDataList entry the track's
 // initRef points at (the fMP4 init), tolerating its absence or malformed values.
 func Test_initFromTrack(t *testing.T) {
@@ -114,15 +154,6 @@ func Test_wallclockAt(t *testing.T) {
 			assert.Equal(t, tt.want, wallclockAt(anchor, tt.mediaTime, timescale))
 		})
 	}
-}
-
-// findTrack selects a track by name from the catalog.
-func Test_findTrack(t *testing.T) {
-	c := msf.Catalog{Tracks: []msf.Track{{Name: "video"}, {Name: "audio"}}}
-
-	require.NotNil(t, findTrack(c, "video"))
-	assert.Equal(t, "video", findTrack(c, "video").Name)
-	assert.Nil(t, findTrack(c, "missing"))
 }
 
 // testMediaInfo is a media track the real VP9 packager can describe, so the
