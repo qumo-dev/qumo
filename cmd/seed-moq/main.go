@@ -97,6 +97,9 @@ func main() {
 	// The broadcast is itself a TrackHandler: it serves the catalog track and
 	// dispatches media-track subscribes to the registered handler.
 	mux.Publish(ctx, moqt.BroadcastPath(path), broadcast)
+	// Opt the broadcast into the HLS egress, which serves what is announced
+	// beneath /.hls/; the announcement carries no tracks of its own.
+	mux.Publish(ctx, moqt.BroadcastPath("/.hls"+path), moqt.NotFoundTrackHandler)
 
 	httpMux := http.NewServeMux()
 	httpMux.Handle("/", &moqt.WebTransportHandler{

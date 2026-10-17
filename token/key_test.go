@@ -228,3 +228,32 @@ func TestLoadKeySet_MissingFile(t *testing.T) {
 
 	assert.ErrorContains(t, err, "read")
 }
+
+// Holds is what the relay re-checks a live session's tickets with, so it
+// must agree with Sign: the key's prefix and its /.hls/ mirror, at a "/"
+// boundary, and nothing else.
+func TestKey_Holds(t *testing.T) {
+	tests := map[string]struct {
+		prefix string
+		root   string
+		want   bool
+	}{
+		"the empty root":                  {prefix: "/acme/", root: "", want: true},
+		"any root for an unconfined key":  {prefix: "/", root: "/other/x/", want: true},
+		"the prefix itself":               {prefix: "/acme/", root: "/acme/", want: true},
+		"beneath the prefix":              {prefix: "/acme/", root: "/acme/room/42/", want: true},
+		"beneath the HLS mirror":          {prefix: "/acme/", root: "/.hls/acme/room/42/", want: true},
+		"the HLS mirror itself":           {prefix: "/acme/", root: "/.hls/acme/", want: true},
+		"a sibling sharing a name prefix": {prefix: "/acme/", root: "/acme2/", want: false},
+		"a sibling of the mirror":         {prefix: "/acme/", root: "/.hls/acme2/", want: false},
+		"above the prefix":                {prefix: "/acme/", root: "/", want: false},
+		"above the mirror":                {prefix: "/acme/", root: "/.hls/", want: false},
+		"another tenant's mirror":         {prefix: "/acme/", root: "/.hls/other/", want: false},
+		"a mirror of the mirror":          {prefix: "/acme/", root: "/.hls/.hls/acme/", want: false},
+	}
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			assert.Equal(t, tt.want, Key{Prefix: tt.prefix}.Holds(tt.root))
+		})
+	}
+}
