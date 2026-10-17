@@ -8,4 +8,7 @@ var (
 	ErrServerRejected       = errors.New("rtmp: server rejected")
 	ErrCreateStreamRejected = errors.New("rtmp: createStream rejected")
 	ErrUnsupportedFrameType = errors.New("rtmp: unsupported frame type")
+	// ErrPublishDenied is returned by [Conn.AcceptStreamFunc] when its check
+	// refuses a publish.
+	ErrPublishDenied = errors.New("rtmp: publish denied")
 )

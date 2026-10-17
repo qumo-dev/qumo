@@ -10,6 +10,7 @@ import (
 	"net"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/qumo-dev/gomoqt/moqt"
 	"github.com/qumo-dev/qumo/internal/rtsp"
@@ -22,6 +23,12 @@ type RTSPConfig struct {
 
 	// TrackMux is the MoQT multiplexer where ingested streams are announced.
 	TrackMux *moqt.TrackMux
+
+	// Authorize, when set, decides whether each ANNOUNCE may publish, from
+	// the ?jwt= its URL carries; a refused one is answered 401. The
+	// connection is cut when the permission lapses. Nil accepts every
+	// ANNOUNCE.
+	Authorize PublishAuthorizer
 }
 
 // RTSPServer accepts RTSP push connections and bridges each stream to
@@ -126,6 +133,20 @@ func (s *RTSPServer) handleConn(ctx context.Context, conn *rtsp.Conn) {
 		}
 	}()
 
+	// A read blocked on the connection doesn't see ctx end; closing the
+	// connection ends it. cut closes it when the publisher's permission
+	// lapses.
+	defer context.AfterFunc(ctx, func() {
+		// not actionable: the connection is being torn down either way.
+		_ = conn.Close()
+	})()
+	var cut *time.Timer
+	defer func() {
+		if cut != nil {
+			cut.Stop()
+		}
+	}()
+
 	for {
 		req, frame, err := conn.ReadRequest()
 		if err != nil {
@@ -162,11 +183,39 @@ func (s *RTSPServer) handleConn(ctx context.Context, conn *rtsp.Conn) {
 				resp.StatusCode = rtsp.StatusBadRequest
 				break
 			}
-			sdp = rtsp.ParseSDP(string(body))
 			path := moqt.BroadcastPath(req.URL.Path)
 			if path == "" {
 				path = "/live/stream"
 			}
+			if s.config.Authorize != nil {
+				lapses, err := s.config.Authorize(req.URL.Query().Get("jwt"), path)
+				if err != nil {
+					slog.Warn("RTSP publish refused",
+						"remote", conn.RemoteAddr(),
+						"broadcast_path", path,
+						"error", err,
+					)
+					resp.StatusCode = rtsp.StatusUnauthorized
+					break
+				}
+				if cut != nil {
+					cut.Stop()
+					cut = nil
+				}
+				if !lapses.IsZero() {
+					cut = time.AfterFunc(time.Until(lapses), func() {
+						slog.Info("RTSP ingest cut: the publisher's credential lapsed",
+							"remote", conn.RemoteAddr(),
+							"broadcast_path", path,
+						)
+						// not actionable: the connection is being cut.
+						_ = conn.Close()
+					})
+				}
+			}
+			// Only an authorized ANNOUNCE replaces the description: a refused
+			// one leaves the connection as it was.
+			sdp = rtsp.ParseSDP(string(body))
 			if sess != nil {
 				sess.Close()
 			}

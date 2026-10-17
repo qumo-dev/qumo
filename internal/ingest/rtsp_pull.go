@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"net/http"
 	"net/url"
 	"os"
 	"os/signal"
@@ -15,10 +14,9 @@ import (
 
 	"github.com/quic-go/quic-go"
 	"github.com/qumo-dev/gomoqt/moqt"
-	"github.com/qumo-dev/qumo/internal/cors"
-	"github.com/qumo-dev/qumo/internal/envconfig"
 	"github.com/qumo-dev/qumo/internal/quicconfig"
 	"github.com/qumo-dev/qumo/internal/rtsp"
+	"github.com/qumo-dev/qumo/internal/upstream"
 )
 
 // RunRTSPPull connects to an RTSP source (e.g. an IP camera), pulls the stream
@@ -31,7 +29,9 @@ import (
 //
 //	args[0]           RTSP source URL (rtsp://[user:pass@]host/path)
 //	args[1] (opt)     broadcast path (default /live/camera)
-//	RTSP_SERVE_ADDR   MoQT listen address (default :4433)
+//	RTSP_SERVE_ADDR   MoQT listen address for subscribers to dial directly (default :4433 without RELAY_URL, none with it)
+//	RELAY_URL, RELAY_SIGNING_KEY, RELAY_PUBLISH, RELAY_CA_FILE, RELAY_TLS_INSECURE
+//	                  the relay to publish through (upstream.FromEnv lists them)
 //	CERT_FILE         TLS certificate (default certs/server.crt)
 //	KEY_FILE          TLS key (default certs/server.key)
 //	CORS_ALLOWED_ORIGINS  comma-separated WebTransport origins
@@ -44,15 +44,18 @@ func RunRTSPPull(args []string) error {
 	if len(args) > 1 {
 		path = args[1]
 	}
-	serveAddr := envconfig.String("RTSP_SERVE_ADDR", defaultRTMPServeAddr)
-	certFile := envconfig.String("CERT_FILE", "certs/server.crt")
-	keyFile := envconfig.String("KEY_FILE", "certs/server.key")
-	allowedOrigins := cors.LoadAllowed()
 	quicConfig, err := quicconfig.FromEnv(nil)
 	if err != nil {
 		return err
 	}
 	quicconfig.LogEnvSet("rtsp")
+	out, err := originFromEnv("rtsp", "RTSP_SERVE_ADDR", quicConfig)
+	if err != nil {
+		return err
+	}
+	if beneath := out.up.PublishBeneath(); beneath != "" && !strings.HasPrefix(path, beneath) {
+		return fmt.Errorf("rtsp: %s: %w (%s)", path, errOutsidePublish, beneath)
+	}
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
@@ -60,11 +63,12 @@ func RunRTSPPull(args []string) error {
 	handle, err := PullAndServe(ctx, PullConfig{
 		SourceURL:      srcURL,
 		BroadcastPath:  path,
-		ServeAddr:      serveAddr,
-		CertFile:       certFile,
-		KeyFile:        keyFile,
-		AllowedOrigins: allowedOrigins,
+		ServeAddr:      out.serveAddr,
+		CertFile:       out.certFile,
+		KeyFile:        out.keyFile,
+		AllowedOrigins: out.allowedOrigins,
 		QUIC:           quicConfig,
+		Upstream:       out.up,
 	})
 	if err != nil {
 		return err
@@ -76,8 +80,9 @@ func RunRTSPPull(args []string) error {
 
 // PullConfig configures a PullAndServe call.
 type PullConfig struct {
-	SourceURL      string
-	BroadcastPath  string
+	SourceURL     string
+	BroadcastPath string
+	// ServeAddr is the MoQT listener's address; "" serves none.
 	ServeAddr      string
 	CertFile       string
 	KeyFile        string
@@ -85,18 +90,23 @@ type PullConfig struct {
 	// QUIC is the QUIC configuration of the MoQT origin; nil is quic-go's
 	// defaults.
 	QUIC *quic.Config
+	// Upstream, when set, publishes the broadcast through a relay as well.
+	Upstream *upstream.Upstream
 }
 
 // PullHandle is a running RTSP pull ingest. Close stops the pull + MoQT server;
 // Wait blocks until the pull exits (error or context cancel).
 type PullHandle struct {
-	cancel  context.CancelFunc
-	done    chan struct{}
-	sess    *Session
-	moqSrv  *moqt.Server
-	srcURL  string
-	path    string
-	lastErr atomic.Value // string
+	cancel context.CancelFunc
+	done   chan struct{}
+	sess   *Session
+	// moqSrv is nil without a listener.
+	moqSrv *moqt.Server
+	// upstreamDone is closed once the relay session, if any, has ended.
+	upstreamDone chan struct{}
+	srcURL       string
+	path         string
+	lastErr      atomic.Value // string
 }
 
 // Close stops the pull and MoQT server.
@@ -104,7 +114,11 @@ func (h *PullHandle) Close() {
 	h.cancel()
 	shutCtx, shutCancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer shutCancel()
-	_ = h.moqSrv.Shutdown(shutCtx)
+	if h.moqSrv != nil {
+		// not actionable: the pull is stopping either way.
+		_ = h.moqSrv.Shutdown(shutCtx)
+	}
+	<-h.upstreamDone
 	h.sess.Close()
 }
 
@@ -145,36 +159,34 @@ func PullAndServe(parentCtx context.Context, cfg PullConfig) (*PullHandle, error
 		return nil, fmt.Errorf("rtsp pull session: %w", err)
 	}
 
-	wtHandler := &moqt.WebTransportHandler{
-		TrackMux:    trackMux,
-		CheckOrigin: cors.NewChecker(cfg.AllowedOrigins),
-		Handler: moqt.HandleFunc(func(sess *moqt.Session) {
-			defer sess.CloseWithError(moqt.NoError, moqt.NoError.String())
-			<-sess.Context().Done()
-		}),
+	var moqSrv *moqt.Server
+	if cfg.ServeAddr != "" {
+		moqSrv = newMOQTServer(cfg.ServeAddr, trackMux, cfg.AllowedOrigins, cfg.QUIC)
+		go func() {
+			if err := moqSrv.ListenAndServeTLS(cfg.CertFile, cfg.KeyFile); err != nil && ctx.Err() == nil {
+				slog.Error("MoQT server error", "err", err)
+				cancel()
+			}
+		}()
 	}
-	mux := http.NewServeMux()
-	mux.Handle("/", wtHandler)
-	moqSrv := &moqt.Server{
-		Addr:               cfg.ServeAddr,
-		QUICConfig:         cfg.QUIC,
-		WebTransportServer: moqt.NewWebTransportServer(mux),
-		TrackMux:           trackMux,
+	upstreamDone := make(chan struct{})
+	if cfg.Upstream != nil {
+		go func() {
+			defer close(upstreamDone)
+			cfg.Upstream.Run(ctx, trackMux)
+		}()
+	} else {
+		close(upstreamDone)
 	}
-	go func() {
-		if err := moqSrv.ListenAndServeTLS(cfg.CertFile, cfg.KeyFile); err != nil && ctx.Err() == nil {
-			slog.Error("MoQT server error", "err", err)
-			cancel()
-		}
-	}()
 
 	h := &PullHandle{
-		cancel: cancel,
-		done:   make(chan struct{}),
-		sess:   sess,
-		moqSrv: moqSrv,
-		srcURL: cfg.SourceURL,
-		path:   cfg.BroadcastPath,
+		cancel:       cancel,
+		done:         make(chan struct{}),
+		sess:         sess,
+		moqSrv:       moqSrv,
+		upstreamDone: upstreamDone,
+		srcURL:       cfg.SourceURL,
+		path:         cfg.BroadcastPath,
 	}
 
 	slog.Info("RTSP pull ingest starting",

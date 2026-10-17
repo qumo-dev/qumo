@@ -27,6 +27,7 @@ import (
 	"github.com/qumo-dev/qumo/internal/auth"
 	"github.com/qumo-dev/qumo/internal/funnel"
 	"github.com/qumo-dev/qumo/internal/relay"
+	"github.com/qumo-dev/qumo/internal/upstream"
 	"github.com/qumo-dev/qumo/token"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -431,7 +432,7 @@ func startFunnelBehindRelay(t *testing.T) (ingestURL, relayAddr string, relaySrv
 	ctx, cancel := context.WithCancel(context.Background())
 	published := make(chan error, 1)
 	go func() {
-		published <- funnel.PublishThroughRelay(ctx, funnel.RelayConfig{
+		published <- upstream.Publish(ctx, upstream.Config{
 			URL:            nativeURL(relayAddr),
 			Insecure:       true,
 			SigningKeyFile: keyFile,
@@ -574,7 +575,7 @@ func TestFunnel_RedialsWhenTheRelayEndsTheSession(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	published := make(chan error, 1)
 	go func() {
-		published <- funnel.PublishThroughRelay(ctx, funnel.RelayConfig{URL: nativeURL(relayAddr), Insecure: true}, mux)
+		published <- upstream.Publish(ctx, upstream.Config{URL: nativeURL(relayAddr), Insecure: true}, mux)
 	}()
 	t.Cleanup(func() {
 		cancel()
