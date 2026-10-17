@@ -75,7 +75,7 @@ func Test_renderMasterPlaylist(t *testing.T) {
 				Bitrate: 4_500_000,
 			},
 		}
-		data := string(renderMasterPlaylist(tracks))
+		data := string(renderMasterPlaylist(tracks, ""))
 		assert.Contains(t, data, "#EXTM3U")
 		assert.Contains(t, data, "#EXT-X-VERSION:6")
 		assert.Contains(t, data, "#EXT-X-INDEPENDENT-SEGMENTS")
@@ -102,7 +102,7 @@ func Test_renderMasterPlaylist(t *testing.T) {
 				Bitrate: 5_000_000,
 			},
 		}
-		data := string(renderMasterPlaylist(tracks))
+		data := string(renderMasterPlaylist(tracks, ""))
 		assert.Contains(t, data, "video-high/playlist.m3u8")
 		assert.Contains(t, data, "video-low/playlist.m3u8")
 		assert.Contains(t, data, "BANDWIDTH=5000000")
@@ -126,7 +126,7 @@ func Test_renderMasterPlaylist(t *testing.T) {
 				Bitrate: 128_000,
 			},
 		}
-		data := string(renderMasterPlaylist(tracks))
+		data := string(renderMasterPlaylist(tracks, ""))
 		assert.Contains(t, data, `#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="audio",NAME="audio",DEFAULT=YES,AUTOSELECT=YES,URI="audio/playlist.m3u8"`)
 		assert.Contains(t, data, `AUDIO="audio"`)
 		assert.Contains(t, data, "video/playlist.m3u8")
@@ -134,7 +134,7 @@ func Test_renderMasterPlaylist(t *testing.T) {
 }
 
 func Test_streamMux_Routing(t *testing.T) {
-	mux := newStreamMux(10 * time.Second)
+	mux := newStreamMux(10*time.Second, viewerAccess{})
 	b := mux.RegisterBroadcast("/live/cam1")
 
 	liveVideo := &liveness{}
@@ -224,7 +224,7 @@ func Test_streamMux_Routing(t *testing.T) {
 // announcement of the same broadcast mounted since.
 func Test_streamMux_UnregisterBroadcast(t *testing.T) {
 	t.Run("own entry is removed", func(t *testing.T) {
-		mux := newStreamMux(10 * time.Second)
+		mux := newStreamMux(10*time.Second, viewerAccess{})
 		b := mux.RegisterBroadcast("/live/cam1")
 		mux.UnregisterBroadcast(b)
 		_, ok := mux.getBroadcast("/live/cam1")
@@ -232,7 +232,7 @@ func Test_streamMux_UnregisterBroadcast(t *testing.T) {
 	})
 
 	t.Run("successor's entry survives", func(t *testing.T) {
-		mux := newStreamMux(10 * time.Second)
+		mux := newStreamMux(10*time.Second, viewerAccess{})
 		older := mux.RegisterBroadcast("/live/cam1")
 		newer := mux.RegisterBroadcast("/live/cam1")
 		mux.UnregisterBroadcast(older)

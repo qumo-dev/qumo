@@ -57,9 +57,10 @@ The broadcast-level `manifest.mpd` redirects to the default track's (`video`, el
 
 ## Opting in on a relay with auth on
 
-Announcing `/.hls/<broadcast>` is what makes a broadcast public: the egress
-serves it over HTTP to anyone who reaches the egress. On a relay with auth on,
-the opt-in is a grant the app issues deliberately, on a token of its own:
+Announcing `/.hls/<broadcast>` is what makes the egress serve a broadcast over
+HTTP: to anyone who reaches it, unless [viewers are checked](#viewers). On a
+relay with auth on, the opt-in is a grant the app issues deliberately, on a
+token of its own:
 
 - **Rooted under `/.hls/`.** The announcement is publishing at
   `/.hls/acme/room/42/cam`, which a token rooted at `/acme/room/42/` doesn't
@@ -70,12 +71,45 @@ the opt-in is a grant the app issues deliberately, on a token of its own:
   as a ticket on the session it publishes on.
 - **The app decides.** Neither the relay nor the egress checks that the
   bearer publishes `/acme/room/42/cam`: the egress subscribes with its own
-  grant. Issue an opt-in only for a broadcast the app means to make public.
+  grant. Issue an opt-in only for a broadcast the app means to serve over
+  HTTP.
 
 ```bash
 # an opt-in for /acme/room/42/cam, signed by the app's key confined to /acme/
 qumo auth token -key signing-key.jwk -root /.hls/acme/room/42/ -publish /cam
 ```
+
+## Viewers
+
+By default the egress serves every opted-in broadcast to anyone. With
+`QUMO_AUTH_KEYS` — the same key set the relay reads — every request needs a
+token that may `subscribe` to its broadcast, as `?jwt=` on the playlist or MPD
+URL; the token a viewer would present to the relay works here too.
+
+```bash
+QUMO_AUTH_KEYS=keys.json qumo hls
+# a viewer's token for /acme/room/42/cam, signed by the app's key
+T=$(qumo auth token -key signing-key.jwk -root /acme/room/42/ -subscribe /cam)
+# the player opens http://egress:8080/acme/room/42/cam/master.m3u8?jwt=$T
+```
+
+- **The token rides along.** Playlists declare it with
+  `EXT-X-DEFINE:QUERYPARAM` (HLS protocol version 11), so the player repeats
+  it on every variant playlist, init segment and segment; MPDs carry
+  `UrlQueryInfo` (MPEG-DASH Annex I), which repeats the MPD URL's query on
+  segment requests. The manifests are the same for every viewer.
+- **Players.** hls.js and dash.js carry it; a player without `QUERYPARAM`
+  support — ffmpeg, for one — requests the literal `{$jwt}` and is refused.
+- **Checked on every request.** A missing or invalid token is answered `401`,
+  one that may not watch the broadcast `403`, and `503` until the key set is
+  loaded. A viewer's playback stops when its token expires (an hour at most):
+  the player reopens the playlist URL with a fresh one.
+- **Behind a CDN.** Checked responses are `Cache-Control: private`, so a
+  shared cache does not serve one viewer's segments to another — and caches
+  nothing. To cache, let the CDN check tokens at its edge (its own scheme,
+  CTA-5007 Common Access Token, or RFC 9246 URI signing) and set only
+  `HLS_TOKEN_PARAM` to the query parameter its tokens travel in: the
+  manifests then carry that parameter, and the egress checks nothing itself.
 
 ## Storage: S3 object storage or filesystem
 
@@ -175,6 +209,9 @@ All configuration is via environment variables:
 | `RELAY_TLS_INSECURE` | `false` | Skip relay TLS verification entirely. Dominates `RELAY_CA_FILE` when both are set. |
 | `RELAY_SIGNING_KEY` | _unset_ | A signing key file (`qumo auth keygen`) the relay's key set trusts. The egress signs a fresh `subscribe`-only credential on every connect, in place of any `?jwt=` in `RELAY_URL`, and renews it on the session before it expires. The key must cover the whole namespace (no `-prefix`). Not with `RELAY_CERT_FILE`. |
 | `RELAY_CERT_FILE`, `RELAY_KEY_FILE` | _unset_ | A peer certificate and key (PEM) for the egress, from the private CA the relay trusts as `CA_FILE`, with the peering name. It must be the egress's own, not the relay's. The relay serves the egress as a relay peer: no credential, no expiry, nothing checked. Not with `RELAY_SIGNING_KEY` or `?jwt=`. Set both or neither; they need a `moqt://` `RELAY_URL`. |
+| `QUMO_AUTH_KEYS` | _unset_ | The key set viewers' tokens are verified against, as the relay reads it (a file or URL): every request needs a token that may `subscribe` to its broadcast. Unset lets every viewer in. See [Viewers](#viewers). |
+| `QUMO_AUTH_KEYS_CACHE` / `QUMO_RELAY_TOKEN` | _unset_ | A file a downloaded key set is kept in, and the bearer token sent to a key-set URL. |
+| `HLS_TOKEN_PARAM` | `jwt` with `QUMO_AUTH_KEYS`, else _unset_ | The query parameter a viewer's token travels in, carried by the manifests onto every URL they name. Set it alone for a CDN that checks its own tokens. |
 | `CORS_ALLOWED_ORIGINS` | _unset_ | Comma-separated origins allowed to fetch manifests and segments, or `*` for any. Unset disables CORS. Required when the player is served from another origin (e.g. `http://localhost:5173` for the playground). |
 
 ## See also

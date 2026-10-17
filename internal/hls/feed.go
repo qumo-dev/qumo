@@ -434,6 +434,7 @@ func handleAnnouncement(ctx context.Context, session *moqt.Session, ann *moqt.An
 			InitSegment: stream.InitSegment{Bytes: m.packager.Init()},
 			Window:      int(window),
 			EpochWindow: 1,
+			QueryParam:  mux.access.param,
 		})
 		if err != nil {
 			slog.Error("hls: build stream handler error", "path", ledgerTrackPath, "err", err)

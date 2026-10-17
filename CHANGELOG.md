@@ -25,6 +25,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Viewer auth for the HLS egress (`internal/hls`).** With `QUMO_AUTH_KEYS`, `qumo hls` lets in only requests carrying a token that may `subscribe` to the broadcast (`?jwt=`; `401`/`403`, checked responses `Cache-Control: private`); playlists carry it onto every URL with `EXT-X-DEFINE:QUERYPARAM` and MPDs with `UrlQueryInfo`, and `HLS_TOKEN_PARAM` alone carries a CDN's own token parameter unchecked. Redirects keep the query.
 - **A key signs its broadcasts' HLS opt-ins (`token`).** A key confined to `/acme/` also signs roots beneath `/.hls/acme/` (`token.HLSDirectory`), so an app grants an opt-in with the key that grants the broadcast.
 - **Announce-driven multi-track HLS/DASH egress (`internal/hls`).** `qumo hls` accepts announcements under `/.hls/`, discovers video tracks from the canonical broadcast's catalog without double-publishing, and serves multi-variant HLS (`master.m3u8`, `playlist.m3u8`, `{track}/playlist.m3u8`) and DASH (`{track}/manifest.mpd`) over HTTP; the playground's HLS scenario announces its broadcast there.
 - **Publisher auth for RTMP and RTSP push (`internal/ingest`, `internal/rtmp`).** With `QUMO_AUTH_KEYS`, `qumo rtmp` and `qumo rtsp-push` verify a `publish` token presented as `?jwt=` on the stream key (or app) or the push URL, refuse others (`NetStream.Publish.Denied`, RTSP `401`), and cut a push when its token expires; a key paused for publishing refuses new pushes. A stream key's `?query` is no longer part of the broadcast path.
