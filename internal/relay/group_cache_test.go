@@ -692,3 +692,27 @@ func TestGroupRing_Stress(t *testing.T) {
 
 	wg.Wait()
 }
+
+func TestGroupRing_Reserve_HighestSeq(t *testing.T) {
+	tests := map[string]struct {
+		reserved []moqt.GroupSequence
+		want     []moqt.GroupSequence // highestSeq of each reserved cache
+	}{
+		"in order":     {reserved: []moqt.GroupSequence{1, 2, 3}, want: []moqt.GroupSequence{1, 2, 3}},
+		"out of order": {reserved: []moqt.GroupSequence{3, 7, 5}, want: []moqt.GroupSequence{3, 7, 7}},
+		// A later, lower group does not lower the bound, and a group that
+		// arrives afterwards does not raise an earlier group's bound.
+		"kept after eviction": {reserved: []moqt.GroupSequence{9, 1, 2, 10}, want: []moqt.GroupSequence{9, 9, 9, 10}},
+	}
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			ring := newGroupRing(2, DefaultFramePool)
+			got := make([]moqt.GroupSequence, 0, len(tt.reserved))
+			for _, seq := range tt.reserved {
+				got = append(got, ring.reserve(seq).highestSeq)
+			}
+
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}

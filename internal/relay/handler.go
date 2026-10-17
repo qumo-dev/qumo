@@ -549,7 +549,8 @@ type trackDistributor struct {
 	// default build — see stage_latency.go). Shared with ring for ingress stamps.
 	stages *stageCollector
 
-	done chan struct{} // closed when ingest returns
+	drops *dropDistributor
+	done  chan struct{} // closed when ingest returns
 }
 
 func newTrackDistributor(manager *trackManager, trackID string, sampler *statsSampler) *trackDistributor {
@@ -557,6 +558,7 @@ func newTrackDistributor(manager *trackManager, trackID string, sampler *statsSa
 	d := &trackDistributor{
 		trackID:           trackID,
 		ring:              newGroupRing(manager.cacheSize, manager.pool),
+		drops:             newDropDistributor(dropRingSize),
 		manager:           manager,
 		ingressCounter:    metricRelayIngressBytesTotal.WithLabelValues(trackID),
 		egressCounter:     metricRelayEgressBytesTotal.WithLabelValues(trackID),
@@ -604,6 +606,11 @@ func (d *trackDistributor) egress(tw *moqt.TrackWriter) {
 	metricTrackSubscriptionsActive.WithLabelValues(path, track).Inc()
 	defer metricTrackSubscriptionsActive.WithLabelValues(path, track).Dec()
 
+	// drops reports groups this subscriber will not receive. It runs on this
+	// goroutine: upstream drops wake the same notify as new groups, and are
+	// flushed after each delivered group and at every wait.
+	drops := newDropReporter(tw, d.drops)
+
 	// Track the last seen notify sequence so we can detect new data without
 	// per-subscriber channels or RWMutex contention. Each call to broadcast()
 	// advances the sequence and closes the previous notification channel;
@@ -628,6 +635,9 @@ func (d *trackDistributor) egress(tw *moqt.TrackWriter) {
 	// behind, still draining queued groups → self-serialization). The first
 	// pickup after startup counts as caught up.
 	woken := true
+	// skipped is set when the subscriber jumped ahead in the ring, past
+	// groups that were evicted before it could send them.
+	skipped := false
 
 	for {
 		latest := d.ring.head()
@@ -643,16 +653,57 @@ func (d *trackDistributor) egress(tw *moqt.TrackWriter) {
 				)
 				metricSubscriberSkipsTotal.Inc()
 				last = latest
+				skipped = true
 			}
 
 			if cache := d.ring.get(last); cache != nil {
-				if d.deliverGroup(tw, twCtx, openTO, woken, cache) {
+				// Read the sequence while get's reference pins the slot:
+				// deliverGroup releases it, and the ring may then reuse the
+				// slot for a later group.
+				seq := cache.seq
+
+				if skipped {
+					// Which groups were evicted is unknown, and groups arrive
+					// out of order, so an evicted group may be above seq. Report
+					// every group reserved up to this one that was neither sent
+					// nor reported, except seq, which is sent next. The bound is
+					// the cache's own highestSeq, not the ring's: groups that
+					// arrived after this one are still in the ring and will be
+					// sent.
+					drops.reportSkipped(seq, cache.highestSeq, moqt.SubscribeErrorCodeInternal)
+					skipped = false
+				}
+
+				// A group already reported dropped (by upstream or by a skip)
+				// is not sent, so the subscriber never receives a group it was
+				// told it would not get.
+				if drops.isHandled(seq) {
+					d.ring.decrRef(cache)
+					continue
+				}
+
+				switch d.deliverGroup(twCtx, tw, openTO, woken, cache) {
+				case deliveryStopped:
 					return
+				case groupTimedOut:
+					drops.report(moqt.SubscribeDrop{
+						StartGroup: seq,
+						EndGroup:   seq,
+						ErrorCode:  moqt.SubscribeErrorCodeTimeout,
+					})
+				case groupSent:
+					drops.sent(seq)
+					drops.flush()
 				}
 				woken = false // a subsequent direct iteration means we are behind
 				continue
 			}
 		}
+
+		// Forward upstream drops before checking for a wakeup: a drop recorded
+		// after this flush advances the notify seq, so the check below loops
+		// back here instead of waiting.
+		drops.flush()
 
 		// Refresh the notification state and check if new data arrived between
 		// the last iteration and now.
@@ -671,18 +722,21 @@ func (d *trackDistributor) egress(tw *moqt.TrackWriter) {
 		// loop past cancellation and pin gomoqt's stream-handler WaitGroup,
 		// hanging Server.Shutdown/Close (#286).
 		//
-		// No poll-timer fallback: broadcast() (called on every fill) advances
-		// the notify seq and closes the previous channel, waking this select;
-		// egress re-reads head() fresh each iteration (level-triggered), so
-		// coalesced signals never lose data. Guarded by
-		// TestRelayChain_NotifyOnlyDelivery (delivery is complete and prompt
-		// with no poll fallback).
+		// No poll-timer fallback: broadcast() (called on every fill and every
+		// upstream drop) advances the notify seq and closes the previous
+		// channel, waking this select; egress re-reads head() fresh each
+		// iteration (level-triggered), so coalesced signals never lose data.
+		// Guarded by TestRelayChain_NotifyOnlyDelivery (delivery is complete
+		// and prompt with no poll fallback).
 		select {
 		case <-state.ch:
 			// Channel closed — new data arrived. Refresh state and loop.
 			lastState = d.notify.listen()
 			woken = true // reached the next group via a wait (caught up)
 		case <-d.done:
+			// ingest records every upstream drop before closing done, so this
+			// final flush forwards the last of them.
+			drops.flush()
 			return
 		case <-twCtx.Done():
 			return
@@ -690,11 +744,23 @@ func (d *trackDistributor) egress(tw *moqt.TrackWriter) {
 	}
 }
 
-// deliverGroup writes one group (cache) to the subscriber's track writer. It
-// returns true if the egress loop should exit — the subscribe stream was closed
-// or cancelled (OpenGroupAt/WriteFrame error, twCtx.Done, or d.done) — or false
-// if the group was delivered completely and the loop should advance to the next.
-func (d *trackDistributor) deliverGroup(tw *moqt.TrackWriter, twCtx context.Context, openTO *openTimeout, woken bool, cache *groupCache) bool {
+// deliverResult is what deliverGroup did with one group.
+type deliverResult int
+
+const (
+	// groupSent means the group was opened and every frame written.
+	groupSent deliverResult = iota
+	// groupTimedOut means the subscriber could not accept a new group stream
+	// in time, so the group was skipped and egress continues.
+	groupTimedOut
+	// deliveryStopped means the subscribe stream closed, the subscriber left,
+	// or the track ended; egress must return.
+	deliveryStopped
+)
+
+// deliverGroup writes one group (cache) to the subscriber's track writer and
+// reports what happened to it.
+func (d *trackDistributor) deliverGroup(ctx context.Context, tw *moqt.TrackWriter, openTO *openTimeout, woken bool, cache *groupCache) deliverResult {
 	// Stage stamps (no-op in the default build): tEnter closes the R stage
 	// (group arrival → egress pickup) and opens the O stage (OpenGroupAt).
 	// enterDeliver/exitDeliver bracket the concurrent-delivery gauge and the
@@ -717,7 +783,7 @@ func (d *trackDistributor) deliverGroup(tw *moqt.TrackWriter, twCtx context.Cont
 	timedOut := openTO.done()
 	if err != nil {
 		d.ring.decrRef(cache)
-		if timedOut && twCtx.Err() == nil {
+		if timedOut && ctx.Err() == nil {
 			// Backpressure: peer's MAX_STREAMS is exhausted. Drop this group
 			// (MoQ semi-reliable) and continue to the next.
 			//
@@ -726,10 +792,10 @@ func (d *trackDistributor) deliverGroup(tw *moqt.TrackWriter, twCtx context.Cont
 			// fast with timedOut=false and terminates, so a dead session costs
 			// at most one extra loop iteration.
 			metricSubscriberSkipsTotal.Inc()
-			return false
+			return groupTimedOut
 		}
 		// Non-timeout error (connection closed, session dead): terminate egress.
-		return true
+		return deliveryStopped
 	}
 	defer gw.Close()
 	defer d.ring.decrRef(cache)
@@ -766,7 +832,7 @@ func (d *trackDistributor) deliverGroup(tw *moqt.TrackWriter, twCtx context.Cont
 		case <-d.done:
 			cancelled = true
 			return false
-		case <-twCtx.Done():
+		case <-ctx.Done():
 			cancelled = true
 			return false
 		}
@@ -781,7 +847,7 @@ func (d *trackDistributor) deliverGroup(tw *moqt.TrackWriter, twCtx context.Cont
 			// handed to QUIC, so they count against egress even
 			// though the group is being abandoned. The failing frame is excluded.
 			d.egressCounter.Add(float64(egressTotal))
-			return true
+			return deliveryStopped
 		}
 		d.stages.egressFrame(tWrite)
 		n := int64(frame.Len())
@@ -789,11 +855,11 @@ func (d *trackDistributor) deliverGroup(tw *moqt.TrackWriter, twCtx context.Cont
 	}
 	d.egressCounter.Add(float64(egressTotal))
 	if cancelled {
-		return true
+		return deliveryStopped
 	}
 
 	d.deliveryHistogram.Observe(time.Since(start).Seconds())
-	return false
+	return groupSent
 }
 
 // subscribe and unsubscribe are removed. The broadcastNotify mechanism replaces
@@ -806,6 +872,18 @@ func (d *trackDistributor) deliverGroup(tw *moqt.TrackWriter, twCtx context.Cont
 func (d *trackDistributor) ingest(ctx context.Context, src *moqt.TrackReader) {
 	defer d.manager.remove(d.trackID, d)
 	defer d.sampler.removeTrack(d.trackID)
+
+	// Upstream drops are recorded until the subscription closes; the deferred
+	// shutdown below waits for this before closing done, so egress's final
+	// flush sees every drop.
+	var dropWg sync.WaitGroup
+	dropWg.Go(func() {
+		for drop := range src.Drops(ctx) {
+			d.drops.record(drop)
+			d.broadcast() // wakes egress, which forwards the drop
+		}
+	})
+
 	// Workers must complete before egress is signalled to stop: a single
 	// deferred closure enforces close(fillJobs) → fillWg.Wait() → close(done),
 	// so every reserved cache is filled before any egress goroutine sees done.
@@ -822,10 +900,11 @@ func (d *trackDistributor) ingest(ctx context.Context, src *moqt.TrackReader) {
 			_ = src.Close() // not actionable: the subscription is ending either way
 		}
 		d.fillWg.Wait()
-		close(d.done)
 		if !drained {
 			_ = src.Close() // not actionable: the subscription is ending either way
 		}
+		dropWg.Wait()
+		close(d.done)
 	}()
 
 	for {

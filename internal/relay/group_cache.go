@@ -64,6 +64,12 @@ type groupCache struct {
 	evicted  atomic.Bool
 	released atomic.Bool
 
+	// highestSeq is the highest sequence among this group and every group
+	// reserved before it. Groups arrive out of sequence order, so egress uses
+	// it after a skip to bound the groups the subscriber may have missed
+	// without counting groups that arrived after this one.
+	highestSeq moqt.GroupSequence
+
 	// ingressArrivalNano is the UnixNano instant the group was reserved into the
 	// ring (stage-latency instrumentation; see stage_latency.go). Written only by
 	// the instrument build's stampArrival/clearArrival, read by egress
@@ -228,6 +234,12 @@ type groupRing struct {
 	pos    atomic.Uint64
 	gcPool sync.Pool
 
+	// maxSeq is the highest group sequence reserved so far. Only reserve
+	// uses it; readers see it through each cache's highestSeq, which is
+	// published with the cache. Atomic only so the multi-writer reserve
+	// benchmarks stay race-free.
+	maxSeq atomic.Uint64
+
 	// stages is the stage-latency collector shared with the owning distributor
 	// (set in newTrackDistributor). Nil-safe no-op in the default build.
 	stages *stageCollector
@@ -252,6 +264,12 @@ func (ring *groupRing) reserve(seq moqt.GroupSequence) *groupCache {
 	// instrument-only field; the instrument build re-stamps in processGroup).
 	ring.stages.clearArrival(cache)
 
+	highest := moqt.GroupSequence(ring.maxSeq.Load())
+	if seq > highest {
+		highest = seq
+		ring.maxSeq.Store(uint64(seq)) // single writer in production: no CAS needed
+	}
+	cache.highestSeq = highest
 	pos := ring.pos.Add(1)
 	cache.pos = ringPosition(pos)
 	idx := int(pos % uint64(ring.size))

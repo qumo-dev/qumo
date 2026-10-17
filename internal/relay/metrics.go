@@ -326,6 +326,16 @@ var (
 		Help:      "Total number of times subscribers were skipped forward due to falling behind.",
 	})
 
+	// metricSubscriberDropsLostTotal counts upstream drop notifications a
+	// subscriber never received because the track's drop buffer overwrote them
+	// first. Those groups reach the subscriber neither as groups nor as drops.
+	metricSubscriberDropsLostTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Namespace: "qumo",
+		Subsystem: "relay",
+		Name:      "subscriber_drops_lost_total",
+		Help:      "Total number of upstream drop notifications overwritten before a subscriber could forward them.",
+	})
+
 	// metricBufferDepthGroups tracks the number of groups currently held in the
 	// track's ring buffer, labelled by track name.
 	metricBufferDepthGroups = promauto.NewGaugeVec(
