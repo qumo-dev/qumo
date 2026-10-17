@@ -132,8 +132,11 @@ RELAY_CA_FILE=/secrets/relay-ca.crt qumo hls
   key is read once, at startup.
 
 The playground's HLS scenario opts its broadcast in by announcing it under
-`/.hls/` as well. `cmd/seed-moq`, the dev seeder, announces nothing under
-`/.hls/`, so the egress does not serve it.
+`/.hls/` as well. So does `cmd/seed-moq`, the dev seeder: a standalone server
+(not a relay) that presents an ephemeral self-signed certificate and publishes
+`/live/cam1`. Point the egress at it with `RELAY_TLS_INSECURE=true`; the default
+`RELAY_URL=https://localhost:4433` already matches, and the stream is served at
+`/live/cam1/master.m3u8`.
 
 ## Configuration
 
