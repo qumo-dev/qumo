@@ -2,10 +2,10 @@
 // qumo-ledger.
 //
 // [Run] connects to a MoQ relay, subscribes to a track, and writes each
-// received group into a qumo-ledger track as a sealed group; the ledger's
-// [stream.Handler] renders that track as an HLS playlist and a DASH MPD over
-// HTTP. The feed is the qumo (relay) side; the rendering is the qumo-ledger
-// (storage) side, so the two stay decoupled.
+// received group into a qumo-ledger track as a sealed group; [stream.Handler]
+// renders that track as an HLS playlist and a DASH MPD over HTTP. qumo-ledger
+// only stores the track: the HLS/DASH views over it live here, in
+// internal/hls/stream.
 //
 // Packaging happens at the subscriber, not the publisher. MoQ carries LOC — an
 // encoded frame carrying a microsecond timestamp and almost nothing else — which

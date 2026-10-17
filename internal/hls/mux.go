@@ -128,16 +128,21 @@ func (b *broadcastEntry) isLive(now time.Time, timeout time.Duration) bool {
 //	/{broadcast}/{track}/init.m4s     - fMP4 init segment for {track}
 //	/{broadcast}/{track}/<group>.m4s  - media segment for {track}
 //	/{broadcast}/manifest.mpd         - DASH MPD for default track
+//
+// Every request passes access first, a request for no live broadcast
+// included.
 type streamMux struct {
 	mu          sync.RWMutex
 	broadcasts  map[string]*broadcastEntry
 	liveTimeout time.Duration
+	access      viewerAccess
 }
 
-func newStreamMux(liveTimeout time.Duration) *streamMux {
+func newStreamMux(liveTimeout time.Duration, access viewerAccess) *streamMux {
 	return &streamMux{
 		broadcasts:  make(map[string]*broadcastEntry),
 		liveTimeout: liveTimeout,
+		access:      access,
 	}
 }
 
@@ -191,7 +196,9 @@ func (m *streamMux) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if base == "master.m3u8" {
 		broadcastPath := path.Dir(cleanPath)
 		if b, ok := m.getBroadcast(broadcastPath); ok {
-			m.serveMasterPlaylist(w, r, b)
+			if m.access.admit(w, r, b.path) {
+				m.serveMasterPlaylist(w, r, b)
+			}
 			return
 		}
 	}
@@ -202,7 +209,9 @@ func (m *streamMux) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	trackName := path.Base(dir)
 	if b, ok := m.getBroadcast(broadcastPath); ok {
 		if t, ok := b.getTrack(trackName); ok {
-			t.handler.ServeHTTP(w, r)
+			if m.access.admit(w, r, b.path) {
+				t.handler.ServeHTTP(w, r)
+			}
 			return
 		}
 	}
@@ -211,7 +220,9 @@ func (m *streamMux) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if base == "playlist.m3u8" {
 		broadcastPath := path.Dir(cleanPath)
 		if b, ok := m.getBroadcast(broadcastPath); ok {
-			m.serveMasterPlaylist(w, r, b)
+			if m.access.admit(w, r, b.path) {
+				m.serveMasterPlaylist(w, r, b)
+			}
 			return
 		}
 	}
@@ -223,7 +234,9 @@ func (m *streamMux) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		broadcastPath := path.Dir(cleanPath)
 		if b, ok := m.getBroadcast(broadcastPath); ok {
 			if t, ok := b.defaultTrack(); ok {
-				http.Redirect(w, r, path.Join(b.path, t.info.Name, "manifest.mpd"), http.StatusFound)
+				if m.access.admit(w, r, b.path) {
+					http.Redirect(w, r, keepQuery(path.Join(b.path, t.info.Name, "manifest.mpd"), r), http.StatusFound)
+				}
 				return
 			}
 		}
@@ -234,12 +247,19 @@ func (m *streamMux) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// broadcast's directory, not the root.
 	if (base == "playlist.m3u8" || base == "master.m3u8") && cleanPath == "/"+base {
 		if single := m.singleBroadcast(); single != nil {
-			http.Redirect(w, r, path.Join(single.path, "master.m3u8"), http.StatusFound)
+			// Checked before the redirect names the broadcast.
+			if m.access.admit(w, r, single.path) {
+				http.Redirect(w, r, keepQuery(path.Join(single.path, "master.m3u8"), r), http.StatusFound)
+			}
 			return
 		}
 	}
 
-	http.NotFound(w, r)
+	// Checked here too, so a viewer can't tell a live broadcast it may not
+	// watch from one that isn't there: both are refused alike.
+	if m.access.admit(w, r, path.Dir(cleanPath)) {
+		http.NotFound(w, r)
+	}
 }
 
 func (m *streamMux) serveMasterPlaylist(w http.ResponseWriter, _ *http.Request, b *broadcastEntry) {
@@ -258,14 +278,16 @@ func (m *streamMux) serveMasterPlaylist(w http.ResponseWriter, _ *http.Request, 
 		return
 	}
 
-	body := renderMasterPlaylist(tracks)
+	body := renderMasterPlaylist(tracks, m.access.param)
 	w.Header().Set("Content-Type", "application/vnd.apple.mpegurl")
 	_, _ = w.Write(body)
 }
 
 // renderMasterPlaylist formats an RFC 8216 HLS master playlist from media track
-// metadata.
-func renderMasterPlaylist(tracks []trackInfo) []byte {
+// metadata. A param carries that query parameter of the playlist's URL onto
+// every variant URI (EXT-X-DEFINE:QUERYPARAM), as the media playlists carry it
+// onto their segments.
+func renderMasterPlaylist(tracks []trackInfo, param string) []byte {
 	sorted := make([]trackInfo, len(tracks))
 	copy(sorted, tracks)
 	sort.Slice(sorted, func(i, j int) bool {
@@ -284,7 +306,13 @@ func renderMasterPlaylist(tracks []trackInfo) []byte {
 
 	var b strings.Builder
 	b.WriteString("#EXTM3U\n")
-	b.WriteString("#EXT-X-VERSION:6\n")
+	if param != "" {
+		// QUERYPARAM needs protocol version 11.
+		b.WriteString("#EXT-X-VERSION:11\n")
+		fmt.Fprintf(&b, "#EXT-X-DEFINE:QUERYPARAM=%q\n", param)
+	} else {
+		b.WriteString("#EXT-X-VERSION:6\n")
+	}
 	b.WriteString("#EXT-X-INDEPENDENT-SEGMENTS\n")
 
 	hasAudio := len(audioTracks) > 0
@@ -295,7 +323,7 @@ func renderMasterPlaylist(tracks []trackInfo) []byte {
 				def = "YES"
 			}
 			fmt.Fprintf(&b, "#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"audio\",NAME=%q,DEFAULT=%s,AUTOSELECT=YES,URI=%q\n",
-				a.Name, def, a.Name+"/playlist.m3u8")
+				a.Name, def, carryParam(a.Name+"/playlist.m3u8", param))
 		}
 	}
 
@@ -320,8 +348,8 @@ func renderMasterPlaylist(tracks []trackInfo) []byte {
 			if hasAudio {
 				attrs = append(attrs, "AUDIO=\"audio\"")
 			}
-			fmt.Fprintf(&b, "#EXT-X-STREAM-INF:%s\n%s/playlist.m3u8\n",
-				strings.Join(attrs, ","), v.Name)
+			fmt.Fprintf(&b, "#EXT-X-STREAM-INF:%s\n%s\n",
+				strings.Join(attrs, ","), carryParam(v.Name+"/playlist.m3u8", param))
 		}
 	} else if hasAudio {
 		for _, a := range audioTracks {
@@ -334,10 +362,19 @@ func renderMasterPlaylist(tracks []trackInfo) []byte {
 			if a.Codec != "" {
 				attrs = append(attrs, fmt.Sprintf("CODECS=%q", a.Codec))
 			}
-			fmt.Fprintf(&b, "#EXT-X-STREAM-INF:%s\n%s/playlist.m3u8\n",
-				strings.Join(attrs, ","), a.Name)
+			fmt.Fprintf(&b, "#EXT-X-STREAM-INF:%s\n%s\n",
+				strings.Join(attrs, ","), carryParam(a.Name+"/playlist.m3u8", param))
 		}
 	}
 
 	return []byte(b.String())
+}
+
+// carryParam appends param to uri as an HLS variable reference, so the player
+// substitutes the value from the playlist's own URL; uri as it is for no param.
+func carryParam(uri, param string) string {
+	if param == "" {
+		return uri
+	}
+	return uri + "?" + param + "={$" + param + "}"
 }

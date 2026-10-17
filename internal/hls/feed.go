@@ -22,7 +22,7 @@ import (
 
 	"github.com/okdaichi/qumo-ledger/ledger"
 	"github.com/okdaichi/qumo-ledger/ledger/store"
-	"github.com/okdaichi/qumo-ledger/stream"
+	"github.com/qumo-dev/qumo/internal/hls/stream"
 
 	"github.com/qumo-dev/qumo/internal/cmaf"
 	"github.com/qumo-dev/qumo/internal/relay"
@@ -431,9 +431,10 @@ func handleAnnouncement(ctx context.Context, session *moqt.Session, ann *moqt.An
 
 		live := &liveness{}
 		handler, err := stream.NewHandler(track, stream.Options{
-			InitSegment: stream.InitSegment{Bytes: m.packager.Init()},
+			Init:        m.packager.Init(),
 			Window:      int(window),
 			EpochWindow: 1,
+			QueryParam:  mux.access.param,
 		})
 		if err != nil {
 			slog.Error("hls: build stream handler error", "path", ledgerTrackPath, "err", err)

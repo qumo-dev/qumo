@@ -8,7 +8,7 @@ import (
 
 	"github.com/okdaichi/qumo-ledger/ledger"
 	"github.com/okdaichi/qumo-ledger/ledger/store/mem"
-	"github.com/okdaichi/qumo-ledger/stream"
+	"github.com/qumo-dev/qumo/internal/hls/stream"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -43,7 +43,7 @@ func Test_serve_playlist(t *testing.T) {
 	// An fmp4 track needs an init segment: without one the manifests would omit
 	// #EXT-X-MAP and no player could use them, so the handler refuses to build.
 	handler, err := stream.NewHandler(track, stream.Options{
-		InitSegment: stream.InitSegment{Bytes: []byte("init-bytes")},
+		Init: []byte("init-bytes"),
 	})
 	require.NoError(t, err)
 	// The playlist references the groups by their GroupID.

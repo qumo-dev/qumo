@@ -80,6 +80,11 @@ import (
 //	                     certificate is picked up.
 //	QUIC_*               - QUIC transport settings of the session to the relay
 //	                     (quicconfig.FromEnv lists them).
+//	QUMO_AUTH_KEYS, QUMO_AUTH_KEYS_CACHE, QUMO_RELAY_TOKEN, HLS_TOKEN_PARAM
+//	                     - how viewers are let in (viewerAccessFromEnv lists them):
+//	                     with QUMO_AUTH_KEYS, every request needs a token, as
+//	                     ?jwt=, that may subscribe to its broadcast, carried by
+//	                     the manifests onto every URL they name.
 //	CORS_ALLOWED_ORIGINS - comma-separated origins allowed to fetch manifests
 //	                     and segments, or "*" for any. Unset disables CORS.
 //	                     Required when the player is served from another origin,
@@ -132,7 +137,11 @@ func Run(_ []string) error {
 		return fmt.Errorf("hls: open LEDGER_URI: %w", err)
 	}
 
-	mux := newStreamMux(liveTimeout)
+	access, accessName, err := viewerAccessFromEnv(ctx)
+	if err != nil {
+		return err
+	}
+	mux := newStreamMux(liveTimeout, access)
 
 	// fed closes once every announcement's feed has finished.
 	fed := make(chan struct{})
@@ -156,7 +165,8 @@ func Run(_ []string) error {
 		}
 	}()
 
-	slog.Info("hls: serving", "addr", addr, "store", fmt.Sprint(objects), "announce_prefix", announcePrefix)
+	slog.Info("hls: serving", "addr", addr, "store", fmt.Sprint(objects), "announce_prefix", announcePrefix,
+		"viewers", accessName, "token_param", access.param)
 
 	<-ctx.Done()
 

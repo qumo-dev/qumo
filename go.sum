@@ -31,8 +31,6 @@ github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 h1:C3w9PqII01/Oq
 github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822/go.mod h1:+n7T8mK8HuQTcFwEeznm/DIxMOiR9yIdICNftLE1DvQ=
 github.com/okdaichi/qmux-go v0.3.0 h1:uiG3XRiabglaTklBUDmX+dnlBkEXre0EEaxTAmEVm8U=
 github.com/okdaichi/qmux-go v0.3.0/go.mod h1:sOt2VCexJZ+midUNi3SR0K/0QQwDtJxwRI87YaF3wR4=
-github.com/okdaichi/qumo-ledger v0.4.0 h1:b45Lqw6M5ALqhXpeq1XEDazTuYwqpxdTnezq0cguplY=
-github.com/okdaichi/qumo-ledger v0.4.0/go.mod h1:M/9U5aa17uCMb8pPV3luiAcAWkUsYC3/4su1T1nNsdc=
 github.com/okdaichi/qumo-ledger v0.4.1-0.20261017011115-d3ee9824a3ec h1:Mi4CwRU+s7cGtSIJbEIDKvw0UsglBlxraceRN/6uBKY=
 github.com/okdaichi/qumo-ledger v0.4.1-0.20261017011115-d3ee9824a3ec/go.mod h1:M/9U5aa17uCMb8pPV3luiAcAWkUsYC3/4su1T1nNsdc=
 github.com/okdaichi/webtransport-go v0.13.0-okdaichi.2 h1:INtTyplF3uLquFDyIa6unkQ7T7fJRCJ01FfX9abE+dE=
