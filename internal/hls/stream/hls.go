@@ -11,17 +11,10 @@ import (
 )
 
 // renderOpts carries the rendering inputs that come from neither the schema nor
-// the groups themselves: the segment URL extension and the init-segment URI.
+// the groups themselves.
 type renderOpts struct {
-	segExt  string // e.g. ".m4s"
-	initURI string // relative init URI, "" when there is none
-
-	// initServed reports that the handler serves the init segment at initURI,
-	// rather than initURI being an external URL given as-is.
-	initServed bool
-
 	// queryParam names the manifest URL's query parameter clients carry onto
-	// the URIs the handler serves, "" for none (see Options.QueryParam).
+	// every URI it names, "" for none (see Options.QueryParam).
 	queryParam string
 
 	// sliding reports that the groups are a window over the track rather than
@@ -83,13 +76,7 @@ func renderHLS(schema ledger.TrackSchema, groups []ledger.GroupInfo, opts render
 	if !opts.sliding {
 		b.WriteString("#EXT-X-PLAYLIST-TYPE:EVENT\n")
 	}
-	if opts.initURI != "" {
-		initURI := opts.initURI
-		if opts.initServed {
-			initURI = opts.carry(initURI)
-		}
-		fmt.Fprintf(&b, "#EXT-X-MAP:URI=\"%s\"\n", initURI)
-	}
+	fmt.Fprintf(&b, "#EXT-X-MAP:URI=\"%s\"\n", opts.carry(initName))
 
 	// A window can begin exactly where a producer lifetime did, in which case the
 	// reset belongs to the first listed segment. Seeding from what precedes the
@@ -106,26 +93,22 @@ func renderHLS(schema ledger.TrackSchema, groups []ledger.GroupInfo, opts render
 				time.Unix(0, g.Wallclock).UTC().Format(time.RFC3339Nano))
 		}
 		fmt.Fprintf(&b, "#EXTINF:%s,\n", extinfSeconds(g.Duration, schema.Timescale))
-		fmt.Fprintf(&b, "%s\n", opts.carry(g.ID.String()+opts.segExt))
+		fmt.Fprintf(&b, "%s\n", opts.carry(g.ID.String()+segExt))
 		prevEpoch = g.ID.Epoch()
 	}
 
 	return []byte(b.String()), nil
 }
 
-// carry returns uri, a URI the handler serves, with the query parameter the
-// playlist declares (queryParam) appended as an HLS variable reference, so
-// the client substitutes the value from the playlist's own URL. It returns
-// uri as it is without one.
+// carry returns uri with the query parameter the playlist declares
+// (queryParam) appended as an HLS variable reference, so the client
+// substitutes the value from the playlist's own URL. It returns uri as it is
+// without one.
 func (o renderOpts) carry(uri string) string {
 	if o.queryParam == "" {
 		return uri
 	}
-	sep := "?"
-	if strings.Contains(uri, "?") {
-		sep = "&"
-	}
-	return uri + sep + o.queryParam + "={$" + o.queryParam + "}"
+	return uri + "?" + o.queryParam + "={$" + o.queryParam + "}"
 }
 
 // maxSegmentSeconds is the ceiling, in whole seconds, of the longest segment —

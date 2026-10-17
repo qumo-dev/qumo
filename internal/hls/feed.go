@@ -431,7 +431,7 @@ func handleAnnouncement(ctx context.Context, session *moqt.Session, ann *moqt.An
 
 		live := &liveness{}
 		handler, err := stream.NewHandler(track, stream.Options{
-			InitSegment: stream.InitSegment{Bytes: m.packager.Init()},
+			Init:        m.packager.Init(),
 			Window:      int(window),
 			EpochWindow: 1,
 			QueryParam:  mux.access.param,

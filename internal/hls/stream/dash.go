@@ -62,9 +62,7 @@ func renderDASH(schema ledger.TrackSchema, groups []ledger.GroupInfo, opts rende
 	}
 	b.WriteString(`      <Representation id="0">` + "\n")
 	fmt.Fprintf(&b, `        <SegmentList timescale="%d">`+"\n", schema.Timescale)
-	if opts.initURI != "" {
-		fmt.Fprintf(&b, `          <Initialization sourceURL="%s"/>`+"\n", opts.initURI)
-	}
+	b.WriteString(`          <Initialization sourceURL="` + initName + `"/>` + "\n")
 
 	// SegmentTimeline: @t resets at each epoch boundary; otherwise the timeline
 	// continues from the previous segment's end. Entries correspond 1:1, in
@@ -82,7 +80,7 @@ func renderDASH(schema ledger.TrackSchema, groups []ledger.GroupInfo, opts rende
 	b.WriteString("          </SegmentTimeline>\n")
 
 	for _, g := range groups {
-		fmt.Fprintf(&b, `          <SegmentURL media="%s%s"/>`+"\n", g.ID, opts.segExt)
+		fmt.Fprintf(&b, `          <SegmentURL media="%s%s"/>`+"\n", g.ID, segExt)
 	}
 
 	b.WriteString("        </SegmentList>\n")

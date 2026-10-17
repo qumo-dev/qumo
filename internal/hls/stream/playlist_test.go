@@ -40,7 +40,7 @@ func TestRenderHLS_SingleEpoch(t *testing.T) {
 		grp(ledger.NewGroupID(1, 1), 180000, 180000, 0),
 	}
 
-	body, err := renderHLS(testSchema, groups, renderOpts{segExt: ".m4s"})
+	body, err := renderHLS(testSchema, groups, renderOpts{})
 	require.NoError(t, err)
 
 	const want = `#EXTM3U
@@ -48,6 +48,7 @@ func TestRenderHLS_SingleEpoch(t *testing.T) {
 #EXT-X-TARGETDURATION:2
 #EXT-X-MEDIA-SEQUENCE:0
 #EXT-X-PLAYLIST-TYPE:EVENT
+#EXT-X-MAP:URI="init.m4s"
 #EXTINF:2.000,
 e000001-g00000000.m4s
 #EXTINF:2.000,
@@ -56,8 +57,8 @@ e000001-g00000001.m4s
 	assert.Equal(t, want, string(body))
 }
 
-// Two epochs exercise a discontinuity before epoch 2's first segment, the init
-// map, and per-segment program-date-time — the rendering map from decision 14.
+// Two epochs exercise a discontinuity before epoch 2's first segment and
+// per-segment program-date-time.
 func TestRenderHLS_TwoEpochsDiscontinuity(t *testing.T) {
 	groups := []ledger.GroupInfo{
 		grp(ledger.NewGroupID(1, 0), 0, 180000, wallclock(0)),
@@ -65,7 +66,7 @@ func TestRenderHLS_TwoEpochsDiscontinuity(t *testing.T) {
 		grp(ledger.NewGroupID(2, 0), 0, 180000, wallclock(4)),
 	}
 
-	body, err := renderHLS(testSchema, groups, renderOpts{segExt: ".m4s", initURI: "init.m4s"})
+	body, err := renderHLS(testSchema, groups, renderOpts{})
 	require.NoError(t, err)
 
 	const want = `#EXTM3U
@@ -93,7 +94,7 @@ func TestRenderHLS_NoDuration(t *testing.T) {
 		grp(ledger.NewGroupID(1, 0), 0, 0, 0), // a segment with no extent
 	}
 
-	_, err := renderHLS(testSchema, groups, renderOpts{segExt: ".m4s"})
+	_, err := renderHLS(testSchema, groups, renderOpts{})
 
 	assert.Error(t, err, "a segment with no duration has no EXTINF to carry")
 }
@@ -104,7 +105,7 @@ func TestRenderDASH_SingleEpoch(t *testing.T) {
 		grp(ledger.NewGroupID(1, 1), 180000, 180000, wallclock(2)),
 	}
 
-	body, err := renderDASH(testSchema, groups, renderOpts{segExt: ".m4s"})
+	body, err := renderDASH(testSchema, groups, renderOpts{})
 	require.NoError(t, err)
 	assertXMLWellFormed(t, body)
 
@@ -114,6 +115,7 @@ func TestRenderDASH_SingleEpoch(t *testing.T) {
     <AdaptationSet id="0" mimeType="video/mp4" contentType="video" segmentAlignment="true">
       <Representation id="0">
         <SegmentList timescale="90000">
+          <Initialization sourceURL="init.m4s"/>
           <SegmentTimeline>
             <S t="0" d="180000"/>
             <S d="180000"/>
@@ -129,8 +131,7 @@ func TestRenderDASH_SingleEpoch(t *testing.T) {
 	assert.Equal(t, want, string(body))
 }
 
-// The epoch boundary resets @t to the new lifetime's media origin and lists the
-// init segment, which DASH references through @initialization.
+// The epoch boundary resets @t to the new lifetime's media origin.
 func TestRenderDASH_TwoEpochsInit(t *testing.T) {
 	groups := []ledger.GroupInfo{
 		grp(ledger.NewGroupID(1, 0), 0, 180000, wallclock(0)),
@@ -138,7 +139,7 @@ func TestRenderDASH_TwoEpochsInit(t *testing.T) {
 		grp(ledger.NewGroupID(2, 0), 0, 180000, wallclock(4)),
 	}
 
-	body, err := renderDASH(testSchema, groups, renderOpts{segExt: ".m4s", initURI: "init.m4s"})
+	body, err := renderDASH(testSchema, groups, renderOpts{})
 	require.NoError(t, err)
 	assertXMLWellFormed(t, body)
 
@@ -171,7 +172,7 @@ func TestRenderDASH_NoDuration(t *testing.T) {
 		grp(ledger.NewGroupID(1, 0), 0, 0, 0),
 	}
 
-	_, err := renderDASH(testSchema, groups, renderOpts{segExt: ".m4s"})
+	_, err := renderDASH(testSchema, groups, renderOpts{})
 
 	assert.Error(t, err, "a segment with no duration has no @d to carry")
 }
@@ -199,7 +200,7 @@ func TestRenderDASH_NoWallclockAnchor(t *testing.T) {
 		grp(ledger.NewGroupID(1, 1), 180000, 180000, 0),
 	}
 
-	body, err := renderDASH(testSchema, groups, renderOpts{segExt: ".m4s"})
+	body, err := renderDASH(testSchema, groups, renderOpts{})
 	require.NoError(t, err)
 	assertXMLWellFormed(t, body)
 
@@ -224,24 +225,22 @@ func TestRenderDASH_ContentType(t *testing.T) {
 			schema := testSchema
 			schema.MIME = mime
 
-			body, err := renderDASH(schema, groups, renderOpts{segExt: ".m4s"})
+			body, err := renderDASH(schema, groups, renderOpts{})
 			require.NoError(t, err)
 			assert.Contains(t, string(body), want)
 		})
 	}
 }
 
-// A query parameter is declared once and carried onto every URI the handler
-// serves, so the playlist is the same for every viewer.
+// A query parameter is declared once and carried onto every URI the playlist
+// names, so the playlist is the same for every viewer.
 func TestRenderHLS_QueryParam(t *testing.T) {
 	groups := []ledger.GroupInfo{grp(ledger.NewGroupID(1, 0), 0, 180000, 0)}
-	tests := map[string]struct {
-		opts renderOpts
-		want string
-	}{
-		"a served init segment": {
-			opts: renderOpts{segExt: ".m4s", initURI: "init.m4s", initServed: true, queryParam: "jwt"},
-			want: `#EXTM3U
+
+	body, err := renderHLS(testSchema, groups, renderOpts{queryParam: "jwt"})
+
+	require.NoError(t, err)
+	const want = `#EXTM3U
 #EXT-X-VERSION:11
 #EXT-X-DEFINE:QUERYPARAM="jwt"
 #EXT-X-TARGETDURATION:2
@@ -250,37 +249,14 @@ func TestRenderHLS_QueryParam(t *testing.T) {
 #EXT-X-MAP:URI="init.m4s?jwt={$jwt}"
 #EXTINF:2.000,
 e000001-g00000000.m4s?jwt={$jwt}
-`,
-		},
-		// A signed URL would not survive another parameter.
-		"an external init segment": {
-			opts: renderOpts{segExt: ".m4s", initURI: "https://objects.example/init.m4s?sig=x", queryParam: "jwt"},
-			want: `#EXTM3U
-#EXT-X-VERSION:11
-#EXT-X-DEFINE:QUERYPARAM="jwt"
-#EXT-X-TARGETDURATION:2
-#EXT-X-MEDIA-SEQUENCE:0
-#EXT-X-PLAYLIST-TYPE:EVENT
-#EXT-X-MAP:URI="https://objects.example/init.m4s?sig=x"
-#EXTINF:2.000,
-e000001-g00000000.m4s?jwt={$jwt}
-`,
-		},
-	}
-	for name, tt := range tests {
-		t.Run(name, func(t *testing.T) {
-			body, err := renderHLS(testSchema, groups, tt.opts)
-
-			require.NoError(t, err)
-			assert.Equal(t, tt.want, string(body))
-		})
-	}
+`
+	assert.Equal(t, want, string(body))
 }
 
 func TestRenderDASH_QueryParam(t *testing.T) {
 	groups := []ledger.GroupInfo{grp(ledger.NewGroupID(1, 0), 0, 180000, 0)}
 
-	body, err := renderDASH(testSchema, groups, renderOpts{segExt: ".m4s", queryParam: "jwt"})
+	body, err := renderDASH(testSchema, groups, renderOpts{queryParam: "jwt"})
 
 	require.NoError(t, err)
 	assert.Contains(t, string(body), `xmlns:up="urn:mpeg:dash:schema:urlparam:2014"`)
@@ -294,7 +270,7 @@ func TestRenderDASH_QueryParam(t *testing.T) {
 func TestRenderDASH_NoQueryParam(t *testing.T) {
 	groups := []ledger.GroupInfo{grp(ledger.NewGroupID(1, 0), 0, 180000, 0)}
 
-	body, err := renderDASH(testSchema, groups, renderOpts{segExt: ".m4s"})
+	body, err := renderDASH(testSchema, groups, renderOpts{})
 
 	require.NoError(t, err)
 	assert.NotContains(t, string(body), "urlparam")

@@ -10,7 +10,6 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/qumo-dev/qumo/internal/cmaf"
-	"github.com/qumo-dev/qumo/internal/fmp4"
 )
 
 const vp9 = "vp09.00.10.08"
@@ -57,10 +56,11 @@ func TestPackager_Init(t *testing.T) {
 	assert.Equal(t, []string{"ftyp", "moov"}, boxes(t, init),
 		"an init segment is ftyp+moov, with no fragment attached")
 
-	// The reader in qumo-ledger is the independent check on what was written.
-	timescale, err := fmp4.Timescale(init)
+	// mp4ff's decoder is the independent check on what was written.
+	f, err := mp4.DecodeFile(bytes.NewReader(init))
 	require.NoError(t, err)
-	assert.Equal(t, uint32(cmaf.Timescale), timescale,
+	require.NotNil(t, f.Init)
+	assert.Equal(t, uint32(cmaf.Timescale), f.Init.Moov.Trak.Mdia.Mdhd.Timescale,
 		"microseconds, so LOC timestamps carry with no scaling")
 }
 
@@ -96,9 +96,8 @@ func TestPackager_Fragment(t *testing.T) {
 		"29 measured gaps plus a last sample taking their mean")
 
 	// Read the duration back out of the bytes rather than trusting the return.
-	got, err := fmp4.FragmentDuration(data)
-	require.NoError(t, err)
-	assert.Equal(t, duration, got, "the reported extent is the one written into the trun")
+	traf := parseFragment(t, data).Moof.Traf
+	assert.Equal(t, duration, traf.Trun.Duration(traf.Tfhd.DefaultSampleDuration), "the reported extent is the one written into the trun")
 }
 
 // Fragments are placed by the caller's running total, not by the capture clock

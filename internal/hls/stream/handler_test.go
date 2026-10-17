@@ -3,7 +3,6 @@ package stream
 import (
 	"bytes"
 	"context"
-	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -20,10 +19,8 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// testInit satisfies NewHandler's init requirement for the fmp4 fixture. Tests
-// whose subject is not initialization pass it so they exercise the path they are
-// actually about; see TestNewHandler_InitRequired for the guard itself.
-var testInit = InitSegment{Bytes: []byte("init-bytes")}
+// testInit satisfies NewHandler's init requirement.
+var testInit = []byte("init-bytes")
 
 // fixtureEpoch is when the fixture's presentation starts on the wall clock.
 var fixtureEpoch = time.Date(2026, 8, 4, 12, 0, 0, 0, time.UTC)
@@ -38,28 +35,23 @@ type trackFixture struct {
 
 func newTrackFixture(tb testing.TB) trackFixture {
 	tb.Helper()
-	return newTrackFixtureEncoding(tb, "fmp4")
+	return newTrackFixtureGroups(tb, 2)
 }
 
-func newTrackFixtureEncoding(tb testing.TB, encoding string) trackFixture {
+func newTrackFixtureGroups(tb testing.TB, groups int64) trackFixture {
 	tb.Helper()
-	return newTrackFixtureGroups(tb, encoding, 2)
-}
-
-func newTrackFixtureGroups(tb testing.TB, encoding string, groups int64) trackFixture {
-	tb.Helper()
-	return newTrackFixtureStore(tb, encoding, groups, mem.New())
+	return newTrackFixtureStore(tb, groups, mem.New())
 }
 
 // newTrackFixtureStore is newTrackFixtureGroups over a caller-supplied backend,
 // for tests that need to instrument the store mid-test.
-func newTrackFixtureStore(tb testing.TB, encoding string, groups int64, backend store.Store) trackFixture {
+func newTrackFixtureStore(tb testing.TB, groups int64, backend store.Store) trackFixture {
 	tb.Helper()
 	ctx := context.Background()
 
 	track, err := ledger.Create(ctx, backend, "live/cam1/video", ledger.TrackSchema{
 		Timescale: 90000, TimeSource: ledger.TimeSourceFrame,
-		MIME: "video/mp4", Encoding: encoding,
+		MIME: "video/mp4", Encoding: "fmp4",
 	}, ledger.Config{})
 	require.NoError(tb, err)
 
@@ -87,7 +79,7 @@ func newTrackFixtureStore(tb testing.TB, encoding string, groups int64, backend 
 
 func TestHandler_ServeHTTP_HLSPlaylist(t *testing.T) {
 	fix := newTrackFixture(t)
-	handler, err := NewHandler(fix.track, Options{InitSegment: testInit})
+	handler, err := NewHandler(fix.track, Options{Init: testInit})
 	require.NoError(t, err)
 	ts := httptest.NewServer(handler)
 	defer ts.Close()
@@ -110,7 +102,7 @@ func TestHandler_ServeHTTP_HLSPlaylist(t *testing.T) {
 
 func TestHandler_ServeHTTP_DASHManifest(t *testing.T) {
 	fix := newTrackFixture(t)
-	handler, err := NewHandler(fix.track, Options{InitSegment: testInit})
+	handler, err := NewHandler(fix.track, Options{Init: testInit})
 	require.NoError(t, err)
 	ts := httptest.NewServer(handler)
 	defer ts.Close()
@@ -131,10 +123,10 @@ func TestHandler_ServeHTTP_DASHManifest(t *testing.T) {
 		"the MPD points at segments by GroupID, the same URLs as the HLS playlist")
 }
 
-// The default resolver proxies: a segment request returns the stored bytes.
+// A segment request returns the stored bytes.
 func TestHandler_ServeHTTP_SegmentProxies(t *testing.T) {
 	fix := newTrackFixture(t)
-	handler, err := NewHandler(fix.track, Options{InitSegment: testInit})
+	handler, err := NewHandler(fix.track, Options{Init: testInit})
 	require.NoError(t, err)
 	ts := httptest.NewServer(handler)
 	defer ts.Close()
@@ -151,37 +143,9 @@ func TestHandler_ServeHTTP_SegmentProxies(t *testing.T) {
 	assert.Equal(t, fix.payload[0], body, "the proxy serves the exact bytes that were appended")
 }
 
-// A redirect resolver sends the player straight to the object: the handler asks
-// the resolver and 302s to whatever URL it mints from ObjectKey.
-func TestHandler_ServeHTTP_SegmentRedirect(t *testing.T) {
-	fix := newTrackFixture(t)
-	handler, err := NewHandler(fix.track, Options{
-		InitSegment: testInit,
-		Resolver: RedirectResolver(func(g ledger.GroupInfo) string {
-			return "https://objects.example/" + g.ObjectKey
-		}),
-	})
-	require.NoError(t, err)
-	ts := httptest.NewServer(handler)
-	defer ts.Close()
-
-	// Do not follow the redirect: the test asserts the 302, not the object store.
-	client := &http.Client{
-		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
-	}
-	resp, err := client.Get(ts.URL + "/" + fix.metas[1].ID.String() + ".m4s")
-	require.NoError(t, err)
-	defer resp.Body.Close()
-
-	assert.Equal(t, http.StatusFound, resp.StatusCode)
-	loc, err := resp.Location()
-	require.NoError(t, err)
-	assert.Equal(t, "https://objects.example/"+fix.metas[1].ObjectKey, loc.String())
-}
-
 func TestHandler_ServeHTTP_UnknownSegmentNotFound(t *testing.T) {
 	fix := newTrackFixture(t)
-	handler, err := NewHandler(fix.track, Options{InitSegment: testInit})
+	handler, err := NewHandler(fix.track, Options{Init: testInit})
 	require.NoError(t, err)
 	ts := httptest.NewServer(handler)
 	defer ts.Close()
@@ -198,7 +162,7 @@ func TestHandler_ServeHTTP_UnknownSegmentNotFound(t *testing.T) {
 // race detector is the assertion.
 func TestHandler_ServeHTTP_ConcurrentSegments(t *testing.T) {
 	fix := newTrackFixture(t)
-	handler, err := NewHandler(fix.track, Options{InitSegment: testInit})
+	handler, err := NewHandler(fix.track, Options{Init: testInit})
 	require.NoError(t, err)
 	ts := httptest.NewServer(handler)
 	defer ts.Close()
@@ -217,86 +181,26 @@ func TestHandler_ServeHTTP_ConcurrentSegments(t *testing.T) {
 	wg.Wait()
 }
 
-// A fragmented-MP4 track cannot be played without an init segment, so building a
-// handler without one fails rather than serving manifests that omit #EXT-X-MAP
-// (and DASH @initialization) with a 200.
-func TestNewHandler_InitRequired(t *testing.T) {
+// A handler needs a track, and an init segment: fMP4 fragments carry no codec
+// configuration, so manifests without #EXT-X-MAP (or DASH Initialization)
+// would be served as a valid 200 and play as nothing.
+func TestNewHandler_Rejects(t *testing.T) {
+	fix := newTrackFixture(t)
 	tests := map[string]struct {
-		encoding string
-		init     InitSegment
-		wantErr  bool
+		track *ledger.Track
+		opts  Options
 	}{
-		"fmp4 without init":    {encoding: "fmp4", wantErr: true},
-		"fmp4 with init bytes": {encoding: "fmp4", init: InitSegment{Bytes: []byte("init-bytes")}},
-		// A URL satisfies the requirement: the segment exists, this handler just
-		// does not serve its bytes.
-		"fmp4 with init url": {encoding: "fmp4", init: InitSegment{URL: "https://objects.example/init.m4s"}},
-		// MPEG-TS repeats its PAT/PMT in every segment, so it needs no init.
-		"mpegts without init": {encoding: "ts"},
+		"nil track":       {track: nil, opts: Options{Init: testInit}},
+		"no init segment": {track: fix.track, opts: Options{}},
 	}
-
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
-			fix := newTrackFixtureEncoding(t, tt.encoding)
+			handler, err := NewHandler(tt.track, tt.opts)
 
-			handler, err := NewHandler(fix.track, Options{InitSegment: tt.init})
-			if tt.wantErr {
-				assert.ErrorIs(t, err, ErrInitRequired)
-				assert.Nil(t, handler)
-				return
-			}
-			require.NoError(t, err)
-			assert.NotNil(t, handler)
+			assert.Error(t, err)
+			assert.Nil(t, handler)
 		})
 	}
-}
-
-func TestNewHandler_NilTrack(t *testing.T) {
-	handler, err := NewHandler(nil, Options{})
-
-	assert.Error(t, err)
-	assert.Nil(t, handler)
-}
-
-// A container that carries its codec configuration in every segment has no
-// init segment, so neither manifest may point a player at one, and segments are
-// addressed by the extension the encoding implies.
-func TestHandler_ServeHTTP_ContainerWithoutInit(t *testing.T) {
-	fix := newTrackFixtureEncoding(t, "ts")
-	handler, err := NewHandler(fix.track, Options{})
-	require.NoError(t, err)
-	ts := httptest.NewServer(handler)
-	defer ts.Close()
-
-	get := func(tb testing.TB, path string) (int, string) {
-		tb.Helper()
-		resp, err := http.Get(ts.URL + path)
-		require.NoError(tb, err)
-		defer resp.Body.Close()
-		body, err := io.ReadAll(resp.Body)
-		require.NoError(tb, err)
-		return resp.StatusCode, string(body)
-	}
-	segment := fix.metas[0].ID.String() + ".ts"
-
-	status, playlist := get(t, "/playlist.m3u8")
-	require.Equal(t, http.StatusOK, status)
-	assert.NotContains(t, playlist, "#EXT-X-MAP")
-	assert.Contains(t, playlist, segment)
-
-	status, manifest := get(t, "/manifest.mpd")
-	require.Equal(t, http.StatusOK, status)
-	assert.NotContains(t, manifest, "<Initialization")
-	assert.Contains(t, manifest, segment)
-
-	status, body := get(t, "/"+segment)
-	require.Equal(t, http.StatusOK, status)
-	assert.Equal(t, string(fix.payload[0]), body)
-
-	// With nothing to serve as an init segment, its name is just another name
-	// that is not a group id.
-	status, _ = get(t, "/init.ts")
-	assert.Equal(t, http.StatusNotFound, status)
 }
 
 // A window caps the playlist at the newest segments and turns it into a sliding
@@ -304,11 +208,11 @@ func TestHandler_ServeHTTP_ContainerWithoutInit(t *testing.T) {
 // count the ones that rolled off.
 func TestHandler_ServeHTTP_Window(t *testing.T) {
 	const total, window = 10, 3
-	fix := newTrackFixtureGroups(t, "fmp4", total)
+	fix := newTrackFixtureGroups(t, total)
 
 	handler, err := NewHandler(fix.track, Options{
-		InitSegment: testInit,
-		Window:      window,
+		Init:   testInit,
+		Window: window,
 	})
 	require.NoError(t, err)
 	ts := httptest.NewServer(handler)
@@ -346,11 +250,11 @@ func TestHandler_ServeHTTP_Window(t *testing.T) {
 
 // A window larger than the track lists everything and drops nothing.
 func TestHandler_ServeHTTP_WindowLargerThanTrack(t *testing.T) {
-	fix := newTrackFixtureGroups(t, "fmp4", 2)
+	fix := newTrackFixtureGroups(t, 2)
 
 	handler, err := NewHandler(fix.track, Options{
-		InitSegment: testInit,
-		Window:      10,
+		Init:   testInit,
+		Window: 10,
 	})
 	require.NoError(t, err)
 	ts := httptest.NewServer(handler)
@@ -466,7 +370,7 @@ func TestHandler_ServeHTTP_EpochWindow(t *testing.T) {
 	ended := append(append([]ledger.GroupInfo{}, oldest...), previous...)
 
 	render := func(opts Options) string {
-		opts.InitSegment = testInit
+		opts.Init = testInit
 		handler, err := NewHandler(track, opts)
 		require.NoError(t, err)
 		ts := httptest.NewServer(handler)
@@ -581,8 +485,8 @@ func newEpochFixture(tb testing.TB, perEpoch ...int64) (*ledger.Track, [][]ledge
 func renderManifest(tb testing.TB, track *ledger.Track, name string, opts Options) string {
 	tb.Helper()
 
-	if opts.InitSegment.Bytes == nil && opts.InitSegment.URL == "" {
-		opts.InitSegment = testInit
+	if opts.Init == nil {
+		opts.Init = testInit
 	}
 	handler, err := NewHandler(track, opts)
 	require.NoError(tb, err)
@@ -660,7 +564,7 @@ func TestHandler_ServeHTTP_EpochWindowDASH(t *testing.T) {
 
 // The smallest window is one segment, where the ring wraps on every group.
 func TestHandler_ServeHTTP_WindowOfOne(t *testing.T) {
-	fix := newTrackFixtureGroups(t, "fmp4", 5)
+	fix := newTrackFixtureGroups(t, 5)
 
 	got := renderManifest(t, fix.track, "playlist.m3u8", Options{Window: 1})
 
@@ -671,37 +575,13 @@ func TestHandler_ServeHTTP_WindowOfOne(t *testing.T) {
 	assert.Contains(t, got, "#EXT-X-MEDIA-SEQUENCE:4")
 }
 
-// An init segment given as a URL is referenced by both manifests and is not
-// served by the handler: it already lives somewhere the client can reach.
-func TestHandler_ServeHTTP_InitSegmentURL(t *testing.T) {
-	fix := newTrackFixture(t)
-	const url = "https://objects.example/live/cam1/init.m4s"
-	opts := Options{InitSegment: InitSegment{URL: url}}
-
-	assert.Contains(t, renderManifest(t, fix.track, "playlist.m3u8", opts),
-		`#EXT-X-MAP:URI="`+url+`"`)
-	assert.Contains(t, renderManifest(t, fix.track, "manifest.mpd", opts),
-		`<Initialization sourceURL="`+url+`"/>`)
-
-	handler, err := NewHandler(fix.track, opts)
-	require.NoError(t, err)
-	ts := httptest.NewServer(handler)
-	defer ts.Close()
-
-	resp, err := http.Get(ts.URL + "/init.m4s")
-	require.NoError(t, err)
-	defer resp.Body.Close()
-	assert.Equal(t, http.StatusNotFound, resp.StatusCode,
-		"the handler holds no bytes to serve for a URL-referenced init")
-}
-
 // playlistFor renders the HLS playlist for a track through a windowed handler.
 func playlistFor(tb testing.TB, track *ledger.Track, window int) string {
 	tb.Helper()
 
 	handler, err := NewHandler(track, Options{
-		InitSegment: testInit,
-		Window:      window,
+		Init:   testInit,
+		Window: window,
 	})
 	require.NoError(tb, err)
 	ts := httptest.NewServer(handler)
@@ -721,12 +601,12 @@ func playlistFor(tb testing.TB, track *ledger.Track, window int) string {
 // it moves on every refresh and drags each client's timeline with it.
 func TestHandler_ServeHTTP_WindowDASH(t *testing.T) {
 	const total = 10
-	fix := newTrackFixtureGroups(t, "fmp4", total)
+	fix := newTrackFixtureGroups(t, total)
 
 	manifestFor := func(window int) string {
 		handler, err := NewHandler(fix.track, Options{
-			InitSegment: testInit,
-			Window:      window,
+			Init:   testInit,
+			Window: window,
 		})
 		require.NoError(t, err)
 		ts := httptest.NewServer(handler)
@@ -777,9 +657,7 @@ func availabilityStartTime(tb testing.TB, mpd string) string {
 // manifests.
 func TestHandler_ServeHTTP_InitSegment(t *testing.T) {
 	fix := newTrackFixture(t)
-	handler, err := NewHandler(fix.track, Options{
-		InitSegment: InitSegment{Bytes: []byte("init-bytes")},
-	})
+	handler, err := NewHandler(fix.track, Options{Init: testInit})
 	require.NoError(t, err)
 	ts := httptest.NewServer(handler)
 	defer ts.Close()
@@ -810,10 +688,10 @@ func TestHandler_ServeHTTP_InitSegment(t *testing.T) {
 // which have no business in a response.
 func TestHandler_ServeHTTP_StoreFailureIsServerError(t *testing.T) {
 	backend := &fakeStore{}
-	fix := newTrackFixtureStore(t, "fmp4", 2, backend)
+	fix := newTrackFixtureStore(t, 2, backend)
 	backend.failAll = true
 
-	handler, err := NewHandler(fix.track, Options{InitSegment: testInit})
+	handler, err := NewHandler(fix.track, Options{Init: testInit})
 	require.NoError(t, err)
 	ts := httptest.NewServer(handler)
 	defer ts.Close()
@@ -846,7 +724,7 @@ func TestHandler_ServeHTTP_StoreFailureIsServerError(t *testing.T) {
 // ErrGroupNotFound nor the open — the arm that must answer 500 rather than 404.
 func TestHandler_ServeHTTP_LookupFailureIsServerError(t *testing.T) {
 	backend := &fakeStore{}
-	fix := newTrackFixtureStore(t, "fmp4", 1, backend)
+	fix := newTrackFixtureStore(t, 1, backend)
 
 	// A second lifetime, so the fixture's groups sit in epoch 1 and a segment
 	// in epoch 2 forces Lookup to fetch a log the open never touched.
@@ -864,7 +742,7 @@ func TestHandler_ServeHTTP_LookupFailureIsServerError(t *testing.T) {
 	// Armed only now: NewEpoch itself reads epoch 2's log back after writing it.
 	backend.failKey = "live/cam1/video/e000002/log.manifest"
 
-	handler, err := NewHandler(fix.track, Options{InitSegment: testInit})
+	handler, err := NewHandler(fix.track, Options{Init: testInit})
 	require.NoError(t, err)
 	ts := httptest.NewServer(handler)
 	defer ts.Close()
@@ -893,10 +771,10 @@ func assertGenericServerError(tb testing.TB, resp *http.Response) {
 // object cannot be fetched. The segment exists, so this is a 500, not a 404.
 func TestHandler_ServeHTTP_ReadGroupFailureIsServerError(t *testing.T) {
 	backend := &fakeStore{}
-	fix := newTrackFixtureStore(t, "fmp4", 2, backend)
+	fix := newTrackFixtureStore(t, 2, backend)
 	backend.failKey = fix.metas[0].ObjectKey
 
-	handler, err := NewHandler(fix.track, Options{InitSegment: testInit})
+	handler, err := NewHandler(fix.track, Options{Init: testInit})
 	require.NoError(t, err)
 	ts := httptest.NewServer(handler)
 	defer ts.Close()
@@ -918,7 +796,7 @@ func TestHandler_ServeHTTP_ReadGroupFailureIsServerError(t *testing.T) {
 // would tell a player the stream ended there, so neither format is served.
 func TestHandler_ServeHTTP_GatherFailureIsServerError(t *testing.T) {
 	backend := &fakeStore{}
-	fix := newTrackFixtureStore(t, "fmp4", 1, backend)
+	fix := newTrackFixtureStore(t, 1, backend)
 
 	ctx := context.Background()
 	writer, err := fix.track.Writer(ctx)
@@ -934,7 +812,7 @@ func TestHandler_ServeHTTP_GatherFailureIsServerError(t *testing.T) {
 	// Armed only now: NewEpoch itself reads epoch 2's log back after writing it.
 	backend.failKey = "live/cam1/video/e000002/log.manifest"
 
-	handler, err := NewHandler(fix.track, Options{InitSegment: testInit})
+	handler, err := NewHandler(fix.track, Options{Init: testInit})
 	require.NoError(t, err)
 	ts := httptest.NewServer(handler)
 	defer ts.Close()
@@ -959,34 +837,15 @@ func TestHandler_ServeHTTP_GatherFailureIsServerError(t *testing.T) {
 	}
 }
 
-// A resolver that cannot produce a URL — a signing backend that is down, say —
-// is a failure to answer. The handler must not fall back to proxying the bytes
-// a deployment chose not to serve itself, nor report the segment missing.
-func TestHandler_ServeHTTP_ResolverFailureIsServerError(t *testing.T) {
-	fix := newTrackFixture(t)
-	handler, err := NewHandler(fix.track, Options{
-		InitSegment: testInit,
-		Resolver:    &fakeResolver{err: errors.New("signer unavailable: key live/cam1/video")},
-	})
-	require.NoError(t, err)
-	ts := httptest.NewServer(handler)
-	defer ts.Close()
-
-	resp, err := http.Get(ts.URL + "/" + fix.metas[0].ID.String() + ".m4s")
-	require.NoError(t, err)
-	defer resp.Body.Close()
-	assertGenericServerError(t, resp)
-}
-
 // A name that is not a group id never reaches the ledger: it is answered 404
 // from the URL alone. The store is failing throughout, so a request that did
 // reach it would answer 500 instead.
 func TestHandler_ServeHTTP_MalformedSegmentNotFound(t *testing.T) {
 	backend := &fakeStore{}
-	fix := newTrackFixtureStore(t, "fmp4", 2, backend)
+	fix := newTrackFixtureStore(t, 2, backend)
 	backend.failAll = true
 
-	handler, err := NewHandler(fix.track, Options{InitSegment: testInit})
+	handler, err := NewHandler(fix.track, Options{Init: testInit})
 	require.NoError(t, err)
 	ts := httptest.NewServer(handler)
 	defer ts.Close()
@@ -1012,11 +871,9 @@ func TestHandler_ServeHTTP_GroupWithoutDurationIsServerError(t *testing.T) {
 	fix := newTrackFixture(t)
 
 	var buf bytes.Buffer
-	handler, err := NewHandler(fix.track, Options{
-		InitSegment: testInit,
-		Logger:      slog.New(slog.NewTextHandler(&buf, nil)),
-	})
+	handler, err := NewHandler(fix.track, Options{Init: testInit})
 	require.NoError(t, err)
+	handler.logger = slog.New(slog.NewTextHandler(&buf, nil))
 	ts := httptest.NewServer(handler)
 	defer ts.Close()
 
@@ -1055,20 +912,17 @@ func TestHandler_ServeHTTP_GroupWithoutDurationIsServerError(t *testing.T) {
 	}
 }
 
-// With a logger supplied, the generic 500 is accompanied by a record carrying
-// what broke and which request broke it — the log is the only place the detail
-// survives.
+// The generic 500 is accompanied by a record carrying what broke and which
+// request broke it — the log is the only place the detail survives.
 func TestHandler_ServeHTTP_InternalErrorsAreLogged(t *testing.T) {
 	backend := &fakeStore{}
-	fix := newTrackFixtureStore(t, "fmp4", 2, backend)
+	fix := newTrackFixtureStore(t, 2, backend)
 	backend.failAll = true
 
 	var buf bytes.Buffer
-	handler, err := NewHandler(fix.track, Options{
-		InitSegment: testInit,
-		Logger:      slog.New(slog.NewTextHandler(&buf, nil)),
-	})
+	handler, err := NewHandler(fix.track, Options{Init: testInit})
 	require.NoError(t, err)
+	handler.logger = slog.New(slog.NewTextHandler(&buf, nil))
 	ts := httptest.NewServer(handler)
 	defer ts.Close()
 
@@ -1078,27 +932,25 @@ func TestHandler_ServeHTTP_InternalErrorsAreLogged(t *testing.T) {
 	require.Equal(t, http.StatusInternalServerError, resp.StatusCode)
 
 	logged := buf.String()
-	assert.Contains(t, logged, `error="`, "the error is logged under the attr name the ledger's records use")
+	assert.Contains(t, logged, `err="`, "the error is logged under the attr name qumo's records use")
 	assert.Contains(t, logged, "store outage", "the underlying error is in the record, wrapping and all")
 	assert.Contains(t, logged, "GET", "the record names the method")
 	assert.Contains(t, logged, "/"+fix.metas[0].ID.String()+".m4s", "the record names the request path")
 }
 
 // A canceled request is player churn — a seek, a variant switch — not a
-// failure: the handler still answers 500, but writes no record, so the log the
-// option carries stays a signal of real outages.
+// failure: the handler still answers 500, but writes no record, so the log
+// stays a signal of real outages.
 func TestHandler_ServeHTTP_CanceledRequestNotLogged(t *testing.T) {
 	backend := &fakeStore{}
-	fix := newTrackFixtureStore(t, "fmp4", 2, backend)
+	fix := newTrackFixtureStore(t, 2, backend)
 	backend.failAll = true
 	backend.err = context.Canceled
 
 	var buf bytes.Buffer
-	handler, err := NewHandler(fix.track, Options{
-		InitSegment: testInit,
-		Logger:      slog.New(slog.NewTextHandler(&buf, nil)),
-	})
+	handler, err := NewHandler(fix.track, Options{Init: testInit})
 	require.NoError(t, err)
+	handler.logger = slog.New(slog.NewTextHandler(&buf, nil))
 	ts := httptest.NewServer(handler)
 	defer ts.Close()
 
@@ -1110,39 +962,11 @@ func TestHandler_ServeHTTP_CanceledRequestNotLogged(t *testing.T) {
 	assert.Empty(t, buf.String(), "routine client churn writes no record")
 }
 
-func TestNewHandler_QueryParam(t *testing.T) {
-	tests := map[string]struct {
-		param   string
-		wantErr bool
-	}{
-		"none":                 {},
-		"a variable name":      {param: "cdn-token_2"},
-		"a character it bars":  {param: "jwt=", wantErr: true},
-		"a space":              {param: "my token", wantErr: true},
-		"a substitution brace": {param: "{$jwt}", wantErr: true},
-	}
-	for name, tt := range tests {
-		t.Run(name, func(t *testing.T) {
-			fix := newTrackFixtureEncoding(t, "ts")
-
-			handler, err := NewHandler(fix.track, Options{QueryParam: tt.param})
-
-			if tt.wantErr {
-				assert.Error(t, err)
-				assert.Nil(t, handler)
-				return
-			}
-			require.NoError(t, err)
-			assert.NotNil(t, handler)
-		})
-	}
-}
-
 // The handler's playlist carries its query parameter onto the init segment
 // it serves and onto every segment.
 func TestHandler_ServeHTTP_QueryParam(t *testing.T) {
 	fix := newTrackFixture(t)
-	handler, err := NewHandler(fix.track, Options{InitSegment: testInit, QueryParam: "jwt"})
+	handler, err := NewHandler(fix.track, Options{Init: testInit, QueryParam: "jwt"})
 	require.NoError(t, err)
 	segment := fix.metas[0].ID.String() + ".m4s"
 
