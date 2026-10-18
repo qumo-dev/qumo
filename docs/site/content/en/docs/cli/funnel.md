@@ -178,8 +178,8 @@ restart before anyone records again.
 | Variable | Default | Description |
 |---|---|---|
 | `FUNNEL_ADDR` | `:8090` | HTTP listen address for records and history. |
-| `FUNNEL_SENDER_LIMIT` | (unset) | Records each sender may send into a track, as `RATE,BURST`: per second, and at once, e.g. `1,5`. Unset is no limit. |
-| `FUNNEL_TRACK_LIMIT` | (unset) | Records a track takes from all senders together, as `RATE,BURST`, e.g. `20,40`. Unset is no limit. |
+| `FUNNEL_SENDER_LIMIT` | `1,5` | Records each sender may send into a track, as `RATE,BURST`: per second, and at once. `0` or `off` is no limit. |
+| `FUNNEL_TRACK_LIMIT` | `20,40` | Records a track takes from all senders together, as `RATE,BURST`. `0` or `off` is no limit. |
 | `RELAY_URL` | (unset) | The relay to publish through, dialed as a client: `https://relay:4433` for WebTransport or `moqt://relay:4433` for native QUIC. It may carry a credential as `?jwt=`. |
 | `RELAY_SIGNING_KEY` / `RELAY_PUBLISH` | (unset) | A signing key file and the root its credentials grant publishing beneath, e.g. `/room/` for `/room/123/comments`. Set together; the funnel signs a fresh relay credential for every session in place of `?jwt=`, and renews it on the session before it expires. |
 | `RELAY_CA_FILE` | (unset) | PEM certificate to trust as the relay's root, instead of the system roots. |
