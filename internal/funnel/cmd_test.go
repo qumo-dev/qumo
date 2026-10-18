@@ -44,6 +44,9 @@ func TestWithCORS(t *testing.T) {
 				assert.Contains(t, rr.Header().Get("Access-Control-Allow-Headers"), "Idempotency-Key")
 				assert.Contains(t, rr.Header().Get("Access-Control-Allow-Methods"), "PUT")
 				assert.Contains(t, rr.Header().Get("Access-Control-Allow-Methods"), "DELETE", "a browser may redact")
+				assert.Equal(t, "Retry-After, Date", rr.Header().Get("Access-Control-Expose-Headers"))
+			} else {
+				assert.Empty(t, rr.Header().Get("Access-Control-Expose-Headers"))
 			}
 		})
 	}

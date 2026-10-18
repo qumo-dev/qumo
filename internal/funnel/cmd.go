@@ -53,8 +53,10 @@ import (
 )
 
 const (
-	defaultIngestAddr = ":8090"
-	defaultServeAddr  = ":4433"
+	defaultIngestAddr  = ":8090"
+	defaultServeAddr   = ":4433"
+	defaultSenderLimit = "1,5"
+	defaultTrackLimit  = "20,40"
 )
 
 // Run starts the funnel: the HTTP server senders POST to and readers GET from, a session to
@@ -77,8 +79,8 @@ const (
 //	QUMO_AUTH_KEYS       - the key set senders' and readers' credentials are verified against, as the relay reads it (default: none, every request is accepted)
 //	QUMO_AUTH_KEYS_CACHE - a file a downloaded key set is kept in between runs
 //	QUMO_RELAY_TOKEN     - bearer token sent to a key-set URL
-//	FUNNEL_SENDER_LIMIT  - records each sender may send into a track, as "RATE,BURST": per second, and at once (default: no limit)
-//	FUNNEL_TRACK_LIMIT   - records a track takes from every sender together, as "RATE,BURST" (default: no limit)
+//	FUNNEL_SENDER_LIMIT  - records each sender may send into a track, as "RATE,BURST": per second, and at once (default: "1,5"; "0" or "off" for no limit)
+//	FUNNEL_TRACK_LIMIT   - records a track takes from every sender together, as "RATE,BURST" (default: "20,40"; "0" or "off" for no limit)
 //	QUIC_*               - QUIC transport settings of the MoQT listener and of the session to the relay (quicconfig.FromEnv lists them)
 //
 // The HTTP listener is plain HTTP: terminate TLS in front of it.
@@ -94,11 +96,11 @@ func Run(_ []string) error {
 	certFile := envconfig.String("CERT_FILE", "certs/server.crt")
 	keyFile := envconfig.String("KEY_FILE", "certs/server.key")
 	allowedOrigins := cors.LoadAllowed()
-	senderLimit, err := parseLimit(envconfig.String("FUNNEL_SENDER_LIMIT", ""))
+	senderLimit, err := parseLimit(envconfig.String("FUNNEL_SENDER_LIMIT", defaultSenderLimit))
 	if err != nil {
 		return fmt.Errorf("funnel: FUNNEL_SENDER_LIMIT: %w", err)
 	}
-	trackLimit, err := parseLimit(envconfig.String("FUNNEL_TRACK_LIMIT", ""))
+	trackLimit, err := parseLimit(envconfig.String("FUNNEL_TRACK_LIMIT", defaultTrackLimit))
 	if err != nil {
 		return fmt.Errorf("funnel: FUNNEL_TRACK_LIMIT: %w", err)
 	}
@@ -278,9 +280,10 @@ type HandlerOptions struct {
 }
 
 // parseLimit reads a limit written "RATE,BURST", records per second and at
-// once. Empty is no limit.
+// once. Empty, "0", "off", or "none" is no limit.
 func parseLimit(s string) (ingest.Limit, error) {
-	if s == "" {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "", "0", "off", "none":
 		return ingest.Limit{}, nil
 	}
 	rate, burst, ok := strings.Cut(s, ",")
@@ -293,7 +296,8 @@ func parseLimit(s string) (ingest.Limit, error) {
 }
 
 // withCORS lets a browser on an allowed origin call h with a bearer credential
-// and an idempotency key, and answers its preflight request.
+// and an idempotency key, exposes the rate-limit headers on the response, and
+// answers its preflight request.
 func withCORS(h http.Handler, allowed []string) http.Handler {
 	allow := cors.NewChecker(allowed)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -302,6 +306,7 @@ func withCORS(h http.Handler, allowed []string) http.Handler {
 			w.Header().Set("Access-Control-Allow-Origin", origin)
 			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
 			w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, Idempotency-Key")
+			w.Header().Set("Access-Control-Expose-Headers", "Retry-After, Date")
 		}
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)

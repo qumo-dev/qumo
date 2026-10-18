@@ -5,6 +5,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"testing/synctest"
+	"time"
 
 	"github.com/okdaichi/qumo-ledger/ingest"
 	"github.com/okdaichi/qumo-ledger/ledger/store/mem"
@@ -178,14 +180,83 @@ func TestNewHandler_HistoryNeedsASubscriber(t *testing.T) {
 }
 
 func TestNewHandler_Limits(t *testing.T) {
-	h, err := NewHandler(t.Context(), mem.New(), moqt.NewTrackMux(0), HandlerOptions{
-		TrackLimit: ingest.Limit{Rate: 1, Burst: 1},
-	})
-	require.NoError(t, err)
-	require.Equal(t, http.StatusCreated, serve(h, http.MethodPut, chatURL, "").Code)
+	v, key := newVerifier(t)
 
-	assert.Equal(t, http.StatusCreated, serve(h, http.MethodPost, chatURL, `"one"`).Code)
-	assert.Equal(t, http.StatusTooManyRequests, serve(h, http.MethodPost, chatURL, `"two"`).Code)
+	t.Run("sender limit per subject", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			creator := sign(t, key, createOn("room/123"))
+			alice := sign(t, key, postAs("alice", "room/123"))
+			bob := sign(t, key, postAs("bob", "room/123"))
+
+			senderLimit, err := parseLimit(defaultSenderLimit)
+			require.NoError(t, err)
+			trackLimit, err := parseLimit(defaultTrackLimit)
+			require.NoError(t, err)
+			h, err := NewHandler(t.Context(), mem.New(), moqt.NewTrackMux(0), HandlerOptions{
+				Verifier:    v,
+				SenderLimit: senderLimit,
+				TrackLimit:  trackLimit,
+			})
+			require.NoError(t, err)
+			require.Equal(t, http.StatusCreated, serve(h, http.MethodPut, chatURL, "", creator).Code)
+
+			for range senderLimit.Burst {
+				assert.Equal(t, http.StatusCreated, serve(h, http.MethodPost, chatURL, `"ok"`, alice).Code)
+			}
+			refused := serve(h, http.MethodPost, chatURL, `"too fast"`, alice)
+			assert.Equal(t, http.StatusTooManyRequests, refused.Code)
+			assert.Equal(t, "2", refused.Header().Get("Retry-After"))
+			assert.Equal(t, http.StatusCreated, serve(h, http.MethodPost, chatURL, `"ok"`, bob).Code,
+				"another sender has their own bucket")
+		})
+	})
+
+	t.Run("track limit across senders", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			creator := sign(t, key, createOn("room/123"))
+			trackLimit, err := parseLimit(defaultTrackLimit)
+			require.NoError(t, err)
+			h, err := NewHandler(t.Context(), mem.New(), moqt.NewTrackMux(0), HandlerOptions{
+				Verifier:   v,
+				TrackLimit: trackLimit,
+			})
+			require.NoError(t, err)
+			require.Equal(t, http.StatusCreated, serve(h, http.MethodPut, chatURL, "", creator).Code)
+
+			poster := sign(t, key, postAs("alice", "room/123"))
+			for range trackLimit.Burst {
+				assert.Equal(t, http.StatusCreated, serve(h, http.MethodPost, chatURL, `"ok"`, poster).Code)
+			}
+			refused := serve(h, http.MethodPost, chatURL, `"too fast"`, poster)
+			assert.Equal(t, http.StatusTooManyRequests, refused.Code)
+			assert.Equal(t, "1", refused.Header().Get("Retry-After"))
+		})
+	})
+
+	t.Run("track limit refunds sender token", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			creator := sign(t, key, createOn("room/123"))
+			alice := sign(t, key, postAs("alice", "room/123"))
+			bob := sign(t, key, postAs("bob", "room/123"))
+
+			h, err := NewHandler(t.Context(), mem.New(), moqt.NewTrackMux(0), HandlerOptions{
+				Verifier:    v,
+				SenderLimit: ingest.Limit{Rate: 1, Burst: 1},
+				TrackLimit:  ingest.Limit{Rate: 1, Burst: 1},
+			})
+			require.NoError(t, err)
+			require.Equal(t, http.StatusCreated, serve(h, http.MethodPut, chatURL, "", creator).Code)
+
+			assert.Equal(t, http.StatusCreated, serve(h, http.MethodPost, chatURL, `"one"`, bob).Code)
+			refused := serve(h, http.MethodPost, chatURL, `"two"`, alice)
+			assert.Equal(t, http.StatusTooManyRequests, refused.Code)
+			assert.Equal(t, "2", refused.Header().Get("Retry-After"))
+
+			time.Sleep(time.Second)
+			assert.Equal(t, http.StatusCreated, serve(h, http.MethodPost, chatURL, `"two"`, alice).Code,
+				"alice kept her burst token when the track limit refused her")
+		})
+	})
 }
 
 func TestParseLimit(t *testing.T) {
@@ -195,7 +266,11 @@ func TestParseLimit(t *testing.T) {
 		wantErr bool
 	}{
 		"none":            {in: ""},
-		"rate and burst":  {in: "1,5", want: ingest.Limit{Rate: 1, Burst: 5}},
+		"zero disables":   {in: "0"},
+		"off disables":    {in: "off"},
+		"none keyword":    {in: " NONE "},
+		"rate and burst":  {in: defaultSenderLimit, want: ingest.Limit{Rate: 1, Burst: 5}},
+		"track default":   {in: defaultTrackLimit, want: ingest.Limit{Rate: 20, Burst: 40}},
 		"a fraction":      {in: " 0.5 , 2 ", want: ingest.Limit{Rate: 0.5, Burst: 2}},
 		"no burst":        {in: "1", wantErr: true},
 		"zero rate":       {in: "0,5", wantErr: true},
