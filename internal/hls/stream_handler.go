@@ -1,10 +1,12 @@
-package stream
+package hls
 
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"net/http"
 	"path"
 	"slices"
@@ -12,9 +14,11 @@ import (
 	"strings"
 
 	"github.com/okdaichi/qumo-ledger/ledger"
+
+	"github.com/qumo-dev/qumo/internal/cmaf"
 )
 
-// Handler serves one track over HTTP as both HLS and DASH. It routes by the
+// streamHandler serves one track over HTTP as both HLS and DASH. It routes by the
 // request URL's base name, so it is mount-point-agnostic — mount it at the
 // track's path:
 //
@@ -23,13 +27,17 @@ import (
 //	.../<group-id>.m4s                  one segment — shared by both formats
 //	.../init.m4s                        the init segment
 //
+// The track stores each group as the frames MoQ carried (moq-lite-05, their
+// bodies LOC); a segment is that group packaged into a CMAF fragment when it
+// is asked for.
+//
 // A fresh [*ledger.Reader] is opened per request. A Reader is single-consumer,
 // and concurrent consumers each opening their own is the documented cheap
 // pattern, so the handler does that rather than share one.
-type Handler struct {
+type streamHandler struct {
 	track       *ledger.Track
 	schema      ledger.TrackSchema
-	init        []byte
+	packager    *cmaf.Packager
 	window      int
 	epochWindow int
 	queryParam  string
@@ -39,16 +47,18 @@ type Handler struct {
 // segExt is the extension segments are named with: each is a CMAF fragment.
 const segExt = ".m4s"
 
+// segmentMIME is the media type of the init segment and every fragment.
+const segmentMIME = "video/mp4"
+
 // initName is the name, relative to the track, of the init segment.
 const initName = "init" + segExt
 
-// Options configures a [Handler].
-type Options struct {
-	// Init is the track's fMP4 initialization segment (ftyp + moov), served at
-	// init.m4s and referenced as HLS #EXT-X-MAP and DASH Initialization. It is
-	// required: segments are moof+mdat and carry no codec configuration, so a
-	// manifest without one is unplayable.
-	Init []byte
+// streamOptions configures a [streamHandler].
+type streamOptions struct {
+	// Packager packages the track's groups into CMAF fragments, and holds the
+	// initialization segment (ftyp + moov) served at init.m4s and referenced as
+	// HLS #EXT-X-MAP and DASH Initialization. It is required.
+	Packager *cmaf.Packager
 
 	// Window caps how many of the most recent segments a manifest lists. Zero
 	// lists every committed segment.
@@ -72,7 +82,7 @@ type Options struct {
 	// A producer that restarts opens a new epoch, and everything before it is
 	// media from a session that has ended. Left listed, those segments are what
 	// a player opening the stream starts on — it plays the previous session
-	// through before reaching the current one — and [Options.Window] only
+	// through before reaching the current one — and [streamOptions.Window] only
 	// clears them once enough new segments have pushed them out.
 	//
 	// Above 1 keeps recent lifetimes listed, which suits a producer that
@@ -101,19 +111,23 @@ type Options struct {
 	QueryParam string
 }
 
-// NewHandler builds a [Handler] over track, whose segments are fMP4 fragments
-// that opts.Init describes.
-func NewHandler(track *ledger.Track, opts Options) (*Handler, error) {
+// newStreamHandler builds a [streamHandler] over track, whose groups opts.Packager
+// packages. The track's media time is the packager's: [cmaf.Timescale].
+func newStreamHandler(track *ledger.Track, opts streamOptions) (*streamHandler, error) {
 	if track == nil {
-		return nil, errors.New("stream: nil track")
+		return nil, errors.New("hls: nil track")
 	}
-	if len(opts.Init) == 0 {
-		return nil, errors.New("stream: no init segment")
+	if opts.Packager == nil {
+		return nil, errors.New("hls: no packager")
 	}
-	return &Handler{
+	schema := track.Root().TrackSchema
+	if schema.Timescale != cmaf.Timescale {
+		return nil, fmt.Errorf("hls: track timescale %d is not the packager's %d", schema.Timescale, cmaf.Timescale)
+	}
+	return &streamHandler{
 		track:       track,
-		schema:      track.Root().TrackSchema,
-		init:        opts.Init,
+		schema:      schema,
+		packager:    opts.Packager,
 		window:      opts.Window,
 		epochWindow: opts.EpochWindow,
 		queryParam:  opts.QueryParam,
@@ -122,7 +136,7 @@ func NewHandler(track *ledger.Track, opts Options) (*Handler, error) {
 }
 
 // ServeHTTP routes a request to the playlist, manifest, segment, or init handler.
-func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+func (h *streamHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	base := path.Base(r.URL.Path)
 	switch {
 	case strings.HasSuffix(base, ".m3u8"):
@@ -142,7 +156,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 //
 // A canceled context is the client leaving (a seek, a variant switch) and is
 // not logged: routine player churn must not flood the record of real failures.
-func (h *Handler) internalError(w http.ResponseWriter, r *http.Request, op string, err error) {
+func (h *streamHandler) internalError(w http.ResponseWriter, r *http.Request, op string, err error) {
 	if !errors.Is(err, context.Canceled) {
 		// The path, not the URL: the query can carry a viewer's token.
 		h.logger.Error("hls: "+op, "method", r.Method, "path", r.URL.Path, "err", err)
@@ -151,7 +165,7 @@ func (h *Handler) internalError(w http.ResponseWriter, r *http.Request, op strin
 }
 
 // serveHLS renders and writes the HLS media playlist.
-func (h *Handler) serveHLS(w http.ResponseWriter, r *http.Request) {
+func (h *streamHandler) serveHLS(w http.ResponseWriter, r *http.Request) {
 	window, err := h.gather(r.Context())
 	if err != nil {
 		h.internalError(w, r, "gather playlist window", err)
@@ -167,7 +181,7 @@ func (h *Handler) serveHLS(w http.ResponseWriter, r *http.Request) {
 }
 
 // serveDASH renders and writes the DASH MPD.
-func (h *Handler) serveDASH(w http.ResponseWriter, r *http.Request) {
+func (h *streamHandler) serveDASH(w http.ResponseWriter, r *http.Request) {
 	window, err := h.gather(r.Context())
 	if err != nil {
 		h.internalError(w, r, "gather manifest window", err)
@@ -183,15 +197,19 @@ func (h *Handler) serveDASH(w http.ResponseWriter, r *http.Request) {
 }
 
 // serveInit writes the init segment.
-func (h *Handler) serveInit(w http.ResponseWriter) {
-	w.Header().Set("Content-Type", h.schema.MIME)
-	w.Header().Set("Content-Length", strconv.Itoa(len(h.init)))
-	_, _ = w.Write(h.init) // not actionable: once the body write fails the client is gone
+func (h *streamHandler) serveInit(w http.ResponseWriter) {
+	init := h.packager.Init()
+	w.Header().Set("Content-Type", segmentMIME)
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("Content-Length", strconv.Itoa(len(init)))
+	//nolint:gosec // G705: CMAF init segment, typed video/mp4 and not sniffed.
+	_, _ = w.Write(init) // not actionable: once the body write fails the client is gone
 }
 
-// serveSegment reads a segment by its GroupID out of the ledger. One handler
-// serves both HLS and DASH, since both address segments by GroupID.
-func (h *Handler) serveSegment(w http.ResponseWriter, r *http.Request) {
+// serveSegment reads a group by its GroupID out of the ledger and packages it
+// into the segment. One handler serves both HLS and DASH, since both address
+// segments by GroupID.
+func (h *streamHandler) serveSegment(w http.ResponseWriter, r *http.Request) {
 	id, ok := parseSegmentID(path.Base(r.URL.Path))
 	if !ok {
 		http.NotFound(w, r)
@@ -220,19 +238,57 @@ func (h *Handler) serveSegment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	data, err := reader.ReadGroup(r.Context(), group.ObjectKey)
+	payload, err := reader.ReadGroup(r.Context(), group.ObjectKey)
 	if err != nil {
 		h.internalError(w, r, "read segment", err)
 		return
 	}
-
-	mime := group.MIME
-	if mime == "" {
-		mime = h.schema.MIME
+	data, err := h.fragment(group, payload)
+	if err != nil {
+		h.internalError(w, r, "package segment", err)
+		return
 	}
-	w.Header().Set("Content-Type", mime)
+
+	w.Header().Set("Content-Type", segmentMIME)
+	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("Content-Length", strconv.Itoa(len(data)))
+	//nolint:gosec // G705: a CMAF fragment of stored media, typed video/mp4 and not sniffed, not request input reflected back.
 	_, _ = w.Write(data) // not actionable: once the body write fails the client is gone
+}
+
+// fragment packages a stored group, whose frames payload holds, into the CMAF
+// fragment the manifests list it as: placed at its MediaTime and covering its
+// Duration. The last frame's duration is what the writer stated, the part of
+// Duration its frames' timestamps do not span, so the fragment's extent is
+// the EXTINF exactly.
+func (h *streamHandler) fragment(g ledger.GroupInfo, payload []byte) ([]byte, error) {
+	var frames []cmaf.Frame
+	for f, err := range allFrames(payload) {
+		if err != nil {
+			return nil, err
+		}
+		ts, data, err := cmaf.DecodeLOC(f.Body)
+		if err != nil {
+			return nil, fmt.Errorf("frame %d: %w", len(frames), err)
+		}
+		frames = append(frames, cmaf.Frame{
+			Timestamp: ts,
+			Sync:      len(frames) == 0,
+			Data:      data,
+		})
+	}
+	if len(frames) == 0 {
+		return nil, fmt.Errorf("group %s has no frames", g.ID)
+	}
+	span := int64(frames[len(frames)-1].Timestamp - frames[0].Timestamp)
+	last := g.Duration - span
+	if last <= 0 || last > math.MaxUint32 {
+		return nil, fmt.Errorf("group %s: duration %d does not cover its frames' %d", g.ID, g.Duration, span)
+	}
+	// The producer's sequence numbers the fragment: it is what orders the
+	// track's fragments, and restarts with an epoch, as a new session does.
+	data, _, err := h.packager.Fragment(uint32(g.ID.Sequence())+1, frames, uint64(g.MediaTime), uint32(last))
+	return data, err
 }
 
 // manifestWindow is what the renderers need about a track: the groups to list,
@@ -266,7 +322,7 @@ type manifestWindow struct {
 // consistently across reloads, which is what the full walk buys — the output is
 // short but the counts are not derivable from it. The walk reads manifests, not
 // segment payloads.
-func (h *Handler) gather(ctx context.Context) (manifestWindow, error) {
+func (h *streamHandler) gather(ctx context.Context) (manifestWindow, error) {
 	reader, err := h.track.Reader(ctx)
 	if err != nil {
 		return manifestWindow{}, err
@@ -278,10 +334,10 @@ func (h *Handler) gather(ctx context.Context) (manifestWindow, error) {
 	// ring holds the last h.window entries when windowing; next is where the
 	// following one lands, wrapping once the ring is full. Unwindowed, every
 	// entry is kept and next is unused.
-	var ring []entry
+	var ring []streamEntry
 	var next int
 	if h.window > 0 {
-		ring = make([]entry, 0, h.window)
+		ring = make([]streamEntry, 0, h.window)
 	}
 
 	var prevEpoch uint64
@@ -297,7 +353,7 @@ func (h *Handler) gather(ctx context.Context) (manifestWindow, error) {
 		}
 
 		epoch := g.ID.Epoch()
-		e := entry{info: g, discontinuity: seen > 0 && epoch != prevEpoch}
+		e := streamEntry{info: g, discontinuity: seen > 0 && epoch != prevEpoch}
 		prevEpoch = epoch
 		seen++
 
@@ -345,7 +401,7 @@ func (h *Handler) gather(ctx context.Context) (manifestWindow, error) {
 // is actually listed. Epochs the segment window has already trimmed away are
 // not lifetimes this manifest still shows, and counting them would evict a
 // session that is genuinely on screen.
-func (h *Handler) epochsToDrop(ordered []entry) int {
+func (h *streamHandler) epochsToDrop(ordered []streamEntry) int {
 	if h.epochWindow <= 0 || len(ordered) == 0 {
 		return 0
 	}
@@ -367,11 +423,11 @@ func (h *Handler) epochsToDrop(ordered []entry) int {
 	return 0
 }
 
-// entry is a group together with what its position implies for the manifest. A
+// streamEntry is a group together with what its position implies for the manifest. A
 // discontinuity belongs to the segment that opens a new epoch, so it rolls off
 // when that segment does — carrying the flag alongside the group beats
 // recomputing it from a window that no longer contains the boundary.
-type entry struct {
+type streamEntry struct {
 	info          ledger.GroupInfo
 	discontinuity bool
 }
@@ -380,7 +436,7 @@ type entry struct {
 // manifest states: it becomes what precedes the window, its place in the media
 // sequence is spent, and any timeline reset it carried is now behind the
 // manifest rather than inside it.
-func (w *manifestWindow) evict(e entry) {
+func (w *manifestWindow) evict(e streamEntry) {
 	w.precedingEpoch = e.info.ID.Epoch()
 	w.dropped++
 	if e.discontinuity {
@@ -390,7 +446,7 @@ func (w *manifestWindow) evict(e entry) {
 
 // renderOpts is the renderers' input projected from the handler's state and the
 // window it just gathered.
-func (h *Handler) renderOpts(window manifestWindow) renderOpts {
+func (h *streamHandler) renderOpts(window manifestWindow) renderOpts {
 	return renderOpts{
 		queryParam:            h.queryParam,
 		sliding:               h.window > 0,

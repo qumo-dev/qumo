@@ -1,15 +1,16 @@
-// Command seed-moq runs a minimal MoQ server that publishes a live CMAF (fMP4)
+// Command seed-moq runs a minimal MoQ server that publishes a live LOC video
 // track, so the HLS egress (`qumo hls`) can be exercised end-to-end — MoQ
-// catalog + CMAF groups into the ledger, served back as HLS — without a full
-// relay and publisher.
+// catalog + groups into the ledger, served back as HLS — without a full relay
+// and publisher.
 //
 // It serves the MSF catalog for a VP9 placeholder track on the reserved
 // "catalog" track — VP9 carries its configuration in the codec string, so the
 // catalog needs no fMP4 init in initData — and publishes one placeholder group
-// per interval: a run of LOC frames the egress packages into a CMAF fragment.
+// per interval: a run of LOC frames the egress stores, and packages into a
+// CMAF fragment when the segment is asked for.
 // Payloads are placeholder bytes, so the playlist is structurally valid (and
-// carries #EXT-X-MAP) but the segments are not decodable; real fMP4 comes from a
-// WebCodecs publisher.
+// carries #EXT-X-MAP) but the segments are not decodable; decodable frames come
+// from a WebCodecs publisher.
 //
 // It generates an ephemeral self-signed certificate, which the egress will not
 // trust by default — point it at the seeder with RELAY_TLS_INSECURE=true.
@@ -72,7 +73,7 @@ func main() {
 		fmt.Fprintln(os.Stderr, "seed-moq:", err)
 		os.Exit(1)
 	}
-	// The catalog states the track's packaging (CMAF/fMP4) and codec; the egress
+	// The catalog states the track's packaging (LOC) and codec; the egress
 	// builds the ledger schema and the HLS init segment from it. VP9 is the
 	// placeholder codec because it carries its configuration in the codec string
 	// and needs no out-of-band init — an AVC placeholder would be rejected at the
@@ -80,7 +81,7 @@ func main() {
 	// packager refuses a track that states none.
 	if err := broadcast.RegisterTrack(msf.Track{
 		Name:      trackName,
-		Packaging: msf.PackagingCMAF,
+		Packaging: msf.PackagingLOC,
 		Timescale: new(int64(timescale)),
 		Codec:     "vp09.00.10.08",
 		Width:     new(int64(1280)),
@@ -144,7 +145,7 @@ const (
 )
 
 // publish streams a live track to one subscriber: one placeholder group every
-// interval, each a run of LOC frames the egress packages into a CMAF fragment.
+// interval, each a run of LOC frames the egress stores and packages on read.
 // It returns when ctx is cancelled or the subscriber disconnects.
 func publish(ctx context.Context, tw *moqt.TrackWriter, interval time.Duration) {
 	slog.Info("seed-moq: subscriber connected")

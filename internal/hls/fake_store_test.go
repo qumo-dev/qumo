@@ -1,4 +1,4 @@
-package stream
+package hls
 
 import (
 	"context"

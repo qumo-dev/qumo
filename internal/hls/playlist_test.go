@@ -1,4 +1,4 @@
-package stream
+package hls
 
 import (
 	"bytes"
@@ -13,10 +13,11 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// testSchema is a track as the HLS egress stores one: frames as MoQ carried
+// them, under no MIME unless the catalog stated one.
 var testSchema = ledger.TrackSchema{
 	Timescale: 90000,
-	MIME:      "video/mp4",
-	Encoding:  "fmp4",
+	Encoding:  encodingMoQLite05,
 }
 
 // testBase anchors wallclock output at a fixed instant so the golden strings
@@ -208,26 +209,25 @@ func TestRenderDASH_NoWallclockAnchor(t *testing.T) {
 		"with no anchor to derive it from, the attribute is absent rather than wrong")
 }
 
-// DASH's coarse content classification projects from the track's MIME type: an
-// audio track adapts as audio, and anything DASH has no class for adapts as
-// application rather than being mislabeled video.
-func TestRenderDASH_ContentType(t *testing.T) {
+// The adaptation set describes the segments served — CMAF fragments of a video
+// track — whatever MIME the stored track's catalog stated, including none.
+func TestRenderDASH_AdaptationSetType(t *testing.T) {
 	groups := []ledger.GroupInfo{
 		grp(ledger.NewGroupID(1, 0), 0, 180000, wallclock(0)),
 	}
 
-	for mime, want := range map[string]string{
-		"audio/mp4": `contentType="audio"`,
-		"video/mp4": `contentType="video"`,
-		"text/ttml": `contentType="application"`,
+	for name, mime := range map[string]string{
+		"none stated":   "",
+		"a codec's":     "video/vp9",
+		"the segments'": "video/mp4",
 	} {
-		t.Run(mime, func(t *testing.T) {
+		t.Run(name, func(t *testing.T) {
 			schema := testSchema
 			schema.MIME = mime
 
 			body, err := renderDASH(schema, groups, renderOpts{})
 			require.NoError(t, err)
-			assert.Contains(t, string(body), want)
+			assert.Contains(t, string(body), `mimeType="video/mp4" contentType="video"`)
 		})
 	}
 }

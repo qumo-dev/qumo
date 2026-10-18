@@ -6,6 +6,7 @@ import (
 
 	"github.com/okdaichi/qumo-ledger/ledger"
 	"github.com/okdaichi/qumo-ledger/ledger/store/fs"
+	"github.com/qumo-dev/qumo/internal/cmaf"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -20,8 +21,9 @@ func Test_openTrack_createsThenOpens(t *testing.T) {
 	const path ledger.TrackPath = "test/video"
 	ctx := context.Background()
 	schema := ledger.TrackSchema{
-		Timescale: 90000, TimeSource: ledger.TimeSourceIngest,
-		MIME: "video/mp4", Encoding: "fmp4",
+		Timescale:  cmaf.Timescale,
+		TimeSource: ledger.TimeSourceIngest,
+		Encoding:   encodingMoQLite05,
 	}
 
 	track, adopted, err := openTrack(ctx, store, path, schema)
@@ -29,7 +31,7 @@ func Test_openTrack_createsThenOpens(t *testing.T) {
 	assert.False(t, adopted, "the first call creates the track")
 	info := track.Root()
 	assert.Equal(t, path, info.Track)
-	assert.Equal(t, uint32(90000), info.Timescale)
+	assert.Equal(t, schema.Timescale, info.Timescale)
 	assert.Equal(t, ledger.TimeSourceIngest, info.TimeSource)
 
 	again, adopted, err := openTrack(ctx, store, path, schema)
@@ -72,4 +74,26 @@ func TestRun_InvalidQUICSetting(t *testing.T) {
 	err := Run(nil)
 
 	assert.ErrorContains(t, err, "QUIC_INITIAL_PACKET_SIZE")
+}
+
+// A track an earlier egress stored in another encoding cannot take this one's
+// groups, so adopting it is refused with what to do about it.
+func Test_openTrack_refusesAnotherEncoding(t *testing.T) {
+	store, err := fs.New(t.TempDir())
+	require.NoError(t, err)
+	ctx := context.Background()
+	const path ledger.TrackPath = "live/cam1/video"
+	_, err = ledger.Create(ctx, store, path, ledger.TrackSchema{
+		Timescale: 1_000_000, TimeSource: ledger.TimeSourceIngest, MIME: "video/mp4", Encoding: "fmp4",
+	}, ledger.Config{})
+	require.NoError(t, err)
+
+	_, _, err = openTrack(ctx, store, path, ledger.TrackSchema{
+		Timescale:  cmaf.Timescale,
+		TimeSource: ledger.TimeSourceIngest,
+		Encoding:   encodingMoQLite05,
+	})
+
+	assert.ErrorContains(t, err, `stored as "fmp4"`)
+	assert.ErrorContains(t, err, "remove it")
 }
