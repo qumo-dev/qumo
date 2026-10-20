@@ -75,13 +75,14 @@ var (
 
 	// metricTickets counts the tickets sessions present on Auth Streams, by
 	// result: granted, refused (at once, or for too many credentials held),
-	// revoked (by a later check), expired, error (could not be checked) or
-	// not_supported (a session that may present none).
+	// revoked (by a later check), expired, superseded (by a later ticket for
+	// its root), error (could not be checked) or not_supported (a session
+	// that may present none).
 	metricTickets = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "qumo",
 		Subsystem: "relay",
 		Name:      "tickets_total",
-		Help:      "Tickets presented on Auth Streams, by result (granted, refused, revoked, expired, error, not_supported).",
+		Help:      "Tickets presented on Auth Streams, by result (granted, refused, revoked, expired, superseded, error, not_supported).",
 	}, []string{"result"})
 
 	// metricPeersConnected tracks the number of active outbound relay peer

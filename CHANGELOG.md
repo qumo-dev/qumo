@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+> **Breaking for apps that grant one root in several tickets.** A ticket now replaces the session's earlier credential for its root instead of adding to it; put everything a session may do beneath a root in one ticket.
+
+### Changed
+
+- **A ticket for a root the session already holds a credential for replaces it (`internal/relay`).** Once the new grant is in force the earlier ticket, or the session's connection credential, is withdrawn (`AUTH_ERROR` with `NO_ERROR`), so a renewal can narrow a grant: a publisher renewed with a subscribe-only ticket is taken off the air at once rather than when the old ticket expires. Tickets for different roots still add up; `qumo_relay_tickets_total{result="superseded"}` counts replaced tickets.
+
 ## [v0.15.261019] - 2026-10-19
 
 > **Breaking for the HLS egress's ledger.** `qumo hls` stores each group as the frames MoQ carried (`Encoding: "moq-lite-05"`) and packages CMAF per segment request; a track an earlier version stored as `fmp4` is refused at announce, so remove it from `LEDGER_URI` to record the broadcast again.

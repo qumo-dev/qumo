@@ -53,6 +53,75 @@ type admission struct {
 	// held is the grants the session holds, and for an anonymous one its
 	// key and deadline.
 	held heldGrants
+	// roots is the credential in force for each root.
+	roots rootHolds
+}
+
+// rootHolds is, for each root, the one credential of the session in force for
+// it: a ticket for a root the session holds a credential for supersedes that
+// credential, so that renewing a grant replaces it, and may narrow it.
+// Credentials for different roots add up.
+type rootHolds struct {
+	mu   sync.Mutex
+	held map[string]*rootHold
+	// connRetired is set once a ticket superseded the connection's own
+	// credential, which is then not granted again.
+	connRetired bool
+}
+
+// rootHold is a credential in force for a root, withdrawn with its cause.
+type rootHold struct {
+	withdraw context.CancelCauseFunc
+	conn     bool
+}
+
+// errSuperseded is why a credential was withdrawn: a later one for its root
+// is in force in its place.
+var errSuperseded = errors.New("relay: superseded by a later credential for its root")
+
+// supersede makes the credential whose grant withdraw ends the session's
+// credential in force for root, once its grant is in force, and withdraws the
+// one held for root before it. conn is the connection's own credential: a
+// ticket that supersedes it retires it, and it no longer takes a root then
+// (false). release gives the root up when the credential ends, unless a later
+// one took it already. An empty root is held by nothing, and supersedes
+// nothing.
+func (a *admission) supersede(root string, conn bool, withdraw context.CancelCauseFunc) (release func(), ok bool) {
+	if root == "" {
+		return func() {}, true
+	}
+	r := &a.roots
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if conn && r.connRetired {
+		return nil, false
+	}
+	h := &rootHold{withdraw: withdraw, conn: conn}
+	if prev := r.held[root]; prev != nil {
+		if prev.conn && !conn {
+			r.connRetired = true
+		}
+		prev.withdraw(errSuperseded)
+	}
+	if r.held == nil {
+		r.held = make(map[string]*rootHold)
+	}
+	r.held[root] = h
+	return func() {
+		r.mu.Lock()
+		defer r.mu.Unlock()
+		if r.held[root] == h {
+			delete(r.held, root)
+		}
+	}, true
+}
+
+// connRetired reports whether a ticket superseded the connection's own
+// credential.
+func (a *admission) connRetired() bool {
+	a.roots.mu.Lock()
+	defer a.roots.mu.Unlock()
+	return a.roots.connRetired
 }
 
 // heldGrants is what a session's grants in force decide about it. An
@@ -526,9 +595,13 @@ var everything = moqt.Grant{Root: "/", Publish: []string{"/"}, Subscribe: []stri
 // connection carried, presented with no token, is granted what the session
 // was admitted with (admit.go), and a session checked for nothing is granted
 // everything. A ticket presented on an Auth Stream adds its grant to the
-// session's (serveTicket). Every grant of a verified credential lasts until
-// its token expires, wherever the token was presented: a client that stays
-// longer presents a fresh one before then.
+// session's (serveTicket), or replaces the session's credential for the same
+// root: once its grant is in force, the earlier one for that root, ticket or
+// the connection's own, is withdrawn, answered AUTH_ERROR with NO_ERROR, so
+// a renewal may narrow what the session may do. A connection credential a
+// ticket replaced is not granted again. Every grant of a verified credential
+// lasts until its token expires, wherever the token was presented: a client
+// that stays longer presents a fresh one before then.
 //
 // A session that connected with no credential (an anonymous one) is granted
 // nothing for it, and holds what its tickets grant. Whenever it holds no
@@ -560,7 +633,8 @@ func (s *Server) ServeAuth(w *moqt.AuthWriter, r *moqt.AuthRequest) {
 }
 
 // serveConnection grants the session's own credential, presented with no
-// token: what it was admitted with, until the credential's token expires.
+// token: what it was admitted with, until the credential's token expires or
+// a ticket for its root supersedes it.
 func (s *Server) serveConnection(w *moqt.AuthWriter, r *moqt.AuthRequest) {
 	ctx := r.Context()
 	g, err := sessionGrant(ctx)
@@ -583,23 +657,45 @@ func (s *Server) serveConnection(w *moqt.AuthWriter, r *moqt.AuthRequest) {
 		}
 		grant.MaxAge = left
 	}
+	a := admissionFrom(ctx)
+	if a != nil && a.connRetired() {
+		_ = w.Refuse(moqt.UnauthorizedSessionErrorCode, "credential superseded by a ticket")
+		return
+	}
 	// Marked before the grant is answered, so a ticket presented after the
 	// answer finds it.
-	if a := admissionFrom(ctx); a != nil && len(grant.Publish) > 0 {
+	if a != nil && len(grant.Publish) > 0 {
 		a.published.Store(true)
 	}
 	if err := w.Grant(grant); err != nil {
 		slog.Error("relay: the session's grant could not be applied; it may do nothing", "id", id, "error", err)
 		return
 	}
-	if a := admissionFrom(ctx); a != nil && grantsSomething(grant) {
+	if a != nil && grantsSomething(grant) {
 		a.holding()
 		defer a.released()
 	}
+	ctx, withdraw := context.WithCancelCause(ctx)
+	defer withdraw(nil)
+	if a != nil && g != nil {
+		release, ok := a.supersede(g.Token().Root, true, withdraw)
+		if !ok {
+			// A ticket for its root retired it while it was granted.
+			_ = w.Refuse(moqt.UnauthorizedSessionErrorCode, "credential superseded by a ticket")
+			return
+		}
+		defer release()
+	}
 	// The session's lease checks the credential again while it lives, and
 	// ends the session when its key leaves the set.
-	if hold(ctx, lapses, nil) == heldLapsed {
+	switch hold(ctx, lapses, nil) {
+	case heldLapsed:
 		slog.Info("relay: the session's credential expired", "id", id)
+	case heldEnded:
+		if errors.Is(context.Cause(ctx), errSuperseded) {
+			slog.Debug("relay: the session's credential was superseded", "id", id)
+			_ = w.Refuse(moqt.NoError, "superseded by a later credential for its root")
+		}
 	}
 }
 
@@ -671,8 +767,10 @@ func hold(ctx context.Context, lapses time.Time, revalidate func() bool) heldOut
 }
 
 // serveTicket verifies a ticket and grants it until it expires, its presenter
-// withdraws it or its key leaves the set. Only a session admitted with a
-// credential the relay verified, or anonymous, may present one. It must be
+// withdraws it, a later credential for its root supersedes it or its key
+// leaves the set. Once granted, it supersedes the session's earlier
+// credential for its root. Only a session admitted with a credential the
+// relay verified, or anonymous, may present one. It must be
 // signed by the key of the session's credential or, for an anonymous
 // session, by the key its first ticket bound it to.
 func (s *Server) serveTicket(w *moqt.AuthWriter, r *moqt.AuthRequest) {
@@ -752,6 +850,12 @@ func (s *Server) serveTicket(w *moqt.AuthWriter, r *moqt.AuthRequest) {
 		a.holding()
 		defer a.released()
 	}
+	// Its grant is in force now, so the credential it supersedes ends with
+	// no moment when neither covers what both do.
+	ctx, withdraw := context.WithCancelCause(ctx)
+	defer withdraw(nil)
+	release, _ := a.supersede(tg.Token().Root, false, withdraw)
+	defer release()
 
 	switch hold(ctx, lapses, func() bool {
 		// A ticket that could not be checked just now stays in force, as a
@@ -766,6 +870,12 @@ func (s *Server) serveTicket(w *moqt.AuthWriter, r *moqt.AuthRequest) {
 		metricTickets.WithLabelValues(ticketRevoked).Inc()
 		slog.Info("relay: ticket revoked: its key left the set", "id", a.req.ID, "kid", tg.KeyID())
 		_ = w.Refuse(moqt.UnauthorizedSessionErrorCode, "ticket revoked")
+	case heldEnded:
+		if errors.Is(context.Cause(ctx), errSuperseded) {
+			metricTickets.WithLabelValues(ticketSuperseded).Inc()
+			slog.Debug("relay: ticket superseded by a later one for its root", "id", a.req.ID, "root", tg.Token().Root)
+			_ = w.Refuse(moqt.NoError, "superseded by a later ticket for its root")
+		}
 	}
 }
 
@@ -775,6 +885,7 @@ const (
 	ticketRefused      = "refused"
 	ticketRevoked      = "revoked"
 	ticketExpired      = "expired"
+	ticketSuperseded   = "superseded"
 	ticketError        = "error"
 	ticketNotSupported = "not_supported"
 )

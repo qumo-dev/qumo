@@ -518,13 +518,17 @@ func TestServer_ServeAuth_TooManyTickets(t *testing.T) {
 	srv.Authorize = keys.verifier.Authorize
 	srv.Tickets = keys.verifier
 	sess := dialTest(t, srv, signTest(t, keys.session, token.Grant{}))
-	ticket := signTest(t, keys.session, listenRoom)
+	// Each for a root of its own: one for a root already held replaces it.
+	roomTicket := func(i int) string {
+		return signTest(t, keys.session, token.Grant{Root: fmt.Sprintf("/acme/room/%d/", i), Subscribe: []string{"/"}})
+	}
 	held := make([]*moqt.Credential, maxCredentials-1)
 	for i := range held {
-		c, err := authTest(t, sess, ticket)
+		c, err := authTest(t, sess, roomTicket(i))
 		require.NoError(t, err, "ticket %d", i)
 		held[i] = c
 	}
+	ticket := roomTicket(len(held))
 
 	_, err := authTest(t, sess, ticket)
 
@@ -536,6 +540,129 @@ func TestServer_ServeAuth_TooManyTickets(t *testing.T) {
 		_, err := authTest(t, sess, ticket)
 		return err == nil
 	}, 5*time.Second, 20*time.Millisecond, "a withdrawn ticket makes room for another")
+}
+
+// A ticket for a root the session holds a ticket for replaces it once its
+// grant is in force: the earlier one is withdrawn with NO_ERROR. One for
+// another root adds up.
+func TestServer_ServeAuth_TicketSupersedes(t *testing.T) {
+	keys := newTicketTestKeys(t)
+	lobby := token.Grant{Root: "/acme/lobby/", Subscribe: []string{"/"}}
+	tests := map[string]struct {
+		first, second  token.Grant
+		wantSuperseded bool
+	}{
+		"the same root, narrower": {first: listenAndSpeak, second: listenRoom, wantSuperseded: true},
+		"the same root, the same": {first: listenRoom, second: listenRoom, wantSuperseded: true},
+		"another root":            {first: listenRoom, second: lobby},
+	}
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			srv := newWebSocketTestServer(t, &fakeAuth{})
+			srv.Authorize = keys.verifier.Authorize
+			srv.Tickets = keys.verifier
+			sess := dialTest(t, srv, signTest(t, keys.session, token.Grant{}))
+			counter := metricTickets.WithLabelValues(ticketSuperseded)
+			before := testutil.ToFloat64(counter)
+			first, err := authTest(t, sess, signTest(t, keys.session, tt.first))
+			require.NoError(t, err)
+
+			second, err := authTest(t, sess, signTest(t, keys.session, tt.second))
+
+			require.NoError(t, err)
+			if !tt.wantSuperseded {
+				assert.Never(t, func() bool { return first.Context().Err() != nil }, 300*time.Millisecond, 10*time.Millisecond,
+					"a ticket for another root stays in force")
+				assert.Equal(t, before, testutil.ToFloat64(counter))
+				return
+			}
+			require.Eventually(t, func() bool { return first.Context().Err() != nil }, 5*time.Second, 10*time.Millisecond,
+				"the earlier ticket for the root is withdrawn")
+			authErr, ok := errors.AsType[*moqt.AuthError](context.Cause(first.Context()))
+			require.True(t, ok, "an AUTH_ERROR, not %v", context.Cause(first.Context()))
+			assert.Equal(t, moqt.NoError, authErr.Code)
+			assert.NoError(t, second.Context().Err(), "the later ticket stays in force")
+			assert.Eventually(t, func() bool { return testutil.ToFloat64(counter) == before+1 },
+				5*time.Second, 10*time.Millisecond, "the superseded ticket is counted once")
+		})
+	}
+}
+
+// A ticket for the root of the session's own credential replaces it, which
+// is then refused when presented again; a ticket for another root leaves it.
+func TestServer_ServeAuth_TicketSupersedesConnection(t *testing.T) {
+	keys := newTicketTestKeys(t)
+	tests := map[string]struct {
+		ticket   token.Grant
+		wantCode moqt.SessionErrorCode
+	}{
+		"the credential's root": {ticket: listenRoom, wantCode: moqt.UnauthorizedSessionErrorCode},
+		"another root":          {ticket: token.Grant{Root: "/acme/lobby/", Subscribe: []string{"/"}}},
+	}
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			srv := newWebSocketTestServer(t, &fakeAuth{})
+			srv.Authorize = keys.verifier.Authorize
+			srv.Tickets = keys.verifier
+			sess := dialTest(t, srv, signTest(t, keys.session, listenAndSpeak))
+			// The connection's own credential is granted as the session
+			// starts; presenting it again waits for that.
+			_, err := authTest(t, sess, "")
+			require.NoError(t, err)
+			_, err = authTest(t, sess, signTest(t, keys.session, tt.ticket))
+			require.NoError(t, err)
+
+			c, err := authTest(t, sess, "")
+
+			if tt.wantCode == 0 {
+				require.NoError(t, err)
+				assert.Equal(t, "/acme/room/42/", c.Grant().Root)
+				return
+			}
+			authErr, ok := errors.AsType[*moqt.AuthError](err)
+			require.True(t, ok, "an AUTH_ERROR, not %v", err)
+			assert.Equal(t, tt.wantCode, authErr.Code)
+		})
+	}
+}
+
+// supersede keeps one credential in force per root: a later one withdraws
+// the earlier, one that ended gives its root up only while it still holds
+// it, and a ticket that replaced the connection's own credential retires it.
+func TestAdmission_Supersede(t *testing.T) {
+	var withdrawn []string
+	withdraw := func(name string) context.CancelCauseFunc {
+		return func(cause error) {
+			assert.ErrorIs(t, cause, errSuperseded)
+			withdrawn = append(withdrawn, name)
+		}
+	}
+	a := pendingAdmission()
+
+	_, ok := a.supersede("/r/", true, withdraw("conn"))
+	require.True(t, ok)
+	releaseOther, ok := a.supersede("/other/", false, withdraw("other"))
+	require.True(t, ok)
+	releaseFirst, ok := a.supersede("/r/", false, withdraw("first"))
+	require.True(t, ok)
+	assert.Equal(t, []string{"conn"}, withdrawn, "a ticket for the root replaces the connection's credential")
+	assert.True(t, a.connRetired())
+	_, ok = a.supersede("/r/", true, withdraw("conn again"))
+	assert.False(t, ok, "a retired connection credential takes no root")
+
+	releaseSecond, ok := a.supersede("/r/", false, withdraw("second"))
+	require.True(t, ok)
+	releaseFirst()
+	_, ok = a.supersede("/r/", false, withdraw("third"))
+	require.True(t, ok)
+	assert.Equal(t, []string{"conn", "first", "second"}, withdrawn,
+		"one that ended after it was replaced does not give up the root it no longer holds")
+
+	releaseSecond()
+	releaseOther()
+	_, ok = a.supersede("", false, withdraw("nothing"))
+	assert.True(t, ok)
+	assert.Equal(t, []string{"conn", "first", "second"}, withdrawn, "an empty root supersedes nothing")
 }
 
 // A granted ticket's AUTH_OK says when it lapses, so its presenter can
