@@ -99,3 +99,19 @@ operator's; the relay only reads the files.
 
 See
 [Configuration → Peer trust]({{< relref "../configuration" >}}#peer-trust-optional).
+
+## Clients verify the relay by default
+
+qumo's servers (`relay`, `rtmp`, `rtsp`, `rtsp-push`, `playground`) present TLS from `CERT_FILE` / `KEY_FILE` (default `certs/server.crt` + `.key`; generate one with `mage cert`). The clients that dial a relay **verify its certificate by default** — verification is the default, not an opt-in:
+
+- `qumo loadgen` and `tools/capacity` require the relay's cert as a trust anchor (`--ca <cert.pem>`), or `--insecure` for a self-signed dev relay. Verification is the default; `--insecure` is the explicit escape hatch.
+- The bench/test clients follow the same convention: `bench-multiproc/tools/latency-probe` takes `--ca` or `--insecure`; `internal/smoketest` (the `mage smoke` harness) takes `-ca` or `-insecure`, with `mage smoke` passing `-insecure` against the self-signed Docker topology.
+- `qumo hls` verifies against the system root store by default. Trust a specific relay cert with `RELAY_CA_FILE`, or disable verification for a self-signed dev relay with `RELAY_TLS_INSECURE=true`:
+
+  ```bash
+  qumo hls                                   # verify against the system roots
+  RELAY_CA_FILE=certs/server.crt qumo hls    # trust this relay's cert
+  RELAY_TLS_INSECURE=true qumo hls           # dev relay with a self-signed cert
+  ```
+
+`cmd/seed-moq`, the dev seeder, presents an ephemeral self-signed certificate — point the egress at it with `RELAY_TLS_INSECURE=true`.
