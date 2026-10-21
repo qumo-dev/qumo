@@ -23,7 +23,6 @@ import (
 	"strings"
 
 	"github.com/qumo-dev/qumo/internal/version"
-
 )
 
 const (
@@ -362,8 +361,8 @@ func replaceBinary(path string, newData []byte) error {
 	tmpPath := tmp.Name()
 
 	if _, err := tmp.Write(newData); err != nil {
-		_ = tmp.Close()         // not actionable: cleaning up temp file on write error
-		_ = os.Remove(tmpPath)  // not actionable: cleaning up temp file on write error
+		_ = tmp.Close()        // not actionable: cleaning up temp file on write error
+		_ = os.Remove(tmpPath) // not actionable: cleaning up temp file on write error
 		return err
 	}
 	if err := tmp.Close(); err != nil {

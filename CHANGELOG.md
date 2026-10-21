@@ -49,6 +49,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **gofmt under go 1.27.3 (`internal/hls`, `internal/update`).** The toolchain's gofmt reflows two struct fields, aligns two error paths' comments and drops three stray blank lines; no behavior, output or test change.
 - **Tokens carry a root and path patterns per action, matching gomoqt's `moqt.Grant` (`token`, `qumo auth token`, `internal/auth`, `internal/funnel`, `internal/hls`).** `root` is a directory (`/acme/room/42/`, or `/`) at or beneath the signing key's prefix, now also a directory (bare prefixes still load); every grant, a session's own credential included, lasts until its token's `exp`, after which the session may do nothing until a fresh token is presented, patterns are relative to it (`/7`, `/7/`, `/`, `{name}` wildcards), `subscribe` also covers history (no `fetch`), and the root's own path is not a broadcast.
   - To move over: `qumo auth token` takes `-root DIR` and repeatable `-publish`, `-subscribe`, `-create`, `-post`, `-redact` in place of `-scope`; `qumo auth keygen -prefix` defaults to `/`; in Go, `token.Grant` embeds `moqt.Grant` and replaces `token.Scope`, and `auth.NewGrant` takes a `token.Grant`.
   - `path_auth` is read as a grant (`root` as the directory it names, `pub`→`publish`, `sub`→`subscribe`); the funnel's own relay credential has `RELAY_PUBLISH` as its root and publishes every path beneath it, no longer the path itself.

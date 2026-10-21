@@ -268,8 +268,8 @@ func newMediaInfo(path string, t *msf.Track, packager *cmaf.Packager) mediaInfo 
 		role = "video"
 	}
 	return mediaInfo{
-		path:     moqt.BroadcastPath(path),
-		name:     moqt.TrackName(t.Name),
+		path: moqt.BroadcastPath(path),
+		name: moqt.TrackName(t.Name),
 		schema: ledger.TrackSchema{
 			Timescale:  cmaf.Timescale,
 			TimeSource: ledger.TimeSourceIngest,
@@ -653,7 +653,6 @@ func fetchCatalog(ctx context.Context, session *moqt.Session, path string) (msf.
 	}
 	return catalog, nil
 }
-
 
 // initFromTrack base64-decodes the fMP4 init data the track's initRef points
 // at in the catalog's InitDataList, returning nil when the track carries no
