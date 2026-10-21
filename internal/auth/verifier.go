@@ -281,7 +281,7 @@ func (v *Verifier) decide(credential string, credErr error, connect bool, paused
 		}
 		return nil, usageSession{}, refuse(status, "%v", err)
 	}
-	g := &Grant{grant: c.Grant, revalidate: revalidateEvery, keyID: c.Key.ID, issued: c.IssuedAt, expires: c.ExpiresAt}
+	g := &Grant{grant: c.Grant, revalidate: revalidateEvery, keyID: c.Key.ID, expires: c.ExpiresAt}
 	if c.Key.Pauses(token.ActionPublish) && paused(g) {
 		return nil, usageSession{}, refuse(http.StatusForbidden,
 			"signing key %s starts nothing new that publishes", c.Key.ID)

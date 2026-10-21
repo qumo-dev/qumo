@@ -292,30 +292,6 @@ func TestRelay_TicketRenewal(t *testing.T) {
 		assert.NoError(t, subscribeOn(t, sess, "/acme/room/42/host"), "what the renewal grants holds")
 		assertStaysUp(t, sess)
 	})
-	t.Run("a replayed older ticket does not undo a narrowing", func(t *testing.T) {
-		sess, mux := dial(t, token.Grant{})
-		older := sign(t, speak)
-		granted(t, sess, older)
-		end := announceOn(mux, "/acme/room/42/7")
-		t.Cleanup(end)
-		require.Eventually(t, routed(srv, "/acme/room/42/7"), settle, 25*time.Millisecond)
-		// iat is whole seconds: the narrowing ticket is issued later.
-		now := time.Now().Unix()
-		require.Eventually(t, func() bool { return time.Now().Unix() > now }, 2*time.Second, 10*time.Millisecond)
-		granted(t, sess, sign(t, listen))
-		require.Eventually(t, unrouted("/acme/room/42/7"), settle, 25*time.Millisecond)
-
-		_, err := present(t, sess, older)
-
-		authErr, ok := errors.AsType[*moqt.AuthError](err)
-		require.True(t, ok, "the older ticket is refused, not %v", err)
-		assert.Equal(t, moqt.UnauthorizedSessionErrorCode, authErr.Code)
-		endAgain := announceOn(mux, "/acme/room/42/7")
-		t.Cleanup(endAgain)
-		assert.Never(t, routed(srv, "/acme/room/42/7"), 500*time.Millisecond, 25*time.Millisecond,
-			"the session may still not publish")
-		assertStaysUp(t, sess)
-	})
 	t.Run("a narrowing ticket supersedes the connection's credential", func(t *testing.T) {
 		sess, mux := dial(t, speak)
 		end := announceOn(mux, "/acme/room/42/7")

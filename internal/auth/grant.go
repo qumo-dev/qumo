@@ -19,8 +19,6 @@ type Grant struct {
 	// keyID is the kid of the key that signed the credential, or "" for a
 	// grant an Authorize of its own made.
 	keyID string
-	// issued is when the credential was issued (its iat), or zero.
-	issued time.Time
 	// expires is when the credential expires, or zero.
 	expires time.Time
 	// anonymous is a session that connected with no credential.
@@ -51,12 +49,6 @@ func (g *Grant) Subject() string {
 // grant an Authorize other than the Verifier's made.
 func (g *Grant) KeyID() string {
 	return g.keyID
-}
-
-// IssuedAt returns when the credential was issued (its iat), or the zero
-// time when it doesn't say.
-func (g *Grant) IssuedAt() time.Time {
-	return g.issued
 }
 
 // Expires returns when the credential expires, or the zero time when it
