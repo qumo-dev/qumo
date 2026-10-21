@@ -13,6 +13,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **A ticket for a root the session already holds a credential for replaces it (`internal/relay`).** Once its grant is in force the earlier ticket or connection credential ends with `AUTH_ERROR` `NO_ERROR`, which clients must not read as a lost grant, so a renewal can narrow a grant within a session (a ticket's `exp` stays the hard bound); tickets for other roots, or of funnel actions alone, still add up, and `qumo_relay_tickets_total{result="superseded"}` counts replaced ones.
 
+### Fixed
+
+- **Ticket replacement keeps to what was granted (`internal/relay`).** A ticket whose grant fails no longer retires the connection's own credential; a presentation of that credential is refused only while a ticket for its root is being granted. A ticket a later one for its root replaced already is refused (`NO_ERROR`) before its grant is applied, instead of being granted for a moment, and a ticket withdrawn as it registers no longer counts as holding the session's grant; both are counted `refused`, so `qumo_relay_tickets_total{result="superseded"}` counts only granted tickets.
+
 ## [v0.15.261019] - 2026-10-19
 
 > **Breaking for the HLS egress's ledger.** `qumo hls` stores each group as the frames MoQ carried (`Encoding: "moq-lite-05"`) and packages CMAF per segment request; a track an earlier version stored as `fmp4` is refused at announce, so remove it from `LEDGER_URI` to record the broadcast again.
