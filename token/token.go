@@ -78,9 +78,10 @@ var allowedClaims = map[string]bool{
 var grantClaims = []string{"root", "publish", "subscribe", "create", "post", "redact"}
 
 // Claims are a verified token's: its grant, confined to its key's prefix,
-// when it expires, its jti if any, and the key that signed it.
+// when it was issued and expires, its jti if any, and the key that signed it.
 type Claims struct {
 	Grant
+	IssuedAt  time.Time
 	ExpiresAt time.Time
 	ID        string
 	Key       Key
@@ -225,7 +226,7 @@ func verify(token string, keys map[string]Key, now time.Time, expiry bool) (Clai
 	if err := decodeSegment(parts[1], &c); err != nil {
 		return Claims{}, invalid("claims: %v", err)
 	}
-	exp, err := c.checkTime(now, expiry)
+	iat, exp, err := c.checkTime(now, expiry)
 	if err != nil {
 		return Claims{}, err
 	}
@@ -251,7 +252,7 @@ func verify(token string, keys map[string]Key, now time.Time, expiry bool) (Clai
 	if err != nil {
 		return Claims{}, err
 	}
-	return Claims{Grant: g, ExpiresAt: exp, ID: c.ID, Key: key}, nil
+	return Claims{Grant: g, IssuedAt: iat, ExpiresAt: exp, ID: c.ID, Key: key}, nil
 }
 
 // grantOf reads path_auth as a grant: its root as the root, pub as publish,
@@ -285,23 +286,23 @@ func grantOf(pa pathAuth, prefix string) (Grant, error) {
 }
 
 // checkTime enforces exp (when expiry is set), nbf and iat, all required,
-// with Leeway, and the lifetime cap, and returns exp.
-func (c claims) checkTime(now time.Time, expiry bool) (time.Time, error) {
+// with Leeway, and the lifetime cap, and returns iat and exp.
+func (c claims) checkTime(now time.Time, expiry bool) (iat, exp time.Time, err error) {
 	if c.ExpiresAt == nil || c.NotBefore == nil || c.IssuedAt == nil {
-		return time.Time{}, invalid("exp, nbf and iat are required")
+		return time.Time{}, time.Time{}, invalid("exp, nbf and iat are required")
 	}
 	exp, nbf, iat := numericDate(*c.ExpiresAt), numericDate(*c.NotBefore), numericDate(*c.IssuedAt)
 	if lifetime := exp.Sub(iat); lifetime <= 0 || lifetime > MaxLifetime {
-		return time.Time{}, invalid("lifetime (exp - iat) must be positive and at most %s", MaxLifetime)
+		return time.Time{}, time.Time{}, invalid("lifetime (exp - iat) must be positive and at most %s", MaxLifetime)
 	}
 	// Judged on whole seconds, the precision of exp as Sign writes it.
 	switch {
 	case expiry && !now.Before(time.Unix(exp.Add(Leeway).Unix(), 0)):
-		return time.Time{}, invalid("expired")
+		return time.Time{}, time.Time{}, invalid("expired")
 	case now.Add(Leeway).Before(nbf), now.Add(Leeway).Before(iat):
-		return time.Time{}, invalid("not valid yet")
+		return time.Time{}, time.Time{}, invalid("not valid yet")
 	}
-	return exp, nil
+	return iat, exp, nil
 }
 
 func invalid(format string, args ...any) error {

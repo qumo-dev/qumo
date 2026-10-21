@@ -544,17 +544,22 @@ func TestServer_ServeAuth_TooManyTickets(t *testing.T) {
 
 // A ticket for a root the session holds a ticket for replaces it once its
 // grant is in force: the earlier one is withdrawn with NO_ERROR. One for
-// another root adds up.
+// another root, or of funnel actions alone, adds up.
 func TestServer_ServeAuth_TicketSupersedes(t *testing.T) {
 	keys := newTicketTestKeys(t)
-	lobby := token.Grant{Root: "/acme/lobby/", Subscribe: []string{"/"}}
 	tests := map[string]struct {
 		first, second  token.Grant
 		wantSuperseded bool
 	}{
 		"the same root, narrower": {first: listenAndSpeak, second: listenRoom, wantSuperseded: true},
 		"the same root, the same": {first: listenRoom, second: listenRoom, wantSuperseded: true},
-		"another root":            {first: listenRoom, second: lobby},
+		"the same root, nothing": {
+			first: listenAndSpeak, second: token.Grant{Root: "/acme/room/42/"}, wantSuperseded: true,
+		},
+		"another root": {first: listenRoom, second: token.Grant{Root: "/acme/lobby/", Subscribe: []string{"/"}}},
+		"the same root, funnel actions alone": {
+			first: listenAndSpeak, second: token.Grant{Root: "/acme/room/42/", Post: []string{"/comments"}},
+		},
 	}
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
@@ -572,15 +577,11 @@ func TestServer_ServeAuth_TicketSupersedes(t *testing.T) {
 			require.NoError(t, err)
 			if !tt.wantSuperseded {
 				assert.Never(t, func() bool { return first.Context().Err() != nil }, 300*time.Millisecond, 10*time.Millisecond,
-					"a ticket for another root stays in force")
+					"the earlier ticket stays in force")
 				assert.Equal(t, before, testutil.ToFloat64(counter))
 				return
 			}
-			require.Eventually(t, func() bool { return first.Context().Err() != nil }, 5*time.Second, 10*time.Millisecond,
-				"the earlier ticket for the root is withdrawn")
-			authErr, ok := errors.AsType[*moqt.AuthError](context.Cause(first.Context()))
-			require.True(t, ok, "an AUTH_ERROR, not %v", context.Cause(first.Context()))
-			assert.Equal(t, moqt.NoError, authErr.Code)
+			assertSuperseded(t, first)
 			assert.NoError(t, second.Context().Err(), "the later ticket stays in force")
 			assert.Eventually(t, func() bool { return testutil.ToFloat64(counter) == before+1 },
 				5*time.Second, 10*time.Millisecond, "the superseded ticket is counted once")
@@ -588,16 +589,140 @@ func TestServer_ServeAuth_TicketSupersedes(t *testing.T) {
 	}
 }
 
-// A ticket for the root of the session's own credential replaces it, which
-// is then refused when presented again; a ticket for another root leaves it.
+// assertSuperseded asserts that c is withdrawn with NO_ERROR, as a ticket a
+// later one for its root replaced is.
+func assertSuperseded(tb testing.TB, c *moqt.Credential) {
+	tb.Helper()
+	require.Eventually(tb, func() bool { return c.Context().Err() != nil }, 5*time.Second, 10*time.Millisecond,
+		"the earlier credential for the root is withdrawn")
+	authErr, ok := errors.AsType[*moqt.AuthError](context.Cause(c.Context()))
+	require.True(tb, ok, "an AUTH_ERROR, not %v", context.Cause(c.Context()))
+	assert.Equal(tb, moqt.NoError, authErr.Code)
+}
+
+// nextSecond waits until the wall clock enters a new second, so that a
+// token signed after it is issued later (iat is whole seconds) than one
+// signed before.
+func nextSecond(tb testing.TB) {
+	tb.Helper()
+	now := time.Now().Unix()
+	require.Eventually(tb, func() bool { return time.Now().Unix() > now }, 2*time.Second, 10*time.Millisecond)
+}
+
+// Of two tickets for a root, the one issued later stays in force whichever
+// is granted last: an older one presented after a newer one is refused, even
+// once the newer one has ended, so a replayed wider ticket can't undo a
+// narrowing.
+func TestServer_ServeAuth_TicketOrder(t *testing.T) {
+	keys := newTicketTestKeys(t)
+	older := signTest(t, keys.session, listenAndSpeak)
+	nextSecond(t)
+	newer := signTest(t, keys.session, listenRoom)
+	tests := map[string]struct {
+		withdrawNewer bool
+	}{
+		"while the newer one is in force":  {},
+		"once the newer one was withdrawn": {withdrawNewer: true},
+	}
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			srv := newWebSocketTestServer(t, &fakeAuth{})
+			srv.Authorize = keys.verifier.Authorize
+			srv.Tickets = keys.verifier
+			sess := dialTest(t, srv, signTest(t, keys.session, token.Grant{}))
+			c, err := authTest(t, sess, newer)
+			require.NoError(t, err)
+			if tt.withdrawNewer {
+				require.NoError(t, c.Close())
+			}
+
+			_, err = authTest(t, sess, older)
+
+			authErr, ok := errors.AsType[*moqt.AuthError](err)
+			require.True(t, ok, "an AUTH_ERROR, not %v", err)
+			assert.Equal(t, moqt.UnauthorizedSessionErrorCode, authErr.Code)
+			if !tt.withdrawNewer {
+				assert.NoError(t, c.Context().Err(), "the newer ticket stays in force")
+			}
+		})
+	}
+	t.Run("the older one granted first", func(t *testing.T) {
+		srv := newWebSocketTestServer(t, &fakeAuth{})
+		srv.Authorize = keys.verifier.Authorize
+		srv.Tickets = keys.verifier
+		sess := dialTest(t, srv, signTest(t, keys.session, token.Grant{}))
+		first, err := authTest(t, sess, older)
+		require.NoError(t, err)
+
+		second, err := authTest(t, sess, newer)
+
+		require.NoError(t, err)
+		assertSuperseded(t, first)
+		assert.NoError(t, second.Context().Err())
+	})
+	t.Run("presented at once", func(t *testing.T) {
+		for range 10 {
+			srv := newWebSocketTestServer(t, &fakeAuth{})
+			srv.Authorize = keys.verifier.Authorize
+			srv.Tickets = keys.verifier
+			sess := dialTest(t, srv, signTest(t, keys.session, token.Grant{}))
+			var newerCred *moqt.Credential
+			var wg sync.WaitGroup
+			wg.Go(func() {
+				var err error
+				newerCred, err = authTest(t, sess, newer)
+				assert.NoError(t, err)
+			})
+			wg.Go(func() {
+				// Refused, or granted and then superseded: either way it
+				// does not stay.
+				if c, err := authTest(t, sess, older); err == nil {
+					assertSuperseded(t, c)
+				}
+			})
+			wg.Wait()
+
+			require.NotNil(t, newerCred)
+			assert.Never(t, func() bool { return newerCred.Context().Err() != nil }, 200*time.Millisecond, 10*time.Millisecond,
+				"the newer ticket stays in force whichever was granted first")
+		}
+	})
+}
+
+// listsRoom reports whether sess may list announcements in the room, which
+// a grant whose root is the room allows.
+func listsRoom(tb testing.TB, sess *moqt.Session) bool {
+	tb.Helper()
+	ar, err := sess.AcceptAnnounce("/acme/room/42/")
+	require.NoError(tb, err)
+	defer ar.Close()
+	ctx, cancel := context.WithTimeout(tb.Context(), 300*time.Millisecond)
+	defer cancel()
+	_, err = ar.ReceiveAnnouncement(ctx)
+	annErr, refused := errors.AsType[*moqt.AnnounceError](err)
+	return !refused || annErr.AnnounceErrorCode() != moqt.AnnounceErrorCodeUnauthorized
+}
+
+// A ticket for the root of the session's own credential retires it: every
+// presentation of it is withdrawn, and it is refused when presented again,
+// even once nothing holds the root. A ticket for another root leaves it.
 func TestServer_ServeAuth_TicketSupersedesConnection(t *testing.T) {
 	keys := newTicketTestKeys(t)
 	tests := map[string]struct {
-		ticket   token.Grant
-		wantCode moqt.SessionErrorCode
+		ticket token.Grant
+		// presentFirst presents the connection's credential on an Auth
+		// Stream, and withdraws it, before the ticket.
+		presentFirst bool
+		// closeTicket withdraws the ticket before the credential is
+		// presented again.
+		closeTicket bool
+		wantRefused bool
 	}{
-		"the credential's root": {ticket: listenRoom, wantCode: moqt.UnauthorizedSessionErrorCode},
-		"another root":          {ticket: token.Grant{Root: "/acme/lobby/", Subscribe: []string{"/"}}},
+		"the credential's root": {ticket: listenRoom, wantRefused: true},
+		"the credential's root, once nothing holds it": {
+			ticket: listenRoom, presentFirst: true, closeTicket: true, wantRefused: true,
+		},
+		"another root": {ticket: token.Grant{Root: "/acme/lobby/", Subscribe: []string{"/"}}},
 	}
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
@@ -607,62 +732,177 @@ func TestServer_ServeAuth_TicketSupersedesConnection(t *testing.T) {
 			sess := dialTest(t, srv, signTest(t, keys.session, listenAndSpeak))
 			// The connection's own credential is granted as the session
 			// starts; presenting it again waits for that.
-			_, err := authTest(t, sess, "")
+			own, err := authTest(t, sess, "")
 			require.NoError(t, err)
-			_, err = authTest(t, sess, signTest(t, keys.session, tt.ticket))
+			if tt.presentFirst {
+				require.NoError(t, own.Close())
+			}
+			ticket, err := authTest(t, sess, signTest(t, keys.session, tt.ticket))
 			require.NoError(t, err)
+			if tt.closeTicket {
+				require.NoError(t, ticket.Close())
+			}
 
 			c, err := authTest(t, sess, "")
 
-			if tt.wantCode == 0 {
+			if !tt.wantRefused {
 				require.NoError(t, err)
 				assert.Equal(t, "/acme/room/42/", c.Grant().Root)
+				assert.NoError(t, own.Context().Err(), "the credential stays in force")
 				return
 			}
 			authErr, ok := errors.AsType[*moqt.AuthError](err)
 			require.True(t, ok, "an AUTH_ERROR, not %v", err)
-			assert.Equal(t, tt.wantCode, authErr.Code)
+			assert.Equal(t, moqt.UnauthorizedSessionErrorCode, authErr.Code)
+			if !tt.presentFirst {
+				assertSuperseded(t, own)
+			}
 		})
 	}
 }
 
-// supersede keeps one credential in force per root: a later one withdraws
-// the earlier, one that ended gives its root up only while it still holds
-// it, and a ticket that replaced the connection's own credential retires it.
-func TestAdmission_Supersede(t *testing.T) {
-	var withdrawn []string
-	withdraw := func(name string) context.CancelCauseFunc {
-		return func(cause error) {
-			assert.ErrorIs(t, cause, errSuperseded)
-			withdrawn = append(withdrawn, name)
-		}
+// Presenting the connection's own credential again adds up with the
+// session's own grant: withdrawing that presentation leaves the grant.
+func TestServer_ServeAuth_ConnectionPresentedAgain(t *testing.T) {
+	keys := newTicketTestKeys(t)
+	srv := newWebSocketTestServer(t, &fakeAuth{})
+	srv.Authorize = keys.verifier.Authorize
+	srv.Tickets = keys.verifier
+	sess := dialTest(t, srv, signTest(t, keys.session, listenRoom))
+	c, err := authTest(t, sess, "")
+	require.NoError(t, err)
+
+	require.NoError(t, c.Close())
+
+	assert.Never(t, func() bool { return !listsRoom(t, sess) }, time.Second, 50*time.Millisecond,
+		"the session's own grant stays in force")
+}
+
+// recordedWithdrawals records which credentials were withdrawn, by name.
+type recordedWithdrawals struct {
+	mu    sync.Mutex
+	names []string
+}
+
+func (r *recordedWithdrawals) of(tb testing.TB, name string) context.CancelCauseFunc {
+	return func(cause error) {
+		assert.ErrorIs(tb, cause, errSuperseded)
+		r.mu.Lock()
+		defer r.mu.Unlock()
+		r.names = append(r.names, name)
 	}
-	a := pendingAdmission()
+}
 
-	_, ok := a.supersede("/r/", true, withdraw("conn"))
-	require.True(t, ok)
-	releaseOther, ok := a.supersede("/other/", false, withdraw("other"))
-	require.True(t, ok)
-	releaseFirst, ok := a.supersede("/r/", false, withdraw("first"))
-	require.True(t, ok)
-	assert.Equal(t, []string{"conn"}, withdrawn, "a ticket for the root replaces the connection's credential")
-	assert.True(t, a.connRetired())
-	_, ok = a.supersede("/r/", true, withdraw("conn again"))
-	assert.False(t, ok, "a retired connection credential takes no root")
+func (r *recordedWithdrawals) seen() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return slices.Clone(r.names)
+}
 
-	releaseSecond, ok := a.supersede("/r/", false, withdraw("second"))
-	require.True(t, ok)
-	releaseFirst()
-	_, ok = a.supersede("/r/", false, withdraw("third"))
-	require.True(t, ok)
-	assert.Equal(t, []string{"conn", "first", "second"}, withdrawn,
-		"one that ended after it was replaced does not give up the root it no longer holds")
+// granted is an apply that records that it was called.
+func granted(called *int) func() error {
+	return func() error {
+		*called++
+		return nil
+	}
+}
 
-	releaseSecond()
-	releaseOther()
-	_, ok = a.supersede("", false, withdraw("nothing"))
-	assert.True(t, ok)
-	assert.Equal(t, []string{"conn", "first", "second"}, withdrawn, "an empty root supersedes nothing")
+// grantTicket keeps one ticket in force per root, in the order they were
+// issued, and retires the connection's own credential for its root;
+// grantConnection's presentations add up until then.
+func TestAdmission_GrantTicket(t *testing.T) {
+	t0 := time.Unix(1_800_000_000, 0)
+	t.Run("a later ticket withdraws the earlier", func(t *testing.T) {
+		var w recordedWithdrawals
+		a := pendingAdmission()
+		_, err := a.grantTicket("/r/", "", t0, w.of(t, "first"), granted(new(int)))
+		require.NoError(t, err)
+
+		_, err = a.grantTicket("/r/", "", t0.Add(time.Second), w.of(t, "second"), granted(new(int)))
+
+		require.NoError(t, err)
+		assert.Equal(t, []string{"first"}, w.seen())
+	})
+	t.Run("an older ticket is refused unapplied", func(t *testing.T) {
+		var w recordedWithdrawals
+		a := pendingAdmission()
+		_, err := a.grantTicket("/r/", "", t0, w.of(t, "newer"), granted(new(int)))
+		require.NoError(t, err)
+		var applied int
+
+		_, err = a.grantTicket("/r/", "", t0.Add(-time.Second), w.of(t, "older"), granted(&applied))
+
+		assert.ErrorIs(t, err, errStaleTicket)
+		assert.Zero(t, applied)
+		assert.Empty(t, w.seen())
+	})
+	t.Run("a ticket that ended gives up only the root it holds", func(t *testing.T) {
+		var w recordedWithdrawals
+		a := pendingAdmission()
+		releaseFirst, err := a.grantTicket("/r/", "", t0, w.of(t, "first"), granted(new(int)))
+		require.NoError(t, err)
+		_, err = a.grantTicket("/r/", "", t0, w.of(t, "second"), granted(new(int)))
+		require.NoError(t, err)
+
+		releaseFirst()
+		_, err = a.grantTicket("/r/", "", t0, w.of(t, "third"), granted(new(int)))
+
+		require.NoError(t, err)
+		assert.Equal(t, []string{"first", "second"}, w.seen())
+	})
+	t.Run("tickets for different roots add up", func(t *testing.T) {
+		var w recordedWithdrawals
+		a := pendingAdmission()
+		_, err := a.grantTicket("/r/", "", t0, w.of(t, "r"), granted(new(int)))
+		require.NoError(t, err)
+
+		_, err = a.grantTicket("/other/", "", t0, w.of(t, "other"), granted(new(int)))
+
+		require.NoError(t, err)
+		assert.Empty(t, w.seen())
+	})
+	t.Run("an empty root orders nothing", func(t *testing.T) {
+		var w recordedWithdrawals
+		a := pendingAdmission()
+		_, err := a.grantTicket("", "", t0, w.of(t, "first"), granted(new(int)))
+		require.NoError(t, err)
+		var applied int
+
+		_, err = a.grantTicket("", "", t0.Add(-time.Second), w.of(t, "second"), granted(&applied))
+
+		require.NoError(t, err)
+		assert.Equal(t, 1, applied)
+		assert.Empty(t, w.seen())
+	})
+	t.Run("a ticket for the connection's root retires it", func(t *testing.T) {
+		var w recordedWithdrawals
+		a := pendingAdmission()
+		_, err := a.grantConnection("/r/", w.of(t, "conn"), granted(new(int)))
+		require.NoError(t, err)
+		_, err = a.grantConnection("/r/", w.of(t, "conn again"), granted(new(int)))
+		require.NoError(t, err)
+		release, err := a.grantTicket("/r/", "/r/", t0, w.of(t, "ticket"), granted(new(int)))
+		require.NoError(t, err)
+		release()
+		var applied int
+
+		_, err = a.grantConnection("/r/", w.of(t, "conn once retired"), granted(&applied))
+
+		assert.ErrorIs(t, err, errConnRetired)
+		assert.Zero(t, applied)
+		assert.ElementsMatch(t, []string{"conn", "conn again"}, w.seen(), "every presentation is withdrawn")
+	})
+	t.Run("a ticket for the connection's root retires it before it is presented", func(t *testing.T) {
+		var w recordedWithdrawals
+		a := pendingAdmission()
+		_, err := a.grantTicket("/r/", "/r/", t0, w.of(t, "ticket"), granted(new(int)))
+		require.NoError(t, err)
+
+		_, err = a.grantConnection("/r/", w.of(t, "conn"), granted(new(int)))
+
+		assert.ErrorIs(t, err, errConnRetired)
+		assert.Empty(t, w.seen(), "the connection's credential never withdraws a ticket")
+	})
 }
 
 // A granted ticket's AUTH_OK says when it lapses, so its presenter can

@@ -19,6 +19,7 @@ func TestVerify_AcceptsAValidToken(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, signer.trusted(t).ID, c.Key.ID)
 	assert.Equal(t, validGrant, c.Grant)
+	assert.Equal(t, now, c.IssuedAt)
 	assert.Equal(t, now.Add(10*time.Minute), c.ExpiresAt)
 	assert.Equal(t, "j-1", c.ID)
 }
