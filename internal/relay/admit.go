@@ -53,15 +53,16 @@ type admission struct {
 	// held is the grants the session holds, and for an anonymous one its
 	// key and deadline.
 	held heldGrants
-	// roots keeps the session's credentials for each root.
-	roots rootHolds
+	// roots keeps the session's credentials for each root. It is set with
+	// grant, before decided closes.
+	roots *rootHolds
 }
 
 // rootHolds keeps, for each root, the session's credentials in force for it:
 // a ticket for a root the session holds a ticket for replaces it, so that
-// renewing a grant may narrow it, and the first one for the root of the
-// connection's own credential retires that. Credentials for different roots
-// add up.
+// renewing a grant may narrow it, and the first one for connRoot, the root
+// of the connection's own credential, retires that. Credentials for
+// different roots add up.
 //
 // A ticket's grant is applied before it is registered here, outside mu, so
 // it is in force before the credential it replaces is withdrawn, and a grant
@@ -72,6 +73,9 @@ type admission struct {
 // forgotten once it holds no ticket, so a slow grant that registers after
 // every later one ended is the one in force.
 type rootHolds struct {
+	// connRoot is the root of the connection's own credential, or "".
+	connRoot string
+
 	mu sync.Mutex
 	// seq numbers the tickets whose grants began.
 	seq uint64
@@ -80,9 +84,19 @@ type rootHolds struct {
 	// conns withdraws each presentation of the connection's own credential
 	// in force.
 	conns map[*withdrawal]struct{}
-	// connRetired is set once a ticket for the root of the connection's own
-	// credential was granted: that credential is not granted again.
+	// connRetired is set once a ticket for connRoot was granted: the
+	// connection's own credential is not granted again.
 	connRetired bool
+}
+
+// newRootHolds returns the credentials of a session whose own credential
+// has root connRoot ("" for none).
+func newRootHolds(connRoot string) *rootHolds {
+	return &rootHolds{
+		connRoot: connRoot,
+		byRoot:   make(map[string]*rootState),
+		conns:    make(map[*withdrawal]struct{}),
+	}
 }
 
 // rootState is the tickets in force for one root.
@@ -101,7 +115,8 @@ func (st *rootState) empty() bool {
 	return st.ticket == nil && len(st.funnel) == 0
 }
 
-// withdrawal ends a credential's grant, with its cause.
+// withdrawal ends a credential's grant, with its cause. A ticket's is
+// numbered (seq) when its grant begins.
 type withdrawal struct {
 	withdraw context.CancelCauseFunc
 	seq      uint64
@@ -111,29 +126,25 @@ type withdrawal struct {
 // root is in force in its place.
 var errSuperseded = errors.New("relay: superseded by a later ticket for its root")
 
-// rootRole is what a ticket does to the session's other tickets for its
-// root.
+// rootRole is what a ticket for a root does to the session's other
+// credentials for it.
 type rootRole int
 
 const (
-	// roleNone is a ticket of no root: it touches nothing.
-	roleNone rootRole = iota
 	// roleFunnel grants funnel actions alone, which grant nothing on the
 	// relay: it adds up beside the root's other tickets.
-	roleFunnel
+	roleFunnel rootRole = iota
 	// roleRelay grants relay patterns: it replaces the root's ticket of
 	// relay patterns or of none.
 	roleRelay
 	// roleNothing grants no pattern at all: it narrows the root to nothing,
-	// replacing every ticket for it.
+	// replacing every ticket for it begun before it.
 	roleNothing
 )
 
-// roleOf is the role of a ticket granting tg.
+// roleOf is the role of a ticket granting tg, for a root that is not "".
 func roleOf(tg token.Grant) rootRole {
 	switch {
-	case tg.Root == "":
-		return roleNone
 	case len(tg.Publish) > 0 || len(tg.Subscribe) > 0:
 		return roleRelay
 	case len(tg.Create) > 0 || len(tg.Post) > 0 || len(tg.Redact) > 0:
@@ -143,27 +154,25 @@ func roleOf(tg token.Grant) rootRole {
 	}
 }
 
-// beginTicketGrant numbers a ticket whose grant is about to be applied, for
-// registerTicket.
-func (a *admission) beginTicketGrant() uint64 {
-	a.roots.mu.Lock()
-	defer a.roots.mu.Unlock()
-	a.roots.seq++
-	return a.roots.seq
+// beginTicket numbers a ticket whose grant is about to be applied, and
+// returns what withdraws it, for registerTicket.
+func (r *rootHolds) beginTicket(withdraw context.CancelCauseFunc) *withdrawal {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.seq++
+	return &withdrawal{withdraw: withdraw, seq: r.seq}
 }
 
-// registerTicket registers a ticket for root of role whose grant, begun as
-// seq, is in force, with withdraw to end it. It withdraws what the ticket
-// replaces, and every presentation of the connection's own credential when
-// root is connRoot (that credential's root), retiring it. A ticket that a
-// ticket begun after it replaced already is withdrawn at once (current is
-// false). release forgets the ticket when it ends.
-func (a *admission) registerTicket(root, connRoot string, role rootRole, seq uint64,
-	withdraw context.CancelCauseFunc) (release func(), current bool) {
-	if role == roleNone {
+// registerTicket registers h, begun by beginTicket, for a ticket for root of
+// role whose grant is in force. It withdraws what the ticket replaces, and
+// every presentation of the connection's own credential when root is
+// connRoot, retiring it. A ticket that a ticket begun after it replaced
+// already is withdrawn at once (current is false). A ticket of no root
+// touches nothing. release forgets the ticket when it ends.
+func (r *rootHolds) registerTicket(root string, role rootRole, h *withdrawal) (release func(), current bool) {
+	if root == "" {
 		return func() {}, true
 	}
-	r := &a.roots
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	st := r.byRoot[root]
@@ -171,18 +180,17 @@ func (a *admission) registerTicket(root, connRoot string, role rootRole, seq uin
 		st = &rootState{funnel: make(map[*withdrawal]struct{})}
 		r.byRoot[root] = st
 	}
-	if role != roleFunnel && root == connRoot {
+	if role != roleFunnel && root == r.connRoot {
 		r.connRetired = true
 		for c := range r.conns {
 			c.withdraw(errSuperseded)
 		}
 		clear(r.conns)
 	}
-	h := &withdrawal{withdraw: withdraw, seq: seq}
 	switch {
-	case seq < st.cleared, role != roleFunnel && st.ticket != nil && seq < st.ticket.seq:
+	case h.seq < st.cleared, role != roleFunnel && st.ticket != nil && h.seq < st.ticket.seq:
 		// A ticket begun after this one replaced it already.
-		withdraw(errSuperseded)
+		h.withdraw(errSuperseded)
 		if st.empty() {
 			delete(r.byRoot, root)
 		}
@@ -197,12 +205,12 @@ func (a *admission) registerTicket(root, connRoot string, role rootRole, seq uin
 		if role == roleNothing {
 			// Only those begun before it: one begun after it is newer.
 			for f := range st.funnel {
-				if f.seq < seq {
+				if f.seq < h.seq {
 					f.withdraw(errSuperseded)
 					delete(st.funnel, f)
 				}
 			}
-			st.cleared = max(st.cleared, seq)
+			st.cleared = max(st.cleared, h.seq)
 		}
 	}
 	return func() {
@@ -223,12 +231,11 @@ func (a *admission) registerTicket(root, connRoot string, role rootRole, seq uin
 }
 
 // registerConnection registers a presentation of the connection's own
-// credential, before its grant is applied, so that a ticket for its root
+// credential, before its grant is applied, so that a ticket for connRoot
 // granted from then on withdraws it with withdraw; once one was, it is
 // refused (false). Presentations of the credential add up, as they grant the
 // same. release forgets it when it ends.
-func (a *admission) registerConnection(withdraw context.CancelCauseFunc) (release func(), ok bool) {
-	r := &a.roots
+func (r *rootHolds) registerConnection(withdraw context.CancelCauseFunc) (release func(), ok bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.connRetired {
@@ -287,7 +294,8 @@ func (a *admission) boundKey() string {
 
 // beginTicket binds an anonymous session to kid, the key of a ticket that
 // verified, while the ticket is granted: the first key wins, and a ticket of
-// any other key is refused (false). Every true is followed by settleTicket.
+// any other key is refused (false). Every true is followed by settleRefused
+// or settleGranted.
 func (a *admission) beginTicket(kid string) bool {
 	h := &a.held
 	h.mu.Lock()
@@ -303,22 +311,29 @@ func (a *admission) beginTicket(kid string) bool {
 	return true
 }
 
-// settleTicket records whether a ticket begun by beginTicket was granted,
-// and whether what it grants publishes. The first granted on an anonymous
+// settleRefused records that a ticket begun by beginTicket was not granted.
+// A binding no grant ever held is undone once no ticket is in flight.
+func (a *admission) settleRefused() {
+	h := &a.held
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.inFlight--
+	if !h.opened && h.inFlight == 0 {
+		h.key = ""
+	}
+}
+
+// settleGranted records that a ticket begun by beginTicket was granted, and
+// whether what it grants publishes. The first granted on an anonymous
 // session opens its usage (open, with whether it publishes) and binds the
 // session for good; a later one that publishes makes it a publisher
-// (publishing), always after the open whatever order the grants came in. A
-// binding no grant ever held is undone once no ticket is in flight.
-func (a *admission) settleTicket(granted, publishes bool, open func(publishes bool), publishing func()) {
+// (publishing), always after the open whatever order the grants came in.
+func (a *admission) settleGranted(publishes bool, open func(publishes bool), publishing func()) {
 	h := &a.held
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.inFlight--
 	switch {
-	case !granted:
-		if !h.opened && h.inFlight == 0 {
-			h.key = ""
-		}
 	case !h.opened:
 		h.opened, h.publishes = true, publishes
 		open(publishes)
@@ -428,13 +443,7 @@ type admissionKey struct{}
 var refusedGrant = &auth.Grant{}
 
 func pendingAdmission() *admission {
-	return &admission{
-		decided: make(chan struct{}),
-		roots: rootHolds{
-			byRoot: make(map[string]*rootState),
-			conns:  make(map[*withdrawal]struct{}),
-		},
-	}
+	return &admission{decided: make(chan struct{})}
 }
 
 func decidedAdmission(g *auth.Grant, req auth.Request) *admission {
@@ -448,6 +457,11 @@ func decidedAdmission(g *auth.Grant, req auth.Request) *admission {
 func (a *admission) decide(g *auth.Grant, req auth.Request) {
 	a.grant = g
 	a.req = req
+	connRoot := ""
+	if g != nil {
+		connRoot = g.Token().Root
+	}
+	a.roots = newRootHolds(connRoot)
 	close(a.decided)
 }
 
@@ -788,20 +802,17 @@ func (s *Server) serveConnection(w *moqt.AuthWriter, r *moqt.AuthRequest) {
 	defer withdraw(nil)
 	if a != nil && g != nil && g.Token().Root != "" {
 		// Registered before its grant is applied, so that a ticket for its
-		// root granted meanwhile withdraws it.
-		release, ok := a.registerConnection(withdraw)
-		if !ok {
+		// root granted meanwhile withdraws it: refused if one did so before
+		// or since, rather than granted for a moment.
+		release, ok := a.roots.registerConnection(withdraw)
+		if ok {
+			defer release()
+		}
+		if !ok || errors.Is(context.Cause(ctx), errSuperseded) {
 			// not actionable: the credential ends either way.
 			_ = w.Refuse(moqt.UnauthorizedSessionErrorCode, "credential superseded by a ticket")
 			return
 		}
-		defer release()
-	}
-	if errors.Is(context.Cause(ctx), errSuperseded) {
-		// A ticket for its root retired it since it was registered.
-		// not actionable: the credential ends either way.
-		_ = w.Refuse(moqt.UnauthorizedSessionErrorCode, "credential superseded by a ticket")
-		return
 	}
 	// Marked before the grant is answered, so a ticket presented after the
 	// answer finds it.
@@ -953,7 +964,9 @@ func (s *Server) serveTicket(w *moqt.AuthWriter, r *moqt.AuthRequest) {
 	lapses := lapsesAt(tg)
 	grant := moqGrant(tg.Token())
 	grant.MaxAge = max(time.Until(lapses), time.Millisecond)
-	seq := a.beginTicketGrant()
+	ctx, withdraw := context.WithCancelCause(ctx)
+	defer withdraw(nil)
+	h := a.roots.beginTicket(withdraw)
 	// Marked before the grant is answered, so a ticket presented after the
 	// answer finds it. A key's pause refused this one already if it had to.
 	if len(grant.Publish) > 0 {
@@ -961,7 +974,7 @@ func (s *Server) serveTicket(w *moqt.AuthWriter, r *moqt.AuthRequest) {
 	}
 	if err = w.Grant(grant); err != nil {
 		if anonymous {
-			a.settleTicket(false, false, nil, nil)
+			a.settleRefused()
 		}
 		metricTickets.WithLabelValues(ticketRefused).Inc()
 		slog.Info("relay: ticket not granted", "id", a.req.ID, "error", err)
@@ -977,15 +990,16 @@ func (s *Server) serveTicket(w *moqt.AuthWriter, r *moqt.AuthRequest) {
 	}
 	// Its grant is in force now, so what it replaces ends with no moment
 	// when neither covers what both do.
-	ctx, withdraw := context.WithCancelCause(ctx)
-	defer withdraw(nil)
-	release, current := a.registerTicket(tg.Token().Root, g.Token().Root, roleOf(tg.Token()), seq, withdraw)
+	release, current := a.roots.registerTicket(tg.Token().Root, roleOf(tg.Token()), h)
 	defer release()
 	// A ticket a later one replaced before it registered is withdrawn
 	// already (hold counts it superseded), and binds or publishes nothing.
 	publishes := current && len(grant.Publish) > 0
-	if anonymous {
-		a.settleTicket(current, publishes,
+	switch {
+	case anonymous && !current:
+		a.settleRefused()
+	case anonymous:
+		a.settleGranted(publishes,
 			func(publishes bool) { s.Tickets.Bind(a.req.ID, tg.KeyID(), publishes) },
 			func() { s.Tickets.Publishing(a.req.ID) })
 	}

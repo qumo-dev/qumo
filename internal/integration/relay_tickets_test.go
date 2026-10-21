@@ -265,9 +265,6 @@ func TestRelay_TicketRenewal(t *testing.T) {
 			return ok && authErr.Code == moqt.NoError
 		}
 	}
-	unrouted := func(path moqt.BroadcastPath) func() bool {
-		return func() bool { return !routed(srv, path)() }
-	}
 	assertStaysUp := func(tb testing.TB, sess *moqt.Session) {
 		tb.Helper()
 		select {
@@ -286,7 +283,7 @@ func TestRelay_TicketRenewal(t *testing.T) {
 
 		granted(t, sess, sign(t, listen))
 
-		assert.Eventually(t, unrouted("/acme/room/42/7"), settle, 25*time.Millisecond,
+		assert.Eventually(t, func() bool { return !routed(srv, "/acme/room/42/7")() }, settle, 25*time.Millisecond,
 			"the announcement ends once the renewal no longer lets it publish")
 		assert.Eventually(t, superseded(old), settle, 25*time.Millisecond, "the earlier ticket is withdrawn")
 		assert.NoError(t, subscribeOn(t, sess, "/acme/room/42/host"), "what the renewal grants holds")
@@ -300,7 +297,7 @@ func TestRelay_TicketRenewal(t *testing.T) {
 
 		granted(t, sess, sign(t, listen))
 
-		assert.Eventually(t, unrouted("/acme/room/42/7"), settle, 25*time.Millisecond,
+		assert.Eventually(t, func() bool { return !routed(srv, "/acme/room/42/7")() }, settle, 25*time.Millisecond,
 			"the announcement ends once the ticket replaced the credential that let it publish")
 		_, err := present(t, sess, "")
 		authErr, ok := errors.AsType[*moqt.AuthError](err)
