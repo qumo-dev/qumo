@@ -67,7 +67,10 @@ type admission struct {
 // it is in force before the credential it replaces is withdrawn, and a grant
 // that stalls on its stream holds up no other credential of the session.
 // Tickets for a root are ordered by when their grants began (seq): one that
-// finishes after a later one is withdrawn as soon as it is registered.
+// finishes after a later one still in force is withdrawn as soon as it is
+// registered. The order covers only tickets in force: a root's state is
+// forgotten once it holds no ticket, so a slow grant that registers after
+// every later one ended is the one in force.
 type rootHolds struct {
 	mu sync.Mutex
 	// seq numbers the tickets whose grants began.
@@ -153,12 +156,12 @@ func (a *admission) beginTicketGrant() uint64 {
 // seq, is in force, with withdraw to end it. It withdraws what the ticket
 // replaces, and every presentation of the connection's own credential when
 // root is connRoot (that credential's root), retiring it. A ticket that a
-// ticket begun after it replaced already is withdrawn at once. release
-// forgets the ticket when it ends.
+// ticket begun after it replaced already is withdrawn at once (current is
+// false). release forgets the ticket when it ends.
 func (a *admission) registerTicket(root, connRoot string, role rootRole, seq uint64,
-	withdraw context.CancelCauseFunc) (release func()) {
+	withdraw context.CancelCauseFunc) (release func(), current bool) {
 	if role == roleNone {
-		return func() {}
+		return func() {}, true
 	}
 	r := &a.roots
 	r.mu.Lock()
@@ -183,7 +186,7 @@ func (a *admission) registerTicket(root, connRoot string, role rootRole, seq uin
 		if st.empty() {
 			delete(r.byRoot, root)
 		}
-		return func() {}
+		return func() {}, false
 	case role == roleFunnel:
 		st.funnel[h] = struct{}{}
 	default:
@@ -192,11 +195,14 @@ func (a *admission) registerTicket(root, connRoot string, role rootRole, seq uin
 		}
 		st.ticket = h
 		if role == roleNothing {
+			// Only those begun before it: one begun after it is newer.
 			for f := range st.funnel {
-				f.withdraw(errSuperseded)
+				if f.seq < seq {
+					f.withdraw(errSuperseded)
+					delete(st.funnel, f)
+				}
 			}
-			clear(st.funnel)
-			st.cleared = seq
+			st.cleared = max(st.cleared, seq)
 		}
 	}
 	return func() {
@@ -213,7 +219,7 @@ func (a *admission) registerTicket(root, connRoot string, role rootRole, seq uin
 		if cur.empty() {
 			delete(r.byRoot, root)
 		}
-	}
+	}, true
 }
 
 // registerConnection registers a presentation of the connection's own
@@ -791,6 +797,12 @@ func (s *Server) serveConnection(w *moqt.AuthWriter, r *moqt.AuthRequest) {
 		}
 		defer release()
 	}
+	if errors.Is(context.Cause(ctx), errSuperseded) {
+		// A ticket for its root retired it since it was registered.
+		// not actionable: the credential ends either way.
+		_ = w.Refuse(moqt.UnauthorizedSessionErrorCode, "credential superseded by a ticket")
+		return
+	}
 	// Marked before the grant is answered, so a ticket presented after the
 	// answer finds it.
 	if a != nil && len(grant.Publish) > 0 {
@@ -947,14 +959,10 @@ func (s *Server) serveTicket(w *moqt.AuthWriter, r *moqt.AuthRequest) {
 	if len(grant.Publish) > 0 {
 		a.published.Store(true)
 	}
-	err = w.Grant(grant)
-	publishes := len(grant.Publish) > 0
-	if anonymous {
-		a.settleTicket(err == nil, publishes,
-			func(publishes bool) { s.Tickets.Bind(a.req.ID, tg.KeyID(), publishes) },
-			func() { s.Tickets.Publishing(a.req.ID) })
-	}
-	if err != nil {
+	if err = w.Grant(grant); err != nil {
+		if anonymous {
+			a.settleTicket(false, false, nil, nil)
+		}
 		metricTickets.WithLabelValues(ticketRefused).Inc()
 		slog.Info("relay: ticket not granted", "id", a.req.ID, "error", err)
 		// A grant gomoqt refused itself, too large, is answered already.
@@ -962,10 +970,6 @@ func (s *Server) serveTicket(w *moqt.AuthWriter, r *moqt.AuthRequest) {
 			_ = w.Refuse(moqt.UnauthorizedSessionErrorCode, "ticket grants what this relay can't apply")
 		}
 		return
-	}
-	metricTickets.WithLabelValues(ticketGranted).Inc()
-	if publishes && !anonymous {
-		s.Tickets.Publishing(a.req.ID)
 	}
 	if grantsSomething(grant) {
 		a.holding()
@@ -975,8 +979,22 @@ func (s *Server) serveTicket(w *moqt.AuthWriter, r *moqt.AuthRequest) {
 	// when neither covers what both do.
 	ctx, withdraw := context.WithCancelCause(ctx)
 	defer withdraw(nil)
-	release := a.registerTicket(tg.Token().Root, g.Token().Root, roleOf(tg.Token()), seq, withdraw)
+	release, current := a.registerTicket(tg.Token().Root, g.Token().Root, roleOf(tg.Token()), seq, withdraw)
 	defer release()
+	// A ticket a later one replaced before it registered is withdrawn
+	// already (hold counts it superseded), and binds or publishes nothing.
+	publishes := current && len(grant.Publish) > 0
+	if anonymous {
+		a.settleTicket(current, publishes,
+			func(publishes bool) { s.Tickets.Bind(a.req.ID, tg.KeyID(), publishes) },
+			func() { s.Tickets.Publishing(a.req.ID) })
+	}
+	if current {
+		metricTickets.WithLabelValues(ticketGranted).Inc()
+	}
+	if publishes && !anonymous {
+		s.Tickets.Publishing(a.req.ID)
+	}
 
 	switch hold(ctx, lapses, func() bool {
 		// A ticket that could not be checked just now stays in force, as a

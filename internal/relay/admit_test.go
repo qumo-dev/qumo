@@ -765,15 +765,16 @@ func TestAdmission_RegisterTicket(t *testing.T) {
 		first, second := a.beginTicketGrant(), a.beginTicketGrant()
 		a.registerTicket("/r/", "", roleRelay, second, w.of(t, "second"))
 
-		a.registerTicket("/r/", "", roleRelay, first, w.of(t, "first"))
+		_, current := a.registerTicket("/r/", "", roleRelay, first, w.of(t, "first"))
 
+		assert.False(t, current)
 		assert.Equal(t, []string{"first"}, w.seen())
 	})
 	t.Run("a ticket that ended gives up only what it holds", func(t *testing.T) {
 		var w recordedWithdrawals
 		a := pendingAdmission()
-		releaseFirst := a.registerTicket("/r/", "", roleRelay, a.beginTicketGrant(), w.of(t, "first"))
-		releaseSecond := a.registerTicket("/r/", "", roleRelay, a.beginTicketGrant(), w.of(t, "second"))
+		releaseFirst, _ := a.registerTicket("/r/", "", roleRelay, a.beginTicketGrant(), w.of(t, "first"))
+		releaseSecond, _ := a.registerTicket("/r/", "", roleRelay, a.beginTicketGrant(), w.of(t, "second"))
 
 		releaseFirst()
 
@@ -784,8 +785,8 @@ func TestAdmission_RegisterTicket(t *testing.T) {
 	t.Run("a root none holds is forgotten", func(t *testing.T) {
 		a := pendingAdmission()
 		var w recordedWithdrawals
-		release := a.registerTicket("/r/", "", roleRelay, a.beginTicketGrant(), w.of(t, "relay"))
-		releaseFunnel := a.registerTicket("/r/", "", roleFunnel, a.beginTicketGrant(), w.of(t, "funnel"))
+		release, _ := a.registerTicket("/r/", "", roleRelay, a.beginTicketGrant(), w.of(t, "relay"))
+		releaseFunnel, _ := a.registerTicket("/r/", "", roleFunnel, a.beginTicketGrant(), w.of(t, "funnel"))
 
 		release()
 		releaseFunnel()
@@ -831,6 +832,17 @@ func TestAdmission_RegisterTicket(t *testing.T) {
 
 		assert.ElementsMatch(t, []string{"relay", "funnel", "funnel begun before"}, w.seen())
 	})
+	t.Run("nothing leaves a funnel ticket begun after it", func(t *testing.T) {
+		var w recordedWithdrawals
+		a := pendingAdmission()
+		nothing, funnel := a.beginTicketGrant(), a.beginTicketGrant()
+		a.registerTicket("/r/", "", roleFunnel, funnel, w.of(t, "funnel"))
+
+		_, current := a.registerTicket("/r/", "", roleNothing, nothing, w.of(t, "nothing"))
+
+		assert.True(t, current, "nothing holds the root's relay ticket yet")
+		assert.Empty(t, w.seen())
+	})
 	t.Run("a ticket for the connection's root retires it", func(t *testing.T) {
 		var w recordedWithdrawals
 		a := pendingAdmission()
@@ -839,7 +851,7 @@ func TestAdmission_RegisterTicket(t *testing.T) {
 		_, ok = a.registerConnection(w.of(t, "conn again"))
 		require.True(t, ok)
 
-		release := a.registerTicket("/r/", "/r/", roleRelay, a.beginTicketGrant(), w.of(t, "ticket"))
+		release, _ := a.registerTicket("/r/", "/r/", roleRelay, a.beginTicketGrant(), w.of(t, "ticket"))
 		release()
 
 		_, ok = a.registerConnection(w.of(t, "conn once retired"))
@@ -858,28 +870,17 @@ func TestAdmission_RegisterTicket(t *testing.T) {
 		assert.True(t, ok)
 		assert.Empty(t, w.seen())
 	})
-	t.Run("a grant in flight holds up no other credential", func(t *testing.T) {
-		var w recordedWithdrawals
+	t.Run("a registered connection credential learns it was retired", func(t *testing.T) {
+		// serveConnection checks this cause before it applies the grant.
 		a := pendingAdmission()
-		// A ticket whose grant began, and is still being written.
-		stalled := a.beginTicketGrant()
-		done := make(chan struct{})
+		ctx, withdraw := context.WithCancelCause(t.Context())
+		defer withdraw(nil)
+		_, ok := a.registerConnection(withdraw)
+		require.True(t, ok)
 
-		go func() {
-			defer close(done)
-			release := a.registerTicket("/other/", "", roleRelay, a.beginTicketGrant(), w.of(t, "other"))
-			release()
-			releaseConn, _ := a.registerConnection(w.of(t, "conn"))
-			releaseConn()
-		}()
+		a.registerTicket("/r/", "/r/", roleRelay, a.beginTicketGrant(), func(error) {})
 
-		select {
-		case <-done:
-		case <-time.After(5 * time.Second):
-			t.Fatal("another credential waited on a grant in flight")
-		}
-		a.registerTicket("/r/", "", roleRelay, stalled, w.of(t, "stalled"))
-		assert.Empty(t, w.seen())
+		assert.ErrorIs(t, context.Cause(ctx), errSuperseded)
 	})
 }
 
