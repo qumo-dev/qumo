@@ -94,27 +94,29 @@ func runKeygen(args []string, out, info io.Writer, in io.Reader) error {
 	// The key and where it lies, before any file does: the key's prefix is
 	// the one setting a re-issue won't give back, and a bare prefix makes
 	// the key the tenant of everything.
-	var b strings.Builder
-	fmt.Fprintf(&b, "Generated an Ed25519 signing key.\n\n")
-	fmt.Fprintf(&b, "  %-13s %s\n", "Key ID:", key.ID)
-	fmt.Fprintf(&b, "  %-13s %s\n", "Grants:", prefixLabel(key.Prefix))
-	fmt.Fprintf(&b, "  %-13s %s  (private: keep it on your app's server)\n", "Signing key:", *privPath)
-	fmt.Fprintf(&b, "  %-13s %s  (public: for the relay)\n", "Key set:", *pubPath)
-	if _, err := io.WriteString(out, b.String()); err != nil {
-		return err
-	}
-	// On a terminal, the confirmation stands before a file is written: a
-	// tenant the prefix didn't mean, or a path that names the wrong place,
-	// costs nothing to decline and re-run. A pipe confirms without asking,
-	// so a run in a script or CI keeps stdout for its own uses.
-	if in != nil && !*yes {
-		ok, err := ask(info, "Write these two files?", in)
-		if err != nil {
+	var fields strings.Builder
+	fmt.Fprintf(&fields, "Generated an Ed25519 signing key.\n\n")
+	fmt.Fprintf(&fields, "  %-13s %s\n", "Key ID:", key.ID)
+	fmt.Fprintf(&fields, "  %-13s %s\n", "Grants:", prefixLabel(key.Prefix))
+	fmt.Fprintf(&fields, "  %-13s %s  (private: keep it on your app's server)\n", "Signing key:", *privPath)
+	fmt.Fprintf(&fields, "  %-13s %s  (public: for the relay)\n", "Key set:", *pubPath)
+	var next strings.Builder
+	fmt.Fprintf(&next, "\nNext:\n")
+	fmt.Fprintf(&next, "  1. Run the relay with it: QUMO_AUTH_KEYS=%s qumo relay\n", *pubPath)
+	fmt.Fprintf(&next, "  2. Sign a test token:      qumo auth token -key %s %s\n", *privPath, exampleGrant(key.Prefix))
+	// On a terminal, the fields and the question stand before a file is
+	// written: a tenant the prefix didn't mean, or a path that names the
+	// wrong place, costs nothing to decline and re-run. A piped run, or
+	// -yes, confirms without asking, and prints its summary only once it
+	// took effect, as this command did before it asked.
+	asks := in != nil && !*yes
+	if asks {
+		if _, err := io.WriteString(out, fields.String()); err != nil {
 			return err
 		}
-		if !ok {
-			return fmt.Errorf("%w: nothing was written", ErrDeclined)
-		}
+	}
+	if err := confirm(info, "Write these two files?", in, *yes, "nothing was written"); err != nil {
+		return err
 	}
 	// O_EXCL: never overwrite an existing key, which would strand every token
 	// signed with it.
@@ -126,11 +128,12 @@ func runKeygen(args []string, out, info io.Writer, in io.Reader) error {
 		// a key whose public half was never saved.
 		return errors.Join(err, removeFile(*privPath))
 	}
-	var n strings.Builder
-	fmt.Fprintf(&n, "\nNext:\n")
-	fmt.Fprintf(&n, "  1. Run the relay with it: QUMO_AUTH_KEYS=%s qumo relay\n", *pubPath)
-	fmt.Fprintf(&n, "  2. Sign a test token:      qumo auth token -key %s %s\n", *privPath, exampleGrant(key.Prefix))
-	_, err = io.WriteString(out, n.String())
+	if !asks {
+		if _, err := io.WriteString(out, fields.String()); err != nil {
+			return err
+		}
+	}
+	_, err = io.WriteString(out, next.String())
 	return err
 }
 
@@ -267,16 +270,10 @@ func runToken(args []string, out, info io.Writer, in io.Reader) error {
 	}
 	// On a terminal, the confirmation stands before the token is emitted: a
 	// subject, root or pattern the args didn't mean to grant costs nothing
-	// to decline and re-sign. A pipe confirms without asking, so a run in a
-	// script or CI keeps stdout for the token alone.
-	if in != nil && !*yes {
-		ok, err := ask(info, "Sign and emit this token?", in)
-		if err != nil {
-			return err
-		}
-		if !ok {
-			return fmt.Errorf("%w: no token was emitted", ErrDeclined)
-		}
+	// to decline and re-sign. A piped run, or -yes, confirms without asking,
+	// so a run in a script or CI keeps stdout for the token alone.
+	if err := confirm(info, "Sign and emit this token?", in, *yes, "no token was emitted"); err != nil {
+		return err
 	}
 	if _, err := fmt.Fprintln(out, tok); err != nil {
 		return err
@@ -340,6 +337,25 @@ func spellDur(d time.Duration) string {
 	default:
 		return s
 	}
+}
+
+// confirm reads the answer to a y/N question from in: y or yes confirms,
+// and a run takes its effect. The run that cannot be asked confirms
+// without asking — in nil, first: a piped or redirected run; -yes, then:
+// the answer named up front. Any other answer declines with decline, and
+// the run takes none of its effect.
+func confirm(info io.Writer, question string, in io.Reader, yes bool, decline string) error {
+	if in == nil || yes {
+		return nil
+	}
+	ok, err := ask(info, question, in)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return fmt.Errorf("%w: %s", ErrDeclined, decline)
+	}
+	return nil
 }
 
 // ask writes question to w and reads an answer from in: y or yes

@@ -215,21 +215,31 @@ func TestRunKeygen_NoEffectiveArgs(t *testing.T) {
 	assert.NotContains(t, out.String(), "Effective:")
 }
 
-// On a terminal, keygen asks before it writes: y and yes write both files,
-// any other answer — an interrupted prompt among them — writes none.
-func TestRunKeygen_Confirm(t *testing.T) {
-	tests := map[string]struct {
-		answer  string
-		wantErr error
-	}{
-		"y":            {answer: "y\n"},
-		"yes":          {answer: "Yes\n"},
-		"n":            {answer: "n\n", wantErr: ErrDeclined},
-		"a bare Enter": {answer: "\n", wantErr: ErrDeclined},
-		"an EOF":       {answer: "", wantErr: ErrDeclined},
+// confirmCases are the answers a confirmation takes, and whether each
+// confirms: y and its spellings do; a bare Enter, a no, and an answer
+// that cannot be read (an EOF among them) decline.
+type confirmCase struct {
+	name    string
+	answer  string
+	wantErr bool
+}
+
+func confirmCases() []confirmCase {
+	return []confirmCase{
+		{name: "y", answer: "y\n"},
+		{name: "yes", answer: "Yes\n"},
+		{name: "n", answer: "n\n", wantErr: true},
+		{name: "a bare Enter", answer: "\n", wantErr: true},
+		{name: "an EOF", answer: "", wantErr: true},
 	}
-	for name, tt := range tests {
-		t.Run(name, func(t *testing.T) {
+}
+
+// On a terminal, keygen asks before it writes: y and yes write both
+// files, any other answer — an interrupted prompt among them — writes
+// none.
+func TestRunKeygen_Confirm(t *testing.T) {
+	for _, tt := range confirmCases() {
+		t.Run(tt.name, func(t *testing.T) {
 			dir := t.TempDir()
 			priv, pub := filepath.Join(dir, "signing-key.jwk"), filepath.Join(dir, "keys.json")
 			var out, info bytes.Buffer
@@ -237,8 +247,8 @@ func TestRunKeygen_Confirm(t *testing.T) {
 			err := runKeygen([]string{"-out", priv, "-keys", pub}, &out, &info, strings.NewReader(tt.answer))
 
 			assert.Contains(t, out.String(), "Signing key:  "+priv, "the key and its paths are shown before the answer is read")
-			if tt.wantErr != nil {
-				assert.ErrorIs(t, err, tt.wantErr)
+			if tt.wantErr {
+				assert.ErrorIs(t, err, ErrDeclined)
 				assert.Contains(t, err.Error(), "nothing was written")
 				assert.NoFileExists(t, priv)
 				assert.NoFileExists(t, pub)
@@ -303,18 +313,8 @@ func TestRunToken_EffectiveArgs(t *testing.T) {
 // alone on stdout, any other answer — an interrupted prompt among them —
 // emits nothing.
 func TestRunToken_Confirm(t *testing.T) {
-	tests := map[string]struct {
-		answer  string
-		wantErr error
-	}{
-		"y":            {answer: "y\n"},
-		"yes":          {answer: "Yes\n"},
-		"n":            {answer: "n\n", wantErr: ErrDeclined},
-		"a bare Enter": {answer: "\n", wantErr: ErrDeclined},
-		"an EOF":       {answer: "", wantErr: ErrDeclined},
-	}
-	for name, tt := range tests {
-		t.Run(name, func(t *testing.T) {
+	for _, tt := range confirmCases() {
+		t.Run(tt.name, func(t *testing.T) {
 			dir := t.TempDir()
 			priv := filepath.Join(dir, "signing-key.jwk")
 			require.NoError(t, runKeygen([]string{"-prefix", "acme/app", "-out", priv, "-keys", filepath.Join(dir, "keys.json")}, &bytes.Buffer{}, io.Discard, nil))
@@ -323,8 +323,8 @@ func TestRunToken_Confirm(t *testing.T) {
 			err := runToken([]string{"-key", priv, "-root", "/acme/app/", "-subscribe", "/"}, &out, &info, strings.NewReader(tt.answer))
 
 			assert.Contains(t, info.String(), "Effective:", "the args are shown before the answer is read")
-			if tt.wantErr != nil {
-				assert.ErrorIs(t, err, tt.wantErr)
+			if tt.wantErr {
+				assert.ErrorIs(t, err, ErrDeclined)
 				assert.Contains(t, err.Error(), "no token was emitted")
 				assert.Empty(t, out.String(), "no token is emitted")
 				assert.Contains(t, info.String(), "Sign and emit this token?")
@@ -351,14 +351,41 @@ func TestRunToken_YesSkipsThePrompt(t *testing.T) {
 	assert.NotContains(t, info.String(), "Sign and emit this token?", "a confirmed run asks nothing")
 }
 
+// ask's answers: y and yes confirm in their case, while a bare Enter, a
+// no and an unread answer decline.
+func TestAsk(t *testing.T) {
+	tests := map[string]struct {
+		in   interface{ Read([]byte) (int, error) }
+		want bool
+	}{
+		"y":             {in: strings.NewReader("y\n"), want: true},
+		"yes":           {in: strings.NewReader("Yes\n"), want: true},
+		"n":             {in: strings.NewReader("n\n"), want: false},
+		"a bare Enter":  {in: strings.NewReader("\n"), want: false},
+		"an EOF":        {in: strings.NewReader(""), want: false},
+		"an unread one": {in: fakeErrReader{err: io.ErrClosedPipe}, want: false},
+	}
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			var asked bytes.Buffer
+
+			ok, err := ask(&asked, "Anything?", tt.in)
+
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, ok)
+			assert.Contains(t, asked.String(), "Anything? [y/N]: ")
+		})
+	}
+}
+
 // A run with either end off a console — a capture's piped stdout, a
 // script's redirected input among them — confirms without asking.
 func TestPrompted(t *testing.T) {
 	dir := t.TempDir()
-	pipe, err := os.Create(filepath.Join(dir, "pipe"))
+	redirected, err := os.Create(filepath.Join(dir, "redirected"))
 	require.NoError(t, err)
-	defer func() { _ = pipe.Close() }() // not actionable: a read-only handle for the Stat
+	defer func() { _ = redirected.Close() }() // not actionable: a read-only handle for the Stat
 
-	assert.Nil(t, prompted(os.Stdin, pipe), "a captured stdout confirms without asking")
-	assert.Nil(t, prompted(pipe, os.Stdout), "a redirected stdin confirms without asking")
+	assert.Nil(t, prompted(os.Stdin, redirected), "a captured stdout confirms without asking")
+	assert.Nil(t, prompted(redirected, os.Stdout), "a redirected stdin confirms without asking")
 }
