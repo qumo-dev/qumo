@@ -751,16 +751,16 @@ func TestRootHolds_RegisterTicket(t *testing.T) {
 	t.Run("a later ticket withdraws the earlier", func(t *testing.T) {
 		var w recordedWithdrawals
 		r := newRootHolds("")
-		r.registerTicket("/r/", roleRelay, r.beginTicket(w.of(t, "first")))
+		r.registerTicket("/r/", roleRelay, r.beginTicket("/r/", roleRelay, w.of(t, "first")))
 
-		r.registerTicket("/r/", roleRelay, r.beginTicket(w.of(t, "second")))
+		r.registerTicket("/r/", roleRelay, r.beginTicket("/r/", roleRelay, w.of(t, "second")))
 
 		assert.Equal(t, []string{"first"}, w.seen())
 	})
 	t.Run("a ticket whose grant began first and ended last is withdrawn", func(t *testing.T) {
 		var w recordedWithdrawals
 		r := newRootHolds("")
-		first, second := r.beginTicket(w.of(t, "first")), r.beginTicket(w.of(t, "second"))
+		first, second := r.beginTicket("/r/", roleRelay, w.of(t, "first")), r.beginTicket("/r/", roleRelay, w.of(t, "second"))
 		r.registerTicket("/r/", roleRelay, second)
 
 		_, current := r.registerTicket("/r/", roleRelay, first)
@@ -771,20 +771,20 @@ func TestRootHolds_RegisterTicket(t *testing.T) {
 	t.Run("a ticket that ended gives up only what it holds", func(t *testing.T) {
 		var w recordedWithdrawals
 		r := newRootHolds("")
-		releaseFirst, _ := r.registerTicket("/r/", roleRelay, r.beginTicket(w.of(t, "first")))
-		releaseSecond, _ := r.registerTicket("/r/", roleRelay, r.beginTicket(w.of(t, "second")))
+		releaseFirst, _ := r.registerTicket("/r/", roleRelay, r.beginTicket("/r/", roleRelay, w.of(t, "first")))
+		releaseSecond, _ := r.registerTicket("/r/", roleRelay, r.beginTicket("/r/", roleRelay, w.of(t, "second")))
 		t.Cleanup(releaseSecond)
 
 		releaseFirst()
 
-		r.registerTicket("/r/", roleRelay, r.beginTicket(w.of(t, "third")))
+		r.registerTicket("/r/", roleRelay, r.beginTicket("/r/", roleRelay, w.of(t, "third")))
 		assert.Equal(t, []string{"first", "second"}, w.seen())
 	})
 	t.Run("a root none holds is forgotten", func(t *testing.T) {
 		var w recordedWithdrawals
 		r := newRootHolds("")
-		release, _ := r.registerTicket("/r/", roleRelay, r.beginTicket(w.of(t, "relay")))
-		releaseFunnel, _ := r.registerTicket("/r/", roleFunnel, r.beginTicket(w.of(t, "funnel")))
+		release, _ := r.registerTicket("/r/", roleRelay, r.beginTicket("/r/", roleRelay, w.of(t, "relay")))
+		releaseFunnel, _ := r.registerTicket("/r/", roleFunnel, r.beginTicket("/r/", roleFunnel, w.of(t, "funnel")))
 
 		release()
 		releaseFunnel()
@@ -794,9 +794,9 @@ func TestRootHolds_RegisterTicket(t *testing.T) {
 	t.Run("tickets for different roots add up", func(t *testing.T) {
 		var w recordedWithdrawals
 		r := newRootHolds("")
-		r.registerTicket("/r/", roleRelay, r.beginTicket(w.of(t, "r")))
+		r.registerTicket("/r/", roleRelay, r.beginTicket("/r/", roleRelay, w.of(t, "r")))
 
-		r.registerTicket("/other/", roleRelay, r.beginTicket(w.of(t, "other")))
+		r.registerTicket("/other/", roleRelay, r.beginTicket("/other/", roleRelay, w.of(t, "other")))
 
 		assert.Empty(t, w.seen())
 	})
@@ -804,7 +804,7 @@ func TestRootHolds_RegisterTicket(t *testing.T) {
 		var w recordedWithdrawals
 		r := newRootHolds("")
 
-		_, current := r.registerTicket("", roleNothing, r.beginTicket(w.of(t, "none")))
+		_, current := r.registerTicket("", roleNothing, r.beginTicket("", roleNothing, w.of(t, "none")))
 
 		assert.True(t, current)
 		assert.Empty(t, r.byRoot)
@@ -812,21 +812,21 @@ func TestRootHolds_RegisterTicket(t *testing.T) {
 	t.Run("funnel actions alone add up beside relay patterns", func(t *testing.T) {
 		var w recordedWithdrawals
 		r := newRootHolds("")
-		r.registerTicket("/r/", roleFunnel, r.beginTicket(w.of(t, "funnel")))
-		r.registerTicket("/r/", roleRelay, r.beginTicket(w.of(t, "relay")))
+		r.registerTicket("/r/", roleFunnel, r.beginTicket("/r/", roleFunnel, w.of(t, "funnel")))
+		r.registerTicket("/r/", roleRelay, r.beginTicket("/r/", roleRelay, w.of(t, "relay")))
 
-		r.registerTicket("/r/", roleFunnel, r.beginTicket(w.of(t, "funnel again")))
+		r.registerTicket("/r/", roleFunnel, r.beginTicket("/r/", roleFunnel, w.of(t, "funnel again")))
 
 		assert.Empty(t, w.seen())
 	})
 	t.Run("nothing withdraws every ticket for the root begun before it", func(t *testing.T) {
 		var w recordedWithdrawals
 		r := newRootHolds("")
-		r.registerTicket("/r/", roleRelay, r.beginTicket(w.of(t, "relay")))
-		r.registerTicket("/r/", roleFunnel, r.beginTicket(w.of(t, "funnel")))
-		late := r.beginTicket(w.of(t, "funnel begun before"))
+		r.registerTicket("/r/", roleRelay, r.beginTicket("/r/", roleRelay, w.of(t, "relay")))
+		r.registerTicket("/r/", roleFunnel, r.beginTicket("/r/", roleFunnel, w.of(t, "funnel")))
+		late := r.beginTicket("/r/", roleFunnel, w.of(t, "funnel begun before"))
 
-		r.registerTicket("/r/", roleNothing, r.beginTicket(w.of(t, "nothing")))
+		r.registerTicket("/r/", roleNothing, r.beginTicket("/r/", roleNothing, w.of(t, "nothing")))
 		r.registerTicket("/r/", roleFunnel, late)
 
 		assert.ElementsMatch(t, []string{"relay", "funnel", "funnel begun before"}, w.seen())
@@ -834,7 +834,7 @@ func TestRootHolds_RegisterTicket(t *testing.T) {
 	t.Run("nothing leaves a funnel ticket begun after it", func(t *testing.T) {
 		var w recordedWithdrawals
 		r := newRootHolds("")
-		nothing, funnel := r.beginTicket(w.of(t, "nothing")), r.beginTicket(w.of(t, "funnel"))
+		nothing, funnel := r.beginTicket("/r/", roleNothing, w.of(t, "nothing")), r.beginTicket("/r/", roleFunnel, w.of(t, "funnel"))
 		r.registerTicket("/r/", roleFunnel, funnel)
 
 		_, current := r.registerTicket("/r/", roleNothing, nothing)
@@ -844,9 +844,10 @@ func TestRootHolds_RegisterTicket(t *testing.T) {
 	})
 }
 
-// The connection's own credential adds up with its presentations until a
-// ticket for its root that grants relay patterns or none is granted, which
-// withdraws every presentation and retires it.
+// The connection's own credential adds up with its presentations until the
+// grant of a ticket for its root that grants relay patterns or none begins,
+// which retires it; every presentation is withdrawn once that grant is in
+// force.
 func TestRootHolds_RegisterConnection(t *testing.T) {
 	t.Run("presentations add up", func(t *testing.T) {
 		var w recordedWithdrawals
@@ -868,17 +869,31 @@ func TestRootHolds_RegisterConnection(t *testing.T) {
 		_, ok = r.registerConnection(w.of(t, "conn again"))
 		require.True(t, ok)
 
-		release, _ := r.registerTicket("/r/", roleRelay, r.beginTicket(w.of(t, "ticket")))
+		release, _ := r.registerTicket("/r/", roleRelay, r.beginTicket("/r/", roleRelay, w.of(t, "ticket")))
 		release()
 
 		_, ok = r.registerConnection(w.of(t, "conn once retired"))
 		assert.False(t, ok, "refused even once no ticket holds the root")
 		assert.ElementsMatch(t, []string{"conn", "conn again"}, w.seen(), "every presentation is withdrawn")
 	})
+	t.Run("a ticket for its root retires it as its grant begins", func(t *testing.T) {
+		var w recordedWithdrawals
+		r := newRootHolds("/r/")
+		_, ok := r.registerConnection(w.of(t, "conn"))
+		require.True(t, ok)
+
+		h := r.beginTicket("/r/", roleRelay, w.of(t, "ticket"))
+
+		_, ok = r.registerConnection(w.of(t, "conn after"))
+		assert.False(t, ok, "refused while the ticket's grant is applied")
+		assert.Empty(t, w.seen(), "withdrawn only once the ticket's grant is in force")
+		r.registerTicket("/r/", roleRelay, h)
+		assert.Equal(t, []string{"conn"}, w.seen())
+	})
 	t.Run("a ticket for its root retires it before it is presented", func(t *testing.T) {
 		var w recordedWithdrawals
 		r := newRootHolds("/r/")
-		r.registerTicket("/r/", roleNothing, r.beginTicket(w.of(t, "ticket")))
+		r.registerTicket("/r/", roleNothing, r.beginTicket("/r/", roleNothing, w.of(t, "ticket")))
 
 		_, ok := r.registerConnection(w.of(t, "conn"))
 
@@ -891,7 +906,7 @@ func TestRootHolds_RegisterConnection(t *testing.T) {
 		_, ok := r.registerConnection(w.of(t, "conn"))
 		require.True(t, ok)
 
-		r.registerTicket("/r/", roleFunnel, r.beginTicket(w.of(t, "funnel")))
+		r.registerTicket("/r/", roleFunnel, r.beginTicket("/r/", roleFunnel, w.of(t, "funnel")))
 
 		_, ok = r.registerConnection(w.of(t, "conn again"))
 		assert.True(t, ok)
@@ -905,7 +920,7 @@ func TestRootHolds_RegisterConnection(t *testing.T) {
 		_, ok := r.registerConnection(withdraw)
 		require.True(t, ok)
 
-		r.registerTicket("/r/", roleRelay, r.beginTicket(func(error) {}))
+		r.registerTicket("/r/", roleRelay, r.beginTicket("/r/", roleRelay, func(error) {}))
 
 		assert.ErrorIs(t, context.Cause(ctx), errSuperseded)
 	})

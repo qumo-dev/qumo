@@ -61,8 +61,9 @@ type admission struct {
 // rootHolds keeps, for each root, the session's credentials in force for it:
 // a ticket for a root the session holds a ticket for replaces it, so that
 // renewing a grant may narrow it, and the first one for connRoot, the root
-// of the connection's own credential, retires that. Credentials for
-// different roots add up.
+// of the connection's own credential, retires that: from when its grant
+// begins, so that a presentation of the credential answered after it is
+// refused. Credentials for different roots add up.
 //
 // A ticket's grant is applied before it is registered here, outside mu, so
 // it is in force before the credential it replaces is withdrawn, and a grant
@@ -84,8 +85,8 @@ type rootHolds struct {
 	// conns withdraws each presentation of the connection's own credential
 	// in force.
 	conns map[*withdrawal]struct{}
-	// connRetired is set once a ticket for connRoot was granted: the
-	// connection's own credential is not granted again.
+	// connRetired is set once the grant of a ticket for connRoot began:
+	// the connection's own credential is not granted again.
 	connRetired bool
 }
 
@@ -154,11 +155,17 @@ func roleOf(tg token.Grant) rootRole {
 	}
 }
 
-// beginTicket numbers a ticket whose grant is about to be applied, and
-// returns what withdraws it, for registerTicket.
-func (r *rootHolds) beginTicket(withdraw context.CancelCauseFunc) *withdrawal {
+// beginTicket numbers a ticket for root of role whose grant is about to be
+// applied, and returns what withdraws it, for registerTicket. A ticket for
+// connRoot retires the connection's own credential: presentations of it
+// from now on are refused, and those in force are withdrawn once the
+// ticket's grant is (registerTicket).
+func (r *rootHolds) beginTicket(root string, role rootRole, withdraw context.CancelCauseFunc) *withdrawal {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if root != "" && role != roleFunnel && root == r.connRoot {
+		r.connRetired = true
+	}
 	r.seq++
 	return &withdrawal{withdraw: withdraw, seq: r.seq}
 }
@@ -181,7 +188,6 @@ func (r *rootHolds) registerTicket(root string, role rootRole, h *withdrawal) (r
 		r.byRoot[root] = st
 	}
 	if role != roleFunnel && root == r.connRoot {
-		r.connRetired = true
 		for c := range r.conns {
 			c.withdraw(errSuperseded)
 		}
@@ -232,8 +238,8 @@ func (r *rootHolds) registerTicket(root string, role rootRole, h *withdrawal) (r
 
 // registerConnection registers a presentation of the connection's own
 // credential, before its grant is applied, so that a ticket for connRoot
-// granted from then on withdraws it with withdraw; once one was, it is
-// refused (false). Presentations of the credential add up, as they grant the
+// granted from then on withdraws it with withdraw; once the grant of one
+// began, it is refused (false). Presentations of the credential add up, as they grant the
 // same. release forgets it when it ends.
 func (r *rootHolds) registerConnection(withdraw context.CancelCauseFunc) (release func(), ok bool) {
 	r.mu.Lock()
@@ -966,7 +972,7 @@ func (s *Server) serveTicket(w *moqt.AuthWriter, r *moqt.AuthRequest) {
 	grant.MaxAge = max(time.Until(lapses), time.Millisecond)
 	ctx, withdraw := context.WithCancelCause(ctx)
 	defer withdraw(nil)
-	h := a.roots.beginTicket(withdraw)
+	h := a.roots.beginTicket(tg.Token().Root, roleOf(tg.Token()), withdraw)
 	// Marked before the grant is answered, so a ticket presented after the
 	// answer finds it. A key's pause refused this one already if it had to.
 	if len(grant.Publish) > 0 {
