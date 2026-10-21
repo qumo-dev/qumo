@@ -212,3 +212,130 @@ func TestRelay_AnonymousSession(t *testing.T) {
 		}
 	})
 }
+
+// A ticket for a root the session holds a credential for replaces that
+// credential once its grant is in force, so that a renewal may narrow what
+// the session may do; tickets for different roots add up.
+func TestRelay_TicketRenewal(t *testing.T) {
+	// Generous: a loaded runner may take seconds to apply a scope change.
+	const settle = 10 * time.Second
+	keys, verifier := trustedKeys(t, "acme", 1)
+	key := keys[0]
+	addr, srv := startAuthRelay(t, verifier.Authorize, nil, func(s *relay.Server) { s.Tickets = verifier })
+	sign := func(tb testing.TB, g token.Grant) string {
+		tb.Helper()
+		tok, err := token.Sign(key, g, time.Minute)
+		require.NoError(tb, err)
+		return tok
+	}
+	publishOver(t, srv, "https://"+addr+"/?jwt="+sign(t, atAndBeneath("acme/room/42/host", token.ActionPublish)),
+		"/acme/room/42/host")
+	speak := token.Grant{Root: "/acme/room/42/", Publish: []string{"/7"}, Subscribe: []string{"/"}}
+	listen := token.Grant{Root: "/acme/room/42/", Subscribe: []string{"/"}}
+	// present presents tok on sess, withdrawing it when the test ends, and
+	// returns the relay's answer.
+	present := func(tb testing.TB, sess *moqt.Session, tok string) (*moqt.Credential, error) {
+		tb.Helper()
+		ctx, cancel := context.WithTimeout(tb.Context(), 5*time.Second)
+		defer cancel()
+		c, err := sess.Auth(ctx, []byte(tok))
+		if c != nil {
+			tb.Cleanup(func() { _ = c.Close() })
+		}
+		return c, err
+	}
+	// granted presents tok on sess and requires it granted.
+	granted := func(tb testing.TB, sess *moqt.Session, tok string) *moqt.Credential {
+		tb.Helper()
+		c, err := present(tb, sess, tok)
+		require.NoError(tb, err)
+		return c
+	}
+	// dial connects with credential and returns its session and mux.
+	dial := func(tb testing.TB, credential token.Grant) (*moqt.Session, *moqt.TrackMux) {
+		tb.Helper()
+		mux := moqt.NewTrackMux(0)
+		return dialOver(t, nativeURL(addr)+"/?jwt="+sign(tb, credential), nil, mux), mux
+	}
+	// superseded reports whether c was withdrawn because a later ticket for
+	// its root replaced it.
+	superseded := func(c *moqt.Credential) func() bool {
+		return func() bool {
+			authErr, ok := errors.AsType[*moqt.AuthError](context.Cause(c.Context()))
+			return ok && authErr.Code == moqt.NoError
+		}
+	}
+	assertStaysUp := func(tb testing.TB, sess *moqt.Session) {
+		tb.Helper()
+		select {
+		case <-sess.Context().Done():
+			tb.Fatalf("the session ended: %v", context.Cause(sess.Context()))
+		default:
+		}
+	}
+
+	t.Run("a narrowing ticket ends the publication", func(t *testing.T) {
+		sess, mux := dial(t, token.Grant{})
+		old := granted(t, sess, sign(t, speak))
+		end := announceOn(mux, "/acme/room/42/7")
+		t.Cleanup(end)
+		require.Eventually(t, routed(srv, "/acme/room/42/7"), settle, 25*time.Millisecond)
+
+		granted(t, sess, sign(t, listen))
+
+		assert.Eventually(t, func() bool { return !routed(srv, "/acme/room/42/7")() }, settle, 25*time.Millisecond,
+			"the announcement ends once the renewal no longer lets it publish")
+		assert.Eventually(t, superseded(old), settle, 25*time.Millisecond, "the earlier ticket is withdrawn")
+		assert.NoError(t, subscribeOn(t, sess, "/acme/room/42/host"), "what the renewal grants holds")
+		assertStaysUp(t, sess)
+	})
+	t.Run("a narrowing ticket supersedes the connection's credential", func(t *testing.T) {
+		sess, mux := dial(t, speak)
+		end := announceOn(mux, "/acme/room/42/7")
+		t.Cleanup(end)
+		require.Eventually(t, routed(srv, "/acme/room/42/7"), settle, 25*time.Millisecond)
+
+		granted(t, sess, sign(t, listen))
+
+		assert.Eventually(t, func() bool { return !routed(srv, "/acme/room/42/7")() }, settle, 25*time.Millisecond,
+			"the announcement ends once the ticket replaced the credential that let it publish")
+		_, err := present(t, sess, "")
+		authErr, ok := errors.AsType[*moqt.AuthError](err)
+		require.True(t, ok, "the replaced credential is refused, not %v", err)
+		assert.Equal(t, moqt.UnauthorizedSessionErrorCode, authErr.Code)
+		assert.NoError(t, subscribeOn(t, sess, "/acme/room/42/host"))
+		assertStaysUp(t, sess)
+	})
+	t.Run("a renewal granting the same keeps the publication", func(t *testing.T) {
+		sess, mux := dial(t, token.Grant{})
+		old := granted(t, sess, sign(t, speak))
+		end := announceOn(mux, "/acme/room/42/7")
+		t.Cleanup(end)
+		require.Eventually(t, routed(srv, "/acme/room/42/7"), settle, 25*time.Millisecond)
+		before, _ := srv.TrackMux.TrackHandler("/acme/room/42/7")
+		require.NotNil(t, before)
+
+		granted(t, sess, sign(t, speak))
+
+		require.Eventually(t, superseded(old), settle, 25*time.Millisecond, "the earlier ticket is withdrawn")
+		assert.Never(t, func() bool {
+			now, _ := srv.TrackMux.TrackHandler("/acme/room/42/7")
+			return !before.IsActive() || now != before
+		}, time.Second, 10*time.Millisecond, "the announcement is never ended or replaced")
+	})
+	t.Run("tickets for different roots add up", func(t *testing.T) {
+		sess, mux := dial(t, token.Grant{})
+		room := granted(t, sess, sign(t, speak))
+		lobby := granted(t, sess, sign(t, token.Grant{Root: "/acme/lobby/", Publish: []string{"/7"}}))
+		end := announceOn(mux, "/acme/room/42/7")
+		t.Cleanup(end)
+		endLobby := announceOn(mux, "/acme/lobby/7")
+		t.Cleanup(endLobby)
+
+		require.Eventually(t, routed(srv, "/acme/room/42/7"), settle, 25*time.Millisecond)
+		require.Eventually(t, routed(srv, "/acme/lobby/7"), settle, 25*time.Millisecond)
+		assert.NoError(t, room.Context().Err(), "the room's ticket stays in force")
+		assert.NoError(t, lobby.Context().Err(), "the lobby's ticket stays in force")
+		assert.NoError(t, subscribeOn(t, sess, "/acme/room/42/host"))
+	})
+}
