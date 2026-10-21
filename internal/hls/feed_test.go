@@ -48,7 +48,6 @@ func Test_groupInfo(t *testing.T) {
 	}
 }
 
-
 // packagerForTrack needs a picture size to describe the track; a catalog that
 // omits one is a publisher that is not ready.
 func Test_packagerForTrack(t *testing.T) {
