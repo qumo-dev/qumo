@@ -29,6 +29,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`qumo auth keygen` and `qumo auth token` confirm before they take effect (`internal/auth`).** Each shows what it will write or emit, and on a terminal asks before it does; a run with either end piped or redirected confirms without asking, as does `-yes`.
 - **Default rate limits and CORS header exposure for `qumo funnel` (`internal/funnel`).** `FUNNEL_SENDER_LIMIT` defaults to `1,5` (1 record/s, burst 5 per credential `sub` per track) and `FUNNEL_TRACK_LIMIT` to `20,40` (20 records/s, burst 40 per track; set `0` or `off` to disable either), and `withCORS` exposes `Retry-After, Date` in `Access-Control-Expose-Headers` so cross-origin browsers can read the 429 cooldown headers.
 - **Viewer auth for the HLS egress (`internal/hls`).** With `QUMO_AUTH_KEYS`, `qumo hls` answers only requests whose token (`?jwt=`) may `subscribe` to the broadcast (else `401`/`403`, `503` before the key set loads; admitted responses `Cache-Control: private`); playlists carry the token onto every URI with `EXT-X-DEFINE:QUERYPARAM` (`EXT-X-VERSION:11`), MPDs with `UrlQueryInfo`, and `HLS_TOKEN_PARAM` alone carries a CDN's token parameter unchecked.
 - **A key signs its broadcasts' HLS opt-ins (`token`).** A key confined to `/acme/` also signs roots beneath `/.hls/acme/` (`token.HLSDirectory`), so an app grants an opt-in with the key that grants the broadcast.

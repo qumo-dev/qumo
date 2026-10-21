@@ -2,6 +2,7 @@ package auth
 
 import (
 	"bytes"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -21,12 +22,12 @@ func TestRunKeygen_TokenAndVerifierAgree(t *testing.T) {
 	priv, pub := filepath.Join(dir, "signing-key.jwk"), filepath.Join(dir, "keys.json")
 	var out bytes.Buffer
 
-	require.NoError(t, runKeygen([]string{"-prefix", "acme/app", "-out", priv, "-keys", pub}, &out))
+	require.NoError(t, runKeygen([]string{"-prefix", "acme/app", "-out", priv, "-keys", pub}, &out, io.Discard, nil))
 	assert.Contains(t, out.String(), "Key ID:")
 	out.Reset()
 	var info bytes.Buffer
 	require.NoError(t, runToken([]string{"-key", priv, "-root", "/acme/app/",
-		"-publish", "/alice", "-publish", "/alice/", "-subscribe", "/", "-ttl", "5m"}, &out, &info))
+		"-publish", "/alice", "-publish", "/alice/", "-subscribe", "/", "-ttl", "5m"}, &out, &info, nil))
 	tok := strings.TrimSpace(out.String())
 	assert.Equal(t, 2, strings.Count(tok, "."), "stdout carries the token alone, so it can be captured")
 	assert.Contains(t, info.String(), "Root:       /acme/app/\n", "the summary shows the grant as the relay will")
@@ -53,9 +54,9 @@ func TestRun_NoCommand(t *testing.T) {
 func TestRunKeygen_RefusesToOverwrite(t *testing.T) {
 	dir := t.TempDir()
 	args := []string{"-out", filepath.Join(dir, "signing-key.jwk"), "-keys", filepath.Join(dir, "keys.json")}
-	require.NoError(t, runKeygen(args, &bytes.Buffer{}))
+	require.NoError(t, runKeygen(args, &bytes.Buffer{}, io.Discard, nil))
 
-	err := runKeygen(args, &bytes.Buffer{})
+	err := runKeygen(args, &bytes.Buffer{}, io.Discard, nil)
 
 	assert.Error(t, err, "a second keygen must not replace the key every token was signed with")
 }
@@ -67,7 +68,7 @@ func TestRunKeygen_KeySetFailureRemovesThePrivateKey(t *testing.T) {
 	priv, pub := filepath.Join(dir, "signing-key.jwk"), filepath.Join(dir, "keys.json")
 	require.NoError(t, os.WriteFile(pub, []byte("{}"), 0o600))
 
-	err := runKeygen([]string{"-out", priv, "-keys", pub}, &bytes.Buffer{})
+	err := runKeygen([]string{"-out", priv, "-keys", pub}, &bytes.Buffer{}, io.Discard, nil)
 
 	require.Error(t, err)
 	assert.NoFileExists(t, priv)
@@ -83,12 +84,12 @@ func TestRun_UnknownCommand(t *testing.T) {
 func TestRunToken_Patterns(t *testing.T) {
 	dir := t.TempDir()
 	priv, pub := filepath.Join(dir, "signing-key.jwk"), filepath.Join(dir, "keys.json")
-	require.NoError(t, runKeygen([]string{"-prefix", "acme/app", "-out", priv, "-keys", pub}, &bytes.Buffer{}))
+	require.NoError(t, runKeygen([]string{"-prefix", "acme/app", "-out", priv, "-keys", pub}, &bytes.Buffer{}, io.Discard, nil))
 	var out, info bytes.Buffer
 
 	require.NoError(t, runToken([]string{"-key", priv, "-sub", "42", "-root", "acme/app/room/1",
 		"-publish", "/7", "-subscribe", "/", "-create", "/comments",
-		"-post", "/comments", "-post", "/7/", "-post", "/8", "-redact", "/{user}/comments"}, &out, &info))
+		"-post", "/comments", "-post", "/7/", "-post", "/8", "-redact", "/{user}/comments"}, &out, &info, nil))
 
 	assert.Contains(t, info.String(), "Root:       /acme/app/room/1/\n", "a bare -root reads as the directory it names")
 	assert.Contains(t, info.String(), "Publish:    /7\n")
@@ -139,10 +140,10 @@ func TestRunToken_Refusals(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			dir := t.TempDir()
 			priv := filepath.Join(dir, "signing-key.jwk")
-			require.NoError(t, runKeygen([]string{"-prefix", "acme/app", "-out", priv, "-keys", filepath.Join(dir, "keys.json")}, &bytes.Buffer{}))
+			require.NoError(t, runKeygen([]string{"-prefix", "acme/app", "-out", priv, "-keys", filepath.Join(dir, "keys.json")}, &bytes.Buffer{}, io.Discard, nil))
 			var out bytes.Buffer
 
-			err := runToken(append([]string{"-key", priv}, tt.args...), &out, &bytes.Buffer{})
+			err := runToken(append([]string{"-key", priv}, tt.args...), &out, &bytes.Buffer{}, nil)
 
 			assert.ErrorContains(t, err, tt.wantErr)
 			assert.Empty(t, out.String(), "no token is printed")
@@ -154,10 +155,10 @@ func TestRunToken_Refusals(t *testing.T) {
 func TestRunToken_NoPatterns(t *testing.T) {
 	dir := t.TempDir()
 	priv := filepath.Join(dir, "signing-key.jwk")
-	require.NoError(t, runKeygen([]string{"-prefix", "acme", "-out", priv, "-keys", filepath.Join(dir, "keys.json")}, &bytes.Buffer{}))
+	require.NoError(t, runKeygen([]string{"-prefix", "acme", "-out", priv, "-keys", filepath.Join(dir, "keys.json")}, &bytes.Buffer{}, io.Discard, nil))
 	var out, info bytes.Buffer
 
-	require.NoError(t, runToken([]string{"-key", priv}, &out, &info))
+	require.NoError(t, runToken([]string{"-key", priv}, &out, &info, nil))
 
 	assert.Equal(t, 2, strings.Count(strings.TrimSpace(out.String()), "."))
 	assert.Contains(t, info.String(), "nothing: the token names its key's tenant alone")
@@ -168,12 +169,12 @@ func TestRunToken_NoPatterns(t *testing.T) {
 func TestRunToken_NoTicketFlag(t *testing.T) {
 	dir := t.TempDir()
 	priv := filepath.Join(dir, "signing-key.jwk")
-	require.NoError(t, runKeygen([]string{"-prefix", "acme", "-out", priv, "-keys", filepath.Join(dir, "keys.json")}, &bytes.Buffer{}))
+	require.NoError(t, runKeygen([]string{"-prefix", "acme", "-out", priv, "-keys", filepath.Join(dir, "keys.json")}, &bytes.Buffer{}, io.Discard, nil))
 	var out, info bytes.Buffer
 
-	assert.ErrorContains(t, runToken([]string{"-key", priv, "-ticket"}, &out, &info), "-ticket")
-	require.NoError(t, runToken([]string{"-key", priv, "-root", "/acme/room/1/", "-subscribe", "/"}, &out, &info))
-	assert.Contains(t, info.String(), "?jwt=<token>, or on a session's Auth Stream")
+	assert.ErrorContains(t, runToken([]string{"-key", priv, "-ticket"}, &out, &info, nil), "-ticket")
+	require.NoError(t, runToken([]string{"-key", priv, "-root", "/acme/room/1/", "-subscribe", "/"}, &out, &info, nil))
+	assert.Contains(t, info.String(), "https://<relay>/?jwt="+strings.TrimSpace(out.String())+", or on a session's Auth Stream")
 }
 
 func TestRunKeygen_SaysWhatTheKeyGrants(t *testing.T) {
@@ -190,11 +191,188 @@ func TestRunKeygen_SaysWhatTheKeyGrants(t *testing.T) {
 			var out bytes.Buffer
 
 			require.NoError(t, runKeygen([]string{"-prefix", tt.prefix,
-				"-out", filepath.Join(dir, "signing-key.jwk"), "-keys", filepath.Join(dir, "keys.json")}, &out))
+				"-out", filepath.Join(dir, "signing-key.jwk"), "-keys", filepath.Join(dir, "keys.json")}, &out, io.Discard, nil))
 
 			for _, w := range tt.want {
 				assert.Contains(t, out.String(), w)
 			}
 		})
 	}
+}
+
+// The summary names the two paths and what the key grants, and stops
+// there: every value a run will use is in it already, so it adds no
+// args line of its own.
+func TestRunKeygen_NoArgsEcho(t *testing.T) {
+	dir := t.TempDir()
+	priv, pub := filepath.Join(dir, "signing-key.jwk"), filepath.Join(dir, "keys.json")
+	var out bytes.Buffer
+
+	require.NoError(t, runKeygen([]string{"-out", priv, "-keys", pub}, &out, io.Discard, nil))
+
+	assert.Contains(t, out.String(), "Signing key:  "+priv+"  (private:")
+	assert.Contains(t, out.String(), "Key set:      "+pub+"  (public:")
+	assert.NotContains(t, out.String(), "https://<relay>", "the key's no token to use")
+}
+
+// confirmCases are the answers a confirmation takes, and whether each
+// confirms: y and its spellings do; a bare Enter, a no, and an answer
+// that cannot be read (an EOF among them) decline.
+type confirmCase struct {
+	name    string
+	answer  string
+	wantErr bool
+}
+
+func confirmCases() []confirmCase {
+	return []confirmCase{
+		{name: "y", answer: "y\n"},
+		{name: "yes", answer: "Yes\n"},
+		{name: "n", answer: "n\n", wantErr: true},
+		{name: "a bare Enter", answer: "\n", wantErr: true},
+		{name: "an EOF", answer: "", wantErr: true},
+	}
+}
+
+// On a terminal, keygen asks before it writes: y and yes write both
+// files, any other answer — an interrupted prompt among them — writes
+// none.
+func TestRunKeygen_Confirm(t *testing.T) {
+	for _, tt := range confirmCases() {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			priv, pub := filepath.Join(dir, "signing-key.jwk"), filepath.Join(dir, "keys.json")
+			var out, info bytes.Buffer
+
+			err := runKeygen([]string{"-out", priv, "-keys", pub}, &out, &info, strings.NewReader(tt.answer))
+
+			assert.Contains(t, out.String(), "Signing key:  "+priv, "the key and its paths are shown before the answer is read")
+			if tt.wantErr {
+				assert.ErrorIs(t, err, errDeclined)
+				assert.Contains(t, err.Error(), "nothing was written")
+				assert.NoFileExists(t, priv)
+				assert.NoFileExists(t, pub)
+				assert.Contains(t, info.String(), "Write these two files?")
+				return
+			}
+			require.NoError(t, err)
+			assert.FileExists(t, priv)
+			assert.FileExists(t, pub)
+			assert.Contains(t, out.String(), "Next:")
+		})
+	}
+}
+
+// -yes answers the prompt up front, wherever it is directed at.
+func TestRunKeygen_YesSkipsThePrompt(t *testing.T) {
+	dir := t.TempDir()
+	priv, pub := filepath.Join(dir, "signing-key.jwk"), filepath.Join(dir, "keys.json")
+	var out, info bytes.Buffer
+
+	require.NoError(t, runKeygen([]string{"-out", priv, "-keys", pub, "-yes"}, &out, &info, strings.NewReader("n\n")))
+
+	assert.FileExists(t, priv)
+	assert.Empty(t, info.String(), "a confirmed run asks nothing")
+}
+
+// Once a token exists, the run prints it where the relay reads it from:
+// at the relay URL with the token itself spelled in, a copy-paste usage.
+func TestRunToken_Usage(t *testing.T) {
+	dir := t.TempDir()
+	priv := filepath.Join(dir, "signing-key.jwk")
+	require.NoError(t, runKeygen([]string{"-prefix", "acme/app", "-out", priv, "-keys", filepath.Join(dir, "keys.json")}, &bytes.Buffer{}, io.Discard, nil))
+	var out, info bytes.Buffer
+
+	require.NoError(t, runToken([]string{"-key", priv, "-root", "/acme/app/"}, &out, &info, nil))
+
+	tok := strings.TrimSpace(out.String())
+	assert.Contains(t, info.String(), "Present:  https://<relay>/?jwt="+tok+", or on a session's Auth Stream\n")
+}
+
+// On a terminal, token asks before it emits: y and yes emit the token
+// alone on stdout, any other answer — an interrupted prompt among them —
+// emits nothing.
+func TestRunToken_Confirm(t *testing.T) {
+	for _, tt := range confirmCases() {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			priv := filepath.Join(dir, "signing-key.jwk")
+			require.NoError(t, runKeygen([]string{"-prefix", "acme/app", "-out", priv, "-keys", filepath.Join(dir, "keys.json")}, &bytes.Buffer{}, io.Discard, nil))
+			var out, info bytes.Buffer
+
+			err := runToken([]string{"-key", priv, "-root", "/acme/app/", "-subscribe", "/"}, &out, &info, strings.NewReader(tt.answer))
+
+			assert.Contains(t, info.String(), "Sign and emit this token?")
+			if tt.wantErr {
+				assert.ErrorIs(t, err, errDeclined)
+				assert.Contains(t, err.Error(), "no token was emitted")
+				assert.Empty(t, out.String(), "no token is emitted")
+				assert.NotContains(t, info.String(), "Present:", "there was no token to use")
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, 2, strings.Count(strings.TrimSpace(out.String()), "."))
+			assert.Contains(t, info.String(), "https://<relay>/?jwt=", "the usage follows the token it spells")
+		})
+	}
+}
+
+// -yes answers the prompt up front, so a run a person copied from a
+// script never waits on one.
+func TestRunToken_YesSkipsThePrompt(t *testing.T) {
+	dir := t.TempDir()
+	priv := filepath.Join(dir, "signing-key.jwk")
+	require.NoError(t, runKeygen([]string{"-prefix", "acme/app", "-out", priv, "-keys", filepath.Join(dir, "keys.json")}, &bytes.Buffer{}, io.Discard, nil))
+	var out, info bytes.Buffer
+
+	require.NoError(t, runToken([]string{"-key", priv, "-root", "/acme/app/", "-subscribe", "/", "-yes"},
+		&out, &info, strings.NewReader("n\n")))
+
+	assert.Equal(t, 2, strings.Count(strings.TrimSpace(out.String()), "."))
+	assert.NotContains(t, info.String(), "Sign and emit this token?", "a confirmed run asks nothing")
+	assert.Contains(t, info.String(), "https://<relay>/?jwt="+strings.TrimSpace(out.String()), "the usage spells the token it follows")
+}
+
+// ask's answers: y and yes confirm in their case, while a bare Enter, a
+// no and an unread answer decline.
+func TestAsk(t *testing.T) {
+	tests := map[string]struct {
+		in   interface{ Read([]byte) (int, error) }
+		want bool
+	}{
+		"y":             {in: strings.NewReader("y\n"), want: true},
+		"yes":           {in: strings.NewReader("Yes\n"), want: true},
+		"n":             {in: strings.NewReader("n\n"), want: false},
+		"a bare Enter":  {in: strings.NewReader("\n"), want: false},
+		"an EOF":        {in: strings.NewReader(""), want: false},
+		"an unread one": {in: fakeErrReader{err: io.ErrClosedPipe}, want: false},
+	}
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			var asked bytes.Buffer
+
+			ok, err := ask(&asked, "Anything?", tt.in)
+
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, ok)
+			assert.Contains(t, asked.String(), "Anything? [y/N]: ")
+		})
+	}
+}
+
+// A run with either end off a console — a capture's piped stdout, a
+// script's redirected input among them — confirms without asking.
+func TestPrompted(t *testing.T) {
+	dir := t.TempDir()
+	// Through os.Root, the way writeNew opens its files: a redirected
+	// *os.File to Stat, and no path but names inside the root.
+	root, err := os.OpenRoot(dir)
+	require.NoError(t, err)
+	defer func() { _ = root.Close() }() // not actionable: the file itself is closed below
+	redirected, err := root.OpenFile("redirected", os.O_RDWR|os.O_CREATE, 0o600)
+	require.NoError(t, err)
+	defer func() { _ = redirected.Close() }() // not actionable: a read-only handle for the Stat
+
+	assert.Nil(t, prompted(os.Stdin, redirected), "a captured stdout confirms without asking")
+	assert.Nil(t, prompted(redirected, os.Stdout), "a redirected stdin confirms without asking")
 }
