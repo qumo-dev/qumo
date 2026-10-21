@@ -247,7 +247,6 @@ func runToken(args []string, out, info io.Writer, in io.Reader) error {
 	fmt.Fprintf(&b, "  %-11s %s\n", "Subject:", cmp.Or(c.Subject, "-"))
 	fmt.Fprintf(&b, "  %-11s %s (in %s)\n", "Expires:", c.ExpiresAt.Format(time.DateTime), time.Until(c.ExpiresAt).Round(time.Second))
 	fmt.Fprintf(&b, "  %-11s %s\n", "Key:", key.ID)
-	fmt.Fprintf(&b, "  %-11s %s\n", "Present:", "https://<relay>/?jwt=<token>, or on a session's Auth Stream")
 	if _, err := io.WriteString(info, b.String()); err != nil {
 		return err
 	}
@@ -261,27 +260,11 @@ func runToken(args []string, out, info io.Writer, in io.Reader) error {
 	if _, err := fmt.Fprintln(out, tok); err != nil {
 		return err
 	}
-	// After the effect, the run's own example: the command that signs this
-	// same grant again, with every arg the run takes — the defaults it
-	// filled in, -key and -ttl, among them — spelled as a hand writes them.
-	// Not part of what the confirm asks on: the shape above is what a
-	// person answers with, and the example is a thing to copy once the
-	// token exists.
-	var eff []effArg
-	eff = append(eff, effArg{name: "key", val: *keyPath})
-	if c.Root != "" {
-		eff = append(eff, effArg{name: "root", val: c.Root})
-	}
-	for _, a := range token.Actions() {
-		if patterns := c.Patterns(a); len(patterns) > 0 {
-			eff = append(eff, effArg{name: string(a), val: strings.Join(patterns, " ")})
-		}
-	}
-	eff = append(eff,
-		effArg{name: "sub", val: c.Subject},
-		effArg{name: "ttl", val: spellDur(*ttl)},
-	)
-	_, err = fmt.Fprintf(info, "\n  Example:  qumo auth token %s\n", effArgs(eff))
+	// After the effect, its own usage: the token at the URL the relay reads
+	// it from, spelled with the token itself — a session's Auth Stream is
+	// the other way, and needs no spelling. Not part of what the confirm
+	// asks on: there was no token yet to be used.
+	_, err = fmt.Fprintf(info, "\n  Present:  https://<relay>/?jwt=%s, or on a session's Auth Stream\n", tok)
 	return err
 }
 
@@ -302,45 +285,6 @@ func prompted(in, out *os.File) io.Reader {
 func tty(f *os.File) bool {
 	st, err := f.Stat()
 	return err == nil && st.Mode()&os.ModeCharDevice != 0
-}
-
-// effArg is one flag of the args a run will use: the flag, and the value
-// the run takes it as.
-type effArg struct {
-	name, val string
-}
-
-// effArgs renders the args a run will use, on one line to check against
-// what was expected: the flags a run takes, with the values it takes them
-// as, whatever named them. An entry of an empty value names a flag the
-// args left unset, and is left out — nothing of it to check.
-func effArgs(args []effArg) string {
-	var b strings.Builder
-	for _, a := range args {
-		if a.val == "" {
-			continue
-		}
-		if b.Len() > 0 {
-			b.WriteString("  ")
-		}
-		fmt.Fprintf(&b, "-%s %s", a.name, a.val)
-	}
-	return b.String()
-}
-
-// spellDur spells a duration as it is written by hand, "1h" and "5m",
-// where Duration spells them "1h0m0s" and "5m0s"; one no hand writes so
-// short a form of spells itself whole.
-func spellDur(d time.Duration) string {
-	s := d.String()
-	switch {
-	case strings.HasSuffix(s, "h0m0s"):
-		return strings.TrimSuffix(s, "0m0s")
-	case strings.HasSuffix(s, "m0s"):
-		return strings.TrimSuffix(s, "0s")
-	default:
-		return s
-	}
 }
 
 // confirm reads the answer to a y/N question from in: y or yes confirms,

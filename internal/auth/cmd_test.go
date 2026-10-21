@@ -174,7 +174,7 @@ func TestRunToken_NoTicketFlag(t *testing.T) {
 
 	assert.ErrorContains(t, runToken([]string{"-key", priv, "-ticket"}, &out, &info, nil), "-ticket")
 	require.NoError(t, runToken([]string{"-key", priv, "-root", "/acme/room/1/", "-subscribe", "/"}, &out, &info, nil))
-	assert.Contains(t, info.String(), "?jwt=<token>, or on a session's Auth Stream")
+	assert.Contains(t, info.String(), "https://<relay>/?jwt="+strings.TrimSpace(out.String())+", or on a session's Auth Stream")
 }
 
 func TestRunKeygen_SaysWhatTheKeyGrants(t *testing.T) {
@@ -212,7 +212,7 @@ func TestRunKeygen_NoArgsEcho(t *testing.T) {
 
 	assert.Contains(t, out.String(), "Signing key:  "+priv+"  (private:")
 	assert.Contains(t, out.String(), "Key set:      "+pub+"  (public:")
-	assert.NotContains(t, out.String(), "Example:")
+	assert.NotContains(t, out.String(), "https://<relay>", "the key's no token to use")
 }
 
 // confirmCases are the answers a confirmation takes, and whether each
@@ -275,39 +275,18 @@ func TestRunKeygen_YesSkipsThePrompt(t *testing.T) {
 	assert.Empty(t, info.String(), "a confirmed run asks nothing")
 }
 
-// Once a token exists, the run prints the command that signs this same
-// grant again: the args it took, the defaults it filled in among them,
-// on one line to copy.
-func TestRunToken_Example(t *testing.T) {
+// Once a token exists, the run prints it where the relay reads it from:
+// at the relay URL with the token itself spelled in, a copy-paste usage.
+func TestRunToken_Usage(t *testing.T) {
 	dir := t.TempDir()
 	priv := filepath.Join(dir, "signing-key.jwk")
 	require.NoError(t, runKeygen([]string{"-prefix", "acme/app", "-out", priv, "-keys", filepath.Join(dir, "keys.json")}, &bytes.Buffer{}, io.Discard, nil))
-	tests := map[string]struct {
-		args []string
-		want string
-	}{
-		"what the args named and the defaults it filled in": {
-			args: []string{"-root", "acme/app/room/1", "-sub", "alice", "-post", "/comments"},
-			want: "-key " + priv + "  -root /acme/app/room/1/  -post /comments  -sub alice  -ttl 1h",
-		},
-		"a repeated pattern flag lists its patterns": {
-			args: []string{"-root", "/acme/app/", "-publish", "/alice", "-publish", "/alice/"},
-			want: "-key " + priv + "  -root /acme/app/  -publish /alice /alice/  -ttl 1h",
-		},
-		"no patterns at all: what it grants and what it defaults alone": {
-			args: nil,
-			want: "-key " + priv + "  -ttl 1h",
-		},
-	}
-	for name, tt := range tests {
-		t.Run(name, func(t *testing.T) {
-			var out, info bytes.Buffer
+	var out, info bytes.Buffer
 
-			require.NoError(t, runToken(append([]string{"-key", priv}, tt.args...), &out, &info, nil))
+	require.NoError(t, runToken([]string{"-key", priv, "-root", "/acme/app/"}, &out, &info, nil))
 
-			assert.Contains(t, info.String(), "Example:  qumo auth token "+tt.want+"\n")
-		})
-	}
+	tok := strings.TrimSpace(out.String())
+	assert.Contains(t, info.String(), "Present:  https://<relay>/?jwt="+tok+", or on a session's Auth Stream\n")
 }
 
 // On a terminal, token asks before it emits: y and yes emit the token
@@ -328,12 +307,12 @@ func TestRunToken_Confirm(t *testing.T) {
 				assert.ErrorIs(t, err, ErrDeclined)
 				assert.Contains(t, err.Error(), "no token was emitted")
 				assert.Empty(t, out.String(), "no token is emitted")
-				assert.NotContains(t, info.String(), "Example:", "an example comes only once a token exists")
+				assert.NotContains(t, info.String(), "Present:", "there was no token to use")
 				return
 			}
 			require.NoError(t, err)
 			assert.Equal(t, 2, strings.Count(strings.TrimSpace(out.String()), "."))
-			assert.Contains(t, info.String(), "Example:  qumo auth token -key "+priv)
+			assert.Contains(t, info.String(), "https://<relay>/?jwt=", "the usage follows the token it spells")
 		})
 	}
 }
@@ -351,7 +330,7 @@ func TestRunToken_YesSkipsThePrompt(t *testing.T) {
 
 	assert.Equal(t, 2, strings.Count(strings.TrimSpace(out.String()), "."))
 	assert.NotContains(t, info.String(), "Sign and emit this token?", "a confirmed run asks nothing")
-	assert.Contains(t, info.String(), "Example:  qumo auth token -key "+priv, "the example follows the token it describes")
+	assert.Contains(t, info.String(), "https://<relay>/?jwt="+strings.TrimSpace(out.String()), "the usage spells the token it follows")
 }
 
 // ask's answers: y and yes confirm in their case, while a bare Enter, a
