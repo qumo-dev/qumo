@@ -14,7 +14,9 @@
 - 🚀 **High-Performance Relay**: a MoQT relay built on QUIC
 - 📡 **MoQT Protocol**: Media over QUIC Transport (moq-lite draft-04) via [gomoqt](https://github.com/qumo-dev/gomoqt)
 - 🔗 **Peer-Based Topology**: relays connect to each other via `ANNOUNCE_PLEASE` for decentralized content discovery
+- 📊 **Observability**: Prometheus metrics, health probes, and status APIs
 - 🔒 **TLS Security**: TLS 1.3 by default; **clients verify the relay's certificate by default**
+- 🐳 **Docker**: env-var zero-config; prebuilt multi-arch images on GHCR (`ghcr.io/qumo-dev/qumo`)
 
 ## Installation
 
@@ -38,7 +40,7 @@ go install github.com/qumo-dev/qumo@latest
 
 #### Option 3: Download a Binary Release
 
-Download an archive from [GitHub Releases](https://github.com/qumo-dev/qumo/releases) and extract it. Binary releases are produced for Linux (amd64/arm64), macOS (amd64/arm64), and Windows (amd64).
+Download an archive from [GitHub Releases](https://github.com/qumo-dev/qumo/releases) and extract it. Binary releases are produced for Linux (amd64/arm64), macOS (amd64/arm64), and Windows (amd64/arm64).
 
 ```bash
 # Linux/macOS example
@@ -51,6 +53,8 @@ tar xzf qumo_<version>_linux_amd64.tar.gz
 See [docker/README.md](docker/README.md) for compose examples, GHCR usage, and deployment options.
 
 #### Option 5: Build from Source
+
+Requires **Go 1.27+**, **[Deno](https://deno.land/)** (`mage build` embeds the web UI built with Deno + Vite) and **Mage** (`go install github.com/magefile/mage@latest`; `mage help` lists the targets).
 
 ```bash
 git clone https://github.com/qumo-dev/qumo.git
@@ -69,7 +73,7 @@ qumo rtsp-push     # Start the RTSP push ingest server (TCP :8554; bridges RTSP 
 qumo hls           # Start the HLS/DASH egress server (subscribes to a relay, serves HLS/DASH)
 qumo funnel        # Funnel many HTTP senders into one MoQT track (announce + POST records)
 qumo playground    # One-command local demo: in-process relay + embedded web UI on http://127.0.0.1:8080
-qumo loadgen       # Out-of-process capacity load generator (publish|subscribe) — see Benchmarking
+qumo loadgen       # Out-of-process capacity load generator (publish|subscribe) — see [docs/perf](docs/perf/README.md#benchmarking--capacity)
 qumo auth          # Set up the credentials a relay verifies (keygen / token)
 qumo doctor        # Explain effective runtime config (GC target) — read-only
 qumo update        # Update qumo to the latest release (--check to verify without applying)
@@ -86,7 +90,7 @@ Configuration is via environment variables; see `relay-config.example.env`.
 - **Relay implementation** — [internal/relay/README.md](internal/relay/README.md).
 - **Build system (Mage)** — [magefiles/README.md](magefiles/README.md).
 - **Demo server & embedded web UI** — [playground/README.md](playground/README.md).
-- **Performance docs** — [docs/perf/README.md](docs/perf/README.md).
+- **Performance docs, benchmarking & capacity** — [docs/perf/README.md](docs/perf/README.md).
 - **CHANGELOG** — [CHANGELOG.md](CHANGELOG.md).
 
 ## License

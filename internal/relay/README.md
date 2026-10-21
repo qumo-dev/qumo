@@ -5,9 +5,9 @@ server wrapper, the track-wide broadcast distributor, the group cache, and the
 frame pool.
 
 This file covers the package internals. For production configuration (env vars,
-TLS, peer/mTLS), see [`relay-config.example.env`](../relay-config.example.env)
-and [docs/site/content/en/docs/deployment/tls.md](../docs/site/content/en/docs/deployment/tls.md).
-For the top-level feature list, see [`README.md`](../README.md).
+TLS, peer/mTLS), see [`relay-config.example.env`](../../relay-config.example.env)
+and [docs/site/content/en/docs/deployment/tls.md](../../docs/site/content/en/docs/deployment/tls.md).
+For the top-level feature list, see [`README.md`](../../README.md).
 
 ## Core Components
 
@@ -19,14 +19,17 @@ For the top-level feature list, see [`README.md`](../README.md).
 
 ## Design Patterns
 
-### Broadcast Channel Pattern
+### Broadcast Notification
 
-Efficient fan-out to many subscribers:
+Constant-time fan-out to many subscribers (`broadcast_notify.go`):
 
-- Each subscriber gets its own buffered notification channel.
-- A small notification timeout balances CPU and latency.
-- Zero allocations during steady-state operation.
-- Thread-safe subscribe/unsubscribe via `RWMutex`.
+- One shared notifier per track: an atomic sequence number and a channel that
+  is closed and swapped for a fresh one on every notification, waking every
+  waiting subscriber at once.
+- A subscriber reads the sequence and the channel together, so it never misses
+  a notification between checking and waiting.
+- No per-subscriber channel, no subscriber list lock, and no poll timer: each
+  frame's notification is the only wakeup.
 
 ### Frame Pooling
 
@@ -58,20 +61,19 @@ go test ./... -cover
 go test ./... -race
 ```
 
-Benchmarks are in `*_bench_test.go` files; run them with `go test -bench=. -benchmem`.
+Benchmarks are in `benchmarks_test.go` and the `*_bench_test.go` files; run them with `go test -bench=. -benchmem`.
 
 ## Integration Notes
 
 - Configuration is driven by environment variables; see
-  [`relay-config.example.env`](../relay-config.example.env).
+  [`relay-config.example.env`](../../relay-config.example.env).
 - TLS is mandatory for the relay. Generate a dev cert with `mage cert`
   (repo root); see the deployment TLS doc linked above for production peer/mTLS.
 - Production runtime tuning (e.g. GC target for high-fan-out) is documented in
-  [docs/perf/README.md](../docs/perf/README.md) and surfaced by `qumo doctor`.
+  [docs/perf/README.md](../../docs/perf/README.md) and surfaced by `qumo doctor`.
 
 ## Future Improvements
 
 - Integration tests with real `moqt.TrackReader`/`moqt.TrackWriter`.
 - Metrics/observability hooks.
-- Configurable broadcast channel buffer size.
 - Dead subscriber detection and cleanup.
