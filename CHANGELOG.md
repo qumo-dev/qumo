@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [v0.16.261021] - 2026-10-21
+## [v0.16.261022] - 2026-10-22
 
 > **Breaking for apps that grant one root in several tickets.** A ticket now replaces the session's earlier credential for its root instead of adding to it; put everything a session may do beneath a root in one ticket.
 
