@@ -37,7 +37,7 @@ qumo auth keygen [-prefix /acme/app/] [-out signing-key.jwk] [-keys keys.json]
 
 It prints the key's `kid` (its RFC 7638 thumbprint), the roots it may sign ("a root at or beneath `/acme/app/`"), and the next steps. It refuses to overwrite an existing file, since replacing a key would invalidate every token signed with it; if it can't write the key set, it removes the private key it just wrote.
 
-The key and the two paths it will be written to are shown before any file is, and a run whose input and output both sit on the terminal it is launched from asks before writing them: any answer but `y` aborts it having written none. A run with either end piped or redirected — a capture's `T=$(...)`, a script's `-yes` — confirms without asking.
+The key and the two paths it will be written to are shown before any file is, and a run whose input and output both sit on the terminal it is launched from asks before writing them: any answer but `y` aborts it having written none. A run with either end piped or redirected confirms without asking; so does `-yes`.
 
 ### token
 

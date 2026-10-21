@@ -200,16 +200,19 @@ func TestRunKeygen_SaysWhatTheKeyGrants(t *testing.T) {
 	}
 }
 
-// The effective args a run will use are shown beside the key they
-// produce.
-func TestRunKeygen_EffectiveArgs(t *testing.T) {
+// The summary names the two paths and what the key grants, and stops
+// there: every value a run will use is in it already, so it adds no
+// args line of its own.
+func TestRunKeygen_NoEffectiveArgs(t *testing.T) {
 	dir := t.TempDir()
 	priv, pub := filepath.Join(dir, "signing-key.jwk"), filepath.Join(dir, "keys.json")
 	var out bytes.Buffer
 
 	require.NoError(t, runKeygen([]string{"-out", priv, "-keys", pub}, &out, io.Discard, nil))
 
-	assert.Contains(t, out.String(), "Effective:    -prefix /  -out "+priv+"  -keys "+pub+"\n")
+	assert.Contains(t, out.String(), "Signing key:  "+priv+"  (private:")
+	assert.Contains(t, out.String(), "Key set:      "+pub+"  (public:")
+	assert.NotContains(t, out.String(), "Effective:")
 }
 
 // On a terminal, keygen asks before it writes: y and yes write both files,
@@ -233,10 +236,10 @@ func TestRunKeygen_Confirm(t *testing.T) {
 
 			err := runKeygen([]string{"-out", priv, "-keys", pub}, &out, &info, strings.NewReader(tt.answer))
 
-			assert.Contains(t, out.String(), "Effective:", "the key is shown before the answer is read")
+			assert.Contains(t, out.String(), "Signing key:  "+priv, "the key and its paths are shown before the answer is read")
 			if tt.wantErr != nil {
 				assert.ErrorIs(t, err, tt.wantErr)
-				assert.Contains(t, err.Error(), "no key was written")
+				assert.Contains(t, err.Error(), "nothing was written")
 				assert.NoFileExists(t, priv)
 				assert.NoFileExists(t, pub)
 				assert.Contains(t, info.String(), "Write these two files?")

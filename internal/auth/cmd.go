@@ -27,9 +27,8 @@ Commands:
            key set the relay trusts
   token    Sign a token by hand, for testing
 
-Each command names the flags it will use, and on a terminal asks before
-writing a file or emitting a token; a piped run confirms without asking,
-as does -yes.
+On a terminal, both ask before writing a file or emitting a token; a
+piped run confirms without asking, as does -yes.
 
 Run "qumo auth <command> -h" for a command's flags.
 `
@@ -101,11 +100,6 @@ func runKeygen(args []string, out, info io.Writer, in io.Reader) error {
 	fmt.Fprintf(&b, "  %-13s %s\n", "Grants:", prefixLabel(key.Prefix))
 	fmt.Fprintf(&b, "  %-13s %s  (private: keep it on your app's server)\n", "Signing key:", *privPath)
 	fmt.Fprintf(&b, "  %-13s %s  (public: for the relay)\n", "Key set:", *pubPath)
-	fmt.Fprintf(&b, "  %-13s %s\n", "Effective:", effArgs([]effArg{
-		{name: "prefix", val: *prefix},
-		{name: "out", val: *privPath},
-		{name: "keys", val: *pubPath},
-	}))
 	if _, err := io.WriteString(out, b.String()); err != nil {
 		return err
 	}
@@ -119,7 +113,7 @@ func runKeygen(args []string, out, info io.Writer, in io.Reader) error {
 			return err
 		}
 		if !ok {
-			return fmt.Errorf("%w: no key was written", ErrDeclined)
+			return fmt.Errorf("%w: nothing was written", ErrDeclined)
 		}
 	}
 	// O_EXCL: never overwrite an existing key, which would strand every token
