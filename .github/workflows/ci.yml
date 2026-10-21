@@ -36,7 +36,7 @@ jobs:
         with:
           version: v2.14.0
           # Built by the Go set up above. v2.14.0 is the first line that reads
-          # Go 1.27.2's export data (v2.13 fails at typecheck).
+          # Go 1.27's export data (v2.13 fails at typecheck).
           install-mode: goinstall
           args: --timeout=5m
 

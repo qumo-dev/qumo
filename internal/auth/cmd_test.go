@@ -382,7 +382,12 @@ func TestAsk(t *testing.T) {
 // script's redirected input among them — confirms without asking.
 func TestPrompted(t *testing.T) {
 	dir := t.TempDir()
-	redirected, err := os.Create(filepath.Join(dir, "redirected"))
+	// Through os.Root, the way writeNew opens its files: a redirected
+	// *os.File to Stat, and no path but names inside the root.
+	root, err := os.OpenRoot(dir)
+	require.NoError(t, err)
+	defer func() { _ = root.Close() }() // not actionable: the file itself is closed below
+	redirected, err := root.OpenFile("redirected", os.O_RDWR|os.O_CREATE, 0o600)
 	require.NoError(t, err)
 	defer func() { _ = redirected.Close() }() // not actionable: a read-only handle for the Stat
 
