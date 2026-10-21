@@ -248,7 +248,7 @@ func TestRunKeygen_Confirm(t *testing.T) {
 
 			assert.Contains(t, out.String(), "Signing key:  "+priv, "the key and its paths are shown before the answer is read")
 			if tt.wantErr {
-				assert.ErrorIs(t, err, ErrDeclined)
+				assert.ErrorIs(t, err, errDeclined)
 				assert.Contains(t, err.Error(), "nothing was written")
 				assert.NoFileExists(t, priv)
 				assert.NoFileExists(t, pub)
@@ -304,7 +304,7 @@ func TestRunToken_Confirm(t *testing.T) {
 
 			assert.Contains(t, info.String(), "Sign and emit this token?")
 			if tt.wantErr {
-				assert.ErrorIs(t, err, ErrDeclined)
+				assert.ErrorIs(t, err, errDeclined)
 				assert.Contains(t, err.Error(), "no token was emitted")
 				assert.Empty(t, out.String(), "no token is emitted")
 				assert.NotContains(t, info.String(), "Present:", "there was no token to use")

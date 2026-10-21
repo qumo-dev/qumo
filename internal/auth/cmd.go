@@ -33,9 +33,9 @@ piped run confirms without asking, as does -yes.
 Run "qumo auth <command> -h" for a command's flags.
 `
 
-// ErrDeclined says the user answered a confirmation prompt with no: the
+// errDeclined says the user answered a confirmation prompt with no: the
 // run took none of its effect.
-var ErrDeclined = errors.New("qumo auth: declined")
+var errDeclined = errors.New("qumo auth: declined")
 
 // Run executes "qumo auth" with args, the arguments after "auth".
 func Run(args []string) error {
@@ -301,7 +301,7 @@ func confirm(info io.Writer, question string, in io.Reader, yes bool, decline st
 		return err
 	}
 	if !ok {
-		return fmt.Errorf("%w: %s", ErrDeclined, decline)
+		return fmt.Errorf("%w: %s", errDeclined, decline)
 	}
 	return nil
 }
