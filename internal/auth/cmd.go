@@ -247,23 +247,6 @@ func runToken(args []string, out, info io.Writer, in io.Reader) error {
 	fmt.Fprintf(&b, "  %-11s %s\n", "Subject:", cmp.Or(c.Subject, "-"))
 	fmt.Fprintf(&b, "  %-11s %s (in %s)\n", "Expires:", c.ExpiresAt.Format(time.DateTime), time.Until(c.ExpiresAt).Round(time.Second))
 	fmt.Fprintf(&b, "  %-11s %s\n", "Key:", key.ID)
-	// The args the run will use, beside the shape they produce: a root the
-	// args left to none, a -key or -ttl filled in, says itself.
-	var eff []effArg
-	eff = append(eff, effArg{name: "key", val: *keyPath})
-	if c.Root != "" {
-		eff = append(eff, effArg{name: "root", val: c.Root})
-	}
-	for _, a := range token.Actions() {
-		if patterns := c.Patterns(a); len(patterns) > 0 {
-			eff = append(eff, effArg{name: string(a), val: strings.Join(patterns, " ")})
-		}
-	}
-	eff = append(eff,
-		effArg{name: "sub", val: c.Subject},
-		effArg{name: "ttl", val: spellDur(*ttl)},
-	)
-	fmt.Fprintf(&b, "  %-11s %s\n", "Effective:", effArgs(eff))
 	fmt.Fprintf(&b, "  %-11s %s\n", "Present:", "https://<relay>/?jwt=<token>, or on a session's Auth Stream")
 	if _, err := io.WriteString(info, b.String()); err != nil {
 		return err
@@ -278,7 +261,28 @@ func runToken(args []string, out, info io.Writer, in io.Reader) error {
 	if _, err := fmt.Fprintln(out, tok); err != nil {
 		return err
 	}
-	return nil
+	// After the effect, the run's own example: the command that signs this
+	// same grant again, with every arg the run takes — the defaults it
+	// filled in, -key and -ttl, among them — spelled as a hand writes them.
+	// Not part of what the confirm asks on: the shape above is what a
+	// person answers with, and the example is a thing to copy once the
+	// token exists.
+	var eff []effArg
+	eff = append(eff, effArg{name: "key", val: *keyPath})
+	if c.Root != "" {
+		eff = append(eff, effArg{name: "root", val: c.Root})
+	}
+	for _, a := range token.Actions() {
+		if patterns := c.Patterns(a); len(patterns) > 0 {
+			eff = append(eff, effArg{name: string(a), val: strings.Join(patterns, " ")})
+		}
+	}
+	eff = append(eff,
+		effArg{name: "sub", val: c.Subject},
+		effArg{name: "ttl", val: spellDur(*ttl)},
+	)
+	_, err = fmt.Fprintf(info, "\n  Example:  qumo auth token %s\n", effArgs(eff))
+	return err
 }
 
 // prompted returns in when both ends of the run sit on a console — stdin

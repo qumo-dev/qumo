@@ -203,7 +203,7 @@ func TestRunKeygen_SaysWhatTheKeyGrants(t *testing.T) {
 // The summary names the two paths and what the key grants, and stops
 // there: every value a run will use is in it already, so it adds no
 // args line of its own.
-func TestRunKeygen_NoEffectiveArgs(t *testing.T) {
+func TestRunKeygen_NoArgsEcho(t *testing.T) {
 	dir := t.TempDir()
 	priv, pub := filepath.Join(dir, "signing-key.jwk"), filepath.Join(dir, "keys.json")
 	var out bytes.Buffer
@@ -212,7 +212,7 @@ func TestRunKeygen_NoEffectiveArgs(t *testing.T) {
 
 	assert.Contains(t, out.String(), "Signing key:  "+priv+"  (private:")
 	assert.Contains(t, out.String(), "Key set:      "+pub+"  (public:")
-	assert.NotContains(t, out.String(), "Effective:")
+	assert.NotContains(t, out.String(), "Example:")
 }
 
 // confirmCases are the answers a confirmation takes, and whether each
@@ -275,9 +275,10 @@ func TestRunKeygen_YesSkipsThePrompt(t *testing.T) {
 	assert.Empty(t, info.String(), "a confirmed run asks nothing")
 }
 
-// The effective args a run will use are shown beside the shape they
-// produce.
-func TestRunToken_EffectiveArgs(t *testing.T) {
+// Once a token exists, the run prints the command that signs this same
+// grant again: the args it took, the defaults it filled in among them,
+// on one line to copy.
+func TestRunToken_Example(t *testing.T) {
 	dir := t.TempDir()
 	priv := filepath.Join(dir, "signing-key.jwk")
 	require.NoError(t, runKeygen([]string{"-prefix", "acme/app", "-out", priv, "-keys", filepath.Join(dir, "keys.json")}, &bytes.Buffer{}, io.Discard, nil))
@@ -304,7 +305,7 @@ func TestRunToken_EffectiveArgs(t *testing.T) {
 
 			require.NoError(t, runToken(append([]string{"-key", priv}, tt.args...), &out, &info, nil))
 
-			assert.Contains(t, info.String(), "Effective:  "+tt.want+"\n")
+			assert.Contains(t, info.String(), "Example:  qumo auth token "+tt.want+"\n")
 		})
 	}
 }
@@ -322,16 +323,17 @@ func TestRunToken_Confirm(t *testing.T) {
 
 			err := runToken([]string{"-key", priv, "-root", "/acme/app/", "-subscribe", "/"}, &out, &info, strings.NewReader(tt.answer))
 
-			assert.Contains(t, info.String(), "Effective:", "the args are shown before the answer is read")
+			assert.Contains(t, info.String(), "Sign and emit this token?")
 			if tt.wantErr {
 				assert.ErrorIs(t, err, ErrDeclined)
 				assert.Contains(t, err.Error(), "no token was emitted")
 				assert.Empty(t, out.String(), "no token is emitted")
-				assert.Contains(t, info.String(), "Sign and emit this token?")
+				assert.NotContains(t, info.String(), "Example:", "an example comes only once a token exists")
 				return
 			}
 			require.NoError(t, err)
 			assert.Equal(t, 2, strings.Count(strings.TrimSpace(out.String()), "."))
+			assert.Contains(t, info.String(), "Example:  qumo auth token -key "+priv)
 		})
 	}
 }
@@ -349,6 +351,7 @@ func TestRunToken_YesSkipsThePrompt(t *testing.T) {
 
 	assert.Equal(t, 2, strings.Count(strings.TrimSpace(out.String()), "."))
 	assert.NotContains(t, info.String(), "Sign and emit this token?", "a confirmed run asks nothing")
+	assert.Contains(t, info.String(), "Example:  qumo auth token -key "+priv, "the example follows the token it describes")
 }
 
 // ask's answers: y and yes confirm in their case, while a bare Enter, a
