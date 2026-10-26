@@ -14,7 +14,6 @@ import (
 	"context"
 	"crypto/tls"
 	"net"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -30,26 +29,37 @@ const migrationPath = moqt.BroadcastPath("/mobile/live")
 func TestRelay_ConnectionMigration(t *testing.T) {
 	addr, srv := startAuthRelay(t, authOff, nil)
 	publishOver(t, srv, "https://"+addr+"/", migrationPath)
+	// Opened before the session so that, cleanups running last-in first-out,
+	// the session closes while the cellular path still carries its close.
+	cellular := &fakeCountingConn{PacketConn: listenUDP(t)}
+	cellularTr := &quic.Transport{Conn: cellular}
+	t.Cleanup(func() { _ = cellularTr.Close() }) // not actionable: cleanup
 	sub := dialMigratable(t, addr)
 	tr := subscribeMigration(t, sub.sess)
 	last := nextGroup(t, tr, 5*time.Second)
 
 	// The phone joins cellular: probe a path from a new socket, then move the
 	// connection onto it.
-	cellular := listenUDP(t)
-	path, err := sub.conn.AddPath(&quic.Transport{Conn: cellular})
+	path, err := sub.conn.AddPath(cellularTr)
 	require.NoError(t, err)
-	probeCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	probeCtx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
 	defer cancel()
 	require.NoError(t, path.Probe(probeCtx), "the relay should answer the PATH_CHALLENGE")
 	require.NoError(t, path.Switch())
-	// Wi-Fi is gone: nothing more is sent or received over the old socket,
-	// so every later group must arrive over cellular.
+	// quic-go applies a switch the next time the connection wakes, and the
+	// relay follows only once a non-probing packet arrives on the new path. A
+	// subscriber with nothing to send would wait for its keep-alive, so send
+	// one datagram (the relay never reads them) to move now.
+	require.NoError(t, sub.conn.SendDatagram([]byte{0}))
+	// Wi-Fi stays up until the relay has moved: quic-go's client answers the
+	// relay's PATH_CHALLENGE on the active path, not the probed one
+	// (quic-go#5408, fix in quic-go#5980), so cutting it first can stall the
+	// relay's validation of the new path.
+	last = readUntilCellular(t, tr, cellular, last)
+	// Wi-Fi is gone: nothing more is sent or received over the old socket.
 	sub.wifi.down.Store(true)
 
-	for range 5 {
-		last = nextGroupAfter(t, tr, last, 5*time.Second)
-	}
+	readUntilCellular(t, tr, cellular, last)
 
 	assert.NoError(t, sub.sess.Context().Err(), "the MOQ session should survive the move")
 	assert.NoError(t, sub.conn.Context().Err(), "the QUIC connection should survive the move")
@@ -63,21 +73,16 @@ func TestRelay_ConnectionMigration_LinkLostWithoutSwitch(t *testing.T) {
 	publishOver(t, srv, "https://"+addr+"/", migrationPath)
 	sub := dialMigratable(t, addr)
 	tr := subscribeMigration(t, sub.sess)
-	last := nextGroup(t, tr, 5*time.Second)
+	nextGroup(t, tr, 5*time.Second)
 
 	sub.wifi.down.Store(true)
+	// Bring the link back before the session closes, so its close reaches
+	// the relay instead of leaving it to time the session out.
+	t.Cleanup(func() { sub.wifi.down.Store(false) })
 
-	// Groups already in flight may still be delivered from the client's
-	// buffers; after them, nothing new should arrive.
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	for {
-		gr, err := tr.AcceptGroup(ctx)
-		if err != nil {
-			break
-		}
-		assert.Less(t, gr.GroupSequence(), last+5, "groups kept arriving over a dead path")
-	}
+	// Groups already queued in the client may still be delivered; after them
+	// delivery must go quiet, while the publisher keeps sending every 50 ms.
+	assert.True(t, deliveryStops(t, tr, time.Second, 3*time.Second), "groups kept arriving over a dead path")
 }
 
 // migratableSub is a native-QUIC subscriber session whose QUIC connection
@@ -85,23 +90,24 @@ func TestRelay_ConnectionMigration_LinkLostWithoutSwitch(t *testing.T) {
 type migratableSub struct {
 	sess *moqt.Session
 	conn *quic.Conn
-	wifi *droppableConn
+	wifi *fakeDroppableConn
 }
 
 // dialMigratable dials the relay at addr over native QUIC from a socket the
 // test can cut, through a quic.Transport the test owns: quic-go's AddPath
 // needs the connection, which gomoqt's default dialer keeps to itself.
-func dialMigratable(t *testing.T, addr string) migratableSub {
-	t.Helper()
-	sub := migratableSub{wifi: &droppableConn{PacketConn: listenUDP(t)}}
+func dialMigratable(tb testing.TB, addr string) migratableSub {
+	tb.Helper()
+	sub := migratableSub{wifi: &fakeDroppableConn{PacketConn: listenUDP(tb)}}
 	wifi := &quic.Transport{Conn: sub.wifi}
-	t.Cleanup(func() { _ = wifi.Close() })
+	tb.Cleanup(func() { _ = wifi.Close() }) // not actionable: cleanup
 	dialer := &moqt.Dialer{
 		TLSConfig: &tls.Config{
 			InsecureSkipVerify: true, //nolint:gosec // test-only self-signed cert
 			MinVersion:         tls.VersionTLS13,
 		},
-		QUICConfig: &quic.Config{KeepAlivePeriod: 5 * time.Second, MaxIdleTimeout: 30 * time.Second},
+		// The config every other integration-test client dials with.
+		QUICConfig: &quic.Config{EnableDatagrams: true, KeepAlivePeriod: 5 * time.Second, MaxIdleTimeout: 30 * time.Second},
 		DialQUICFunc: func(ctx context.Context, addr string, tlsConf *tls.Config, quicConf *quic.Config) (moqt.StreamConn, error) {
 			raddr, err := net.ResolveUDPAddr("udp", addr)
 			if err != nil {
@@ -115,85 +121,100 @@ func dialMigratable(t *testing.T, addr string) migratableSub {
 			return streamConn{conn}, nil
 		},
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	ctx, cancel := context.WithTimeout(tb.Context(), 3*time.Second)
 	defer cancel()
 	sess, err := dialer.Dial(ctx, nativeURL(addr)+"/", moqt.NewTrackMux(0))
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = sess.CloseWithError(moqt.NoError, "test done") })
+	require.NoError(tb, err)
+	tb.Cleanup(func() { _ = sess.CloseWithError(moqt.NoError, "test done") }) // not actionable: cleanup
 	sub.sess = sess
 	return sub
 }
 
-func subscribeMigration(t *testing.T, sess *moqt.Session) *moqt.TrackReader {
-	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+func subscribeMigration(tb testing.TB, sess *moqt.Session) *moqt.TrackReader {
+	tb.Helper()
+	ctx, cancel := context.WithTimeout(tb.Context(), 5*time.Second)
 	defer cancel()
 	tr, err := sess.Subscribe(ctx, migrationPath, testTrack, nil)
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = tr.Close() })
+	require.NoError(tb, err)
+	tb.Cleanup(func() { _ = tr.Close() }) // not actionable: cleanup
 	return tr
 }
 
 // nextGroup returns the sequence of the next group on tr.
-func nextGroup(t *testing.T, tr *moqt.TrackReader, timeout time.Duration) moqt.GroupSequence {
-	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+func nextGroup(tb testing.TB, tr *moqt.TrackReader, timeout time.Duration) moqt.GroupSequence {
+	tb.Helper()
+	ctx, cancel := context.WithTimeout(tb.Context(), timeout)
 	defer cancel()
 	gr, err := tr.AcceptGroup(ctx)
-	require.NoError(t, err)
-	return gr.GroupSequence()
+	require.NoError(tb, err)
+	return drain(gr)
 }
 
 // nextGroupAfter returns the sequence of the first group on tr later than
 // last, skipping any older one still in flight.
-func nextGroupAfter(t *testing.T, tr *moqt.TrackReader, last moqt.GroupSequence, timeout time.Duration) moqt.GroupSequence {
-	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+func nextGroupAfter(tb testing.TB, tr *moqt.TrackReader, last moqt.GroupSequence, timeout time.Duration) moqt.GroupSequence {
+	tb.Helper()
+	ctx, cancel := context.WithTimeout(tb.Context(), timeout)
 	defer cancel()
 	for {
 		gr, err := tr.AcceptGroup(ctx)
-		require.NoError(t, err, "no group after %d", last)
-		if seq := gr.GroupSequence(); seq > last {
+		require.NoError(tb, err, "no group after %d", last)
+		if seq := drain(gr); seq > last {
 			return seq
 		}
 	}
 }
 
-func listenUDP(t *testing.T) net.PacketConn {
-	t.Helper()
-	conn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = conn.Close() })
-	return conn
+// readUntilCellular reads groups later than last from tr until about a second
+// of live groups (one datagram each, every 50 ms) has arrived on the cellular
+// socket, and returns the last sequence read. The relay starts a subscriber
+// at its oldest held group, so groups already queued in the client could
+// keep arriving without a move; datagrams on the new socket cannot. Groups
+// are read meanwhile, since unread ones hold the stream credit the relay
+// needs to send more.
+func readUntilCellular(tb testing.TB, tr *moqt.TrackReader, cellular *fakeCountingConn, last moqt.GroupSequence) moqt.GroupSequence {
+	tb.Helper()
+	before := cellular.reads.Load()
+	deadline := time.Now().Add(5 * time.Second)
+	for cellular.reads.Load()-before < 20 {
+		require.True(tb, time.Now().Before(deadline), "the relay should send over the cellular path")
+		last = nextGroupAfter(tb, tr, last, 5*time.Second)
+	}
+	return last
 }
 
-// droppableConn is a UDP socket whose link can be cut: once down, it drops
-// every datagram it sends or receives, as a lost Wi-Fi network does.
-//
-// low-level utility: the network change under test happens at the socket,
-// below any gomoqt or relay interface.
-//
-// It embeds the net.PacketConn interface, not *net.UDPConn, so quic-go cannot
-// reach the socket's ReadMsgUDP/WriteMsgUDP past the drop.
-type droppableConn struct {
-	net.PacketConn
-	down atomic.Bool
-}
-
-func (c *droppableConn) ReadFrom(p []byte) (int, net.Addr, error) {
-	for {
-		n, addr, err := c.PacketConn.ReadFrom(p)
-		if err != nil || !c.down.Load() {
-			return n, addr, err
+// deliveryStops reports whether, within limit, tr goes quiet for at least
+// quiet: no group accepted for that long.
+func deliveryStops(tb testing.TB, tr *moqt.TrackReader, quiet, limit time.Duration) bool {
+	tb.Helper()
+	deadline := time.Now().Add(limit)
+	for time.Now().Before(deadline) {
+		ctx, cancel := context.WithTimeout(tb.Context(), quiet)
+		gr, err := tr.AcceptGroup(ctx)
+		cancel()
+		if err != nil {
+			return true
 		}
+		drain(gr)
 	}
+	return false
 }
 
-func (c *droppableConn) WriteTo(p []byte, addr net.Addr) (int, error) {
-	if c.down.Load() {
-		return len(p), nil
+// drain reads gr to its end, so its stream closes and quic-go returns the
+// stream credit, and returns its sequence.
+func drain(gr *moqt.GroupReader) moqt.GroupSequence {
+	_ = gr.SetReadDeadline(time.Now().Add(time.Second)) // not actionable: a stuck group only ends the read early
+	for range gr.Frames(moqt.NewFrame(64)) {
 	}
-	return c.PacketConn.WriteTo(p, addr)
+	return gr.GroupSequence()
+}
+
+func listenUDP(tb testing.TB) net.PacketConn {
+	tb.Helper()
+	conn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	require.NoError(tb, err)
+	tb.Cleanup(func() { _ = conn.Close() }) // not actionable: cleanup
+	return conn
 }
 
 // streamConn adapts a quic-go connection to gomoqt's transport: gomoqt's
