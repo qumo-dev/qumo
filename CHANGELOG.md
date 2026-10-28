@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`qumo dns`: an authoritative GeoDNS server for one name (`internal/geodns`).** It answers the name with the addresses of the region nearest the client, placed by EDNS Client Subnet or the resolver's address with a MaxMind-format city database it can keep fresh from a URL (`{month}` for dated files). Regions and addresses come from an HTTP feed it reads on an interval and keeps on disk, so it answers from the last good reading while the feed is down or after a restart. Answers carry up to `QUMO_DNS_MAX_ANSWERS` addresses, all of the nearest region and rotated; names outside its zone are refused. Run it beside each relay; see the `dns` CLI page.
+
 ### Changed
 
 - **Bumped gomoqt to v0.27.0.** A Go client dialing with gomoqt (`qumo` subcommands that subscribe or publish) now keeps its session through a network change such as Wi-Fi to cellular; gomoqt now tests the quic-go v0.64.1 and webtransport-go `v0.13.0-okdaichi.3` pair qumo already uses.
