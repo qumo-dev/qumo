@@ -11,6 +11,7 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -141,6 +142,19 @@ func TestGeoFetcher_Refresh(t *testing.T) {
 			wantErr:  true,
 			expected: []byte("held"),
 		},
+		"a broken gzip: the held copy stands": {
+			files:    map[string][]byte{"/city.mmdb.gz": []byte("not gzip")},
+			template: "/city.mmdb.gz",
+			held:     []byte("held"),
+			wantErr:  true,
+			expected: []byte("held"),
+		},
+		"a newer database replaces the held copy": {
+			files:    map[string][]byte{"/city.mmdb": db},
+			template: "/city.mmdb",
+			held:     []byte("held"),
+			expected: db,
+		},
 		"nothing found": {
 			template: "/city-{month}.mmdb",
 			wantErr:  true,
@@ -204,6 +218,57 @@ func TestGeoFetcher_Refresh_NotModified(t *testing.T) {
 
 	assert.ErrorIs(t, err, errNotModified)
 	assert.NotEmpty(t, gotSince)
+}
+
+// TestGeoFetcher_Refresh_LastMonthOnAServerError: this month's file failing
+// in any way, not only 404, falls back to last month's.
+func TestGeoFetcher_Refresh_LastMonthOnAServerError(t *testing.T) {
+	db := testCityDB(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/city-2026-01.mmdb" {
+			http.Error(w, "busy", http.StatusInternalServerError)
+			return
+		}
+		_, _ = w.Write(db) // not actionable: a test server
+	}))
+	defer srv.Close()
+	dest := filepath.Join(t.TempDir(), "city.mmdb")
+	f := &geoFetcher{
+		urlTemplate: srv.URL + "/city-{month}.mmdb", dest: dest, client: srv.Client(),
+		now: func() time.Time { return time.Date(2026, 1, 15, 0, 0, 0, 0, time.UTC) },
+	}
+
+	require.NoError(t, f.refresh(t.Context()))
+
+	got, err := fs.ReadFile(os.DirFS(filepath.Dir(dest)), "city.mmdb")
+	require.NoError(t, err)
+	assert.Equal(t, db, got)
+}
+
+// TestLocator_LoadWhileLocating swaps the database while lookups run; run
+// with -race.
+func TestLocator_LoadWhileLocating(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "city.mmdb")
+	require.NoError(t, os.WriteFile(path, testCityDB(t), 0o600))
+	l := &locator{}
+	require.NoError(t, l.load(path))
+	defer l.close()
+
+	var wg sync.WaitGroup
+	wg.Go(func() {
+		for range 20 {
+			assert.NoError(t, l.load(path))
+		}
+	})
+	for range 4 {
+		wg.Go(func() {
+			for range 200 {
+				_, ok := l.locate(netip.MustParseAddr("198.51.100.7"))
+				assert.True(t, ok)
+			}
+		})
+	}
+	wg.Wait()
 }
 
 func TestRedactQuery(t *testing.T) {

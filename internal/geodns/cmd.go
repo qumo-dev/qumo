@@ -124,10 +124,14 @@ func configFromEnv() (config, error) {
 		geoURL:    os.Getenv("QUMO_DNS_GEOIP_URL"),
 		geoDB:     os.Getenv("QUMO_DNS_GEOIP_DB"),
 	}
-	for ns := range strings.SplitSeq(required("QUMO_DNS_NAMESERVERS"), ",") {
+	for ns := range strings.SplitSeq(os.Getenv("QUMO_DNS_NAMESERVERS"), ",") {
 		if ns = strings.TrimSpace(ns); ns != "" {
 			cfg.nameservers = append(cfg.nameservers, canonical(ns))
 		}
+	}
+	if len(cfg.nameservers) == 0 {
+		// The SOA names the first: a list of commas is no list.
+		missing = append(missing, "QUMO_DNS_NAMESERVERS")
 	}
 	if len(missing) > 0 {
 		return config{}, fmt.Errorf("dns: missing required settings: %s", strings.Join(missing, ", "))
@@ -302,8 +306,8 @@ func serveDNS(ctx context.Context, srv *dns.Server) error {
 	}
 }
 
-// serveHTTP serves /healthz and /metrics until ctx ends.
-func (s *service) serveHTTP(ctx context.Context, reg *prometheus.Registry) error {
+// httpHandler serves /healthz, 200 once a feed is served, and /metrics.
+func (s *service) httpHandler(reg *prometheus.Registry) http.Handler {
 	mux := http.NewServeMux()
 	mux.Handle("GET /metrics", promhttp.HandlerFor(reg, promhttp.HandlerOpts{}))
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
@@ -313,7 +317,12 @@ func (s *service) serveHTTP(ctx context.Context, reg *prometheus.Registry) error
 		}
 		_, _ = w.Write([]byte("ok\n")) // not actionable: the client has gone
 	})
-	srv := &http.Server{Addr: s.cfg.httpAddr, Handler: mux, ReadHeaderTimeout: 5 * time.Second}
+	return mux
+}
+
+// serveHTTP serves httpHandler until ctx ends.
+func (s *service) serveHTTP(ctx context.Context, reg *prometheus.Registry) error {
+	srv := &http.Server{Addr: s.cfg.httpAddr, Handler: s.httpHandler(reg), ReadHeaderTimeout: 5 * time.Second}
 	ln, err := net.Listen("tcp", s.cfg.httpAddr)
 	if err != nil {
 		return fmt.Errorf("dns: listen on %s: %w", s.cfg.httpAddr, err)

@@ -43,6 +43,32 @@ func TestParseFeed(t *testing.T) {
 			addrs:   1,
 			serial:  1,
 		},
+		"no address that is not public unicast is served": {
+			body:    `{"regions":[{"region":"east","lat":35.68,"lon":139.69,"addrs":["192.0.2.20","0.0.0.0","224.0.0.1","169.254.0.1","::","::1","fe80::1","fc00::1","ff02::1"]}]}`,
+			regions: []string{"east"},
+			addrs:   1,
+			skipped: 8,
+			serial:  1,
+		},
+		"a region with no name, or a longitude off the globe, is left out": {
+			body:    `{"regions":[{"region":"","lat":0,"lon":0,"addrs":["192.0.2.1"]},{"region":"x","lat":0,"lon":-181,"addrs":["192.0.2.2"]},{"region":"east","lat":35.68,"lon":139.69,"addrs":["192.0.2.20"]}]}`,
+			regions: []string{"east"},
+			addrs:   1,
+			skipped: 2,
+			serial:  1,
+		},
+		"the edges of the globe are on it": {
+			body:    `{"regions":[{"region":"pole","lat":-90,"lon":180,"addrs":["192.0.2.1"]}]}`,
+			regions: []string{"pole"},
+			addrs:   1,
+			serial:  1,
+		},
+		"fields it does not know are ignored": {
+			body:    `{"regions":[{"region":"east","lat":35.68,"lon":139.69,"addrs":["192.0.2.20"],"weight":3}],"version":2}`,
+			regions: []string{"east"},
+			addrs:   1,
+			serial:  1,
+		},
 		"a region off the globe is left out": {
 			body:    `{"regions":[{"region":"x","lat":91,"lon":0,"addrs":["192.0.2.1"]},{"region":"east","lat":35.68,"lon":139.69,"addrs":["192.0.2.20"]}]}`,
 			regions: []string{"east"},

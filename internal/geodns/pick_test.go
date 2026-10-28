@@ -73,6 +73,32 @@ func TestZone_Pick(t *testing.T) {
 	}
 }
 
+// TestZone_Pick_ATieKeepsNameOrder: two regions as near are taken in name
+// order, so that every server answers a client alike.
+func TestZone_Pick_ATieKeepsNameOrder(t *testing.T) {
+	z := &zone{regions: []region{
+		{name: "a", at: tokyo, addrs: []netip.Addr{netip.MustParseAddr("192.0.2.1")}},
+		{name: "b", at: tokyo, addrs: []netip.Addr{netip.MustParseAddr("192.0.2.2")}},
+	}}
+
+	for turn := range uint64(3) {
+		assert.Equal(t, []netip.Addr{netip.MustParseAddr("192.0.2.1")}, z.pick(&osaka, false, 1, turn))
+	}
+}
+
+// TestZone_Pick_SpreadsOverARegion: over as many queries as a region has
+// relays, each relay is answered first once.
+func TestZone_Pick_SpreadsOverARegion(t *testing.T) {
+	z := manyAddrs(3)
+	first := map[netip.Addr]int{}
+
+	for turn := range uint64(3) {
+		first[z.pick(&osaka, false, 1, turn)[0]]++
+	}
+
+	assert.Len(t, first, 3)
+}
+
 func TestZone_Pick_LeavesZoneUnchanged(t *testing.T) {
 	z := testZone()
 	_ = z.pick(&osaka, false, 3, 1) // the result is not under test

@@ -47,14 +47,21 @@ var _ dns.Handler = (*authority)(nil)
 func (a *authority) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 	resp := a.answer(req, remoteAddr(w.RemoteAddr()))
 	if _, udp := w.RemoteAddr().(*net.UDPAddr); udp {
-		size := dns.MinMsgSize
-		if opt := req.IsEdns0(); opt != nil {
-			size = max(int(opt.UDPSize()), dns.MinMsgSize)
-		}
-		resp.Truncate(size)
+		resp.Truncate(udpLimit(req))
 	}
 	a.metrics.queries.WithLabelValues(dns.RcodeToString[resp.Rcode]).Inc()
 	_ = w.WriteMsg(resp) // not actionable: the client has gone
+}
+
+// udpLimit is the largest UDP response to req: 512 bytes without EDNS, else
+// what the client takes, up to the size this server advertises, so that a
+// response is never large enough to fragment.
+func udpLimit(req *dns.Msg) int {
+	opt := req.IsEdns0()
+	if opt == nil {
+		return dns.MinMsgSize
+	}
+	return min(max(int(opt.UDPSize()), dns.MinMsgSize), ednsUDPSize)
 }
 
 // remoteAddr is the address of a query's sender.
@@ -91,26 +98,26 @@ func (a *authority) answer(req *dns.Msg, from netip.Addr) *dns.Msg {
 	// The client's subnet, when the resolver sends it, places the client
 	// better than the resolver's own address does (RFC 7871).
 	client := from
-	var ecs *dns.EDNS0_SUBNET
+	// scope is the subnet option answered: scope 0, an answer for every
+	// client, unless the answer is the served name's addresses.
+	var scope *dns.EDNS0_SUBNET
 	if opt := req.IsEdns0(); opt != nil {
 		for _, o := range opt.Option {
 			if s, ok := o.(*dns.EDNS0_SUBNET); ok {
-				ecs = s
+				scope = &dns.EDNS0_SUBNET{
+					Code:          dns.EDNS0SUBNET,
+					Family:        s.Family,
+					SourceNetmask: s.SourceNetmask,
+					Address:       s.Address,
+				}
 				if ip, ok := netip.AddrFromSlice(s.Address); ok && s.SourceNetmask > 0 {
 					client = ip.Unmap()
 				}
 			}
 		}
 		resp.SetEdns0(ednsUDPSize, false)
-		if ecs != nil {
-			// The answer depends on the whole of the subnet sent.
-			resp.IsEdns0().Option = append(resp.IsEdns0().Option, &dns.EDNS0_SUBNET{
-				Code:          dns.EDNS0SUBNET,
-				Family:        ecs.Family,
-				SourceNetmask: ecs.SourceNetmask,
-				SourceScope:   ecs.SourceNetmask,
-				Address:       ecs.Address,
-			})
+		if scope != nil {
+			resp.IsEdns0().Option = append(resp.IsEdns0().Option, scope)
 		}
 	}
 
@@ -125,6 +132,10 @@ func (a *authority) answer(req *dns.Msg, from netip.Addr) *dns.Msg {
 			return resp
 		}
 		resp.Answer = a.addressRecords(z, client, q.Qtype)
+		if scope != nil {
+			// The addresses hold for the whole of the subnet sent.
+			scope.SourceScope = scope.SourceNetmask
+		}
 	case qname == a.zone:
 		switch q.Qtype {
 		case dns.TypeSOA:

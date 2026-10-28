@@ -70,7 +70,9 @@ ACME `_acme-challenge` record for that name) in the parent zone.
 - `lat`/`lon` place the region, in degrees.
 - `addrs` are public unicast IPv4 (answered as A) and IPv6 (AAAA) addresses.
   Private, loopback and malformed entries are left out and logged.
-- `published_at` becomes the SOA serial (Unix seconds).
+- `published_at` becomes the SOA serial (Unix seconds). A feed should move
+  it only when the regions or addresses change: a body read again unchanged
+  is not written to disk again.
 - A feed with no region left that has an address is refused; what is
   served stays.
 - `503` means the feed has nothing yet; what is served stays. Any other
