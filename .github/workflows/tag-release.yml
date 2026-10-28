@@ -1,0 +1,71 @@
+# Tags a release when its release PR merges, then publishes it.
+#
+# A release PR adds a `## [vX.Y.Z]` heading to CHANGELOG.md. Once it is on
+# main, this workflow tags the commit that added the heading as vX.Y.Z and
+# runs release.yml for it. A tag pushed with GITHUB_TOKEN starts no other
+# workflow, so release.yml is called from here instead.
+#
+# A tag that already exists is left alone: a tag pushed by hand still
+# publishes through release.yml's own tag trigger, and a re-run does nothing.
+# Run it by hand (workflow_dispatch) for a release merged while this workflow
+# was not there.
+name: Tag release
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - CHANGELOG.md
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tag-release
+
+jobs:
+  tag:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # push the tag
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+    steps:
+      - name: Checkout
+        # SHA: actions/checkout@v6
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0 # the history to find the release commit in, and every tag
+
+      - name: Tag a new release
+        id: tag
+        run: |
+          set -euo pipefail
+          # The newest release heading: the first one after [Unreleased].
+          tag=$(sed -nE 's/^## \[(v[0-9][^]]*)\].*/\1/p' CHANGELOG.md | head -n 1)
+          if [ -z "$tag" ]; then
+            echo "No release heading in CHANGELOG.md."
+            exit 0
+          fi
+          if git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
+            echo "$tag exists; nothing to release."
+            exit 0
+          fi
+          commit=$(git log -1 --format=%H -S "## [$tag]" -- CHANGELOG.md)
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "$tag" "$commit" -m "$tag"
+          git push origin "refs/tags/$tag"
+          echo "Tagged $commit as $tag."
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+  release:
+    needs: tag
+    if: needs.tag.outputs.tag != ''
+    permissions:
+      contents: write # create the release
+      packages: write # push the image
+    uses: ./.github/workflows/release.yml
+    with:
+      tag: ${{ needs.tag.outputs.tag }}
