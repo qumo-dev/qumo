@@ -19,7 +19,6 @@ import (
 
 	"github.com/quic-go/quic-go"
 	"github.com/qumo-dev/gomoqt/moqt"
-	"github.com/qumo-dev/gomoqt/transport"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -32,7 +31,7 @@ func TestRelay_ConnectionMigration(t *testing.T) {
 	// Opened before the session so that, cleanups running last-in first-out,
 	// the session closes while the cellular path still carries its close.
 	cellular := &fakeCountingConn{PacketConn: listenUDP(t)}
-	cellularTr := &quic.Transport{Conn: cellular}
+	cellularTr := &quic.Transport{Conn: cellular, ConnectionIDGenerator: zeroConnIDs{}}
 	t.Cleanup(func() { _ = cellularTr.Close() }) // not actionable: cleanup
 	sub := dialMigratable(t, addr)
 	tr := subscribeMigration(t, sub.sess)
@@ -40,29 +39,25 @@ func TestRelay_ConnectionMigration(t *testing.T) {
 
 	// The phone joins cellular: probe a path from a new socket, then move the
 	// connection onto it.
-	path, err := sub.conn.AddPath(cellularTr)
+	path, err := sub.sess.AddPath(cellularTr)
 	require.NoError(t, err)
 	probeCtx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
 	defer cancel()
 	require.NoError(t, path.Probe(probeCtx), "the relay should answer the PATH_CHALLENGE")
 	require.NoError(t, path.Switch())
-	// quic-go applies a switch the next time the connection wakes, and the
-	// relay follows only once a non-probing packet arrives on the new path. A
-	// subscriber with nothing to send would wait for its keep-alive, so send
-	// one datagram (the relay never reads them) to move now.
-	require.NoError(t, sub.conn.SendDatagram([]byte{0}))
+	// The relay follows once a non-probing packet arrives on the new path:
+	// the subscriber's next acknowledgement of a group, 50 ms away at most.
 	// Wi-Fi stays up until the relay has moved: quic-go's client answers the
 	// relay's PATH_CHALLENGE on the active path, not the probed one
-	// (quic-go#5408, fix in quic-go#5980), so cutting it first can stall the
-	// relay's validation of the new path.
+	// (quic-go#5408; fixed by quic-go#5980, not in a release as of v0.64.1),
+	// so cutting it first can stall the relay's validation of the new path.
 	last = readUntilCellular(t, tr, cellular, last)
 	// Wi-Fi is gone: nothing more is sent or received over the old socket.
 	sub.wifi.down.Store(true)
 
 	readUntilCellular(t, tr, cellular, last)
 
-	assert.NoError(t, sub.sess.Context().Err(), "the MOQ session should survive the move")
-	assert.NoError(t, sub.conn.Context().Err(), "the QUIC connection should survive the move")
+	assert.NoError(t, sub.sess.Context().Err(), "the session, and the QUIC connection under it, should survive the move")
 }
 
 // Without a switch, losing Wi-Fi stops the subscription: this proves the
@@ -85,21 +80,19 @@ func TestRelay_ConnectionMigration_LinkLostWithoutSwitch(t *testing.T) {
 	assert.True(t, deliveryStops(t, tr, time.Second, 3*time.Second), "groups kept arriving over a dead path")
 }
 
-// migratableSub is a native-QUIC subscriber session whose QUIC connection
-// the test holds, so it can move it to a new path.
+// migratableSub is a native-QUIC subscriber session dialed over a socket
+// the test can cut.
 type migratableSub struct {
 	sess *moqt.Session
-	conn *quic.Conn
 	wifi *fakeDroppableConn
 }
 
-// dialMigratable dials the relay at addr over native QUIC from a socket the
-// test can cut, through a quic.Transport the test owns: quic-go's AddPath
-// needs the connection, which gomoqt's default dialer keeps to itself.
+// dialMigratable dials the relay at addr over native QUIC through
+// Dialer.Transport, from a socket the test can cut.
 func dialMigratable(tb testing.TB, addr string) migratableSub {
 	tb.Helper()
 	sub := migratableSub{wifi: &fakeDroppableConn{PacketConn: listenUDP(tb)}}
-	wifi := &quic.Transport{Conn: sub.wifi}
+	wifi := &quic.Transport{Conn: sub.wifi, ConnectionIDGenerator: zeroConnIDs{}}
 	tb.Cleanup(func() { _ = wifi.Close() }) // not actionable: cleanup
 	dialer := &moqt.Dialer{
 		TLSConfig: &tls.Config{
@@ -108,18 +101,7 @@ func dialMigratable(tb testing.TB, addr string) migratableSub {
 		},
 		// The config every other integration-test client dials with.
 		QUICConfig: &quic.Config{EnableDatagrams: true, KeepAlivePeriod: 5 * time.Second, MaxIdleTimeout: 30 * time.Second},
-		DialQUICFunc: func(ctx context.Context, addr string, tlsConf *tls.Config, quicConf *quic.Config) (moqt.StreamConn, error) {
-			raddr, err := net.ResolveUDPAddr("udp", addr)
-			if err != nil {
-				return nil, err
-			}
-			conn, err := wifi.DialEarly(ctx, raddr, tlsConf, quicConf)
-			if err != nil {
-				return nil, err
-			}
-			sub.conn = conn
-			return streamConn{conn}, nil
-		},
+		Transport:  wifi,
 	}
 	ctx, cancel := context.WithTimeout(tb.Context(), 3*time.Second)
 	defer cancel()
@@ -217,62 +199,15 @@ func listenUDP(tb testing.TB) net.PacketConn {
 	return conn
 }
 
-// streamConn adapts a quic-go connection to gomoqt's transport: gomoqt's
-// stream and error-code types are quic-go's, so each method only widens the
-// returned stream to the interface.
-type streamConn struct{ *quic.Conn }
+// zeroConnIDs generates zero-length connection IDs, which every transport
+// of a connection that moves should use (see moqt.Session.AddPath): a
+// quic-go relay follows a client with longer ones only twice (quic-go#5965).
+type zeroConnIDs struct{}
 
-var _ transport.StreamConn = streamConn{}
+var _ quic.ConnectionIDGenerator = zeroConnIDs{}
 
-func (c streamConn) AcceptStream(ctx context.Context) (transport.Stream, error) {
-	s, err := c.Conn.AcceptStream(ctx)
-	if err != nil {
-		return nil, err
-	}
-	return s, nil
+func (zeroConnIDs) GenerateConnectionID() (quic.ConnectionID, error) {
+	return quic.ConnectionID{}, nil
 }
 
-func (c streamConn) AcceptUniStream(ctx context.Context) (transport.ReceiveStream, error) {
-	s, err := c.Conn.AcceptUniStream(ctx)
-	if err != nil {
-		return nil, err
-	}
-	return s, nil
-}
-
-func (c streamConn) OpenStream() (transport.Stream, error) {
-	s, err := c.Conn.OpenStream()
-	if err != nil {
-		return nil, err
-	}
-	return s, nil
-}
-
-func (c streamConn) OpenStreamSync(ctx context.Context) (transport.Stream, error) {
-	s, err := c.Conn.OpenStreamSync(ctx)
-	if err != nil {
-		return nil, err
-	}
-	return s, nil
-}
-
-func (c streamConn) OpenUniStream() (transport.SendStream, error) {
-	s, err := c.Conn.OpenUniStream()
-	if err != nil {
-		return nil, err
-	}
-	return s, nil
-}
-
-func (c streamConn) OpenUniStreamSync(ctx context.Context) (transport.SendStream, error) {
-	s, err := c.Conn.OpenUniStreamSync(ctx)
-	if err != nil {
-		return nil, err
-	}
-	return s, nil
-}
-
-func (c streamConn) TLS() *tls.ConnectionState {
-	state := c.ConnectionState().TLS
-	return &state
-}
+func (zeroConnIDs) ConnectionIDLen() int { return 0 }
