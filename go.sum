@@ -33,8 +33,8 @@ github.com/okdaichi/qmux-go v0.3.0 h1:uiG3XRiabglaTklBUDmX+dnlBkEXre0EEaxTAmEVm8
 github.com/okdaichi/qmux-go v0.3.0/go.mod h1:sOt2VCexJZ+midUNi3SR0K/0QQwDtJxwRI87YaF3wR4=
 github.com/okdaichi/qumo-ledger v0.4.1-0.20261017011115-d3ee9824a3ec h1:Mi4CwRU+s7cGtSIJbEIDKvw0UsglBlxraceRN/6uBKY=
 github.com/okdaichi/qumo-ledger v0.4.1-0.20261017011115-d3ee9824a3ec/go.mod h1:M/9U5aa17uCMb8pPV3luiAcAWkUsYC3/4su1T1nNsdc=
-github.com/okdaichi/webtransport-go v0.13.0-okdaichi.2 h1:INtTyplF3uLquFDyIa6unkQ7T7fJRCJ01FfX9abE+dE=
-github.com/okdaichi/webtransport-go v0.13.0-okdaichi.2/go.mod h1:TTvw4NOrc4R62weL6rkqNxyN0hFluy5KFFzm90pf1vE=
+github.com/okdaichi/webtransport-go v0.13.0-okdaichi.3 h1:XeEAZ2mPt+j7AW1LwXc9Jz954SbN4Rh5RHrvJWTxOno=
+github.com/okdaichi/webtransport-go v0.13.0-okdaichi.3/go.mod h1:Fa2NeCFWoyB+z+lZAM+6lFMwZq8ODpMu/3RqEJp4tHs=
 github.com/pmezard/go-difflib v1.0.0/go.mod h1:iKH77koFhYxTK1pcRnkKkqfTogsbg7gZNVY4sRDYZ/4=
 github.com/prometheus/client_golang v1.25.0 h1:cDtW1TcFsMi1RJc8khwCKB4VhzwV04aKqbYtNOXuiK0=
 github.com/prometheus/client_golang v1.25.0/go.mod h1:j2X/4/kaQHLPnmyEU8zjmkndo1T317VpCIQEml8LTKk=
@@ -48,10 +48,10 @@ github.com/quic-go/go-ossfuzz-seeds v0.1.0 h1:APacT+iIaNF6fd8AGEiN3bT/Jtkd2jz4v4
 github.com/quic-go/go-ossfuzz-seeds v0.1.0/go.mod h1:3IOHRbJIc+L6YKMwfDtJAM9Vj9k0YY4muhuyUYk5tbk=
 github.com/quic-go/qpack v0.6.0 h1:g7W+BMYynC1LbYLSqRt8PBg5Tgwxn214ZZR34VIOjz8=
 github.com/quic-go/qpack v0.6.0/go.mod h1:lUpLKChi8njB4ty2bFLX2x4gzDqXwUpaO1DP9qMDZII=
-github.com/quic-go/quic-go v0.63.0 h1:LIFGHI4PFUhhw2dDD1ARHdCff143ffMHwZtbnbuJ78A=
-github.com/quic-go/quic-go v0.63.0/go.mod h1:RAro2j2yN9a9EiPACLHT9IB2NXCvGQmmo/alT0yYI0w=
-github.com/qumo-dev/gomoqt v0.26.0 h1:a3e7dv7Kk2mkIjMXvGKpl9ou61BKtPXJ0YQ5VvW/aoo=
-github.com/qumo-dev/gomoqt v0.26.0/go.mod h1:0u5PKpfxCSPuLXyQeWxkSfc+Mi1FuO54WSy9xlwfWvo=
+github.com/quic-go/quic-go v0.64.1 h1:BCNTP+6x6++OPKrGST2FR3f1tycx8O3QOA3QQv09g70=
+github.com/quic-go/quic-go v0.64.1/go.mod h1:RAro2j2yN9a9EiPACLHT9IB2NXCvGQmmo/alT0yYI0w=
+github.com/qumo-dev/gomoqt v0.27.0 h1:7VZptW5yizqGo3l1bSYa8c8Btx0NLam/Cjt3nDypjT4=
+github.com/qumo-dev/gomoqt v0.27.0/go.mod h1:g3I8gDpH/LbTkSTFDbIo5zyUdb3T9oOXJnVfhUHMR9w=
 github.com/stretchr/objx v0.1.0/go.mod h1:HFkY916IF+rwdDfMAkV7OtwuqBVzrE8GR6GFx+wExME=
 github.com/stretchr/testify v1.3.0/go.mod h1:M5WIy9Dh21IEIfnGCwXGc5bZfKNJtfHm1UVUgZn+9EI=
 github.com/stretchr/testify v1.7.0/go.mod h1:6Fq8oRcR53rry900zMqJjRRixrwX3KX962/h/Wwjteg=
