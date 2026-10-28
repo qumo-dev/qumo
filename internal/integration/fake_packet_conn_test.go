@@ -20,18 +20,27 @@ var (
 
 // fakeDroppableConn is a UDP socket whose link can be cut: once down is set,
 // it drops every datagram it sends or receives, as a lost Wi-Fi network does.
-// Writes report success either way.
+// Writes report success either way. It counts the datagrams it delivers, to
+// show whether the relay still sends over it.
 type fakeDroppableConn struct {
 	net.PacketConn
-	down atomic.Bool
+	down  atomic.Bool
+	reads atomic.Int64
 }
 
 func (c *fakeDroppableConn) ReadFrom(p []byte) (int, net.Addr, error) {
 	for {
 		n, addr, err := c.PacketConn.ReadFrom(p)
-		if err != nil || !c.down.Load() {
-			return n, addr, err
+		if c.down.Load() {
+			if err != nil {
+				return 0, nil, err // a datagram read with the error is dropped too
+			}
+			continue
 		}
+		if err == nil {
+			c.reads.Add(1)
+		}
+		return n, addr, err
 	}
 }
 
