@@ -394,7 +394,7 @@ func TestEnvSet(t *testing.T) {
 
 // quicGoVersion is the quic-go release the defaults and bounds in
 // quicconfig.go were read from.
-const quicGoVersion = "v0.63.0"
+const quicGoVersion = "v0.64.1"
 
 // TestFromEnv_QUICGoVersion fails when go.mod moves to another quic-go, so
 // the defaults FromEnv checks against (quicGoIdleTimeout, quicGo*Window)

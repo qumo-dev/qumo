@@ -4,6 +4,14 @@ on:
   push:
     tags:
       - 'v*'
+  # Called by tag-release.yml for the tag it pushes: the run is then on main,
+  # so every step below takes the tag from inputs.tag, not github.ref.
+  workflow_call:
+    inputs:
+      tag:
+        description: 'Tag to publish (must already exist)'
+        required: true
+        type: string
 
 permissions:
   contents: write
@@ -18,6 +26,7 @@ jobs:
         # SHA: actions/checkout@v6
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
+          ref: ${{ inputs.tag || github.ref }}
           fetch-depth: 0
 
       - name: Set up Go
@@ -56,6 +65,7 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GORELEASER_CURRENT_TAG: ${{ inputs.tag || github.ref_name }}
 
   docker:
     name: Build and Push Docker Image
@@ -64,6 +74,20 @@ jobs:
       - name: Checkout code
         # SHA: actions/checkout@v6
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+
+      # The commit and date of the tag checked out: github.sha is main's head
+      # when tag-release.yml calls this.
+      - name: Resolve release commit
+        id: rev
+        run: |
+          {
+            echo "tag=${{ inputs.tag || github.ref_name }}"
+            echo "sha=$(git rev-parse HEAD)"
+            echo "short=$(git rev-parse --short=7 HEAD)"
+            echo "date=$(git log -1 --format=%cI)"
+          } >> "$GITHUB_OUTPUT"
 
       # The Dockerfile's build stage cross-compiles, so QEMU only runs the
       # arm64 runtime stage's package commands.
@@ -88,10 +112,10 @@ jobs:
         with:
           images: ghcr.io/${{ github.repository }}
           tags: |
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=semver,pattern={{major}}
-            type=sha
+            type=semver,pattern={{version}},value=${{ steps.rev.outputs.tag }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ steps.rev.outputs.tag }}
+            type=semver,pattern={{major}},value=${{ steps.rev.outputs.tag }}
+            type=raw,value=sha-${{ steps.rev.outputs.short }}
 
       - name: Build and push
         uses: docker/build-push-action@v7
@@ -103,8 +127,8 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
-            VERSION=${{ github.ref_name }}
-            COMMIT=${{ github.sha }}
-            BUILD_DATE=${{ github.event.head_commit.timestamp }}
+            VERSION=${{ steps.rev.outputs.tag }}
+            COMMIT=${{ steps.rev.outputs.sha }}
+            BUILD_DATE=${{ steps.rev.outputs.date }}
           cache-from: type=gha
           cache-to: type=gha,mode=max

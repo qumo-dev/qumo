@@ -11,6 +11,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **`qumo dns`: an authoritative GeoDNS server for one name (`internal/geodns`).** It answers the name with the addresses of the region nearest the client, placed by EDNS Client Subnet or the resolver's address with a MaxMind-format city database it can keep fresh from a URL (`{month}` for dated files). Regions and addresses come from an HTTP feed it reads on an interval and keeps on disk, so it answers from the last good reading while the feed is down or after a restart. Answers carry up to `QUMO_DNS_MAX_ANSWERS` addresses, all of the nearest region and rotated; names outside its zone are refused. Run it beside each relay; see the `dns` CLI page.
 
+### Changed
+
+- **Bumped gomoqt to v0.27.0.** A Go client dialing with gomoqt (`qumo` subcommands that subscribe or publish) now keeps its session through a network change such as Wi-Fi to cellular; gomoqt now tests the quic-go v0.64.1 and webtransport-go `v0.13.0-okdaichi.3` pair qumo already uses.
+- **A merged release PR now publishes itself (CI).** `tag-release.yml` tags the commit that added the newest `## [vX.Y.Z]` CHANGELOG heading and runs `release.yml` for it (binaries and the container image); an existing tag is left alone, so tagging by hand still works. The image's version, commit and date now come from the tagged commit.
+- **Bumped quic-go to v0.64.1 and webtransport-go to `v0.13.0-okdaichi.3`.** The relay now challenges a client's new address again until it answers, instead of once (quic-go#5930), so a phone that moves off a network that has already gone down (Wi-Fi off, onto cellular) keeps its session instead of stalling; at the default `QUIC_INITIAL_PACKET_SIZE` a connection falls back to 1200-byte packets when a path refuses 1280.
+
 ## [v0.16.261022] - 2026-10-22
 
 > **Breaking for apps that grant one root in several tickets.** A ticket now replaces the session's earlier credential for its root instead of adding to it; put everything a session may do beneath a root in one ticket.

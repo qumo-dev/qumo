@@ -63,20 +63,31 @@ func publishOver(t *testing.T, srv *relay.Server, url string, paths ...moqt.Broa
 // when the test ends.
 func dialOver(t *testing.T, url string, clientCert *tls.Certificate, mux *moqt.TrackMux) *moqt.Session {
 	t.Helper()
-	dialerTLS := &tls.Config{
-		InsecureSkipVerify: true, //nolint:gosec // test-only self-signed cert
-		MinVersion:         tls.VersionTLS13,
-	}
+	dialerTLS := testClientTLS()
 	if clientCert != nil {
 		dialerTLS.Certificates = []tls.Certificate{*clientCert}
 	}
-	quicCfg := &quic.Config{EnableDatagrams: true, KeepAlivePeriod: 5 * time.Second, MaxIdleTimeout: 30 * time.Second}
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	sess, err := (&moqt.Dialer{TLSConfig: dialerTLS, QUICConfig: quicCfg}).Dial(ctx, url, mux)
+	sess, err := (&moqt.Dialer{TLSConfig: dialerTLS, QUICConfig: testClientQUIC()}).Dial(ctx, url, mux)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = sess.CloseWithError(moqt.NoError, "test done") })
 	return sess
+}
+
+// testClientTLS is the TLS config every integration-test client dials with:
+// it trusts the relay's self-signed certificate.
+func testClientTLS() *tls.Config {
+	return &tls.Config{
+		InsecureSkipVerify: true, //nolint:gosec // test-only self-signed cert
+		MinVersion:         tls.VersionTLS13,
+	}
+}
+
+// testClientQUIC is the QUIC config every integration-test client dials
+// with.
+func testClientQUIC() *quic.Config {
+	return &quic.Config{EnableDatagrams: true, KeepAlivePeriod: 5 * time.Second, MaxIdleTimeout: 30 * time.Second}
 }
 
 // subscribe subscribes to testTrack at path over a new session to url, and
