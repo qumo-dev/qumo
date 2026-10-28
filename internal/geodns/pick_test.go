@@ -44,26 +44,32 @@ func TestZone_Pick(t *testing.T) {
 		turn     uint64
 		expected []netip.Addr
 	}{
-		"a client in Asahikawa gets the north, then the east": {
-			at: &asahikawa, limit: 2, expected: addrs("192.0.2.10", "192.0.2.20"),
+		"a client in Asahikawa gets the north alone": {
+			at: &asahikawa, limit: 2, expected: addrs("192.0.2.10"),
 		},
-		"a client in Osaka gets both relays in the east first": {
+		"a client in Osaka gets both relays in the east": {
 			at: &osaka, limit: 2, expected: addrs("192.0.2.20", "192.0.2.21"),
 		},
 		"the turn rotates within the nearest region": {
 			at: &osaka, limit: 1, turn: 1, expected: addrs("192.0.2.21"),
 		},
 		"the limit caps the answer": {
-			at: &osaka, limit: 3, expected: addrs("192.0.2.20", "192.0.2.21", "192.0.2.10"),
+			at: &osaka, limit: 1, expected: addrs("192.0.2.20"),
 		},
-		"IPv6 comes only from regions that have it": {
+		"a limit beyond the region is never filled from another": {
+			at: &osaka, limit: 3, expected: addrs("192.0.2.20", "192.0.2.21"),
+		},
+		"IPv6 comes from the nearest region that has it": {
 			at: &osaka, v6: true, limit: 2, expected: addrs("2001:db8::10"),
 		},
 		"an unknown client gets the regions in name order on turn 0": {
-			limit: 1, expected: addrs("192.0.2.20"),
+			limit: 2, expected: addrs("192.0.2.20", "192.0.2.21"),
 		},
 		"an unknown client gets the next region on turn 1": {
-			limit: 1, turn: 1, expected: addrs("192.0.2.10"),
+			limit: 2, turn: 1, expected: addrs("192.0.2.10"),
+		},
+		"an unknown client gets the first region's next relay on turn 2": {
+			limit: 1, turn: 2, expected: addrs("192.0.2.21"),
 		},
 	}
 	for name, tt := range tests {

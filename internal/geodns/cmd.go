@@ -90,7 +90,7 @@ type config struct {
 //	QUMO_DNS_LISTEN         - UDP and TCP listen address (default: ":53")
 //	QUMO_DNS_HTTP_ADDR      - HTTP address of /healthz and /metrics (default: "127.0.0.1:9153"; "off" for none)
 //	QUMO_DNS_TTL            - TTL of the address answers (default: "30s")
-//	QUMO_DNS_MAX_ANSWERS    - addresses in one answer, nearest region first (default: 2)
+//	QUMO_DNS_MAX_ANSWERS    - addresses in one answer, all of the nearest region (default: 2)
 //	QUMO_DNS_HOSTMASTER     - the SOA contact, as a name (default: "hostmaster.<zone>")
 //
 // Without a database every client is of unknown place, and the regions are

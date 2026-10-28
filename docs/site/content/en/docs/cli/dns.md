@@ -19,10 +19,14 @@ never replaces one it can.
 A client is placed with a city database in MaxMind's `.mmdb` format, by the
 subnet its resolver sends ([EDNS Client Subnet](https://www.rfc-editor.org/rfc/rfc7871))
 or else by the resolver's own address. The answer holds up to
-`QUMO_DNS_MAX_ANSWERS` addresses: the nearest region's first, rotated across
-queries, then the next region's, so a client that tries another address tries
-another place. A client the database cannot place, or every client when
-there is no database, gets the regions in turn.
+`QUMO_DNS_MAX_ANSWERS` addresses, all of the nearest region that has an
+address of the type asked, rotated across queries. It never mixes regions:
+resolvers and clients reorder the addresses of an answer, so a far region's
+address would be the first some clients try. A client the database cannot
+place, or every client when there is no database, gets the regions in turn.
+
+Taking a region that is down out of the feed is the feed's job: until it
+does, that region's clients are answered with it.
 
 It does not recurse: a name outside its zone is refused.
 

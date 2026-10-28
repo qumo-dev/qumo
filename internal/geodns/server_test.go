@@ -73,13 +73,13 @@ func TestAuthority_Answer_Addresses(t *testing.T) {
 		from     netip.Addr
 		expected []string
 	}{
-		"a resolver in Asahikawa gets the north first": {
+		"a resolver in Asahikawa gets the north": {
 			qname: "cdn.geo.example.com.", qtype: dns.TypeA, from: resolverInAsahikawa,
-			expected: []string{"192.0.2.10", "192.0.2.20"},
+			expected: []string{"192.0.2.10"},
 		},
 		"the name is matched without regard to case": {
 			qname: "CDN.Geo.Example.com.", qtype: dns.TypeA, from: resolverInAsahikawa,
-			expected: []string{"192.0.2.10", "192.0.2.20"},
+			expected: []string{"192.0.2.10"},
 		},
 		"IPv6": {
 			qname: "cdn.geo.example.com.", qtype: dns.TypeAAAA, from: resolverInAsahikawa,
@@ -135,7 +135,7 @@ func TestAuthority_Answer_ClientSubnetZeroIsIgnored(t *testing.T) {
 
 	resp := testAuthority(t, testZone()).answer(req, resolverInAsahikawa)
 
-	assert.Equal(t, []string{"192.0.2.10", "192.0.2.20"}, answerAddrs(t, resp), "placed by the resolver")
+	assert.Equal(t, []string{"192.0.2.10"}, answerAddrs(t, resp), "placed by the resolver")
 }
 
 func TestAuthority_Answer_Rcodes(t *testing.T) {
@@ -228,7 +228,7 @@ func TestAuthority_Answer_NameAtApex(t *testing.T) {
 	a.name = a.zone
 
 	addrs := a.answer(query("geo.example.com.", dns.TypeA), resolverInAsahikawa)
-	assert.Equal(t, []string{"192.0.2.10", "192.0.2.20"}, answerAddrs(t, addrs))
+	assert.Equal(t, []string{"192.0.2.10"}, answerAddrs(t, addrs))
 	soa := a.answer(query("geo.example.com.", dns.TypeSOA), resolverInAsahikawa)
 	require.Len(t, soa.Answer, 1)
 	assert.Equal(t, dns.TypeSOA, soa.Answer[0].Header().Rrtype)
@@ -271,8 +271,8 @@ func TestAuthority_ServeDNS(t *testing.T) {
 			resp, _, err := c.Exchange(query("cdn.geo.example.com.", dns.TypeA), addr)
 			require.NoError(t, err)
 			assert.Equal(t, dns.RcodeSuccess, resp.Rcode)
-			// 127.0.0.1 is of unknown place: every region in turn, two addresses.
-			assert.Len(t, resp.Answer, 2)
+			// 127.0.0.1 is of unknown place: the regions in turn.
+			assert.NotEmpty(t, resp.Answer)
 
 			resp, _, err = c.Exchange(query("www.geo.example.com.", dns.TypeA), addr)
 			require.NoError(t, err)
