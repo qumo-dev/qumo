@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [v0.17.261028] - 2026-10-28
+
 ### Added
 
 - **`qumo dns`: an authoritative GeoDNS server for one name (`internal/geodns`).** It answers the name with the addresses of the region nearest the client, placed by EDNS Client Subnet or the resolver's address with a MaxMind-format city database it can keep fresh from a URL (`{month}` for dated files). Regions and addresses come from an HTTP feed it reads on an interval and keeps on disk, so it answers from the last good reading while the feed is down or after a restart. Answers carry up to `QUMO_DNS_MAX_ANSWERS` addresses, all of the nearest region and rotated; names outside its zone are refused. Run it beside each relay; see the `dns` CLI page.
