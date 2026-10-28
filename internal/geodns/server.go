@@ -156,24 +156,35 @@ func (a *authority) answer(req *dns.Msg, from netip.Addr) *dns.Msg {
 // addressRecords answers the served name for a client at from.
 func (a *authority) addressRecords(z *zone, from netip.Addr, qtype uint16) []dns.RR {
 	var at *location
+	client := "unknown"
 	if loc, ok := a.geo.locate(from); ok {
 		at = &loc
-		a.metrics.located.WithLabelValues("located").Inc()
-	} else {
-		a.metrics.located.WithLabelValues("unknown").Inc()
+		client = "located"
 	}
+	a.metrics.located.WithLabelValues(client).Inc()
 	turn := a.turn.Add(1) - 1
 	var out []dns.RR
+	answered := ""
 	if qtype == dns.TypeA || qtype == dns.TypeANY {
-		for _, addr := range z.pick(at, false, a.maxAnswers, turn) {
+		region, addrs := z.pick(at, false, a.maxAnswers, turn)
+		for _, addr := range addrs {
 			out = append(out, &dns.A{Hdr: a.header(dns.TypeA, a.ttl), A: addr.AsSlice()})
 		}
+		answered = region
 	}
 	if qtype == dns.TypeAAAA || (qtype == dns.TypeANY && len(out) == 0) {
-		for _, addr := range z.pick(at, true, a.maxAnswers, turn) {
+		region, addrs := z.pick(at, true, a.maxAnswers, turn)
+		for _, addr := range addrs {
 			out = append(out, &dns.AAAA{Hdr: a.header(dns.TypeAAAA, a.ttl), AAAA: addr.AsSlice()})
 		}
+		answered = region
 	}
+	if answered == "" {
+		answered = "none"
+	}
+	// Where clients are sent, and whether they were placed to be: how well
+	// the city database serves this zone shows here.
+	a.metrics.answers.WithLabelValues(answered, client).Inc()
 	return out
 }
 

@@ -29,7 +29,9 @@ func distanceKM(a, b location) float64 {
 // turn rotates the addresses within the region, so that clients of one
 // place spread over its relays. A client of unknown place gets the regions
 // in name order, in turn, and each region's addresses in turn too.
-func (z *zone) pick(at *location, v6 bool, limit int, turn uint64) []netip.Addr {
+//
+// It also returns the region the addresses are of, "" when there are none.
+func (z *zone) pick(at *location, v6 bool, limit int, turn uint64) (string, []netip.Addr) {
 	var candidates []region
 	for _, r := range z.regions {
 		var family []netip.Addr
@@ -43,7 +45,7 @@ func (z *zone) pick(at *location, v6 bool, limit int, turn uint64) []netip.Addr 
 		}
 	}
 	if len(candidates) == 0 {
-		return nil
+		return "", nil
 	}
 	var chosen region
 	if at != nil {
@@ -58,5 +60,5 @@ func (z *zone) pick(at *location, v6 bool, limit int, turn uint64) []netip.Addr 
 	}
 	k := int(turn % uint64(len(chosen.addrs)))
 	out := slices.Concat(chosen.addrs[k:], chosen.addrs[:k])
-	return out[:min(limit, len(out))]
+	return chosen.name, out[:min(limit, len(out))]
 }

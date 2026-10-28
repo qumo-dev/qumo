@@ -74,7 +74,8 @@ func TestZone_Pick(t *testing.T) {
 	}
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
-			assert.Equal(t, tt.expected, testZone().pick(tt.at, tt.v6, tt.limit, tt.turn))
+			_, got := testZone().pick(tt.at, tt.v6, tt.limit, tt.turn)
+			assert.Equal(t, tt.expected, got)
 		})
 	}
 }
@@ -88,7 +89,9 @@ func TestZone_Pick_ATieKeepsNameOrder(t *testing.T) {
 	}}
 
 	for turn := range uint64(3) {
-		assert.Equal(t, []netip.Addr{netip.MustParseAddr("192.0.2.1")}, z.pick(&osaka, false, 1, turn))
+		region, got := z.pick(&osaka, false, 1, turn)
+		assert.Equal(t, "a", region)
+		assert.Equal(t, []netip.Addr{netip.MustParseAddr("192.0.2.1")}, got)
 	}
 }
 
@@ -99,7 +102,8 @@ func TestZone_Pick_SpreadsOverARegion(t *testing.T) {
 	first := map[netip.Addr]int{}
 
 	for turn := range uint64(3) {
-		first[z.pick(&osaka, false, 1, turn)[0]]++
+		_, got := z.pick(&osaka, false, 1, turn)
+		first[got[0]]++
 	}
 
 	assert.Len(t, first, 3)
@@ -107,6 +111,6 @@ func TestZone_Pick_SpreadsOverARegion(t *testing.T) {
 
 func TestZone_Pick_LeavesZoneUnchanged(t *testing.T) {
 	z := testZone()
-	_ = z.pick(&osaka, false, 3, 1) // the result is not under test
+	_, _ = z.pick(&osaka, false, 3, 1) // the result is not under test
 	assert.Equal(t, testZone(), z)
 }

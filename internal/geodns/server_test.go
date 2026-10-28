@@ -485,3 +485,34 @@ func TestAuthority_Answer_WhileTheZoneChanges(t *testing.T) {
 	}
 	wg.Wait()
 }
+
+// TestAuthority_Answer_CountsWhereClientsGo: every address query is counted
+// by the region answered and whether the client was placed, so how well the
+// city database serves a zone shows in the metrics.
+func TestAuthority_Answer_CountsWhereClientsGo(t *testing.T) {
+	v4Only := &zone{serial: 7, regions: []region{
+		{name: "east", at: tokyo, addrs: []netip.Addr{netip.MustParseAddr("192.0.2.20")}},
+	}}
+	tests := map[string]struct {
+		zone   *zone
+		qtype  uint16
+		from   netip.Addr
+		region string
+		client string
+	}{
+		"a placed client, its nearest region":         {zone: testZone(), qtype: dns.TypeA, from: resolverInAsahikawa, region: "north", client: "located"},
+		"a client of unknown place, a region in turn": {zone: testZone(), qtype: dns.TypeA, from: netip.MustParseAddr("192.0.2.200"), region: "east", client: "unknown"},
+		"IPv6 from the nearest region that has it":    {zone: testZone(), qtype: dns.TypeAAAA, from: clientInOsaka, region: "north", client: "located"},
+		"no address of the type: none":                {zone: v4Only, qtype: dns.TypeAAAA, from: clientInOsaka, region: "none", client: "located"},
+	}
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			a := testAuthority(t, tt.zone)
+
+			a.answer(query("cdn.geo.example.com.", tt.qtype), tt.from)
+
+			assert.InDelta(t, 1, testutil.ToFloat64(a.metrics.answers.WithLabelValues(tt.region, tt.client)), 0)
+			assert.Equal(t, 1, testutil.CollectAndCount(a.metrics.answers), "one series, counted once")
+		})
+	}
+}
