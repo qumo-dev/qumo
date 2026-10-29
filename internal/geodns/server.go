@@ -164,6 +164,7 @@ func (a *authority) addressRecords(z *zone, from netip.Addr, qtype uint16) []dns
 	a.metrics.located.WithLabelValues(client).Inc()
 	turn := a.turn.Add(1) - 1
 	var out []dns.RR
+	// The region answered from, "" for none: no feed region is named "".
 	answered := ""
 	if qtype == dns.TypeA || qtype == dns.TypeANY {
 		region, addrs := z.pick(at, false, a.maxAnswers, turn)
@@ -179,11 +180,9 @@ func (a *authority) addressRecords(z *zone, from netip.Addr, qtype uint16) []dns
 		}
 		answered = region
 	}
-	if answered == "" {
-		answered = "none"
-	}
 	// Where clients are sent, and whether they were placed to be: how well
-	// the city database serves this zone shows here.
+	// the city database serves this zone shows here. located counts the
+	// same queries by client alone; it stays for dashboards built on it.
 	a.metrics.answers.WithLabelValues(answered, client).Inc()
 	return out
 }

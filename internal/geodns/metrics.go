@@ -27,7 +27,7 @@ func newMetrics(reg prometheus.Registerer) *metrics {
 		}, []string{"outcome"}),
 		answers: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Namespace: "qumo", Subsystem: "dns", Name: "answers_total",
-			Help: "Address queries by the region answered (none: no address of the type) and whether the client was placed (located, unknown).",
+			Help: "Address queries answered from a zone, by the region answered (empty: no address of the type) and whether the client was placed (located, unknown).",
 		}, []string{"region", "client"}),
 		feedRounds: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Namespace: "qumo", Subsystem: "dns", Name: "feed_rounds_total",

@@ -30,7 +30,8 @@ func distanceKM(a, b location) float64 {
 // place spread over its relays. A client of unknown place gets the regions
 // in name order, in turn, and each region's addresses in turn too.
 //
-// It also returns the region the addresses are of, "" when there are none.
+// It also returns the name of the region the addresses are of, "" when
+// there are none.
 func (z *zone) pick(at *location, v6 bool, limit int, turn uint64) (string, []netip.Addr) {
 	var candidates []region
 	for _, r := range z.regions {

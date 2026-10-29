@@ -260,6 +260,20 @@ func TestService_FeedRound_Outcomes(t *testing.T) {
 	assert.JSONEq(t, testFeedTwoRegions, string(kept))
 }
 
+// TestService_Serve_ForgetsRegionsLeft: a region the new feed no longer has
+// leaves the answer counts, and a region it keeps keeps its count.
+func TestService_Serve_ForgetsRegionsLeft(t *testing.T) {
+	s := testService(t, "http://127.0.0.1:1/unused")
+	require.NoError(t, s.serve(t.Context(), []byte(testFeedTwoRegions), false))
+	s.metrics.answers.WithLabelValues("east", "located").Inc()
+	s.metrics.answers.WithLabelValues("north", "unknown").Inc()
+
+	require.NoError(t, s.serve(t.Context(), []byte(testFeed), false))
+
+	assert.Equal(t, 1, testutil.CollectAndCount(s.metrics.answers), "north left the feed")
+	assert.InDelta(t, 1, testutil.ToFloat64(s.metrics.answers.WithLabelValues("east", "located")), 0)
+}
+
 // TestService_LoadSnapshot_ServesWithoutTheFeed: a restart with the feed
 // unreachable answers from the copy kept, without asking the feed.
 func TestService_LoadSnapshot_ServesWithoutTheFeed(t *testing.T) {
