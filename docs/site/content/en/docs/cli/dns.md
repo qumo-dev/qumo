@@ -113,6 +113,7 @@ the key is never logged.
 |---|---|
 | `qumo_dns_queries_total{rcode}` | Queries answered, by response code. |
 | `qumo_dns_client_locations_total{outcome}` | Address queries whose client was `located` or `unknown`. |
+| `qumo_dns_answers_total{region,client}` | Address queries answered from a zone (not the `SERVFAIL`s before the first feed read), by the region answered (empty: no address of the type asked) and whether the client was `located` or `unknown`: where clients are sent, and how well the city database places them. A region that leaves the feed leaves the metric too. |
 | `qumo_dns_feed_rounds_total{outcome}` | Feed reads: `updated`, `unchanged`, `not_ready`, `error`. |
 | `qumo_dns_feed_last_success_timestamp_seconds` | When the feed was last read. |
 | `qumo_dns_geo_refresh_total{outcome}` | Database refreshes: `updated`, `unchanged`, `error`. |

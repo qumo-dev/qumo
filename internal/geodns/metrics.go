@@ -7,6 +7,7 @@ import "github.com/prometheus/client_golang/prometheus"
 type metrics struct {
 	queries       *prometheus.CounterVec
 	located       *prometheus.CounterVec
+	answers       *prometheus.CounterVec
 	feedRounds    *prometheus.CounterVec
 	feedUpdated   prometheus.Gauge
 	geoRounds     *prometheus.CounterVec
@@ -24,6 +25,10 @@ func newMetrics(reg prometheus.Registerer) *metrics {
 			Namespace: "qumo", Subsystem: "dns", Name: "client_locations_total",
 			Help: "Address queries by whether the client was placed (located, unknown).",
 		}, []string{"outcome"}),
+		answers: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Namespace: "qumo", Subsystem: "dns", Name: "answers_total",
+			Help: "Address queries answered from a zone, by the region answered (empty: no address of the type) and whether the client was placed (located, unknown).",
+		}, []string{"region", "client"}),
 		feedRounds: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Namespace: "qumo", Subsystem: "dns", Name: "feed_rounds_total",
 			Help: "Feed reads, by outcome (updated, unchanged, not_ready, error).",
@@ -45,6 +50,6 @@ func newMetrics(reg prometheus.Registerer) *metrics {
 			Help: "Addresses in the zone served.",
 		}),
 	}
-	reg.MustRegister(m.queries, m.located, m.feedRounds, m.feedUpdated, m.geoRounds, m.zoneRegions, m.zoneAddresses)
+	reg.MustRegister(m.queries, m.located, m.answers, m.feedRounds, m.feedUpdated, m.geoRounds, m.zoneRegions, m.zoneAddresses)
 	return m
 }

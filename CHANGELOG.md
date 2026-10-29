@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`qumo dns` counts where it sends clients (`internal/geodns`).** `qumo_dns_answers_total{region,client}` counts address queries answered from a zone by the region answered (empty when no region has an address of the type asked) and whether the client was placed (`located`, `unknown`), so how well the city database places a zone's clients can be watched rather than guessed. A region that leaves the feed is dropped from it.
+
 ## [v0.17.261028] - 2026-10-28
 
 ### Added

@@ -24,6 +24,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -404,6 +405,21 @@ func (s *service) feedRound(ctx context.Context) {
 	s.metrics.feedRounds.WithLabelValues("updated").Inc()
 }
 
+// forgetRegionsLeft drops the answer counts of the regions in old that are
+// not in z, so that a feed renaming its regions does not leave every name it
+// ever had in the metrics. A query answered from old as it is replaced may
+// count its region once more.
+func (s *service) forgetRegionsLeft(old, z *zone) {
+	if old == nil {
+		return
+	}
+	for _, r := range old.regions {
+		if !slices.ContainsFunc(z.regions, func(n region) bool { return n.name == r.name }) {
+			s.metrics.answers.DeletePartialMatch(prometheus.Labels{"region": r.name})
+		}
+	}
+}
+
 // serve puts a feed body in place, and keeps it on disk when keep is set.
 func (s *service) serve(ctx context.Context, body []byte, keep bool) error {
 	z, skipped, err := parseFeed(body)
@@ -413,8 +429,9 @@ func (s *service) serve(ctx context.Context, body []byte, keep bool) error {
 	if err != nil {
 		return err
 	}
-	s.auth.current.Store(z)
+	old := s.auth.current.Swap(z)
 	s.lastBody = body
+	s.forgetRegionsLeft(old, z)
 	addrs := 0
 	for _, r := range z.regions {
 		addrs += len(r.addrs)
