@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **`qumo dns` counts where it sends clients (`internal/geodns`).** `qumo_dns_answers_total{region,client}` counts address queries answered from a zone by the region answered (empty when no region has an address of the type asked) and whether the client was placed (`located`, `unknown`), so how well the city database places a zone's clients can be watched rather than guessed. A region that leaves the feed is dropped from it.
 
+### Changed
+
+- **Bumped gomoqt to v0.28.0 and the playground's `@qumo/moq` to 0.28.0.** Both now follow SUBSCRIBE_REDIRECT, a gomoqt extension by which a publisher sends a subscriber to another track or relay; the relay sends none yet, so nothing changes until it does. A Go client dialing over WebTransport (`https://`) now reports why a subscribe was refused, such as a missing broadcast, as it already did over native QUIC.
+
 ## [v0.17.261028] - 2026-10-28
 
 ### Added
