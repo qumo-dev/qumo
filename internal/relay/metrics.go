@@ -395,4 +395,18 @@ var (
 		},
 		[]string{"code"},
 	)
+
+	// metricSubscribeRedirectsTotal counts subscriptions whose publisher
+	// answered with a redirect, by what the relay did with it: passed it on,
+	// refused one to another relay, or could not pass it on (the subscriber
+	// does not follow redirects).
+	metricSubscribeRedirectsTotal = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Namespace: "qumo",
+			Subsystem: "relay",
+			Name:      "subscribe_redirects_total",
+			Help:      "Total number of subscriptions a publisher redirected, by result: passed, refused, not_passed.",
+		},
+		[]string{"result"},
+	)
 )

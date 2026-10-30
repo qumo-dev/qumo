@@ -38,6 +38,8 @@ import (
 	"github.com/qumo-dev/gomoqt/moqt"
 	"github.com/qumo-dev/gomoqt/msf"
 
+	"github.com/qumo-dev/qumo/internal/hls"
+
 	"github.com/qumo-dev/qumo/internal/cmaf"
 	"github.com/qumo-dev/qumo/internal/envconfig"
 	"github.com/qumo-dev/qumo/internal/quicconfig"
@@ -101,11 +103,7 @@ func main() {
 	// Opt the broadcast into the HLS egress, which serves what is announced
 	// beneath /.hls/. The opt-in has no tracks of its own: it redirects every
 	// subscription to the broadcast, keeping the track name.
-	mux.PublishFunc(ctx, moqt.BroadcastPath("/.hls"+path), func(tw *moqt.TrackWriter) {
-		if err := tw.Redirect(tw.Context(), moqt.Redirect{BroadcastPath: moqt.BroadcastPath(path)}); err != nil {
-			tw.CloseWithError(moqt.SubscribeErrorCodeNotFound)
-		}
-	})
+	mux.Publish(ctx, moqt.BroadcastPath("/.hls"+path), hls.OptInHandler(moqt.BroadcastPath(path)))
 
 	httpMux := http.NewServeMux()
 	httpMux.Handle("/", &moqt.WebTransportHandler{

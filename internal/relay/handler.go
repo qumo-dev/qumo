@@ -41,10 +41,11 @@ var MaxGroupFillsInFlight = max(32, 2*runtime.GOMAXPROCS(0))
 
 var errTrackNotFound = errors.New("track not found")
 
-// stopRedirect is the relay's CheckRedirect: it never follows a publisher's
-// redirect upstream, so Session.Subscribe returns it as a *moqt.RedirectError
-// for ServeTrack to pass on.
-func stopRedirect(moqt.Redirect, []moqt.Redirect) error { return moqt.ErrStopRedirect }
+// StopRedirect is a CheckRedirect that follows no redirect: Session.Subscribe
+// returns each one as a *moqt.RedirectError. The relay's sessions use it, so
+// that ServeTrack passes a publisher's redirect on rather than following it
+// upstream, and so does the HLS egress, which follows redirects itself.
+func StopRedirect(moqt.Redirect, []moqt.Redirect) error { return moqt.ErrStopRedirect }
 
 // maxGroupFillsInFlightOrPanic returns MaxGroupFillsInFlight, panicking if it
 // is less than 1 so that misconfiguration causes an immediate, clear failure
@@ -389,16 +390,7 @@ func (h *relayHandler) ServeTrack(tw *moqt.TrackWriter) {
 	select {
 	case result := <-ch:
 		if redirectErr, ok := errors.AsType[*moqt.RedirectError](result.Err); ok {
-			// The publisher sent the subscriber elsewhere: pass it on. The
-			// target is subscribed through this relay as any other track.
-			to := redirectErr.Redirect
-			if err := tw.Redirect(tw.Context(), to); err != nil {
-				tw.CloseWithError(moqt.SubscribeErrorCodeNotFound)
-				metricSubscribeErrorsTotal.WithLabelValues("not_found").Inc()
-				logger.Warn("relay: could not pass a redirect on", "to", to.BroadcastPath, "error", err)
-				return
-			}
-			logger.Debug("relay: passed a redirect on", "to", to.BroadcastPath, "track", to.TrackName)
+			h.passRedirect(tw, redirectErr.Redirect, logger)
 			return
 		}
 		if result.Err != nil {
@@ -413,6 +405,27 @@ func (h *relayHandler) ServeTrack(tw *moqt.TrackWriter) {
 		// Client unsubscribed before we could subscribe upstream - just return
 		return
 	}
+}
+
+// passRedirect answers tw with the redirect its publisher answered the
+// relay's upstream subscribe with. The target is subscribed through this
+// relay as any other track. A redirect to another relay is refused: the relay
+// does not send its subscribers to a host its operator did not choose.
+func (h *relayHandler) passRedirect(tw *moqt.TrackWriter, to moqt.Redirect, logger *slog.Logger) {
+	if to.URI != "" {
+		tw.CloseWithError(moqt.SubscribeErrorCodeNotFound)
+		metricSubscribeRedirectsTotal.WithLabelValues("refused").Inc()
+		logger.Warn("relay: refused a publisher's redirect to another relay", "to_broadcast", to.BroadcastPath)
+		return
+	}
+	if err := tw.Redirect(tw.Context(), to); err != nil {
+		tw.CloseWithError(moqt.SubscribeErrorCodeNotFound)
+		metricSubscribeRedirectsTotal.WithLabelValues("not_passed").Inc()
+		logger.Warn("relay: could not pass a redirect on", "to", to.BroadcastPath, "error", err)
+		return
+	}
+	metricSubscribeRedirectsTotal.WithLabelValues("passed").Inc()
+	logger.Debug("relay: passed a redirect on", "to", to.BroadcastPath, "track", to.TrackName)
 }
 
 // upstreamTrack is the result of a deduplicated upstream subscribe: the

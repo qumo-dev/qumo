@@ -26,8 +26,7 @@ type Server struct {
 	// TLSConfig with NextProtos: []string{moqt.NextProtoMOQ} only, so that
 	// ALPN negotiation does not accidentally select "h3"; the relay command
 	// sets (*PeerTrust).DialerTLS, which also names PeeringName. The relay
-	// sets its CheckRedirect, so do not share it with code that follows
-	// redirects.
+	// dials with a copy whose CheckRedirect follows no redirect.
 	MOQDialer *moqt.Dialer
 	// PeerCertificate is this relay's own peer certificate (DER), or nil
 	// without a peer identity. A dialed peer that presents it is this relay
@@ -268,12 +267,15 @@ func (s *Server) init() {
 		if s.MOQServer.CheckRedirect != nil {
 			slog.Warn("relay.Server: overriding MOQServer.CheckRedirect set by caller")
 		}
-		s.MOQServer.CheckRedirect = stopRedirect
+		s.MOQServer.CheckRedirect = StopRedirect
 		if s.MOQDialer != nil {
 			if s.MOQDialer.CheckRedirect != nil {
 				slog.Warn("relay.Server: overriding MOQDialer.CheckRedirect set by caller")
 			}
-			s.MOQDialer.CheckRedirect = stopRedirect
+			// A copy, so a Dialer the caller shares keeps following redirects.
+			dialer := *s.MOQDialer
+			dialer.CheckRedirect = StopRedirect
+			s.MOQDialer = &dialer
 		}
 
 		// Wire relay-specific fields into the caller-provided MoQServer.
@@ -296,7 +298,7 @@ func (s *Server) init() {
 			TrackMux:      s.TrackMux,
 			Handler:       moqt.HandleFunc(s.Relay),
 			AuthHandler:   moqt.AuthHandlerFunc(s.ServeAuth),
-			CheckRedirect: stopRedirect,
+			CheckRedirect: StopRedirect,
 			Logger:        s.MOQServer.Logger,
 			CheckOrigin:   cors.NewChecker(s.AllowedOrigins),
 		}
@@ -308,7 +310,7 @@ func (s *Server) init() {
 				TrackMux:      s.TrackMux,
 				Handler:       moqt.HandleFunc(s.Relay),
 				AuthHandler:   moqt.AuthHandlerFunc(s.ServeAuth),
-				CheckRedirect: stopRedirect,
+				CheckRedirect: StopRedirect,
 				Logger:        s.MOQServer.Logger,
 				CheckOrigin:   cors.NewChecker(s.AllowedOrigins),
 				Server:        s.MOQServer,

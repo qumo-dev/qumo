@@ -17,6 +17,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/qumo-dev/qumo/internal/devcert"
+	"github.com/qumo-dev/qumo/internal/relay"
 )
 
 // loopbackPublisher serves mux on a loopback native QUIC address and returns
@@ -52,7 +53,7 @@ func loopbackPublisher(tb testing.TB, ctx context.Context, mux *moqt.TrackMux) *
 	}()
 	tb.Cleanup(func() { _ = srv.Close() }) // not actionable: test teardown
 
-	dialer := &moqt.Dialer{TLSConfig: &tls.Config{InsecureSkipVerify: true}, CheckRedirect: stopRedirect} //nolint:gosec // test-only self-signed cert
+	dialer := &moqt.Dialer{TLSConfig: &tls.Config{InsecureSkipVerify: true}, CheckRedirect: relay.StopRedirect} //nolint:gosec // test-only self-signed cert
 	var sess *moqt.Session
 	require.Eventually(tb, func() bool {
 		s, err := dialer.Dial(ctx, "moqt://"+addr+"/", nil)
@@ -103,20 +104,12 @@ func TestFetchCatalog_OptIn(t *testing.T) {
 	defer cancel()
 	mux := moqt.NewTrackMux(0)
 	mux.PublishFunc(ctx, "/acme/cam", serveCatalog(t, catalog))
-	mux.PublishFunc(ctx, "/.hls/acme/cam", func(tw *moqt.TrackWriter) {
-		if err := tw.Redirect(tw.Context(), moqt.Redirect{BroadcastPath: "/acme/cam"}); err != nil {
-			tw.CloseWithError(moqt.SubscribeErrorCodeNotFound)
-		}
-	})
+	mux.Publish(ctx, "/.hls/acme/cam", OptInHandler("/acme/cam"))
 	mux.PublishFunc(ctx, "/legacy/cam", serveCatalog(t, catalog))
 	mux.Publish(ctx, "/.hls/legacy/cam", moqt.NotFoundTrackHandler)
 	// An opt-in that redirects to a broadcast not published yet, while its
 	// plain path is published: the egress must not take the plain path.
-	mux.PublishFunc(ctx, "/.hls/early/cam", func(tw *moqt.TrackWriter) {
-		if err := tw.Redirect(tw.Context(), moqt.Redirect{BroadcastPath: "/early/cam-hd"}); err != nil {
-			tw.CloseWithError(moqt.SubscribeErrorCodeNotFound)
-		}
-	})
+	mux.Publish(ctx, "/.hls/early/cam", OptInHandler("/early/cam-hd"))
 	mux.PublishFunc(ctx, "/early/cam", serveCatalog(t, catalog))
 	mux.Publish(ctx, "/.hls/gone/cam", moqt.NotFoundTrackHandler)
 	sess := loopbackPublisher(t, ctx, mux)
@@ -147,4 +140,81 @@ func TestFetchCatalog_OptIn(t *testing.T) {
 			assert.Equal(t, "video", got.Tracks[0].Name)
 		})
 	}
+}
+
+// redirectTo serves every subscription with a redirect to to.
+func redirectTo(to moqt.Redirect) moqt.TrackHandler {
+	return moqt.TrackHandlerFunc(func(tw *moqt.TrackWriter) {
+		if err := tw.Redirect(tw.Context(), to); err != nil {
+			tw.CloseWithError(moqt.SubscribeErrorCodeNotFound)
+		}
+	})
+}
+
+// subscribeFollowing follows redirects on the session, up to two, and reports
+// how many; a redirect to another relay or one hop too many is not retried.
+func TestSubscribeFollowing(t *testing.T) {
+	w, h := int64(1280), int64(720)
+	catalog := msf.Catalog{Tracks: []msf.Track{{
+		Name: "video", Role: msf.RoleVideo, Packaging: msf.PackagingLOC,
+		Codec: "vp09.00.10.08", Width: &w, Height: &h,
+	}}}
+	ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
+	defer cancel()
+	mux := moqt.NewTrackMux(0)
+	mux.PublishFunc(ctx, "/real", serveCatalog(t, catalog))
+	mux.Publish(ctx, "/one", redirectTo(moqt.Redirect{BroadcastPath: "/real"}))
+	mux.Publish(ctx, "/two", redirectTo(moqt.Redirect{BroadcastPath: "/one"}))
+	mux.Publish(ctx, "/loop-a", redirectTo(moqt.Redirect{BroadcastPath: "/loop-b"}))
+	mux.Publish(ctx, "/loop-b", redirectTo(moqt.Redirect{BroadcastPath: "/loop-a"}))
+	sess := loopbackPublisher(t, ctx, mux)
+
+	tests := map[string]struct {
+		path     moqt.BroadcastPath
+		wantHops int
+		wantErr  error
+	}{
+		"no redirect":   {path: "/real", wantHops: 0},
+		"one redirect":  {path: "/one", wantHops: 1},
+		"two redirects": {path: "/two", wantHops: 2},
+		"a loop":        {path: "/loop-a", wantHops: 2, wantErr: moqt.ErrTooManyRedirects},
+	}
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			tr, hops, err := subscribeFollowing(ctx, sess, tt.path, msf.DefaultCatalogTrackName)
+
+			assert.Equal(t, tt.wantHops, hops)
+			if tt.wantErr != nil {
+				assert.ErrorIs(t, err, tt.wantErr)
+				assert.ErrorIs(t, err, errNotRetryable)
+				return
+			}
+			require.NoError(t, err)
+			defer tr.Close() //nolint:errcheck // test teardown
+			assert.Equal(t, moqt.BroadcastPath("/real"), tr.BroadcastPath)
+		})
+	}
+}
+
+// An opt-in that answered NOT_FOUND once is a publisher from before the
+// redirect: a retry asks its broadcast directly, not the opt-in again.
+func TestOptInCatalog_RemembersAnOlderPublisher(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
+	defer cancel()
+	optInAsked := make(chan struct{}, 4)
+	mux := moqt.NewTrackMux(0)
+	mux.PublishFunc(ctx, "/.hls/legacy/cam", func(tw *moqt.TrackWriter) {
+		optInAsked <- struct{}{}
+		tw.CloseWithError(moqt.SubscribeErrorCodeNotFound)
+	})
+	sess := loopbackPublisher(t, ctx, mux)
+	c := &optInCatalog{optIn: "/.hls/legacy/cam", broadcast: "/legacy/cam"}
+
+	_, _, firstErr := c.fetch(ctx, sess)
+	_, _, secondErr := c.fetch(ctx, sess)
+
+	require.Error(t, firstErr, "the broadcast is not published")
+	require.Error(t, secondErr)
+	assert.True(t, c.legacy)
+	assert.Len(t, optInAsked, 1, "the opt-in is asked once")
 }

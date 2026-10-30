@@ -4,6 +4,8 @@ package relay
 
 import (
 	"context"
+	"crypto/tls"
+	"errors"
 	"testing"
 	"time"
 
@@ -80,4 +82,53 @@ func TestRelay_PassesRedirectOn(t *testing.T) {
 			assert.Equal(t, moqt.GroupSequence(1), gr.GroupSequence())
 		})
 	}
+}
+
+// A relay does not send its subscribers to another relay a publisher names:
+// it refuses such a redirect. Only a server may send one, so the publisher
+// here is a plain gomoqt server the relay peers with.
+func TestRelay_RefusesRedirectToAnotherRelay(t *testing.T) {
+	const optIn = moqt.BroadcastPath("/.hls/acme/cam")
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	cert, pool := chainCert(t)
+	quicCfg := &quic.Config{EnableDatagrams: true, KeepAlivePeriod: 5 * time.Second, MaxIdleTimeout: 30 * time.Second}
+
+	// The publisher: a gomoqt server whose opt-in redirects to another host.
+	pubMux := moqt.NewTrackMux(moqt.NewHopID())
+	pubMux.PublishFunc(ctx, optIn, func(tw *moqt.TrackWriter) {
+		if err := tw.Redirect(tw.Context(), moqt.Redirect{URI: "moqt://elsewhere.example/", BroadcastPath: "/acme/cam"}); err != nil {
+			tw.CloseWithError(moqt.SubscribeErrorCodeNotFound)
+		}
+	})
+	pubAddr := chainFreeAddr(t)
+	pub := &moqt.Server{
+		Addr: pubAddr,
+		TLSConfig: &tls.Config{
+			Certificates: []tls.Certificate{cert}, NextProtos: []string{moqt.NextProtoMOQ}, MinVersion: tls.VersionTLS13,
+		},
+		QUICConfig: quicCfg,
+		TrackMux:   pubMux,
+		Handler:    moqt.HandleFunc(func(sess *moqt.Session) { <-sess.Context().Done() }),
+	}
+	go func() { _ = pub.ListenAndServe() }() // not actionable: ends with Close
+	t.Cleanup(func() { _ = pub.Close() })    // not actionable: test teardown
+	chainWaitReachable(t, pubAddr, pool, quicCfg)
+
+	leaf := spinRelay(t, "leaf", chainFreeAddr(t), cert, pool, quicCfg)
+	leaf.Config.Peers = []Peer{{Address: pubAddr}}
+	go leaf.ConnectPeers(ctx) //nolint:errcheck // ends with ctx
+	waitForHandler(t, leaf, optIn)
+
+	sess, err := (&moqt.Dialer{TLSConfig: chainDialerTLS(pool), QUICConfig: &quic.Config{EnableDatagrams: true}}).Dial(ctx, "moqt://"+leaf.MOQServer.Addr, moqt.NewTrackMux(0))
+	require.NoError(t, err)
+	defer sess.CloseWithError(moqt.NoError, "done") //nolint:errcheck // test teardown
+
+	_, err = sess.Subscribe(ctx, optIn, "video", nil)
+
+	_, redirected := errors.AsType[*moqt.RedirectError](err)
+	assert.False(t, redirected, "the subscriber is not sent to the other relay")
+	subErr, ok := errors.AsType[*moqt.SubscribeError](err)
+	require.True(t, ok, "want a *moqt.SubscribeError, got %v", err)
+	assert.Equal(t, moqt.SubscribeErrorCodeNotFound, subErr.SubscribeErrorCode())
 }
