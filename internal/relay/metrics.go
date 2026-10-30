@@ -395,4 +395,30 @@ var (
 		},
 		[]string{"code"},
 	)
+
+	// metricSubscribeRedirectCacheHitsTotal counts subscriptions answered
+	// with a redirect the relay remembered, without asking the publisher.
+	// They count in metricSubscribeRedirectsTotal too.
+	metricSubscribeRedirectCacheHitsTotal = promauto.NewCounter(
+		prometheus.CounterOpts{
+			Namespace: "qumo",
+			Subsystem: "relay",
+			Name:      "subscribe_redirect_cache_hits_total",
+			Help:      "Total number of subscriptions answered with a cached publisher redirect.",
+		},
+	)
+
+	// metricSubscribeRedirectsTotal counts subscriptions whose publisher
+	// answered with a redirect, by what the relay did with it: passed it on,
+	// refused one to another relay, or could not pass it on (the subscriber
+	// does not follow redirects).
+	metricSubscribeRedirectsTotal = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Namespace: "qumo",
+			Subsystem: "relay",
+			Name:      "subscribe_redirects_total",
+			Help:      "Total number of subscriptions a publisher redirected, by result: passed, refused, not_passed.",
+		},
+		[]string{"result"},
+	)
 )

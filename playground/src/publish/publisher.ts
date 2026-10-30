@@ -52,8 +52,9 @@ export interface PublishSettings extends VideoWanted {
 
 /**
  * Where a publisher opts into the HLS egress: announcing `/.hls/hls/x` asks it
- * to serve the broadcast `/hls/x`. The announcement carries no tracks; the
- * egress reads the media from the broadcast itself.
+ * to serve the broadcast `/hls/x`. The announcement carries no tracks: it
+ * redirects every subscription to the broadcast, where the egress reads the
+ * media.
  */
 const HLS_OPT_IN_PREFIX = "/.hls";
 
@@ -301,7 +302,16 @@ export class Publisher {
 				log.info("publish: opting into the HLS egress", { path: optIn });
 				// reason: built from the user's path, as above.
 				this.#init.mux.publish(context.done(), optIn as BroadcastPath, {
-					serveTrack: NotFound,
+					// The opt-in has no tracks of its own: it sends every
+					// subscription to the broadcast, keeping the track name. A
+					// subscriber that does not follow redirects is refused.
+					async serveTrack(writer: TrackWriter) {
+						// reason: the user's path, as above.
+						const err = await writer.redirect({ broadcastPath: settings.path as BroadcastPath });
+						if (err !== undefined) {
+							await NotFound(writer);
+						}
+					},
 				})
 					.catch((err: unknown) => {
 						if (run.stopped) return;

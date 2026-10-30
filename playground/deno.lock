@@ -3,7 +3,7 @@
   "specifiers": {
     "jsr:@okdaichi/golikejs@0.10.0": "0.10.0",
     "jsr:@okdaichi/media-log@0.1": "0.1.0",
-    "jsr:@qumo/moq@0.28": "0.28.0",
+    "jsr:@qumo/moq@~0.28.1": "0.28.1",
     "jsr:@std/assert@*": "1.0.16",
     "jsr:@std/assert@^1.0.19": "1.0.19",
     "jsr:@std/async@^1.5.1": "1.5.1",
@@ -31,8 +31,8 @@
     "@okdaichi/media-log@0.1.0": {
       "integrity": "c8ed4fdaac82cf8a2ecb7aa1a5a114d136f9886548ceae2c64b2322485a3c034"
     },
-    "@qumo/moq@0.28.0": {
-      "integrity": "284231924f924b61b650efab27e46f94ecc8f7e9f0d0d8a15b7fdaf339d1c742",
+    "@qumo/moq@0.28.1": {
+      "integrity": "b8a237ca09be2f342a208ec74f32ef59791d5ce3cb706e41ed2ce2cb8f8f4585",
       "dependencies": [
         "jsr:@okdaichi/golikejs",
         "npm:@moq/qmux",
@@ -764,7 +764,7 @@
     "dependencies": [
       "jsr:@okdaichi/golikejs@0.10.0",
       "jsr:@okdaichi/media-log@0.1",
-      "jsr:@qumo/moq@0.28",
+      "jsr:@qumo/moq@~0.28.1",
       "jsr:@std/assert@^1.0.19",
       "jsr:@std/testing@^1.0.21",
       "npm:hls.js@^1.7.3"

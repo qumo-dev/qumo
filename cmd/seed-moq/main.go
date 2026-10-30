@@ -40,6 +40,7 @@ import (
 
 	"github.com/qumo-dev/qumo/internal/cmaf"
 	"github.com/qumo-dev/qumo/internal/envconfig"
+	"github.com/qumo-dev/qumo/internal/hlsoptin"
 	"github.com/qumo-dev/qumo/internal/quicconfig"
 )
 
@@ -99,8 +100,9 @@ func main() {
 	// dispatches media-track subscribes to the registered handler.
 	mux.Publish(ctx, moqt.BroadcastPath(path), broadcast)
 	// Opt the broadcast into the HLS egress, which serves what is announced
-	// beneath /.hls/; the announcement carries no tracks of its own.
-	mux.Publish(ctx, moqt.BroadcastPath("/.hls"+path), moqt.NotFoundTrackHandler)
+	// beneath /.hls/. The opt-in has no tracks of its own: it redirects every
+	// subscription to the broadcast, keeping the track name.
+	mux.Publish(ctx, moqt.BroadcastPath("/.hls"+path), hlsoptin.Handler(moqt.BroadcastPath(path)))
 
 	httpMux := http.NewServeMux()
 	httpMux.Handle("/", &moqt.WebTransportHandler{

@@ -195,9 +195,10 @@ func TestRelayHandler_ConcurrentSubscribe(t *testing.T) {
 			name := moqt.TrackName(fmt.Sprintf("track-%d", i))
 
 			// Should hit the cache and return immediately
-			d, opened := h.subscribe(name)
-			assert.NotNil(t, d)
-			assert.False(t, opened, "a cached distributor was not opened by this call")
+			up, err := h.subscribe(name)
+			assert.NoError(t, err)
+			assert.NotNil(t, up.d)
+			assert.False(t, up.opened, "a cached distributor was not opened by this call")
 		}()
 	}
 
@@ -915,4 +916,28 @@ func BenchmarkEgressHistogramObserve(b *testing.B) {
 			observer.Observe(time.Since(start).Seconds())
 		}
 	})
+}
+
+// redirectCache keeps a redirect per track name and, past
+// maxCachedRedirects names, makes room for a new one by evicting another.
+func TestRedirectCache_Store(t *testing.T) {
+	var c redirectCache
+	for i := range maxCachedRedirects {
+		c.store(moqt.TrackName(fmt.Sprint(i)), moqt.Redirect{BroadcastPath: "/a"})
+	}
+
+	c.store("one too many", moqt.Redirect{BroadcastPath: "/b"})
+
+	newest, ok := c.load("one too many")
+	assert.True(t, ok, "a new name past the cap is stored")
+	assert.Equal(t, moqt.BroadcastPath("/b"), newest.BroadcastPath)
+	held := 0
+	for i := range maxCachedRedirects {
+		if _, ok := c.load(moqt.TrackName(fmt.Sprint(i))); ok {
+			held++
+		}
+	}
+	assert.Equal(t, maxCachedRedirects-1, held, "one older name is evicted")
+	_, ok = c.load("never stored")
+	assert.False(t, ok)
 }

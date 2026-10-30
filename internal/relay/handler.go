@@ -41,6 +41,12 @@ var MaxGroupFillsInFlight = max(32, 2*runtime.GOMAXPROCS(0))
 
 var errTrackNotFound = errors.New("track not found")
 
+// StopRedirect is a CheckRedirect that follows no redirect: Session.Subscribe
+// returns each one as a *moqt.RedirectError. The relay's sessions use it, so
+// that ServeTrack passes a publisher's redirect on rather than following it
+// upstream, and so does the HLS egress, which follows redirects itself.
+func StopRedirect(moqt.Redirect, []moqt.Redirect) error { return moqt.ErrStopRedirect }
+
 // maxGroupFillsInFlightOrPanic returns MaxGroupFillsInFlight, panicking if it
 // is less than 1 so that misconfiguration causes an immediate, clear failure
 // rather than a silent deadlock.
@@ -108,6 +114,8 @@ type relayHandler struct {
 
 	trackInfoCache sync.Map           // moqt.TrackName -> moqt.PublishInfo
 	infoFlights    singleflight.Group // deduplicates concurrent upstream TrackInfo queries
+
+	redirects redirectCache
 
 	// sampler is the server-wide stats sampler, passed to each track
 	// distributor this handler creates (see subscribe). nil is valid (nil-safe
@@ -374,19 +382,25 @@ func (h *relayHandler) ServeTrack(tw *moqt.TrackWriter) {
 		return
 	}
 
+	if to, ok := h.redirects.load(tw.TrackName); ok && h.announcement.IsActive() {
+		metricSubscribeRedirectCacheHitsTotal.Inc()
+		h.passRedirect(tw, to, logger)
+		return
+	}
+
 	logger.Debug("relay: ServeTrack — no existing distributor, will subscribe upstream", "track_id", trackID)
 
 	// Dedup: only one upstream subscribe per track name at a time
 	ch := h.flights.DoChan(string(tw.TrackName), func() (any, error) {
-		d, opened := h.subscribe(tw.TrackName)
-		if d == nil {
-			return nil, errTrackNotFound
-		}
-		return upstreamTrack{d: d, opened: opened}, nil
+		return h.subscribe(tw.TrackName)
 	})
 
 	select {
 	case result := <-ch:
+		if redirectErr, ok := errors.AsType[*moqt.RedirectError](result.Err); ok {
+			h.passRedirect(tw, redirectErr.Redirect, logger)
+			return
+		}
 		if result.Err != nil {
 			tw.CloseWithError(moqt.SubscribeErrorCodeNotFound)
 			metricSubscribeErrorsTotal.WithLabelValues("not_found").Inc()
@@ -401,6 +415,27 @@ func (h *relayHandler) ServeTrack(tw *moqt.TrackWriter) {
 	}
 }
 
+// passRedirect answers tw with the redirect its publisher answered the
+// relay's upstream subscribe with. The target is subscribed through this
+// relay as any other track. A redirect to another relay is refused: the relay
+// does not send its subscribers to a host its operator did not choose.
+func (h *relayHandler) passRedirect(tw *moqt.TrackWriter, to moqt.Redirect, logger *slog.Logger) {
+	if to.URI != "" {
+		tw.CloseWithError(moqt.SubscribeErrorCodeNotFound)
+		metricSubscribeRedirectsTotal.WithLabelValues("refused").Inc()
+		logger.Warn("relay: refused a publisher's redirect to another relay", "to_broadcast", to.BroadcastPath)
+		return
+	}
+	if err := tw.Redirect(tw.Context(), to); err != nil {
+		tw.CloseWithError(moqt.SubscribeErrorCodeNotFound)
+		metricSubscribeRedirectsTotal.WithLabelValues("not_passed").Inc()
+		logger.Warn("relay: could not pass a redirect on", "to", to.BroadcastPath, "error", err)
+		return
+	}
+	metricSubscribeRedirectsTotal.WithLabelValues("passed").Inc()
+	logger.Debug("relay: passed a redirect on", "to", to.BroadcastPath, "track", to.TrackName)
+}
+
 // upstreamTrack is the result of a deduplicated upstream subscribe: the
 // distributor, and whether this flight opened its upstream subscription (as
 // opposed to finding a distributor already running).
@@ -410,31 +445,35 @@ type upstreamTrack struct {
 }
 
 // subscribe returns the distributor for name, opening the upstream
-// subscription if none is running. opened reports whether this call opened it.
-// It returns nil when the track cannot be subscribed.
-func (h *relayHandler) subscribe(name moqt.TrackName) (d *trackDistributor, opened bool) {
+// subscription if none is running. It returns the publisher's
+// *moqt.RedirectError when the publisher redirected the subscription, and
+// errTrackNotFound when the track cannot be subscribed.
+func (h *relayHandler) subscribe(name moqt.TrackName) (upstreamTrack, error) {
 	announcement := h.announcement
 	if announcement == nil {
 		slog.Warn("relay: subscribe failed: announcement is nil", "track", name)
-		return nil, false
+		return upstreamTrack{}, errTrackNotFound
 	}
 
 	trackID := "[" + h.nodeID + "]" + string(announcement.BroadcastPath()) + "/" + string(name)
 	if d, ok := h.tracks.load(trackID); ok {
-		return d, false
+		return upstreamTrack{d: d}, nil
 	}
 
 	session := h.session
 	if session == nil {
 		slog.Warn("relay: subscribe failed: session is nil", "track", name)
-		return nil, false
+		return upstreamTrack{}, errTrackNotFound
 	}
 
 	if !announcement.IsActive() {
 		slog.Warn("relay: subscribe failed: announcement inactive",
 			"track", name,
 			"broadcast_path", announcement.BroadcastPath())
-		return nil, false
+		return upstreamTrack{}, errTrackNotFound
+	}
+	if to, ok := h.redirects.load(name); ok {
+		return upstreamTrack{}, &moqt.RedirectError{Redirect: to}
 	}
 
 	slog.Debug("relay: subscribe — subscribing upstream",
@@ -451,6 +490,10 @@ func (h *relayHandler) subscribe(name moqt.TrackName) (d *trackDistributor, open
 	start := time.Now()
 	src, err := session.Subscribe(h.ctx, announcement.BroadcastPath(), name, nil)
 	metricTrackUpstreamRequestDuration.WithLabelValues(path, track).Observe(time.Since(start).Seconds())
+	if redirectErr, ok := errors.AsType[*moqt.RedirectError](err); ok {
+		h.redirects.store(name, redirectErr.Redirect)
+		return upstreamTrack{}, err
+	}
 	if err != nil {
 		metricTrackUpstreamRequestErrorsTotal.WithLabelValues(path, track).Inc()
 		slog.Warn("relay: upstream subscribe failed",
@@ -458,10 +501,10 @@ func (h *relayHandler) subscribe(name moqt.TrackName) (d *trackDistributor, open
 			"broadcast_path", announcement.BroadcastPath(),
 			"track", name,
 			"error", err)
-		return nil, false
+		return upstreamTrack{}, errTrackNotFound
 	}
 
-	d = newTrackDistributor(h.tracks, trackID, h.sampler)
+	d := newTrackDistributor(h.tracks, trackID, h.sampler)
 
 	slog.Debug("relay: starting ingest loop",
 		"node", h.nodeID,
@@ -471,7 +514,45 @@ func (h *relayHandler) subscribe(name moqt.TrackName) (d *trackDistributor, open
 
 	h.tracks.store(trackID, d)
 
-	return d, true
+	return upstreamTrack{d: d, opened: true}, nil
+}
+
+// maxCachedRedirects bounds the redirects one handler remembers: the track
+// names are the subscribers' to choose, and a publisher redirects a few.
+const maxCachedRedirects = 64
+
+// redirectCache remembers the redirect a handler's publisher answered for
+// each track name, so later subscribers get it without asking the publisher
+// again, as an HTTP cache keeps a permanent redirect. SUBSCRIBE_REDIRECT
+// carries no lifetime, so an entry lives as long as the handler, which is the
+// announcement's: a publisher that would redirect elsewhere announces again.
+// Past maxCachedRedirects entries, a new one replaces one chosen at random,
+// so names a subscriber makes up cannot keep the opt-in's real tracks out.
+type redirectCache struct {
+	mu sync.Mutex
+	m  map[moqt.TrackName]moqt.Redirect
+}
+
+func (c *redirectCache) load(name moqt.TrackName) (moqt.Redirect, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	to, ok := c.m[name]
+	return to, ok
+}
+
+func (c *redirectCache) store(name moqt.TrackName, to moqt.Redirect) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.m == nil {
+		c.m = make(map[moqt.TrackName]moqt.Redirect)
+	}
+	if _, ok := c.m[name]; !ok && len(c.m) >= maxCachedRedirects {
+		for old := range c.m { // map iteration starts at a random entry
+			delete(c.m, old)
+			break
+		}
+	}
+	c.m[name] = to
 }
 
 // trackManager manages the set of active track distributors.

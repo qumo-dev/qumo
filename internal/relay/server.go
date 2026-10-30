@@ -25,7 +25,8 @@ type Server struct {
 	// MOQDialer is used for outbound peer connections. The caller must set
 	// TLSConfig with NextProtos: []string{moqt.NextProtoMOQ} only, so that
 	// ALPN negotiation does not accidentally select "h3"; the relay command
-	// sets (*PeerTrust).DialerTLS, which also names PeeringName.
+	// sets (*PeerTrust).DialerTLS, which also names PeeringName. The relay
+	// dials with a copy whose CheckRedirect follows no redirect.
 	MOQDialer *moqt.Dialer
 	// PeerCertificate is this relay's own peer certificate (DER), or nil
 	// without a peer identity. A dialed peer that presents it is this relay
@@ -260,6 +261,23 @@ func (s *Server) init() {
 			s.pathStatus = make(map[moqt.BroadcastPath]overlayPathStatus)
 		}
 
+		// A relay does not follow a publisher's redirect: it hands it to its
+		// own subscriber, on whose session the target is found (see
+		// relayHandler.ServeTrack). Every session it accepts or dials stops.
+		if s.MOQServer.CheckRedirect != nil {
+			slog.Warn("relay.Server: overriding MOQServer.CheckRedirect set by caller")
+		}
+		s.MOQServer.CheckRedirect = StopRedirect
+		if s.MOQDialer != nil {
+			if s.MOQDialer.CheckRedirect != nil {
+				slog.Warn("relay.Server: overriding MOQDialer.CheckRedirect set by caller")
+			}
+			// A copy, so a Dialer the caller shares keeps following redirects.
+			dialer := *s.MOQDialer
+			dialer.CheckRedirect = StopRedirect
+			s.MOQDialer = &dialer
+		}
+
 		// Wire relay-specific fields into the caller-provided MoQServer.
 		if s.MOQServer.Handler != nil {
 			slog.Warn("relay.Server: overriding MOQServer.Handler set by caller")
@@ -277,23 +295,25 @@ func (s *Server) init() {
 		s.MOQServer.AuthHandler = moqt.AuthHandlerFunc(s.ServeAuth)
 
 		s.webtransportHandler = &moqt.WebTransportHandler{
-			TrackMux:    s.TrackMux,
-			Handler:     moqt.HandleFunc(s.Relay),
-			AuthHandler: moqt.AuthHandlerFunc(s.ServeAuth),
-			Logger:      s.MOQServer.Logger,
-			CheckOrigin: cors.NewChecker(s.AllowedOrigins),
+			TrackMux:      s.TrackMux,
+			Handler:       moqt.HandleFunc(s.Relay),
+			AuthHandler:   moqt.AuthHandlerFunc(s.ServeAuth),
+			CheckRedirect: StopRedirect,
+			Logger:        s.MOQServer.Logger,
+			CheckOrigin:   cors.NewChecker(s.AllowedOrigins),
 		}
 
 		if s.Config != nil && s.Config.WebSocket {
 			// Server ties the sessions to MOQServer's Shutdown and Close,
 			// so they get the GOAWAY a WebTransport session gets.
 			s.websocketHandler = &moqt.WebSocketHandler{
-				TrackMux:    s.TrackMux,
-				Handler:     moqt.HandleFunc(s.Relay),
-				AuthHandler: moqt.AuthHandlerFunc(s.ServeAuth),
-				Logger:      s.MOQServer.Logger,
-				CheckOrigin: cors.NewChecker(s.AllowedOrigins),
-				Server:      s.MOQServer,
+				TrackMux:      s.TrackMux,
+				Handler:       moqt.HandleFunc(s.Relay),
+				AuthHandler:   moqt.AuthHandlerFunc(s.ServeAuth),
+				CheckRedirect: StopRedirect,
+				Logger:        s.MOQServer.Logger,
+				CheckOrigin:   cors.NewChecker(s.AllowedOrigins),
+				Server:        s.MOQServer,
 			}
 		}
 

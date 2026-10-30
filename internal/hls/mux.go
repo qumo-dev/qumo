@@ -8,6 +8,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/qumo-dev/gomoqt/moqt"
 )
 
 // broadcastPathFromAnnounce strips the announcement prefix from annPath to find
@@ -25,6 +27,12 @@ func broadcastPathFromAnnounce(annPath, prefix string) string {
 		p = "/" + p
 	}
 	return path.Clean(p)
+}
+
+// sameBroadcast reports whether a and b name one broadcast, however spelled:
+// the egress cleans the paths it derives, a publisher may not.
+func sameBroadcast(a, b moqt.BroadcastPath) bool {
+	return path.Clean(string(a)) == path.Clean(string(b))
 }
 
 // trackInfo holds metadata describing a media track in an HLS master playlist.
