@@ -217,7 +217,10 @@ func dialRelay(ctx context.Context, cfg feedConfig) (*moqt.Session, error) {
 	if err != nil {
 		return nil, fmt.Errorf("hls: %w", err)
 	}
-	session, err := (&moqt.Dialer{TLSConfig: tc, QUICConfig: cfg.quic}).Dial(ctx, target, moqt.NewTrackMux(0))
+	// The egress follows an opt-in's redirect itself (fetchCatalog), so that it
+	// can tell the opt-in's answer from the broadcast's.
+	dialer := &moqt.Dialer{TLSConfig: tc, QUICConfig: cfg.quic, CheckRedirect: stopRedirect}
+	session, err := dialer.Dial(ctx, target, moqt.NewTrackMux(0))
 	if err != nil {
 		return nil, fmt.Errorf("hls: dial relay: %w", err)
 	}
@@ -287,23 +290,24 @@ func newMediaInfo(path string, t *msf.Track, packager *cmaf.Packager) mediaInfo 
 
 // fetchCatalogWithRetry subscribes to the catalog track with short retries to
 // accommodate any startup race between announcement arrival and the publisher's
-// catalog publication.
-func fetchCatalogWithRetry(ctx context.Context, session *moqt.Session, path string) (msf.Catalog, error) {
+// catalog publication. See fetchCatalog for optIn, broadcast and the path it
+// returns.
+func fetchCatalogWithRetry(ctx context.Context, session *moqt.Session, optIn, broadcast string) (msf.Catalog, moqt.BroadcastPath, error) {
 	for attempt := 1; attempt <= 10; attempt++ {
-		cat, err := fetchCatalog(ctx, session, path)
+		cat, source, err := fetchCatalog(ctx, session, optIn, broadcast)
 		if err == nil {
-			return cat, nil
+			return cat, source, nil
 		}
 		if ctx.Err() != nil {
-			return msf.Catalog{}, ctx.Err()
+			return msf.Catalog{}, "", ctx.Err()
 		}
 		select {
 		case <-ctx.Done():
-			return msf.Catalog{}, ctx.Err()
+			return msf.Catalog{}, "", ctx.Err()
 		case <-time.After(200 * time.Millisecond):
 		}
 	}
-	return fetchCatalog(ctx, session, path)
+	return fetchCatalog(ctx, session, optIn, broadcast)
 }
 
 // discoverMediaTracks finds all packageable media tracks described in the MSF
@@ -383,13 +387,18 @@ func handleAnnouncement(ctx context.Context, session *moqt.Session, ann *moqt.An
 		}
 	}()
 
-	catalog, err := fetchCatalogWithRetry(annCtx, session, realBroadcast)
+	catalog, source, err := fetchCatalogWithRetry(annCtx, session, annPath, realBroadcast)
 	if err != nil {
 		slog.Warn("hls: catalog fetch failed for announced broadcast", "broadcast", realBroadcast, "err", err)
 		return
 	}
+	if string(source) != realBroadcast {
+		slog.Info("hls: opt-in redirected", "announce", annPath, "source", source)
+	}
 
-	mediaTracks := discoverMediaTracks(catalog, realBroadcast)
+	// The media tracks are subscribed where the catalog came from; the
+	// broadcast keeps its name in the egress's URLs and storage.
+	mediaTracks := discoverMediaTracks(catalog, string(source))
 	if len(mediaTracks) == 0 {
 		slog.Warn("hls: no packageable media tracks found", "broadcast", realBroadcast)
 		return
@@ -625,33 +634,71 @@ func sessionRefusal(session *moqt.Session, err error) error {
 	return fmt.Errorf("hls: the relay closed the session: %w", cause)
 }
 
-// fetchCatalog subscribes to the reserved catalog track and parses its first
-// group as the MSF catalog.
-func fetchCatalog(ctx context.Context, session *moqt.Session, path string) (msf.Catalog, error) {
-	cat, err := session.Subscribe(ctx,
-		moqt.BroadcastPath(path),
-		moqt.TrackName(msf.DefaultCatalogTrackName),
-		&moqt.SubscribeConfig{Ordered: true},
-	)
+// stopRedirect is the egress session's CheckRedirect: Subscribe returns a
+// redirect as a *moqt.RedirectError, and subscribeCatalog follows it.
+func stopRedirect(moqt.Redirect, []moqt.Redirect) error { return moqt.ErrStopRedirect }
+
+// subscribeCatalog subscribes to the catalog of optIn. The opt-in answers with
+// a redirect to the broadcast, which it follows: one hop, on this session. A
+// publisher that predates the redirect answers NOT_FOUND instead, and its
+// broadcast is the opt-in's path without announcePrefix. NOT_FOUND from the
+// broadcast the opt-in redirected to is an error: that broadcast is not
+// announced yet, and the retry asks the opt-in again.
+func subscribeCatalog(ctx context.Context, session *moqt.Session, optIn, broadcast string) (*moqt.TrackReader, error) {
+	subscribe := func(path moqt.BroadcastPath, name moqt.TrackName) (*moqt.TrackReader, error) {
+		return session.Subscribe(ctx, path, name, &moqt.SubscribeConfig{Ordered: true})
+	}
+	cat, err := subscribe(moqt.BroadcastPath(optIn), msf.DefaultCatalogTrackName)
+	if redirectErr, ok := errors.AsType[*moqt.RedirectError](err); ok {
+		to := redirectErr.Redirect
+		if to.URI != "" {
+			return nil, fmt.Errorf("hls: the opt-in %s redirected to another relay (%s), which the egress does not dial", optIn, to.URI)
+		}
+		cat, err = subscribe(to.BroadcastPath, to.TrackName)
+		if err != nil {
+			return nil, fmt.Errorf("hls: subscribe catalog at %s, where the opt-in %s redirected: %w", to.BroadcastPath, optIn, err)
+		}
+		return cat, nil
+	}
+	if subErr, ok := errors.AsType[*moqt.SubscribeError](err); ok && subErr.SubscribeErrorCode() == moqt.SubscribeErrorCodeNotFound {
+		cat, err = subscribe(moqt.BroadcastPath(broadcast), msf.DefaultCatalogTrackName)
+		if err != nil {
+			return nil, fmt.Errorf("hls: subscribe catalog at %s, as the opt-in %s answered NOT_FOUND: %w", broadcast, optIn, err)
+		}
+		return cat, nil
+	}
 	if err != nil {
-		return msf.Catalog{}, fmt.Errorf("hls: subscribe catalog: %w", err)
+		return nil, fmt.Errorf("hls: subscribe catalog at the opt-in %s: %w", optIn, err)
+	}
+	// The opt-in serves a catalog itself.
+	return cat, nil
+}
+
+// fetchCatalog subscribes to the reserved catalog track of optIn, an
+// announcement beneath announcePrefix, and parses its first group as the MSF
+// catalog. It returns the path the catalog came from: the broadcast the opt-in
+// redirected to, or broadcast for a publisher that does not redirect.
+func fetchCatalog(ctx context.Context, session *moqt.Session, optIn, broadcast string) (msf.Catalog, moqt.BroadcastPath, error) {
+	cat, err := subscribeCatalog(ctx, session, optIn, broadcast)
+	if err != nil {
+		return msf.Catalog{}, "", err
 	}
 	defer cat.Close()
 
 	gr, err := cat.AcceptGroup(ctx)
 	if err != nil {
-		return msf.Catalog{}, fmt.Errorf("hls: read catalog group: %w", err)
+		return msf.Catalog{}, "", fmt.Errorf("hls: read catalog group: %w", err)
 	}
 	data, err := drainRaw(gr, moqt.NewFrame(0))
 	if err != nil {
-		return msf.Catalog{}, fmt.Errorf("hls: read catalog payload: %w", err)
+		return msf.Catalog{}, "", fmt.Errorf("hls: read catalog payload: %w", err)
 	}
 
 	catalog, err := msf.ParseCatalog(data)
 	if err != nil {
-		return msf.Catalog{}, fmt.Errorf("hls: parse catalog: %w", err)
+		return msf.Catalog{}, "", fmt.Errorf("hls: parse catalog: %w", err)
 	}
-	return catalog, nil
+	return catalog, cat.BroadcastPath, nil
 }
 
 // initFromTrack base64-decodes the fMP4 init data the track's initRef points

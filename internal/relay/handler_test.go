@@ -195,9 +195,10 @@ func TestRelayHandler_ConcurrentSubscribe(t *testing.T) {
 			name := moqt.TrackName(fmt.Sprintf("track-%d", i))
 
 			// Should hit the cache and return immediately
-			d, opened := h.subscribe(name)
-			assert.NotNil(t, d)
-			assert.False(t, opened, "a cached distributor was not opened by this call")
+			up, err := h.subscribe(name)
+			assert.NoError(t, err)
+			assert.NotNil(t, up.d)
+			assert.False(t, up.opened, "a cached distributor was not opened by this call")
 		}()
 	}
 

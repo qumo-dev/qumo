@@ -99,8 +99,13 @@ func main() {
 	// dispatches media-track subscribes to the registered handler.
 	mux.Publish(ctx, moqt.BroadcastPath(path), broadcast)
 	// Opt the broadcast into the HLS egress, which serves what is announced
-	// beneath /.hls/; the announcement carries no tracks of its own.
-	mux.Publish(ctx, moqt.BroadcastPath("/.hls"+path), moqt.NotFoundTrackHandler)
+	// beneath /.hls/. The opt-in has no tracks of its own: it redirects every
+	// subscription to the broadcast, keeping the track name.
+	mux.PublishFunc(ctx, moqt.BroadcastPath("/.hls"+path), func(tw *moqt.TrackWriter) {
+		if err := tw.Redirect(tw.Context(), moqt.Redirect{BroadcastPath: moqt.BroadcastPath(path)}); err != nil {
+			tw.CloseWithError(moqt.SubscribeErrorCodeNotFound)
+		}
+	})
 
 	httpMux := http.NewServeMux()
 	httpMux.Handle("/", &moqt.WebTransportHandler{
