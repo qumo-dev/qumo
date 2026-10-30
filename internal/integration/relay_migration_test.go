@@ -39,10 +39,9 @@ func TestRelay_ConnectionMigration(t *testing.T) {
 	last := nextGroupAfter(t, tr, 0, 5*time.Second)
 
 	moveTo(t, sub.sess, cellular.tr)
-	// Wi-Fi stays up until the relay has moved, so the relay's validation of
-	// the new path does not need its retries (quic-go#5408: the client answers
-	// a PATH_CHALLENGE on its active path; fixed by quic-go#5980, not in a
-	// release as of v0.64.1).
+	// Wi-Fi stays up until the relay has moved, as a phone keeps it while it
+	// joins cellular. (Until quic-go#5980 is released, this also spares the
+	// relay's challenge retries: quic-go#5408.)
 	last = readUntilMoved(t, tr, sub.wifi, cellular.conn, last)
 	// Wi-Fi is gone: nothing more is sent or received over the old socket.
 	sub.wifi.down.Store(true)
