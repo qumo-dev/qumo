@@ -459,9 +459,6 @@ func (h *relayHandler) subscribe(name moqt.TrackName) (upstreamTrack, error) {
 	if d, ok := h.tracks.load(trackID); ok {
 		return upstreamTrack{d: d}, nil
 	}
-	if to, ok := h.redirects.load(name); ok {
-		return upstreamTrack{}, &moqt.RedirectError{Redirect: to}
-	}
 
 	session := h.session
 	if session == nil {
@@ -474,6 +471,9 @@ func (h *relayHandler) subscribe(name moqt.TrackName) (upstreamTrack, error) {
 			"track", name,
 			"broadcast_path", announcement.BroadcastPath())
 		return upstreamTrack{}, errTrackNotFound
+	}
+	if to, ok := h.redirects.load(name); ok {
+		return upstreamTrack{}, &moqt.RedirectError{Redirect: to}
 	}
 
 	slog.Debug("relay: subscribe — subscribing upstream",
@@ -526,7 +526,8 @@ const maxCachedRedirects = 64
 // again, as an HTTP cache keeps a permanent redirect. SUBSCRIBE_REDIRECT
 // carries no lifetime, so an entry lives as long as the handler, which is the
 // announcement's: a publisher that would redirect elsewhere announces again.
-// Past maxCachedRedirects entries, new redirects are passed on uncached.
+// Past maxCachedRedirects entries, a new one replaces one chosen at random,
+// so names a subscriber makes up cannot keep the opt-in's real tracks out.
 type redirectCache struct {
 	mu sync.Mutex
 	m  map[moqt.TrackName]moqt.Redirect
@@ -546,7 +547,10 @@ func (c *redirectCache) store(name moqt.TrackName, to moqt.Redirect) {
 		c.m = make(map[moqt.TrackName]moqt.Redirect)
 	}
 	if _, ok := c.m[name]; !ok && len(c.m) >= maxCachedRedirects {
-		return
+		for old := range c.m { // map iteration starts at a random entry
+			delete(c.m, old)
+			break
+		}
 	}
 	c.m[name] = to
 }

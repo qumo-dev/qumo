@@ -38,10 +38,9 @@ import (
 	"github.com/qumo-dev/gomoqt/moqt"
 	"github.com/qumo-dev/gomoqt/msf"
 
-	"github.com/qumo-dev/qumo/internal/hlsoptin"
-
 	"github.com/qumo-dev/qumo/internal/cmaf"
 	"github.com/qumo-dev/qumo/internal/envconfig"
+	"github.com/qumo-dev/qumo/internal/hlsoptin"
 	"github.com/qumo-dev/qumo/internal/quicconfig"
 )
 

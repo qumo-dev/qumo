@@ -918,22 +918,26 @@ func BenchmarkEgressHistogramObserve(b *testing.B) {
 	})
 }
 
-// redirectCache keeps a redirect per track name, replaces one it holds, and
-// past maxCachedRedirects names stores no new one.
+// redirectCache keeps a redirect per track name and, past
+// maxCachedRedirects names, makes room for a new one by evicting another.
 func TestRedirectCache_Store(t *testing.T) {
 	var c redirectCache
 	for i := range maxCachedRedirects {
 		c.store(moqt.TrackName(fmt.Sprint(i)), moqt.Redirect{BroadcastPath: "/a"})
 	}
 
-	c.store("0", moqt.Redirect{BroadcastPath: "/b"})
-	c.store("one too many", moqt.Redirect{BroadcastPath: "/a"})
+	c.store("one too many", moqt.Redirect{BroadcastPath: "/b"})
 
-	replaced, ok := c.load("0")
-	assert.True(t, ok)
-	assert.Equal(t, moqt.BroadcastPath("/b"), replaced.BroadcastPath, "a held name is replaced at the cap")
-	_, ok = c.load("one too many")
-	assert.False(t, ok, "a new name past the cap is not stored")
+	newest, ok := c.load("one too many")
+	assert.True(t, ok, "a new name past the cap is stored")
+	assert.Equal(t, moqt.BroadcastPath("/b"), newest.BroadcastPath)
+	held := 0
+	for i := range maxCachedRedirects {
+		if _, ok := c.load(moqt.TrackName(fmt.Sprint(i))); ok {
+			held++
+		}
+	}
+	assert.Equal(t, maxCachedRedirects-1, held, "one older name is evicted")
 	_, ok = c.load("never stored")
 	assert.False(t, ok)
 }

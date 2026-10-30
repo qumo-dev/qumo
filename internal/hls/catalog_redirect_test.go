@@ -126,7 +126,7 @@ func TestFetchCatalog_OptIn(t *testing.T) {
 	}
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
-			got, source, err := fetchCatalog(ctx, sess, tt.optIn, tt.broadcast)
+			got, source, err := (&optInCatalog{optIn: tt.optIn, broadcast: tt.broadcast}).fetch(ctx, sess)
 
 			if tt.wantErr {
 				subErr, ok := errors.AsType[*moqt.SubscribeError](err)
@@ -256,4 +256,22 @@ func TestOptInCatalog_RemembersAnOlderPublisher(t *testing.T) {
 	require.Error(t, secondErr)
 	assert.True(t, c.legacy)
 	assert.Len(t, optInAsked, 1, "the opt-in is asked once")
+}
+
+func TestSameBroadcast(t *testing.T) {
+	tests := map[string]struct {
+		a, b moqt.BroadcastPath
+		want bool
+	}{
+		"the same":              {a: "/acme/cam", b: "/acme/cam", want: true},
+		"a trailing slash":      {a: "/acme/cam/", b: "/acme/cam", want: true},
+		"a doubled slash":       {a: "/acme//cam", b: "/acme/cam", want: true},
+		"another broadcast":     {a: "/other/cam", b: "/acme/cam", want: false},
+		"beneath the broadcast": {a: "/acme/cam/hd", b: "/acme/cam", want: false},
+	}
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			assert.Equal(t, tt.want, sameBroadcast(tt.a, tt.b))
+		})
+	}
 }

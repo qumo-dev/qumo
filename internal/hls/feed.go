@@ -393,8 +393,8 @@ func handleAnnouncement(ctx context.Context, session *moqt.Session, ann *moqt.An
 		slog.Warn("hls: catalog fetch failed for announced broadcast", "broadcast", realBroadcast, "err", err)
 		return
 	}
-	if string(source) != realBroadcast {
-		slog.Info("hls: opt-in redirected", "announce", annPath, "source", source)
+	if !sameBroadcast(source, moqt.BroadcastPath(realBroadcast)) {
+		slog.Info("hls: the opt-in answered the catalog itself, without a redirect; reading its media there", "announce", annPath)
 	}
 
 	// The media tracks are subscribed where the catalog came from; the
@@ -665,7 +665,7 @@ func subscribeFollowing(ctx context.Context, session *moqt.Session, path moqt.Br
 		if to.URI != "" {
 			return nil, hops, fmt.Errorf("%w: %s %s redirected to another relay, which the egress does not dial", errNotRetryable, path, name)
 		}
-		if to.BroadcastPath != within {
+		if !sameBroadcast(to.BroadcastPath, within) {
 			return nil, hops, fmt.Errorf("%w: %s %s redirected to %s, outside the broadcast %s", errNotRetryable, path, name, to.BroadcastPath, within)
 		}
 		if hops == maxRedirectHops {
@@ -732,12 +732,6 @@ func (c *optInCatalog) subscribe(ctx context.Context, session *moqt.Session) (*m
 		return nil, fmt.Errorf("hls: subscribe catalog at %s, as the opt-in %s answered NOT_FOUND: %w", c.broadcast, c.optIn, err)
 	}
 	return cat, nil
-}
-
-// fetchCatalog fetches the catalog of the broadcast optIn opted into the
-// egress, once; see optInCatalog.
-func fetchCatalog(ctx context.Context, session *moqt.Session, optIn, broadcast string) (msf.Catalog, moqt.BroadcastPath, error) {
-	return (&optInCatalog{optIn: optIn, broadcast: broadcast}).fetch(ctx, session)
 }
 
 // initFromTrack base64-decodes the fMP4 init data the track's initRef points
