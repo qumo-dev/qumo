@@ -132,3 +132,70 @@ func TestRelay_RefusesRedirectToAnotherRelay(t *testing.T) {
 	require.True(t, ok, "want a *moqt.SubscribeError, got %v", err)
 	assert.Equal(t, moqt.SubscribeErrorCodeNotFound, subErr.SubscribeErrorCode())
 }
+
+// A relay remembers a publisher's redirect for as long as the announcement:
+// later subscribers get it without the publisher being asked again. A new
+// announcement of the path starts afresh, so a publisher that would redirect
+// elsewhere announces again.
+func TestRelay_CachesRedirect(t *testing.T) {
+	const (
+		optIn = moqt.BroadcastPath("/.hls/acme/cam")
+		track = moqt.TrackName("video")
+	)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	cert, pool := chainCert(t)
+	quicCfg := &quic.Config{EnableDatagrams: true, KeepAlivePeriod: 5 * time.Second, MaxIdleTimeout: 30 * time.Second}
+	r := spinRelay(t, "origin", chainFreeAddr(t), cert, pool, quicCfg)
+	dial := func(mux *moqt.TrackMux) *moqt.Session {
+		sess, err := (&moqt.Dialer{TLSConfig: chainDialerTLS(pool), QUICConfig: &quic.Config{EnableDatagrams: true}}).Dial(ctx, "moqt://"+r.MOQServer.Addr, mux)
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = sess.CloseWithError(moqt.NoError, "done") }) // not actionable: test teardown
+		return sess
+	}
+	media := moqt.NewTrackMux(moqt.NewHopID())
+	for _, path := range []moqt.BroadcastPath{"/acme/cam", "/acme/cam-hd"} {
+		media.PublishFunc(ctx, path, func(tw *moqt.TrackWriter) {
+			_ = writeGroup(ctx, tw, 1) // not actionable: the subscriber reports what it got
+			<-tw.Context().Done()
+		})
+	}
+	dial(media)
+	asked := make(chan struct{}, 16)
+	optInTo := func(to moqt.BroadcastPath) *moqt.TrackMux {
+		mux := moqt.NewTrackMux(moqt.NewHopID())
+		mux.PublishFunc(ctx, optIn, func(tw *moqt.TrackWriter) {
+			asked <- struct{}{}
+			if err := tw.Redirect(tw.Context(), moqt.Redirect{BroadcastPath: to}); err != nil {
+				tw.CloseWithError(moqt.SubscribeErrorCodeNotFound)
+			}
+		})
+		return mux
+	}
+	sub := dial(moqt.NewTrackMux(0))
+	subscribe := func() moqt.BroadcastPath {
+		tr, err := sub.Subscribe(ctx, optIn, track, nil)
+		require.NoError(t, err)
+		defer tr.Close() //nolint:errcheck // test teardown
+		return tr.BroadcastPath
+	}
+
+	first := dial(optInTo("/acme/cam"))
+	waitForHandler(t, r, optIn)
+	got := []moqt.BroadcastPath{subscribe(), subscribe(), subscribe()}
+
+	assert.Equal(t, []moqt.BroadcastPath{"/acme/cam", "/acme/cam", "/acme/cam"}, got)
+	assert.Len(t, asked, 1, "the publisher is asked once")
+
+	// The opt-in is announced again, redirecting elsewhere.
+	require.NoError(t, first.CloseWithError(moqt.NoError, "re-announce"))
+	require.Eventually(t, func() bool {
+		h, _ := r.TrackMux.TrackHandler(optIn)
+		return h == nil
+	}, 10*time.Second, 20*time.Millisecond, "the first announcement ends")
+	dial(optInTo("/acme/cam-hd"))
+	waitForHandler(t, r, optIn)
+
+	assert.Equal(t, moqt.BroadcastPath("/acme/cam-hd"), subscribe(), "the new announcement's redirect")
+	assert.Len(t, asked, 2)
+}

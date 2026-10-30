@@ -115,6 +115,8 @@ type relayHandler struct {
 	trackInfoCache sync.Map           // moqt.TrackName -> moqt.PublishInfo
 	infoFlights    singleflight.Group // deduplicates concurrent upstream TrackInfo queries
 
+	redirects redirectCache
+
 	// sampler is the server-wide stats sampler, passed to each track
 	// distributor this handler creates (see subscribe). nil is valid (nil-safe
 	// methods) for a handler built without a Server.
@@ -380,6 +382,12 @@ func (h *relayHandler) ServeTrack(tw *moqt.TrackWriter) {
 		return
 	}
 
+	if to, ok := h.redirects.load(tw.TrackName); ok && h.announcement.IsActive() {
+		metricSubscribeRedirectCacheHitsTotal.Inc()
+		h.passRedirect(tw, to, logger)
+		return
+	}
+
 	logger.Debug("relay: ServeTrack — no existing distributor, will subscribe upstream", "track_id", trackID)
 
 	// Dedup: only one upstream subscribe per track name at a time
@@ -451,6 +459,9 @@ func (h *relayHandler) subscribe(name moqt.TrackName) (upstreamTrack, error) {
 	if d, ok := h.tracks.load(trackID); ok {
 		return upstreamTrack{d: d}, nil
 	}
+	if to, ok := h.redirects.load(name); ok {
+		return upstreamTrack{}, &moqt.RedirectError{Redirect: to}
+	}
 
 	session := h.session
 	if session == nil {
@@ -479,7 +490,8 @@ func (h *relayHandler) subscribe(name moqt.TrackName) (upstreamTrack, error) {
 	start := time.Now()
 	src, err := session.Subscribe(h.ctx, announcement.BroadcastPath(), name, nil)
 	metricTrackUpstreamRequestDuration.WithLabelValues(path, track).Observe(time.Since(start).Seconds())
-	if _, ok := errors.AsType[*moqt.RedirectError](err); ok {
+	if redirectErr, ok := errors.AsType[*moqt.RedirectError](err); ok {
+		h.redirects.store(name, redirectErr.Redirect)
 		return upstreamTrack{}, err
 	}
 	if err != nil {
@@ -503,6 +515,40 @@ func (h *relayHandler) subscribe(name moqt.TrackName) (upstreamTrack, error) {
 	h.tracks.store(trackID, d)
 
 	return upstreamTrack{d: d, opened: true}, nil
+}
+
+// maxCachedRedirects bounds the redirects one handler remembers: the track
+// names are the subscribers' to choose, and a publisher redirects a few.
+const maxCachedRedirects = 64
+
+// redirectCache remembers the redirect a handler's publisher answered for
+// each track name, so later subscribers get it without asking the publisher
+// again, as an HTTP cache keeps a permanent redirect. SUBSCRIBE_REDIRECT
+// carries no lifetime, so an entry lives as long as the handler, which is the
+// announcement's: a publisher that would redirect elsewhere announces again.
+// Past maxCachedRedirects entries, new redirects are passed on uncached.
+type redirectCache struct {
+	mu sync.Mutex
+	m  map[moqt.TrackName]moqt.Redirect
+}
+
+func (c *redirectCache) load(name moqt.TrackName) (moqt.Redirect, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	to, ok := c.m[name]
+	return to, ok
+}
+
+func (c *redirectCache) store(name moqt.TrackName, to moqt.Redirect) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.m == nil {
+		c.m = make(map[moqt.TrackName]moqt.Redirect)
+	}
+	if _, ok := c.m[name]; !ok && len(c.m) >= maxCachedRedirects {
+		return
+	}
+	c.m[name] = to
 }
 
 // trackManager manages the set of active track distributors.
