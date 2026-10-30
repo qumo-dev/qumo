@@ -645,10 +645,16 @@ var errNotRetryable = errors.New("hls: not retryable")
 
 // subscribeFollowing subscribes to name at path on session, whose
 // CheckRedirect stops at every redirect (relay.StopRedirect), and follows the
-// redirects itself: up to maxRedirectHops, on this session. hops reports how
-// many it followed, so a caller can tell an answer of path's own from one of
-// a redirect's target.
-func subscribeFollowing(ctx context.Context, session *moqt.Session, path moqt.BroadcastPath, name moqt.TrackName) (tr *moqt.TrackReader, hops int, err error) {
+// redirects itself: up to maxRedirectHops, on this session, and only to a
+// track of the broadcast within. hops reports how many it followed, so a
+// caller can tell an answer of path's own from one of a redirect's target.
+//
+// The egress may read every broadcast, and a redirect is the publisher's
+// word: followed anywhere, a publisher confined to its own prefix could have
+// the egress read, and serve under its own name, a broadcast of someone else.
+// So a redirect leads only to the broadcast the opt-in names, as an HTTP
+// client that fetches for others checks every redirect's target.
+func subscribeFollowing(ctx context.Context, session *moqt.Session, path moqt.BroadcastPath, name moqt.TrackName, within moqt.BroadcastPath) (tr *moqt.TrackReader, hops int, err error) {
 	for {
 		tr, err := session.Subscribe(ctx, path, name, &moqt.SubscribeConfig{Ordered: true})
 		redirectErr, ok := errors.AsType[*moqt.RedirectError](err)
@@ -659,6 +665,9 @@ func subscribeFollowing(ctx context.Context, session *moqt.Session, path moqt.Br
 		if to.URI != "" {
 			return nil, hops, fmt.Errorf("%w: %s %s redirected to another relay, which the egress does not dial", errNotRetryable, path, name)
 		}
+		if to.BroadcastPath != within {
+			return nil, hops, fmt.Errorf("%w: %s %s redirected to %s, outside the broadcast %s", errNotRetryable, path, name, to.BroadcastPath, within)
+		}
 		if hops == maxRedirectHops {
 			return nil, hops, fmt.Errorf("%w: %s %s: %w", errNotRetryable, path, name, moqt.ErrTooManyRedirects)
 		}
@@ -667,12 +676,13 @@ func subscribeFollowing(ctx context.Context, session *moqt.Session, path moqt.Br
 	}
 }
 
-// optInCatalog fetches the catalog of a broadcast opted into the egress by the
-// announcement optIn. The opt-in redirects to its broadcast, which the egress
-// follows. A publisher that predates the redirect answers NOT_FOUND instead,
-// and its broadcast is broadcast, the opt-in's path without announcePrefix:
-// legacy remembers that, so a retry asks the broadcast directly. NOT_FOUND
-// after a redirect is an error, retried: the target is not announced yet.
+// optInCatalog fetches the catalog of broadcast, opted into the egress by the
+// announcement optIn, its path beneath announcePrefix. The opt-in redirects to
+// broadcast, which the egress follows; a redirect elsewhere is refused. A
+// publisher that predates the redirect answers NOT_FOUND instead: legacy
+// remembers that, so a retry asks broadcast directly, which is where the
+// redirect would lead too. NOT_FOUND after a redirect is an error, retried:
+// broadcast is not announced yet.
 type optInCatalog struct {
 	optIn, broadcast string
 	legacy           bool
@@ -706,7 +716,7 @@ func (c *optInCatalog) fetch(ctx context.Context, session *moqt.Session) (msf.Ca
 // subscribe subscribes to the catalog track as fetch describes.
 func (c *optInCatalog) subscribe(ctx context.Context, session *moqt.Session) (*moqt.TrackReader, error) {
 	if !c.legacy {
-		cat, hops, err := subscribeFollowing(ctx, session, moqt.BroadcastPath(c.optIn), msf.DefaultCatalogTrackName)
+		cat, hops, err := subscribeFollowing(ctx, session, moqt.BroadcastPath(c.optIn), msf.DefaultCatalogTrackName, moqt.BroadcastPath(c.broadcast))
 		subErr, notFound := errors.AsType[*moqt.SubscribeError](err)
 		notFound = notFound && subErr.SubscribeErrorCode() == moqt.SubscribeErrorCodeNotFound
 		if hops > 0 || !notFound {
@@ -717,7 +727,7 @@ func (c *optInCatalog) subscribe(ctx context.Context, session *moqt.Session) (*m
 		}
 		c.legacy = true
 	}
-	cat, _, err := subscribeFollowing(ctx, session, moqt.BroadcastPath(c.broadcast), msf.DefaultCatalogTrackName)
+	cat, _, err := subscribeFollowing(ctx, session, moqt.BroadcastPath(c.broadcast), msf.DefaultCatalogTrackName, moqt.BroadcastPath(c.broadcast))
 	if err != nil {
 		return nil, fmt.Errorf("hls: subscribe catalog at %s, as the opt-in %s answered NOT_FOUND: %w", c.broadcast, c.optIn, err)
 	}
@@ -728,18 +738,6 @@ func (c *optInCatalog) subscribe(ctx context.Context, session *moqt.Session) (*m
 // egress, once; see optInCatalog.
 func fetchCatalog(ctx context.Context, session *moqt.Session, optIn, broadcast string) (msf.Catalog, moqt.BroadcastPath, error) {
 	return (&optInCatalog{optIn: optIn, broadcast: broadcast}).fetch(ctx, session)
-}
-
-// OptInHandler serves an announcement beneath announcePrefix that opts
-// broadcast into the egress: it redirects every subscription to broadcast,
-// keeping the track name, and refuses a subscriber that does not follow
-// redirects with NOT_FOUND.
-func OptInHandler(broadcast moqt.BroadcastPath) moqt.TrackHandler {
-	return moqt.TrackHandlerFunc(func(tw *moqt.TrackWriter) {
-		if err := tw.Redirect(tw.Context(), moqt.Redirect{BroadcastPath: broadcast}); err != nil {
-			tw.CloseWithError(moqt.SubscribeErrorCodeNotFound)
-		}
-	})
 }
 
 // initFromTrack base64-decodes the fMP4 init data the track's initRef points
@@ -828,7 +826,7 @@ func (c *countingAppender) AppendGroup(ctx context.Context, meta ledger.GroupInf
 type sessionSubscriber struct{ sess *moqt.Session }
 
 func (s sessionSubscriber) SubscribeMedia(ctx context.Context, m mediaInfo) (groupFeeder, error) {
-	tr, _, err := subscribeFollowing(ctx, s.sess, m.path, m.name)
+	tr, _, err := subscribeFollowing(ctx, s.sess, m.path, m.name, m.path)
 	if err != nil {
 		return nil, err
 	}
