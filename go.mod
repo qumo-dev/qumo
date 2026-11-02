@@ -4,7 +4,7 @@ go 1.27.3
 
 require (
 	github.com/Eyevinn/mp4ff v0.60.0
-	github.com/maxmind/mmdbwriter v1.1.0
+	github.com/maxmind/mmdbwriter v1.2.0
 	github.com/miekg/dns v1.1.72
 	github.com/okdaichi/qumo-ledger v0.4.1-0.20261017011115-d3ee9824a3ec
 	github.com/oschwald/maxminddb-golang/v2 v2.7.0
