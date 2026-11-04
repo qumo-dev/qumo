@@ -14,6 +14,7 @@ import (
 	"net/http/pprof"
 	"os"
 	"os/signal"
+	"runtime"
 	"strconv"
 	"strings"
 	"syscall"
@@ -85,6 +86,12 @@ func sanitizeLog(s string) string {
 //	                           HTTP only, for a proxy that terminates TLS.
 //	WS_ENABLE                - "0" to take no WebSocket upgrades at all
 //	                           (default: on).
+//	RELAY_PPROF_BLOCK_RATE   - with RELAY_PPROF, record blocking events of at
+//	                           least this many ns in /debug/pprof/block
+//	                           (runtime.SetBlockProfileRate; default 0: off).
+//	RELAY_PPROF_MUTEX_FRACTION - with RELAY_PPROF, sample 1 in this many mutex
+//	                           contention events in /debug/pprof/mutex
+//	                           (runtime.SetMutexProfileFraction; default 0: off).
 //	RELAY_EGRESS_SHED_HEAP_MB - drop new groups at every subscriber while the
 //	                           Go heap is past this many MB, resuming below
 //	                           80 % of it (default 0: off). Bounds the send
@@ -288,6 +295,9 @@ func Run(args []string) error {
 		httpMux.HandleFunc("/debug/pprof/symbol", pprof.Symbol)
 		httpMux.HandleFunc("/debug/pprof/trace", pprof.Trace)
 		log.Printf("\t%-8s: pprof (RELAY_PPROF on)\n", "/debug/pprof/")
+		if err := enableContentionProfiles(); err != nil {
+			return err
+		}
 	}
 
 	httpServer := &http.Server{
@@ -666,3 +676,27 @@ func parseRelayArgs(args []string) (relayFlags, error) {
 	return f, nil
 }
 
+// enableContentionProfiles turns on the block and mutex profiles that
+// RELAY_PPROF_BLOCK_RATE and RELAY_PPROF_MUTEX_FRACTION ask for. Both are off
+// by default: they cost on every contended lock and blocking operation, so
+// they are for a profiling run, beside RELAY_PPROF.
+func enableContentionProfiles() error {
+	blockRate, err := envInt("RELAY_PPROF_BLOCK_RATE", 0)
+	if err != nil || blockRate < 0 {
+		return fmt.Errorf("invalid RELAY_PPROF_BLOCK_RATE %q: nanoseconds, 0 for off", os.Getenv("RELAY_PPROF_BLOCK_RATE"))
+	}
+	mutexFraction, err := envInt("RELAY_PPROF_MUTEX_FRACTION", 0)
+	if err != nil || mutexFraction < 0 {
+		return fmt.Errorf("invalid RELAY_PPROF_MUTEX_FRACTION %q: 1 in N events, 0 for off", os.Getenv("RELAY_PPROF_MUTEX_FRACTION"))
+	}
+	if blockRate > 0 {
+		runtime.SetBlockProfileRate(blockRate)
+	}
+	if mutexFraction > 0 {
+		runtime.SetMutexProfileFraction(mutexFraction)
+	}
+	if blockRate > 0 || mutexFraction > 0 {
+		slog.Info("relay: contention profiles on", "block_rate_ns", blockRate, "mutex_fraction", mutexFraction)
+	}
+	return nil
+}
