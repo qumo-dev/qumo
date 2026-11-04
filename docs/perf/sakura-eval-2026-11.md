@@ -288,6 +288,80 @@ for the rest of the job); 1024 is too low for normal operation, since 1000
 audio subscribers already use about 300 MB and video's per-subscriber buffers
 are larger.
 
+## Shutdown under load
+
+dev saw a relay that did not end for more than two minutes after SIGTERM/SIGINT
+under Nomad `raw_exec` and had to be killed. Here: SIGTERM about 60 s into a
+1000-subscriber audio stage (`-measure 120s`, 2^20 grant, 7 MiB buffers, no
+shedding), timed by `termtest.sh`, which takes a goroutine dump while the
+relay is still running.
+
+| Load | How the relay ran | Transport | Sessions at SIGTERM | Goroutines | SIGTERM → exit |
+|---|---|---|---:|---:|---:|
+| none | `qumo playground` | — | 0 | — | 5 ms |
+| 1000 audio | `qumo playground` | QUIC | 1002 | 9 073 | 10.08 s |
+| 1000 audio | `qumo playground` | WebTransport | 1002 | 17 089 | 10.16 s |
+| 1000 audio | `qumo relay` (no playground wrapper) | WebTransport | 1002 | 17 086 | 10.17 s |
+| 1000 audio | `qumo relay`, dump at 5 s | WebTransport | 1002 | 17 086 | 10.10 s |
+
+(`qumo playground` gives up on its in-process relay after 12 s and exits
+anyway, which would hide a hang; hence the `qumo relay` rows.)
+
+The ten seconds are the GOAWAY window, by design. The dump at 5 s:
+
+- goroutine in `relay.serveComponents` → `relay.(*Server).Shutdown` →
+  `gomoqt moqt.(*Server).Shutdown` at `server.go:828`, `<-connManager.Done()`:
+  waiting for every session to leave;
+- 1002 goroutines in `moqt.(*Server).goAway` at `server.go:876`, the `select`
+  on the connection's end or the shutdown context: GOAWAY sent, waiting for
+  the client to leave. loadtest does not act on GOAWAY, so each waits for the
+  context;
+- 1000 `quic-go (*Conn).run`, one per connection, and 1000 WebTransport
+  `ServeQUICConn` waiting on their sessions.
+
+At 10 s the context expires, `goAway` closes each connection with
+`goaway timeout`, the sessions remove themselves, `Done()` closes, and the
+process exits. The usage send and the 5 s wait for session ends add nothing
+here (auth is off).
+
+**Not reproduced**, then: with clients that keep reading, shutdown is bounded
+by the 10 s GOAWAY window under load. What the code does not bound, and what a
+dev client can trigger:
+
+1. `moqt.(*Server).Shutdown` waits on `<-connManager.Done()` with no regard
+   for its `ctx`. Every exit therefore depends on each `goAway` closing its
+   connection at the deadline.
+2. `goAway` closes the connection only from its final `select`. If
+   `OpenStreamSync(ctx)` fails at the deadline (the client's bidi stream credit
+   is used up), or the GOAWAY write fails, it returns early and **leaves the
+   connection open**. If the write blocks on flow control (a client that has
+   stopped reading: a frozen or backgrounded browser tab, a congested peer),
+   `Encode` has no deadline and blocks with it. Either way that session stays
+   in the connManager until the client goes away by itself, which a live QUIC
+   connection with keep-alives never does.
+3. A session leaves the connManager in `Session.CloseWithError`, after
+   `sess.wg.Wait()`: a stream handler that does not return when its
+   connection closes keeps `Done()` open too.
+
+Any of these turns the 10 s window into an unbounded one, and the dev hang
+(two minutes, then SIGKILL) has their shape. The dev job's `kill_timeout` is
+now 30 s, so such a relay is killed at 30 s, before its last usage report if
+that had not gone yet.
+
+Proposed fix, in gomoqt (none of it changes a shutdown that ends in time):
+
+- `goAway`: register `context.AfterFunc(ctx, func() { conn.CloseWithError(goaway timeout) })`
+  on entry, so the connection is closed at the deadline whatever path
+  `goAway` took, including a blocked write.
+- `Shutdown`: `select` on `connManager.Done()` and `ctx.Done()`; on the
+  context, close every remaining connection and return `ctx.Err()`, as `Close`
+  does.
+
+And in the relay, until that is released: if `relaySrv.Shutdown` has not
+returned a few seconds after its context, write the goroutine profile
+(`pprof.Lookup("goroutine").WriteTo(os.Stderr, 1)`) to the log and return, so
+that the next hang leaves its stacks instead of a SIGKILL.
+
 ## Reproducing
 
 On the relay VM, from a directory holding the relay binary as `qumo`:
