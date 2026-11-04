@@ -253,6 +253,41 @@ Both are off unless their variable is set.
 
 Their measurements follow as they are taken.
 
+### Egress shedding at 2000 audio subscribers
+
+`RELAY_EGRESS_SHED_HEAP_MB=1024`, the run that OOM-killed the relay without
+it: loadtest granting 2^20 streams, 7 MiB buffers (16 MiB sysctl), 2 VMs,
+one 2000-subscriber stage (`-warmup 10s -measure 60s`).
+
+| Shedding | Verdict | p50 / p95 / p99 ms | Loss | Receiving | Relay CPU | Relay RSS (max) | OOM kill |
+|---|---|---|---:|---:|---:|---:|---|
+| off | relay OOM-killed | 49 / 908 / 14 037 (before the kill) | 55.6 % | — | — | 7.6 GB, growing | yes |
+| 1024 MB | relay-limit | 74 / 3483 / 4538 | 42.8 % | 1949 | 362 % | **1.60 GB** (1.42 GB at the stage's end) | **no** |
+
+- The relay survived the stage: RSS stayed between 1.4 and 1.6 GB for the
+  whole run, about 1.5 times the heap limit (the rest is the runtime's
+  headroom, stacks and freed-but-unreturned spans). The kernel log has no new
+  OOM kill.
+- Shedding switched on and off 18 times in about two minutes
+  (`qumo_relay_egress_shed_episodes_total`) and dropped 3.33 M group
+  deliveries (`qumo_relay_egress_shed_groups_total`). Each episode drains the
+  backlog to 80 % of the limit, then the same 2^20 grant refills it.
+- It is a memory guard, not a quality fix: the subscribers still see 43 %
+  loss and seconds of latency, because the relay is out of CPU (362 % of 400 %)
+  either way. The outcome it changes is the one for everybody else on the
+  node: a degraded stage instead of a killed relay and every session dropped.
+- With a realistic client grant (100 streams) the same load lost 2.3 % at
+  1.05 GB without any shedding (**The client's stream limit**): there the
+  relay's own `OpenGroupAt` timeout bounds the backlog first, and shedding at
+  1024 MB would never trigger.
+
+Sizing it for a job: RSS ran at about 1.5 × the limit, so a limit is safe up
+to about 60 % of the memory the relay may use. For a 4096 MB Nomad job that
+is `RELAY_EGRESS_SHED_HEAP_MB=2048` (RSS ≈ 3.1 GB at the limit, leaving room
+for the rest of the job); 1024 is too low for normal operation, since 1000
+audio subscribers already use about 300 MB and video's per-subscriber buffers
+are larger.
+
 ## Reproducing
 
 On the relay VM, from a directory holding the relay binary as `qumo`:
