@@ -103,6 +103,40 @@ out of CPU, and nothing bounds it. It is also a resource the client decides:
 any client that grants a large MAX_STREAMS can make the relay queue streams
 for it.
 
+### The client's stream limit
+
+The same run with loadtest's subscribers granting **100** uni streams (quic-go's
+default, and the order of what real clients grant) instead of 2^20; baseline
+relay binary, default sysctl, 2 VMs:
+
+| Subscribers | Client MaxIncomingUniStreams | Verdict | p50 / p95 / p99 ms | Loss | Receiving | Relay CPU | Relay RSS (max) |
+|---:|---:|---|---|---:|---:|---:|---:|
+| 500 | 2^20 | ok | 3.7 / 7.7 / 13.6 | 0 % | 500 | 122 % | 148 MB |
+| 500 | 100 | ok | 3.7 / 7.7 / 15.1 | 0 % | 500 | 121 % | 146 MB |
+| 1000 | 2^20 | ok | 8.1 / 38.3 / 64.0 | 0 % | 1000 | 255 % | 280 MB |
+| 1000 | 100 | ok | 9.0 / 44.1 / 74.3 | 0 % | 1000 | 268 % | 277 MB |
+| 2000 | 2^20 | **relay OOM-killed** | — | 100 % | 760 | — | 7.8 GB, growing ~130 MB/s |
+| 2000 | 100 | relay-limit | 29 / 561 / 965 | 2.3 % | 1609 | 294 % | **1.05 GB, flat** |
+
+With a realistic grant the relay does not run out of memory at 2000: once the
+subscriber's 100 streams are in flight, `OpenGroupAt` blocks, times out after
+30 ms and drops the group, which is the designed backpressure. RSS levels off
+at 1.0 GB for the whole window and the stage fails on what it should fail on,
+CPU (≈ 3 of 4 cores busy, latency in the hundreds of milliseconds, 2.3 % loss).
+The receive buffer still overflows (5.8 M `RcvbufErrors` over the run).
+
+So:
+
+- **The dev sizing run's 2000-subscriber OOM is an artifact of the load
+  client**, which grants 2^20 streams; with a client-like grant the 4-core
+  relay's audio ceiling at 2000 is CPU (latency and loss), not memory. The
+  sizing harness should dial with a realistic `MaxIncomingUniStreams`
+  (100) so that it measures what real clients see.
+- **The relay still trusts the client for its memory.** A client that grants
+  a large MAX_STREAMS, by accident or on purpose, gets an unbounded queue in
+  the relay once the relay is out of CPU. That is what
+  `RELAY_EGRESS_SHED_HEAP_MB` is for (measured below).
+
 CPU over 30 s at the 2000 ramp (304 % of one core): top frames
 
 | # | flat % | cum % | Frame |
