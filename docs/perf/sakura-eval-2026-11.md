@@ -219,6 +219,17 @@ relay's own host.
   and mutex profiles were empty: the relay never set their rates (see
   **Contention profiles**).
 
+With the relay's buffers at 7 MiB (16 MiB sysctl, the dev/prod condition),
+2 VMs:
+
+| Subscribers | Verdict, loss | p50 / p95 | Relay TX | Relay CPU |
+|---:|---|---|---:|---:|
+| 5 | ok, 0 % | 1.4 / 2.0 ms | ≈ 60 Mbps | 7 % |
+| 10 | ok by loss (0.1 %), but p50 4.5 s | 4.5 / 5.9 s | ≈ 150 Mbps | 31 % |
+| 20 | limit, 60.9 % | 13.7 / 17.4 s | ≈ 150 Mbps | 36 % |
+
+The same cliff at the same rate: the buffers change nothing for video.
+
 **Conclusion: the video cliff on dev is the network, not the relay's send
 path.** A Sakura server on the shared segment is limited to 100 Mbps (Sakura
 Cloud's documentation for the shared segment; iperf3 between the dev hosts
