@@ -216,8 +216,8 @@ relay's own host.
   processing for a path that drops packets, not the cause of the drops.
 - CPU at 20 subscribers across the network: 0.27 core over 20 s, `Syscall6`
   28 %, `runtime.futex` 12 %, the scheduler's idle loop 24 % cum. The block
-  and mutex profiles were empty: the relay never set their rates (see
-  **Contention profiles**).
+  and mutex profiles were empty here: the relay never set their rates (see
+  **Contention profiles at the video cliff**).
 
 With the relay's buffers at 7 MiB (16 MiB sysctl, the dev/prod condition),
 2 VMs:
@@ -287,6 +287,57 @@ is `RELAY_EGRESS_SHED_HEAP_MB=2048` (RSS ≈ 3.1 GB at the limit, leaving room
 for the rest of the job); 1024 is too low for normal operation, since 1000
 audio subscribers already use about 300 MB and video's per-subscriber buffers
 are larger.
+
+## Contention profiles at the video cliff
+
+`RELAY_PPROF_BLOCK_RATE=10000` (one sample per 10 µs blocked),
+`RELAY_PPROF_MUTEX_FRACTION=10`, 7 MiB buffers, 20 video subscribers across
+the network (`-warmup 5s -measure 60s`): limit, 57.3 % loss, p50 / p95
+10.2 / 16.7 s, relay CPU 34 %, RSS 98 MB, relay TX ≈ 150 Mbps; the same row as
+above. A 20 s CPU profile mid-stage, and block and mutex profiles taken at its
+start and end; the tables are the end minus the start, that is the same 20 s.
+
+CPU (0.27 core):
+
+| # | flat % | cum % | Frame |
+|---:|---:|---:|---|
+| 1 | 28.5 | 28.5 | `internal/runtime/syscall/linux.Syscall6` (`sendmsg` / `recvmmsg`) |
+| 2 | 12.1 | 12.1 | `runtime.futex` |
+| 3 | 2.4 | 2.4 | `aes/gcm.gcmAesEnc` (packet sealing) |
+| 4 | 1.9 | 1.9 | `runtime.lock2` |
+| 5 | 1.7 | 6.7 | `runtime.selectgo` |
+| 6 | 1.3 | 1.9 | `runtime.unlock2` |
+| 7 | 1.3 | 1.3 | `runtime.write1` |
+| 8 | 0.9 | 10.2 | `quic-go.(*packetPacker).appendPacket` |
+| 9 | 0.9 | 22.4 | `runtime.findRunnable` (the scheduler idling) |
+| 10 | 0.9 | 0.9 | `runtime.memmove` |
+
+Block (1923 s of goroutine-blocked time in 20 s):
+
+| # | Blocked | Where | What it is |
+|---:|---:|---|---|
+| 1 | 483 s | `quic-go (*sendQueue).Run` (select) | per connection, idle until a packet is queued |
+| 2 | 482 s | `quic-go (*Conn).run` (select) | per connection, the event loop's wait |
+| 3 | **463 s** | relay `trackDistributor.egress` → `deliverGroup` → gomoqt `GroupWriter.WriteFrame` → quic-go `SendStream.Write` | **every subscriber's egress blocked in a stream write, ≈ 23 goroutines for the whole window** |
+| 4 | 423 s | relay `trackDistributor.fillWorker` (chan receive) | 32 workers idle, waiting for groups |
+| 5 | 22 s | gomoqt `TrackReader.AcceptGroup` | the publisher's track, waiting for the next group |
+| 6 | 22 s | relay `splitListener.Accept` | the TCP listener |
+| 7 | 22 s | quic-go `ReceiveStream.Read` | the publisher's group stream between frames |
+| 8 | 20 s | relay `statsSampler.run` | 1 s ticker |
+| 9 | 20 s | `net/http/pprof.sleep` | the CPU profile's own wait |
+| 10 | 0.2 s | relay `deliverGroup.func1` | |
+
+Mutex: **14 ms** of contention in the 20 s, half in the runtime's own lock
+around `recvmmsg` (`entersyscall`), a quarter in the scheduler, 0.8 ms in
+quic-go `ReceiveStream.Read` (the group fill). No relay or gomoqt lock is
+contended.
+
+So at the cliff nothing in the relay waits on a lock. Its egress goroutines
+are parked in `SendStream.Write`, waiting for QUIC flow-control or
+congestion-window credit that the lossy path hands back slowly; the rest is
+idle. That is what a sender behind a link that drops a third of its packets
+looks like, and it confirms the video conclusion: the limit is the 100 Mbps
+segment, not the relay's send path or its locking.
 
 ## Shutdown under load
 
