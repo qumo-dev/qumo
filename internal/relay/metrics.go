@@ -320,6 +320,27 @@ var (
 
 	// metricSubscriberSkipsTotal counts how many times a subscriber was skipped
 	// forward because it fell behind the ring buffer.
+	metricEgressShedding = promauto.NewGauge(prometheus.GaugeOpts{
+		Namespace: "qumo",
+		Subsystem: "relay",
+		Name:      "egress_shedding",
+		Help:      "1 while the relay drops new groups because its heap is past RELAY_EGRESS_SHED_HEAP_MB, else 0.",
+	})
+
+	metricEgressShedEpisodesTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Namespace: "qumo",
+		Subsystem: "relay",
+		Name:      "egress_shed_episodes_total",
+		Help:      "Times the relay started dropping new groups because its heap passed RELAY_EGRESS_SHED_HEAP_MB.",
+	})
+
+	metricEgressShedGroupsTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Namespace: "qumo",
+		Subsystem: "relay",
+		Name:      "egress_shed_groups_total",
+		Help:      "Group deliveries dropped (one per subscriber and group) while the relay was shedding egress for memory.",
+	})
+
 	metricSubscriberSkipsTotal = promauto.NewCounter(prometheus.CounterOpts{
 		Namespace: "qumo",
 		Subsystem: "relay",

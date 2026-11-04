@@ -777,6 +777,20 @@ func (d *trackDistributor) egress(tw *moqt.TrackWriter, fromStart bool) {
 					continue
 				}
 
+				// The relay is past its heap limit (egress_shed.go): drop the
+				// group rather than open a stream that would join the send
+				// backlog, and tell the subscriber, as a timed-out open does.
+				if d.sampler.shedding() {
+					d.ring.decrRef(cache)
+					metricEgressShedGroupsTotal.Inc()
+					drops.report(moqt.SubscribeDrop{
+						StartGroup: seq,
+						EndGroup:   seq,
+						ErrorCode:  moqt.SubscribeErrorCodeTimeout,
+					})
+					continue
+				}
+
 				switch d.deliverGroup(twCtx, tw, openTO, woken, cache) {
 				case deliveryStopped:
 					return

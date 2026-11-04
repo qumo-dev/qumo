@@ -65,6 +65,16 @@ type statsSampler struct {
 	// stageAgg is the server-wide stage-latency collector (see stage_latency.go).
 	// Zero-size no-op in the default build; real histograms with -tags instrument.
 	stageAgg stageCollector
+
+	// shed is the server-wide egress shedder (egress_shed.go), nil when
+	// RELAY_EGRESS_SHED_HEAP_MB is unset. It rides on the sampler because the
+	// sampler is what already reaches every track distributor.
+	shed *egressShed
+}
+
+// shedding reports whether egress is dropping new groups for memory now.
+func (s *statsSampler) shedding() bool {
+	return s != nil && s.shed.shedding()
 }
 
 // queueReap enqueues fn to run on the sampler goroutine after the next sweep.

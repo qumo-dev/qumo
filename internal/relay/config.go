@@ -53,6 +53,13 @@ type Config struct {
 	// turns it off.
 	WebSocket bool
 
+	// EgressShedHeapBytes, when positive, makes every subscriber's egress drop
+	// new groups while the relay's heap is past it, and resume below 80 % of
+	// it (egress_shed.go): a relay out of CPU then loses groups instead of
+	// queueing streams until it is killed for memory. 0 sheds nothing.
+	// RELAY_EGRESS_SHED_HEAP_MB sets it.
+	EgressShedHeapBytes uint64
+
 	// NextSessionURI is the redirect URI sent to clients/peers in a GOAWAY
 	// message during graceful shutdown (gomoqt Server.NextSessionURI). Empty
 	// means no redirect is advertised. GOAWAY is an escape-hatch primitive;
