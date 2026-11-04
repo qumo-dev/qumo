@@ -137,6 +137,35 @@ So:
   the relay once the relay is out of CPU. That is what
   `RELAY_EGRESS_SHED_HEAP_MB` is for (measured below).
 
+### Socket buffers: the dev and prod relays already have 7 MiB
+
+quic-go asks for 7 MiB of receive and send buffer on its socket. As an
+ordinary user it gets what `net.core.rmem_max`/`wmem_max` allow (416 KiB at
+the default 212992), which is how the relay ran on perf-relay above. **The dev
+and prod relays run as root** (Nomad `raw_exec`), and there quic-go uses
+`SO_RCVBUFFORCE`/`SO_SNDBUFFORCE`, which ignore the sysctl: `ss -m` on a dev
+relay node shows `rb14680064 tb14680064` (7 MiB, doubled by the kernel) at the
+default sysctl. So the "default sysctl" rows above are **not** the dev/prod
+condition. The rows below, with the relay VM's `rmem_max`/`wmem_max` raised to
+16 MiB so that the non-root relay gets its 7 MiB, are the closer match, and
+are the baseline to use from here on (loadtest granting 2^20 streams, as in the
+sizing run):
+
+| Subscribers | Buffers | Verdict | p50 / p95 / p99 ms | Loss | Relay CPU | Relay RSS (max) | `RcvbufErrors` over the run |
+|---:|---|---|---|---:|---:|---:|---:|
+| 500 | 416 KiB | ok | 3.7 / 7.7 / 13.6 | 0 % | 122 % | 148 MB | |
+| 500 | 7 MiB | ok | 3.6 / 6.8 / 9.7 | 0 % | 115 % | 151 MB | |
+| 1000 | 416 KiB | ok | 8.1 / 38.3 / 64.0 | 0 % | 255 % | 280 MB | |
+| 1000 | 7 MiB | ok | 6.8 / **20.9** / 55.1 | 0 % | 237 % | 296 MB | |
+| 2000 | 416 KiB | relay OOM-killed | — | 100 % | — | 7.8 GB | **2.96 M** (whole run) |
+| 2000 | 7 MiB | relay OOM-killed | 49 / 908 / 14 037 (before the kill) | 55.6 % | — | 7.6 GB | **16 K** (whole run) |
+
+- The full buffer removes the receive drops (2.96 M → 16 K over the whole
+  run) and halves p95 at 1000 subscribers (38 → 21 ms).
+- It does not change the 2000-subscriber outcome with a 2^20 grant: the
+  relay is out of CPU, the open-but-unsent backlog grows the same way, and the
+  kernel kills it at 7.6 GB. The OOM is the stream grant, not the buffer.
+
 CPU over 30 s at the 2000 ramp (304 % of one core): top frames
 
 | # | flat % | cum % | Frame |
@@ -190,12 +219,17 @@ relay's own host.
   and mutex profiles were empty: the relay never set their rates (see
   **Contention profiles**).
 
-**Conclusion: the video cliff on dev is the network path between hosts on the
-shared segment (≈ 150–165 Mbps here), not the relay's send path.** One UDP
-socket, no GSO tuning and the default 212992 `wmem_max` carry 50 subscribers
-on loopback. Whether more sockets or a larger `wmem_max` would help across the
-network is answered by the 16 MiB section below; the loopback result already
-says the relay can produce the bytes.
+**Conclusion: the video cliff on dev is the network, not the relay's send
+path.** A Sakura server on the shared segment is limited to 100 Mbps (Sakura
+Cloud's documentation for the shared segment; iperf3 between the dev hosts
+measured 99 Mbps over TCP). The relay's NIC counter shows what it handed to
+the network, 140–165 Mbps of UDP, more than the segment carries; the rest is
+dropped beyond the VM, which is the loss and the retransmission-driven delay
+the subscribers see. At 10–15 Mbps per subscriber, 100 Mbps is 6–9 video
+subscribers per relay: exactly where the sizing run's video ceiling (5–9) sat
+on every plan. One UDP socket, no GSO tuning and the default 212992
+`wmem_max` carry 50 subscribers on loopback; more sockets or bigger buffers
+cannot raise a link cap.
 
 ## Changes on this branch
 
