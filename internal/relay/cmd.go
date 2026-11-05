@@ -92,10 +92,6 @@ func sanitizeLog(s string) string {
 //	RELAY_PPROF_MUTEX_FRACTION - with RELAY_PPROF, sample 1 in this many mutex
 //	                           contention events in /debug/pprof/mutex
 //	                           (runtime.SetMutexProfileFraction; default 0: off).
-//	RELAY_EGRESS_SHED_HEAP_MB - drop new groups at every subscriber while the
-//	                           Go heap is past this many MB, resuming below
-//	                           80 % of it (default 0: off). Bounds the send
-//	                           backlog of a relay out of CPU (egress_shed.go).
 func Run(args []string) error {
 	// Execution modes are flags (discoverable, self-documenting); secrets and
 	// deployment configuration stay env vars (see relay-config.example.env).
@@ -131,10 +127,6 @@ func Run(args []string) error {
 	frameCapacity, err := envInt("FRAME_CAPACITY", 1500)
 	if err != nil {
 		return fmt.Errorf("invalid FRAME_CAPACITY: %w", err)
-	}
-	egressShedMB, err := envInt("RELAY_EGRESS_SHED_HEAP_MB", 0)
-	if err != nil || egressShedMB < 0 {
-		return fmt.Errorf("invalid RELAY_EGRESS_SHED_HEAP_MB %q: a whole number of MB, 0 for off", os.Getenv("RELAY_EGRESS_SHED_HEAP_MB"))
 	}
 	quicConfig, err := quicConfigFromEnv()
 	if err != nil {
@@ -216,11 +208,6 @@ func Run(args []string) error {
 		FrameCapacity:  frameCapacity,
 		Peers:          peers,
 		NextSessionURI: os.Getenv("GOAWAY_REDIRECT_URI"),
-
-		EgressShedHeapBytes: uint64(egressShedMB) << 20,
-	}
-	if egressShedMB > 0 {
-		slog.Info("relay: egress sheds new groups while the heap is past a limit", "limit_mb", egressShedMB)
 	}
 
 	// Setup signal handling for graceful shutdown

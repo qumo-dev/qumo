@@ -245,15 +245,9 @@ func (s *Server) init() {
 		// because the relay has no server-lifetime context of its own; the
 		// cancel is the sole stop signal.
 		s.sampler = &statsSampler{}
-		if s.Config != nil {
-			s.sampler.shed = newEgressShed(s.Config.EgressShedHeapBytes)
-		}
 		samplerCtx, cancel := context.WithCancel(context.Background())
 		s.samplerCancel = cancel
 		go s.sampler.run(samplerCtx)
-		// Stopped with the sampler (samplerCancel); returns at once when
-		// shedding is off.
-		go s.sampler.shed.run(samplerCtx)
 
 		if s.TrackMux == nil {
 			s.TrackMux = moqt.NewTrackMux(0)

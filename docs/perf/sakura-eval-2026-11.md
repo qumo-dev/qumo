@@ -134,8 +134,10 @@ So:
   (100) so that it measures what real clients see.
 - **The relay still trusts the client for its memory.** A client that grants
   a large MAX_STREAMS, by accident or on purpose, gets an unbounded queue in
-  the relay once the relay is out of CPU. That is what
-  `RELAY_EGRESS_SHED_HEAP_MB` is for (measured below).
+  the relay once the relay is out of CPU. The fix is designed in
+  [qumo#586](https://github.com/qumo-dev/qumo/discussions/586): drop the
+  oldest undelivered groups, bounded per subscriber. A stopgap that dropped
+  new groups at a heap limit was measured below and removed.
 
 ### Socket buffers: the dev and prod relays already have 7 MiB
 
@@ -244,16 +246,26 @@ cannot raise a link cap.
 
 ## Changes on this branch
 
-Both are off unless their variable is set.
+It is off unless its variables are set.
 
 | Variable | Commit | What it does |
 |---|---|---|
-| `RELAY_EGRESS_SHED_HEAP_MB` | `b5925ee` | A 100 ms sampler reads the heap's object bytes. Past the limit every subscriber's egress drops new groups instead of opening streams (reported to the subscriber as timeout drops, as a timed-out `OpenGroupAt` is), and resumes below 80 % of it. Metrics `qumo_relay_egress_shedding`, `qumo_relay_egress_shed_episodes_total`, `qumo_relay_egress_shed_groups_total`. |
 | `RELAY_PPROF_BLOCK_RATE`, `RELAY_PPROF_MUTEX_FRACTION` | `0132a68` | With `RELAY_PPROF`, set `runtime.SetBlockProfileRate` / `SetMutexProfileFraction` so `/debug/pprof/block` and `/mutex` record something. |
 
-Their measurements follow as they are taken.
+Its measurements are in **Contention profiles at the video cliff**.
 
-### Egress shedding at 2000 audio subscribers
+### Removed: dropping new groups at a heap limit
+
+This branch first tried `RELAY_EGRESS_SHED_HEAP_MB` (`b5925ee`, since
+reverted). A 100 ms sampler read the heap's object bytes; past the limit,
+every subscriber's egress dropped new groups instead of opening streams, and
+resumed below 80 % of it. It was removed because it drops in the wrong order
+for live media: the stale backlog already queued in quic-go kept being sent
+while the fresh groups were thrown away. It also dropped
+groups for subscribers that were keeping up. The replacement drops the oldest
+undelivered groups per subscriber:
+[qumo#586](https://github.com/qumo-dev/qumo/discussions/586). The
+measurement is kept as the baseline that design must beat.
 
 `RELAY_EGRESS_SHED_HEAP_MB=1024`, the run that OOM-killed the relay without
 it: loadtest granting 2^20 streams, 7 MiB buffers (16 MiB sysctl), 2 VMs,
@@ -280,13 +292,6 @@ one 2000-subscriber stage (`-warmup 10s -measure 60s`).
   1.05 GB without any shedding (**The client's stream limit**): there the
   relay's own `OpenGroupAt` timeout bounds the backlog first, and shedding at
   1024 MB would never trigger.
-
-Sizing it for a job: RSS ran at about 1.5 × the limit, so a limit is safe up
-to about 60 % of the memory the relay may use. For a 4096 MB Nomad job that
-is `RELAY_EGRESS_SHED_HEAP_MB=2048` (RSS ≈ 3.1 GB at the limit, leaving room
-for the rest of the job); 1024 is too low for normal operation, since 1000
-audio subscribers already use about 300 MB and video's per-subscriber buffers
-are larger.
 
 ## Contention profiles at the video cliff
 
