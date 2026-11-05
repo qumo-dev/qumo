@@ -669,12 +669,18 @@ func parseRelayArgs(args []string) (relayFlags, error) {
 // they are for a profiling run, beside RELAY_PPROF.
 func enableContentionProfiles() error {
 	blockRate, err := envInt("RELAY_PPROF_BLOCK_RATE", 0)
-	if err != nil || blockRate < 0 {
-		return fmt.Errorf("invalid RELAY_PPROF_BLOCK_RATE %q: nanoseconds, 0 for off", os.Getenv("RELAY_PPROF_BLOCK_RATE"))
+	if err != nil {
+		return fmt.Errorf("invalid RELAY_PPROF_BLOCK_RATE: %w", err)
+	}
+	if blockRate < 0 {
+		return fmt.Errorf("invalid RELAY_PPROF_BLOCK_RATE %d: nanoseconds, 0 for off", blockRate)
 	}
 	mutexFraction, err := envInt("RELAY_PPROF_MUTEX_FRACTION", 0)
-	if err != nil || mutexFraction < 0 {
-		return fmt.Errorf("invalid RELAY_PPROF_MUTEX_FRACTION %q: 1 in N events, 0 for off", os.Getenv("RELAY_PPROF_MUTEX_FRACTION"))
+	if err != nil {
+		return fmt.Errorf("invalid RELAY_PPROF_MUTEX_FRACTION: %w", err)
+	}
+	if mutexFraction < 0 {
+		return fmt.Errorf("invalid RELAY_PPROF_MUTEX_FRACTION %d: 1 in N events, 0 for off", mutexFraction)
 	}
 	if blockRate > 0 {
 		runtime.SetBlockProfileRate(blockRate)
