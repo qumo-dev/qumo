@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **`RELAY_PPROF` also records the block and mutex profiles (`internal/relay`).** `/debug/pprof/block` and `/debug/pprof/mutex` were always empty, because the runtime records nothing until a rate is set. With `RELAY_PPROF` on, the relay now samples about one blocking event per 10 µs blocked and 1 in 10 contended locks. Both cost a little on every contended lock and blocking wait, so they stay off without `RELAY_PPROF`.
 - **Bumped gomoqt to v0.28.2.** Over WebTransport, a group stream the subscriber ended now reports its MoQ error code to the relay, as over native QUIC (webtransport-go `v0.13.0-okdaichi.4`).
 
 ## [v0.18.261031] - 2026-10-31

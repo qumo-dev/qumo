@@ -14,6 +14,7 @@ import (
 	"net/http/pprof"
 	"os"
 	"os/signal"
+	"runtime"
 	"strconv"
 	"strings"
 	"syscall"
@@ -275,6 +276,7 @@ func Run(args []string) error {
 		httpMux.HandleFunc("/debug/pprof/symbol", pprof.Symbol)
 		httpMux.HandleFunc("/debug/pprof/trace", pprof.Trace)
 		log.Printf("\t%-8s: pprof (RELAY_PPROF on)\n", "/debug/pprof/")
+		enableContentionProfiles()
 	}
 
 	httpServer := &http.Server{
@@ -651,4 +653,23 @@ func parseRelayArgs(args []string) (relayFlags, error) {
 		return relayFlags{}, fmt.Errorf("unexpected argument: %s", fs.Arg(0))
 	}
 	return f, nil
+}
+
+// Sampling rates for the block and mutex profiles under RELAY_PPROF.
+const (
+	// pprofBlockRateNs samples about one blocking event per 10 µs spent
+	// blocked (runtime.SetBlockProfileRate).
+	pprofBlockRateNs = 10_000
+	// pprofMutexFraction samples 1 in 10 contended mutex events
+	// (runtime.SetMutexProfileFraction).
+	pprofMutexFraction = 10
+)
+
+// enableContentionProfiles makes /debug/pprof/block and /debug/pprof/mutex
+// record something: the runtime leaves both empty until a rate is set. Both
+// cost something on every contended lock and blocking wait, so only
+// RELAY_PPROF, which is already a profiling run, turns them on.
+func enableContentionProfiles() {
+	runtime.SetBlockProfileRate(pprofBlockRateNs)
+	runtime.SetMutexProfileFraction(pprofMutexFraction)
 }
