@@ -86,12 +86,6 @@ func sanitizeLog(s string) string {
 //	                           HTTP only, for a proxy that terminates TLS.
 //	WS_ENABLE                - "0" to take no WebSocket upgrades at all
 //	                           (default: on).
-//	RELAY_PPROF_BLOCK_RATE   - with RELAY_PPROF, record blocking events of at
-//	                           least this many ns in /debug/pprof/block
-//	                           (runtime.SetBlockProfileRate; default 0: off).
-//	RELAY_PPROF_MUTEX_FRACTION - with RELAY_PPROF, sample 1 in this many mutex
-//	                           contention events in /debug/pprof/mutex
-//	                           (runtime.SetMutexProfileFraction; default 0: off).
 func Run(args []string) error {
 	// Execution modes are flags (discoverable, self-documenting); secrets and
 	// deployment configuration stay env vars (see relay-config.example.env).
@@ -282,9 +276,7 @@ func Run(args []string) error {
 		httpMux.HandleFunc("/debug/pprof/symbol", pprof.Symbol)
 		httpMux.HandleFunc("/debug/pprof/trace", pprof.Trace)
 		log.Printf("\t%-8s: pprof (RELAY_PPROF on)\n", "/debug/pprof/")
-		if err := enableContentionProfiles(); err != nil {
-			return err
-		}
+		enableContentionProfiles()
 	}
 
 	httpServer := &http.Server{
@@ -663,33 +655,21 @@ func parseRelayArgs(args []string) (relayFlags, error) {
 	return f, nil
 }
 
-// enableContentionProfiles turns on the block and mutex profiles that
-// RELAY_PPROF_BLOCK_RATE and RELAY_PPROF_MUTEX_FRACTION ask for. Both are off
-// by default: they cost on every contended lock and blocking operation, so
-// they are for a profiling run, beside RELAY_PPROF.
-func enableContentionProfiles() error {
-	blockRate, err := envInt("RELAY_PPROF_BLOCK_RATE", 0)
-	if err != nil {
-		return fmt.Errorf("invalid RELAY_PPROF_BLOCK_RATE: %w", err)
-	}
-	if blockRate < 0 {
-		return fmt.Errorf("invalid RELAY_PPROF_BLOCK_RATE %d: nanoseconds, 0 for off", blockRate)
-	}
-	mutexFraction, err := envInt("RELAY_PPROF_MUTEX_FRACTION", 0)
-	if err != nil {
-		return fmt.Errorf("invalid RELAY_PPROF_MUTEX_FRACTION: %w", err)
-	}
-	if mutexFraction < 0 {
-		return fmt.Errorf("invalid RELAY_PPROF_MUTEX_FRACTION %d: 1 in N events, 0 for off", mutexFraction)
-	}
-	if blockRate > 0 {
-		runtime.SetBlockProfileRate(blockRate)
-	}
-	if mutexFraction > 0 {
-		runtime.SetMutexProfileFraction(mutexFraction)
-	}
-	if blockRate > 0 || mutexFraction > 0 {
-		slog.Info("relay: contention profiles on", "block_rate_ns", blockRate, "mutex_fraction", mutexFraction)
-	}
-	return nil
+// Sampling rates for the block and mutex profiles under RELAY_PPROF.
+const (
+	// pprofBlockRateNs samples about one blocking event per 10 µs spent
+	// blocked (runtime.SetBlockProfileRate).
+	pprofBlockRateNs = 10_000
+	// pprofMutexFraction samples 1 in 10 contended mutex events
+	// (runtime.SetMutexProfileFraction).
+	pprofMutexFraction = 10
+)
+
+// enableContentionProfiles makes /debug/pprof/block and /debug/pprof/mutex
+// record something: the runtime leaves both empty until a rate is set. Both
+// cost something on every contended lock and blocking wait, so only
+// RELAY_PPROF, which is already a profiling run, turns them on.
+func enableContentionProfiles() {
+	runtime.SetBlockProfileRate(pprofBlockRateNs)
+	runtime.SetMutexProfileFraction(pprofMutexFraction)
 }

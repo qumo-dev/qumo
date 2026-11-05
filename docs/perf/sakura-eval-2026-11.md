@@ -246,11 +246,7 @@ cannot raise a link cap.
 
 ## Changes on this branch
 
-It is off unless its variables are set.
-
-| Variable | Commit | What it does |
-|---|---|---|
-| `RELAY_PPROF_BLOCK_RATE`, `RELAY_PPROF_MUTEX_FRACTION` | `0132a68` | With `RELAY_PPROF`, set `runtime.SetBlockProfileRate` / `SetMutexProfileFraction` so `/debug/pprof/block` and `/mutex` record something. |
+With `RELAY_PPROF` set, the relay now also records the block and mutex profiles (`/debug/pprof/block`, `/mutex`), at about one sample per 10 µs blocked and 1 in 10 contended locks. The runtime leaves both empty until a rate is set. There is no separate switch, since they are only wanted during a profiling run.
 
 Its measurements are in **Contention profiles at the video cliff**.
 
@@ -295,8 +291,8 @@ one 2000-subscriber stage (`-warmup 10s -measure 60s`).
 
 ## Contention profiles at the video cliff
 
-`RELAY_PPROF_BLOCK_RATE=10000` (one sample per 10 µs blocked),
-`RELAY_PPROF_MUTEX_FRACTION=10`, 7 MiB buffers, 20 video subscribers across
+`RELAY_PPROF` (block profile at one sample per 10 µs blocked, mutex profile
+at 1 in 10), 7 MiB buffers, 20 video subscribers across
 the network (`-warmup 5s -measure 60s`): limit, 57.3 % loss, p50 / p95
 10.2 / 16.7 s, relay CPU 34 %, RSS 98 MB, relay TX ≈ 150 Mbps; the same row as
 above. A 20 s CPU profile mid-stage, and block and mutex profiles taken at its
