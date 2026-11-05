@@ -327,6 +327,15 @@ var (
 		Help:      "Total number of times subscribers were skipped forward due to falling behind.",
 	})
 
+	// metricEgressGroupResetsTotal counts group streams egress reset because
+	// their group left the ring after they were written (sent_groups.go).
+	metricEgressGroupResetsTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Namespace: "qumo",
+		Subsystem: "relay",
+		Name:      "egress_group_resets_total",
+		Help:      "Total number of written group streams reset because their group was evicted from the ring.",
+	})
+
 	// metricSubscriberDropsLostTotal counts upstream drop notifications a
 	// subscriber never received because the track's drop buffer overwrote them
 	// first. Those groups reach the subscriber neither as groups nor as drops.
