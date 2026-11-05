@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Bumped gomoqt to v0.28.2.** Over WebTransport, a group stream the subscriber ended now reports its MoQ error code to the relay, as over native QUIC (webtransport-go `v0.13.0-okdaichi.4`).
+
 ## [v0.18.261031] - 2026-10-31
 
 ### Added
