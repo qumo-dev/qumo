@@ -709,9 +709,9 @@ func (d *trackDistributor) egress(tw *moqt.TrackWriter, fromStart bool) {
 	// flushed after each delivered group and at every wait.
 	drops := newDropReporter(tw, d.drops)
 
-	// sent holds this subscriber's written group streams until the ring
-	// evicts their groups, then resets them (sent_groups.go).
-	var sent sentGroups
+	// recent holds this subscriber's last written group streams and resets
+	// the oldest past maxRecentGroupStreams (recent_streams.go).
+	recent := recentStreams{max: maxRecentGroupStreams}
 
 	// Track the last seen notify sequence so we can detect new data without
 	// per-subscriber channels or RWMutex contention. Each call to broadcast()
@@ -740,10 +740,6 @@ func (d *trackDistributor) egress(tw *moqt.TrackWriter, fromStart bool) {
 
 	for {
 		latest := d.ring.head()
-
-		if n := sent.resetBefore(d.ring.earliestAvailable()); n > 0 {
-			metricEgressGroupResetsTotal.Add(float64(n))
-		}
 
 		if last < latest {
 			last++
@@ -797,7 +793,9 @@ func (d *trackDistributor) egress(tw *moqt.TrackWriter, fromStart bool) {
 					})
 				case groupSent:
 					drops.sent(seq)
-					sent.add(last, gw)
+					if recent.add(gw) {
+						metricEgressGroupResetsTotal.Inc()
+					}
 					drops.flush()
 				}
 				woken = false // a subsequent direct iteration means we are behind
@@ -882,8 +880,8 @@ const (
 
 // deliverGroup writes one group (cache) to the subscriber's track writer and
 // reports what happened to it. On groupSent it also returns the group's
-// writer, already closed, so egress can reset the stream if the group is
-// evicted before quic-go has sent it.
+// writer, already closed, so egress can reset the stream once it is too
+// old (recent_streams.go).
 func (d *trackDistributor) deliverGroup(ctx context.Context, tw *moqt.TrackWriter, openTO *openTimeout, woken bool, cache *groupCache) (deliverResult, *moqt.GroupWriter) {
 	// Stage stamps (no-op in the default build): tEnter closes the R stage
 	// (group arrival → egress pickup) and opens the O stage (OpenGroupAt).
