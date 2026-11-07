@@ -709,9 +709,9 @@ func (d *trackDistributor) egress(tw *moqt.TrackWriter, fromStart bool) {
 	// flushed after each delivered group and at every wait.
 	drops := newDropReporter(tw, d.drops)
 
-	// recent holds this subscriber's last written group streams and resets
-	// the oldest past maxRecentGroupStreams (recent_streams.go).
-	recent := recentStreams{max: maxRecentGroupStreams}
+	// recent holds this subscriber's written group streams and resets the
+	// ones too old to be worth sending (recent_streams.go).
+	var recent recentStreams
 
 	// Track the last seen notify sequence so we can detect new data without
 	// per-subscriber channels or RWMutex contention. Each call to broadcast()
@@ -793,8 +793,8 @@ func (d *trackDistributor) egress(tw *moqt.TrackWriter, fromStart bool) {
 					})
 				case groupSent:
 					drops.sent(seq)
-					if recent.add(gw) {
-						metricEgressGroupResetsTotal.Inc()
+					if n := recent.add(gw, time.Now()); n > 0 {
+						metricEgressGroupResetsTotal.Add(float64(n))
 					}
 					drops.flush()
 				}

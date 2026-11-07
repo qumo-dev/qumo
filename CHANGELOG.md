@@ -13,7 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- **The relay resets a subscriber's older group streams (`internal/relay`).** Writing a group stream returns once its data is in quic-go's send buffer. A relay short of CPU, facing a subscriber that grants many streams, could therefore queue unsent streams in quic-go without bound while egress counted itself caught up, and the ring's skip never engaged. With 2000 audio subscribers on 4 cores and a 2^20 stream grant, that queue grew the heap until the relay was OOM-killed. Egress now keeps a subscriber's last 8 written streams, and resets the oldest (`ExpiredGroupErrorCode`) when it writes another. quic-go reports no delivery, so streams already delivered are reset too, and the receiver ignores those resets. New metric: `qumo_relay_egress_group_resets_total`.
+- **The relay resets a subscriber's older group streams (`internal/relay`).** Writing a group stream returns once its data is in quic-go's send buffer. A relay short of CPU, facing a subscriber that grants many streams, could therefore queue unsent streams in quic-go without bound while egress counted itself caught up, and the ring's skip never engaged. With 2000 audio subscribers on 4 cores and a 2^20 stream grant, that queue grew the heap until the relay was OOM-killed. Egress now resets a subscriber's written streams (`ExpiredGroupErrorCode`) once they are 400 ms old, keeping at least its newest 8 and at most 64. A group not delivered by then is too late to play. quic-go reports no delivery, so streams already delivered are reset too, and the receiver ignores those resets. New metric: `qumo_relay_egress_group_resets_total`.
 
 ## [v0.18.261031] - 2026-10-31
 

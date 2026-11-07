@@ -328,13 +328,12 @@ var (
 	})
 
 	// metricEgressGroupResetsTotal counts written group streams egress reset
-	// because the subscriber had maxRecentGroupStreams newer ones
-	// (recent_streams.go).
+	// because they were too old to be worth sending (recent_streams.go).
 	metricEgressGroupResetsTotal = promauto.NewCounter(prometheus.CounterOpts{
 		Namespace: "qumo",
 		Subsystem: "relay",
 		Name:      "egress_group_resets_total",
-		Help:      "Total number of written group streams reset because the subscriber had too many newer ones.",
+		Help:      "Total number of written group streams reset because they were too old to be worth sending.",
 	})
 
 	// metricSubscriberDropsLostTotal counts upstream drop notifications a
