@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"runtime"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -505,6 +506,15 @@ func (h *relayHandler) subscribe(name moqt.TrackName) (upstreamTrack, error) {
 	}
 
 	d := newTrackDistributor(h.tracks, trackID, h.sampler)
+	// Learn the timescale off the subscribe path: TRACK_INFO is a round trip
+	// to the publisher (cached per handler), and until it answers, Max
+	// Latency is measured at the default timescale. TrackInfo returns when
+	// h.ctx ends.
+	go func() {
+		if info, ok := h.TrackInfo(name); ok {
+			d.timescale.Store(info.Timescale)
+		}
+	}()
 
 	slog.Debug("relay: starting ingest loop",
 		"node", h.nodeID,
@@ -644,6 +654,11 @@ type trackDistributor struct {
 
 	drops *dropDistributor
 	done  chan struct{} // closed when ingest returns
+
+	// timescale is the track's timestamp units per second, from its
+	// TRACK_INFO; 0 until known, which means moqt.DefaultTimescale. It turns
+	// a subscriber's Max Latency (milliseconds) into frame timestamp units.
+	timescale atomic.Uint64
 }
 
 func newTrackDistributor(manager *trackManager, trackID string, sampler *statsSampler) *trackDistributor {
@@ -709,9 +724,12 @@ func (d *trackDistributor) egress(tw *moqt.TrackWriter, fromStart bool) {
 	// flushed after each delivered group and at every wait.
 	drops := newDropReporter(tw, d.drops)
 
-	// recent holds this subscriber's written group streams and resets the
-	// ones too old to be worth sending (recent_streams.go).
-	var recent recentStreams
+	// expiry resets this subscriber's group streams once their groups have
+	// left the ring and its Max Latency, capped at the relay's, expires them
+	// (group_expiry.go). The relay does not read SUBSCRIBE_UPDATE, so the Max
+	// Latency is the one the subscription opened with.
+	expiry := groupExpiry{keep: d.ring.size}
+	maxLatency := subscriberMaxLatency(tw.TrackConfig().MaxLatency)
 
 	// Track the last seen notify sequence so we can detect new data without
 	// per-subscriber channels or RWMutex contention. Each call to broadcast()
@@ -781,8 +799,7 @@ func (d *trackDistributor) egress(tw *moqt.TrackWriter, fromStart bool) {
 					continue
 				}
 
-				result, gw := d.deliverGroup(twCtx, tw, openTO, woken, cache)
-				switch result {
+				switch d.deliverGroup(twCtx, tw, openTO, woken, cache, &expiry, maxLatency) {
 				case deliveryStopped:
 					return
 				case groupTimedOut:
@@ -793,9 +810,6 @@ func (d *trackDistributor) egress(tw *moqt.TrackWriter, fromStart bool) {
 					})
 				case groupSent:
 					drops.sent(seq)
-					if n := recent.add(gw, time.Now()); n > 0 {
-						metricEgressGroupResetsTotal.Add(float64(n))
-					}
 					drops.flush()
 				}
 				woken = false // a subsequent direct iteration means we are behind
@@ -879,10 +893,11 @@ const (
 )
 
 // deliverGroup writes one group (cache) to the subscriber's track writer and
-// reports what happened to it. On groupSent it also returns the group's
-// writer, already closed, so egress can reset the stream once it is too
-// old (recent_streams.go).
-func (d *trackDistributor) deliverGroup(ctx context.Context, tw *moqt.TrackWriter, openTO *openTimeout, woken bool, cache *groupCache) (deliverResult, *moqt.GroupWriter) {
+// reports what happened to it.
+//
+// The group's stream joins expiry when it opens, and each frame written on it
+// may expire older groups (maxLatency in milliseconds).
+func (d *trackDistributor) deliverGroup(ctx context.Context, tw *moqt.TrackWriter, openTO *openTimeout, woken bool, cache *groupCache, expiry *groupExpiry, maxLatency uint64) deliverResult {
 	// Stage stamps (no-op in the default build): tEnter closes the R stage
 	// (group arrival → egress pickup) and opens the O stage (OpenGroupAt).
 	// enterDeliver/exitDeliver bracket the concurrent-delivery gauge and the
@@ -914,13 +929,17 @@ func (d *trackDistributor) deliverGroup(ctx context.Context, tw *moqt.TrackWrite
 			// fast with timedOut=false and terminates, so a dead session costs
 			// at most one extra loop iteration.
 			metricSubscriberSkipsTotal.Inc()
-			return groupTimedOut, nil
+			return groupTimedOut
 		}
 		// Non-timeout error (connection closed, session dead): terminate egress.
-		return deliveryStopped, nil
+		return deliveryStopped
 	}
 	defer gw.Close()
 	defer d.ring.decrRef(cache)
+	if n := expiry.open(gw); n > 0 {
+		metricEgressGroupResetsTotal.Add(float64(n))
+	}
+	maxAge := maxAgeUnits(maxLatency, d.timescale.Load())
 
 	d.stages.groupOpen(tEnter)
 
@@ -969,19 +988,22 @@ func (d *trackDistributor) deliverGroup(ctx context.Context, tw *moqt.TrackWrite
 			// handed to QUIC, so they count against egress even
 			// though the group is being abandoned. The failing frame is excluded.
 			d.egressCounter.Add(float64(egressTotal))
-			return deliveryStopped, nil
+			return deliveryStopped
 		}
 		d.stages.egressFrame(tWrite)
+		if n := expiry.frame(frame.Timestamp, maxAge); n > 0 {
+			metricEgressGroupResetsTotal.Add(float64(n))
+		}
 		n := int64(frame.Len())
 		egressTotal += n
 	}
 	d.egressCounter.Add(float64(egressTotal))
 	if cancelled {
-		return deliveryStopped, nil
+		return deliveryStopped
 	}
 
 	d.deliveryHistogram.Observe(time.Since(start).Seconds())
-	return groupSent, gw
+	return groupSent
 }
 
 // subscribe and unsubscribe are removed. The broadcastNotify mechanism replaces
