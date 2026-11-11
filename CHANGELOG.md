@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Bumped gomoqt to v0.28.3 and quic-go to v0.65.0.** quic-go v0.65.0 fixes connection migration across repeated NAT rebindings and stops DATAGRAM frames from starving ACKs and retransmissions; its defaults that the QUIC settings are checked against (idle timeout, flow-control windows, initial packet size range) are unchanged. gomoqt v0.28.3 carries webtransport-go `v0.13.0-okdaichi.5`, which adapts to quic-go v0.65.0's `HTTPStream` change.
+
 ### Security
 
 - **Bumped golang.org/x/net to v0.62.0** for CVE-2026-78661 (HIGH, a denial of service in `x/net/html` on crafted input). The relay does not parse HTML, but the image scan fails on the version, which blocked every PR's Build Image check.
