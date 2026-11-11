@@ -10,8 +10,8 @@ require (
 	github.com/oschwald/maxminddb-golang/v2 v2.9.0
 	github.com/prometheus/client_golang v1.25.0
 	github.com/prometheus/client_model v0.6.3
-	github.com/quic-go/quic-go v0.64.1
-	github.com/qumo-dev/gomoqt v0.28.2
+	github.com/quic-go/quic-go v0.65.0
+	github.com/qumo-dev/gomoqt v0.28.3
 	github.com/stretchr/testify v1.12.1
 	golang.org/x/sync v0.24.0
 )
@@ -28,7 +28,7 @@ require (
 	github.com/kylelemons/godebug v1.1.0 // indirect
 	github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 // indirect
 	github.com/okdaichi/qmux-go v0.3.0 // indirect
-	github.com/okdaichi/webtransport-go v0.13.0-okdaichi.4 // indirect
+	github.com/okdaichi/webtransport-go v0.13.0-okdaichi.5 // indirect
 	github.com/prometheus/common v0.72.1 // indirect
 	github.com/prometheus/procfs v0.22.0 // indirect
 	github.com/quic-go/qpack v0.6.0 // indirect
