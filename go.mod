@@ -10,7 +10,7 @@ require (
 	github.com/oschwald/maxminddb-golang/v2 v2.9.0
 	github.com/prometheus/client_golang v1.25.0
 	github.com/prometheus/client_model v0.6.3
-	github.com/quic-go/quic-go v0.64.1
+	github.com/quic-go/quic-go v0.65.0
 	github.com/qumo-dev/gomoqt v0.28.2
 	github.com/stretchr/testify v1.12.1
 	golang.org/x/sync v0.24.0
