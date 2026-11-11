@@ -131,7 +131,7 @@ The number of streams a peer may open is not a setting. The relay relies on quic
 
 | Variable | Default | Description |
 |---|---|---|
-| `RELAY_PPROF` | (unset) | Opt-in `net/http/pprof` endpoints (`/debug/pprof/...`) alongside `/metrics`. Off by default — enable only on a trusted/loopback interface. |
+| `RELAY_PPROF` | (unset) | Opt-in `net/http/pprof` endpoints (`/debug/pprof/...`) alongside `/metrics`, with the block and mutex profiles recording (about one sample per 10 µs blocked, 1 in 10 contended locks). Off by default — enable only on a trusted/loopback interface. |
 
 {{< callout type="warning" >}}
 `RELAY_PPROF` is checked for **emptiness, not truthiness**: any non-empty value
