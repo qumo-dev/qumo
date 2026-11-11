@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- **Bumped golang.org/x/net to v0.62.0** for CVE-2026-78661 (HIGH, a denial of service in `x/net/html` on crafted input). The relay does not parse HTML, but the image scan fails on the version, which blocked every PR's Build Image check.
+
 ### Changed
 
 - **Bumped gomoqt to v0.28.2.** Over WebTransport, a group stream the subscriber ended now reports its MoQ error code to the relay, as over native QUIC (webtransport-go `v0.13.0-okdaichi.4`).
