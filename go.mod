@@ -1,6 +1,6 @@
 module github.com/qumo-dev/qumo
 
-go 1.27.3
+go 1.27.4
 
 require (
 	github.com/Eyevinn/mp4ff v0.61.0
