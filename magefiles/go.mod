@@ -1,6 +1,6 @@
 module github.com/qumo-dev/qumo/magefiles
 
-go 1.27.3
+go 1.27.4
 
 require (
 	github.com/magefile/mage v1.17.1
