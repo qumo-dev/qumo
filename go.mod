@@ -1,6 +1,6 @@
 module github.com/qumo-dev/qumo
 
-go 1.27.3
+go 1.27.4
 
 require (
 	github.com/Eyevinn/mp4ff v0.61.0
@@ -35,7 +35,7 @@ require (
 	go.yaml.in/yaml/v3 v3.0.5 // indirect
 	go4.org/netipx v0.0.0-20231129151722-fdeea329fbba // indirect
 	golang.org/x/crypto v0.58.0 // indirect
-	golang.org/x/net v0.61.0 // indirect
+	golang.org/x/net v0.62.0 // indirect
 	golang.org/x/sys v0.49.0 // indirect
 	golang.org/x/text v0.43.0 // indirect
 	google.golang.org/protobuf v1.36.12 // indirect

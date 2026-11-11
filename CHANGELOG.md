@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- **Bumped golang.org/x/net to v0.62.0** for CVE-2026-78661 (HIGH, a denial of service in `x/net/html` on crafted input). The relay does not parse HTML, but the image scan fails on the version, which blocked every PR's Build Image check.
+- **Go 1.27.4** for GO-2026-6859 in `net/http` (fixed in go1.27.4), which failed Vulncheck.
+
 ### Changed
 
 - **`RELAY_PPROF` also records the block and mutex profiles (`internal/relay`).** `/debug/pprof/block` and `/debug/pprof/mutex` were always empty, because the runtime records nothing until a rate is set. With `RELAY_PPROF` on, the relay now samples about one blocking event per 10 µs blocked and 1 in 10 contended locks. Both cost a little on every contended lock and blocking wait, so they stay off without `RELAY_PPROF`.
