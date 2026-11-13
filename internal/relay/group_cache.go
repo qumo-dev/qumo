@@ -70,19 +70,18 @@ type groupCache struct {
 	// without counting groups that arrived after this one.
 	highestSeq moqt.GroupSequence
 
-	// ingressArrivalNano is the UnixNano instant the group was reserved into the
-	// ring (stage-latency instrumentation; see stage_latency.go). Written only by
-	// the instrument build's stampArrival/clearArrival, read by egress
-	// ringResidence; atomic because fill and egress goroutines access it
-	// concurrently. Always present (8 bytes) so the field layout is
-	// build-independent, and deliberately last so it does not displace the hot
-	// fields above across cache lines.
-	//nolint:unused // accessed only by the -tags instrument build (stage_latency_instrument.go), invisible to the default-build linter
+	// ingressArrivalNano is the instant the group was reserved into the ring, on
+	// monoNanos's clock. reserve stamps it in every build before the cache is
+	// published; egress expiry measures a group's age from it (group_expiry.go),
+	// and the instrument build its ring residence. Atomic because the fill
+	// worker and egress goroutines access the cache concurrently.
 	ingressArrivalNano atomic.Int64
 
 	// Mechanism-investigation stamps (instrument build only; see
-	// stage_latency.go). All UnixNano, atomic (fill worker + N egress goroutines
-	// touch them concurrently), zeroed in clearArrival on reserve.
+	// stage_latency.go). firstBroadcastNano is on monoNanos's clock (it is
+	// measured against ingressArrivalNano), the others UnixNano. All atomic
+	// (fill worker + N egress goroutines touch them concurrently), zeroed in
+	// clearArrival on reserve.
 	//   firstBroadcastNano: when fill first broadcast this generation's data
 	//     (reserve→here = fill/ingest latency; here→pickup = egress wake latency).
 	//   firstPickupNano:    first egress goroutine to enter deliverGroup for this
@@ -259,10 +258,11 @@ func (ring *groupRing) reserve(seq moqt.GroupSequence) *groupCache {
 	// releaseCache having cleaned up: clear the slots and reset count to 0.
 	cache.resetForReuse()
 
-	// Clear any stale arrival stamp from the cache's previous generation
-	// (no-op in the default build, so reserve pays nothing for the
-	// instrument-only field; the instrument build re-stamps in processGroup).
+	// Clear the instrument-only stamps of the cache's previous generation
+	// (no-op in the default build), then stamp this generation's arrival
+	// before the Swap below publishes the cache to egress.
 	ring.stages.clearArrival(cache)
+	cache.ingressArrivalNano.Store(monoNanos())
 
 	highest := moqt.GroupSequence(ring.maxSeq.Load())
 	if seq > highest {

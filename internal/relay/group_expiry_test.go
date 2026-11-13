@@ -1,7 +1,6 @@
 package relay
 
 import (
-	"math"
 	"testing"
 	"time"
 
@@ -10,79 +9,62 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// step is one egress action on a groupExpiry: open the next group's stream,
-// or write a frame with a timestamp on the latest one.
-type step struct {
-	open bool
-	ts   uint64
+// opening is one groupExpiry.open: a group that arrived at arrival, opened at
+// now (nanoseconds on monoNanos's clock).
+type opening struct {
+	arrival, now int64
 }
 
-func TestGroupExpiry_Frame(t *testing.T) {
-	// Groups are numbered by the order they were opened, from 0.
+func TestGroupExpiry_Open(t *testing.T) {
+	// Groups are numbered by the order they were opened, from 0. keep is 0, so
+	// the ring's window does not apply.
 	tests := map[string]struct {
-		maxAge    uint64
-		steps     []step
-		wantReset []int
+		maxLatency time.Duration
+		openings   []opening
+		wantReset  []int
 	}{
-		"max age 0 keeps only the latest once it presents a frame": {
-			maxAge:    0,
-			steps:     []step{{open: true}, {ts: 0}, {open: true}, {ts: 20}},
-			wantReset: []int{0},
+		"a group expires once the next arrived max latency ago": {
+			maxLatency: 100,
+			openings:   []opening{{0, 0}, {20, 20}, {120, 120}},
+			wantReset:  []int{0},
 		},
-		"a group is not expired before the next presents a frame": {
-			maxAge:    0,
-			steps:     []step{{open: true}, {ts: 0}, {open: true}},
-			wantReset: nil,
+		"one nanosecond short keeps the group": {
+			maxLatency: 100,
+			openings:   []opening{{0, 0}, {20, 20}, {119, 119}},
+			wantReset:  nil,
 		},
-		"one unit short of max age keeps the group": {
-			// Group 0's reach is group 1's first frame (20); 119-20 = 99.
-			maxAge:    100,
-			steps:     []step{{open: true}, {ts: 0}, {open: true}, {ts: 20}, {ts: 119}},
-			wantReset: nil,
-		},
-		"an age equal to max age expires the group": {
-			maxAge:    100,
-			steps:     []step{{open: true}, {ts: 0}, {open: true}, {ts: 20}, {ts: 120}},
-			wantReset: []int{0},
+		"age is measured from the next group's arrival, not the group's own": {
+			// Group 0 arrived long ago, but group 1 only 60 before now.
+			maxLatency: 100,
+			openings:   []opening{{0, 0}, {90, 90}, {150, 150}},
+			wantReset:  nil,
 		},
 		"the latest group never expires": {
-			maxAge:    100,
-			steps:     []step{{open: true}, {ts: 0}, {ts: 1_000_000}},
-			wantReset: nil,
+			maxLatency: 100,
+			openings:   []opening{{0, 1_000_000}},
+			wantReset:  nil,
 		},
 		"expires oldest first, up to the first that is young enough": {
-			// Reaches: group 0 -> 20, group 1 -> 40, group 2 -> 60; latest 140.
-			maxAge: 100,
-			steps: []step{
-				{open: true}, {ts: 0}, {open: true}, {ts: 20}, {open: true}, {ts: 40},
-				{open: true}, {ts: 60}, {ts: 140},
-			},
-			wantReset: []int{0, 1},
+			// Group 3 opened late (egress behind): groups 1 and 2 arrived 120
+			// and 100 before it, group 3 itself 80.
+			maxLatency: 100,
+			openings:   []opening{{0, 0}, {20, 20}, {40, 40}, {60, 140}},
+			wantReset:  []int{0, 1},
 		},
-		"timestamps that run backwards are age 0": {
-			maxAge:    1,
-			steps:     []step{{open: true}, {ts: 500}, {open: true}, {ts: 100}},
-			wantReset: nil,
-		},
-		"frames without timestamps expire only under max age 0": {
-			maxAge:    100,
-			steps:     []step{{open: true}, {ts: 0}, {open: true}, {ts: 0}, {open: true}, {ts: 0}},
-			wantReset: nil,
+		"max latency 0 keeps only the latest": {
+			maxLatency: 0,
+			openings:   []opening{{0, 0}, {20, 20}, {40, 40}},
+			wantReset:  []int{0, 1},
 		},
 	}
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
 			var e groupExpiry
-			var fakes []*fakeGroupCanceler
+			fakes := make([]*fakeGroupCanceler, len(tt.openings))
 			resets := 0
-			for _, s := range tt.steps {
-				if s.open {
-					f := &fakeGroupCanceler{}
-					fakes = append(fakes, f)
-					resets += e.open(f)
-					continue
-				}
-				resets += e.frame(s.ts, tt.maxAge)
+			for i, o := range tt.openings {
+				fakes[i] = &fakeGroupCanceler{}
+				resets += e.open(fakes[i], o.arrival, o.now, tt.maxLatency)
 			}
 
 			assert.Equal(t, len(tt.wantReset), resets)
@@ -101,16 +83,16 @@ func TestGroupExpiry_Frame(t *testing.T) {
 	}
 }
 
-func TestGroupExpiry_Frame_KeepsTheRing(t *testing.T) {
+func TestGroupExpiry_Open_KeepsTheRing(t *testing.T) {
 	// With keep 2, a group is reset only once 2 newer groups were opened,
-	// however expired it is (max age 0).
+	// however expired it is (max latency 0).
 	e := groupExpiry{keep: 2}
 	fakes := make([]*fakeGroupCanceler, 4)
 	resets := 0
 	for i := range fakes {
 		fakes[i] = &fakeGroupCanceler{}
-		resets += e.open(fakes[i])
-		resets += e.frame(uint64(i*20), 0)
+		at := int64(i * 20)
+		resets += e.open(fakes[i], at, at, 0)
 		if i < 2 {
 			assert.Zero(t, resets, "after group %d, every group is still in the ring", i)
 		}
@@ -125,13 +107,14 @@ func TestGroupExpiry_Frame_KeepsTheRing(t *testing.T) {
 }
 
 func TestGroupExpiry_Open_CapsStreams(t *testing.T) {
-	// With no frames to measure age by, only the cap bounds the streams kept.
+	// Groups that all arrived at once never expire by age; only the cap bounds
+	// the streams kept.
 	var e groupExpiry
 	fakes := make([]*fakeGroupCanceler, maxLiveGroupStreams+3)
 	resets := 0
 	for i := range fakes {
 		fakes[i] = &fakeGroupCanceler{}
-		resets += e.open(fakes[i])
+		resets += e.open(fakes[i], 0, 0, relayMaxLatency)
 	}
 
 	assert.Equal(t, 3, resets)
@@ -145,26 +128,6 @@ func TestGroupExpiry_Open_CapsStreams(t *testing.T) {
 	require.Len(t, e.streams, maxLiveGroupStreams)
 	for i, s := range e.streams[len(e.streams):cap(e.streams)] {
 		assert.Nil(t, s.gw, "tail slot %d still references a reset stream", i)
-	}
-}
-
-func TestMaxAgeUnits(t *testing.T) {
-	tests := map[string]struct {
-		maxLatency      time.Duration
-		timescale, want uint64
-	}{
-		"default timescale is milliseconds": {maxLatency: 400 * time.Millisecond, timescale: 0, want: 400},
-		"millisecond timescale":             {maxLatency: 400 * time.Millisecond, timescale: 1000, want: 400},
-		"90 kHz video":                      {maxLatency: 400 * time.Millisecond, timescale: 90_000, want: 36_000},
-		"48 kHz audio":                      {maxLatency: 20 * time.Millisecond, timescale: 48_000, want: 960},
-		"zero stays zero":                   {maxLatency: 0, timescale: 90_000, want: 0},
-		"negative is zero":                  {maxLatency: -time.Second, timescale: 90_000, want: 0},
-		"saturates instead of overflowing":  {maxLatency: math.MaxInt64, timescale: math.MaxUint64, want: math.MaxUint64},
-	}
-	for name, tt := range tests {
-		t.Run(name, func(t *testing.T) {
-			assert.Equal(t, tt.want, maxAgeUnits(tt.maxLatency, tt.timescale))
-		})
 	}
 }
 

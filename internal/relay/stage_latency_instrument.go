@@ -161,7 +161,7 @@ func (c *stageCollector) groupBroadcast(gc *groupCache) {
 	if c == nil || gc == nil {
 		return
 	}
-	gc.firstBroadcastNano.CompareAndSwap(0, time.Now().UnixNano())
+	gc.firstBroadcastNano.CompareAndSwap(0, monoNanos())
 }
 
 // ringResidenceSplit records the aggregate R plus its fill/wake split and the
@@ -174,7 +174,8 @@ func (c *stageCollector) ringResidenceSplit(gc *groupCache, t time.Time, woken b
 	if arrival == 0 {
 		return
 	}
-	r := t.Sub(time.Unix(0, arrival))
+	at := int64(t.Sub(monoEpoch)) // t on monoNanos's clock
+	r := time.Duration(at - arrival)
 	c.ring.observe(r)
 	if woken {
 		c.rWoken.observe(r)
@@ -182,8 +183,8 @@ func (c *stageCollector) ringResidenceSplit(gc *groupCache, t time.Time, woken b
 		c.rBehind.observe(r)
 	}
 	if bc := gc.firstBroadcastNano.Load(); bc != 0 {
-		c.rFill.observe(time.Unix(0, bc).Sub(time.Unix(0, arrival)))
-		c.rWake.observe(t.Sub(time.Unix(0, bc)))
+		c.rFill.observe(time.Duration(bc - arrival))
+		c.rWake.observe(time.Duration(at - bc))
 	}
 }
 
@@ -255,28 +256,26 @@ func (c *stageCollector) ingressFrame(t0 time.Time) {
 	c.ingress.observe(time.Since(t0))
 }
 
-// stampArrival records the group's ring-arrival instant (atomically, since
-// egress goroutines read it concurrently with the fill worker's writes).
+// stampArrival records the group-open cadence from the arrival instant
+// reserve stamped (monoNanos's clock).
 func (c *stageCollector) stampArrival(gc *groupCache) {
 	if c == nil || gc == nil {
 		return
 	}
-	now := time.Now().UnixNano()
-	gc.ingressArrivalNano.Store(now)
+	now := gc.ingressArrivalNano.Load()
 	// Record the group-open cadence (spacing since the previous reserve).
 	if prev := c.lastReserveNano.Swap(now); prev != 0 && now > prev {
 		c.interArrival.observe(time.Duration(now - prev))
 	}
 }
 
-// clearArrival zeroes a reused cache's stale arrival stamp so ringResidence
-// never measures against a previous generation. Called from reserve; the
+// clearArrival zeroes a reused cache's stale instrument stamps so the
+// mechanism gauges never measure against a previous generation. Called from reserve; the
 // default build's no-op keeps the reserve path free of this cost.
 func (c *stageCollector) clearArrival(gc *groupCache) {
 	if c == nil || gc == nil {
 		return
 	}
-	gc.ingressArrivalNano.Store(0)
 	gc.firstBroadcastNano.Store(0)
 	gc.firstPickupNano.Store(0)
 	gc.lastEndNano.Store(0)
