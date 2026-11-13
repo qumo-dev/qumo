@@ -2,6 +2,7 @@ package relay
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"maps"
 	"net"
@@ -99,6 +100,12 @@ type Server struct {
 	sampler       *statsSampler
 	samplerCancel context.CancelFunc
 
+	// load is what the relay knows of its own load, against
+	// Config.MaxClientSessions and Config.MaxEgressKbps: whether it is full,
+	// and whether a new client session is refused (load.go). Created and
+	// started with the sampler.
+	load *loadMonitor
+
 	// sessionEnds counts checked sessions whose end report hasn't been sent
 	// yet (waitSessionEnds).
 	sessionEnds pendingCount
@@ -173,6 +180,9 @@ func (s *Server) HandleWebTransport(w http.ResponseWriter, r *http.Request) {
 	req := s.upgradeRequest(r, auth.TransportWebTransport)
 	g, err := s.admit(r.Context(), req)
 	if err != nil {
+		if errors.Is(err, errFull) {
+			w.Header().Set("Retry-After", fullRetryAfter)
+		}
 		w.WriteHeader(auth.RefusalStatus(err))
 		return
 	}
@@ -248,6 +258,13 @@ func (s *Server) init() {
 		samplerCtx, cancel := context.WithCancel(context.Background())
 		s.samplerCancel = cancel
 		go s.sampler.run(samplerCtx)
+
+		var maxSessions, maxEgress int
+		if s.Config != nil {
+			maxSessions, maxEgress = s.Config.MaxClientSessions, s.Config.MaxEgressKbps
+		}
+		s.load = newLoadMonitor(maxSessions, maxEgress)
+		go s.load.run(samplerCtx, s.sampler.egress)
 
 		if s.TrackMux == nil {
 			s.TrackMux = moqt.NewTrackMux(0)
@@ -759,7 +776,11 @@ func (s *Server) relayPeer(sess *moqt.Session) {
 		// Closed before the decision: a subscribe the client already sent
 		// then fails with the session's error (unauthorized), not with the
 		// refused grant's "track does not exist", so the client learns why.
-		_ = sess.CloseWithError(moqt.UnauthorizedSessionErrorCode, "refused")
+		reason := refusalRefused
+		if errors.Is(err, errFull) {
+			reason = refusalFull
+		}
+		_ = sess.CloseWithError(moqt.UnauthorizedSessionErrorCode, reason)
 		a.decide(refusedGrant, req)
 		return
 	}
@@ -824,6 +845,9 @@ func (s *Server) serveSession(sess *moqt.Session) {
 
 	metricSessionsActive.Inc()
 	defer metricSessionsActive.Dec()
+	if admittedClass(a) == classClient {
+		defer s.load.clientStarted()()
+	}
 
 	s.sampler.addSession(addr, sess)
 	sampleSessionStats(sess, addr) // immediate first sample

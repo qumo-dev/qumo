@@ -656,6 +656,13 @@ func (s *Server) admit(ctx context.Context, req auth.Request) (*auth.Grant, erro
 			"transport", req.Transport, "remote", req.Remote, "path", req.Path)
 		return nil, errNoAuthorize
 	}
+	// A full relay refuses before asking, which spares the key set a check:
+	// the client tries its next relay.
+	if !s.load.admits() {
+		metricSessionsRefused.WithLabelValues(refusalFull).Inc()
+		slog.Debug("relay: session refused: at capacity", "transport", req.Transport, "remote", req.Remote, "path", req.Path)
+		return nil, errFull
+	}
 	g, err := s.Authorize(ctx, req)
 	outcome := authOutcome(g, err)
 	if outcome == authAdmitted && g.Anonymous() && !s.reservePending() {
@@ -722,10 +729,16 @@ const (
 	refusalRefused = "refused"
 	// refusalUnavailable is a session that could not be checked just now.
 	refusalUnavailable = "unavailable"
+	// refusalFull is a relay at its ceiling (load.go): another relay may
+	// take the session now, and this one later.
+	refusalFull = "full"
 )
 
 // refusalReason is the close reason for a session refused with err.
 func refusalReason(err error) string {
+	if errors.Is(err, errFull) {
+		return refusalFull
+	}
 	if _, refused := errors.AsType[auth.RefusedError](err); refused {
 		return refusalRefused
 	}

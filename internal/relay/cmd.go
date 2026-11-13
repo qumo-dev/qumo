@@ -122,6 +122,15 @@ func Run(args []string) error {
 	if err != nil {
 		return fmt.Errorf("invalid FRAME_CAPACITY: %w", err)
 	}
+	// The watermarks the relay is full at (load.go).
+	maxClientSessions, err := envLimit("MAX_CLIENT_SESSIONS")
+	if err != nil {
+		return err
+	}
+	maxEgressKbps, err := envLimit("MAX_EGRESS_KBPS")
+	if err != nil {
+		return err
+	}
 	quicConfig, err := quicConfigFromEnv()
 	if err != nil {
 		return err
@@ -202,6 +211,9 @@ func Run(args []string) error {
 		FrameCapacity:  frameCapacity,
 		Peers:          peers,
 		NextSessionURI: os.Getenv("GOAWAY_REDIRECT_URI"),
+
+		MaxClientSessions: maxClientSessions,
+		MaxEgressKbps:     maxEgressKbps,
 	}
 
 	// Setup signal handling for graceful shutdown
@@ -586,6 +598,15 @@ func envInt(key string, defaultVal int) (int, error) {
 	n, err := strconv.Atoi(v)
 	if err != nil {
 		return 0, err
+	}
+	return n, nil
+}
+
+// envLimit reads a watermark: a whole number, 0 (the default) for no limit.
+func envLimit(key string) (int, error) {
+	n, err := envInt(key, 0)
+	if err != nil || n < 0 {
+		return 0, fmt.Errorf("invalid %s %q: want a whole number, 0 for no limit", key, os.Getenv(key))
 	}
 	return n, nil
 }

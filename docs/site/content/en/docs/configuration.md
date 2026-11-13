@@ -92,6 +92,8 @@ See [Deployment → TLS & mTLS]({{< relref "deployment/tls" >}}).
 |---|---|---|
 | `GROUP_CACHE_SIZE` | `8` | Completed groups each track's ring retains for late/backfill subscribers. Raise to absorb longer subscriber startup lag, at the cost of per-track memory. |
 | `FRAME_CAPACITY` | `1500` | Frame buffer capacity in bytes (roughly one network MTU). |
+| `MAX_CLIENT_SESSIONS` | `0` | Client sessions at which the relay is full (`qumo_relay_full`): a control plane that reads it offers the relay last. From 10% above it (rounded up) the relay refuses new client sessions at connect. Relay peers are never refused. `0` is no limit. |
+| `MAX_EGRESS_KBPS` | `0` | Egress rate in kbit/s (media sent to subscribers, clients and peers alike, over the last 10 s) at which the relay is full, with the same ceiling 10% above it. Set it to the share of the line clients may take: on a hub, below an edge's, so that the rest of its line feeds the edges. `0` is no limit. |
 | `RELAY_UDP_RCVBUF` | `262144` | UDP receive buffer (`SO_RCVBUF`) for the relay's QUIC listener socket. Raise on deployments pushing beyond ~15K concurrent sessions in burst. Set to `0` to use the unmodified OS default. |
 | `RELAY_GOGC` | (unset) | GC target percentage. Opt-in: if unset (and `GOGC` is unset), the Go runtime default (100) is used. A fan-out relay's goroutine stacks dominate RSS, so GC-scan CPU grows with session count; `RELAY_GOGC=600..1600` reached ~18–20K sessions on an 8-core host. `GOGC` (the runtime's own env var) always wins if set. Do **not** use `GOMEMLIMIT` for this workload — it forces constant GC and collapses throughput. |
 

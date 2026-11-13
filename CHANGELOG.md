@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **A full relay refuses new client sessions, and says it is full (`internal/relay`).** `MAX_CLIENT_SESSIONS` and `MAX_EGRESS_KBPS` set the watermarks: the relay is full from one of them until it is back down to 90% (`qumo_relay_full`), and from 10% above one it refuses a new client session at connect, before asking the key set: a WebTransport upgrade gets 503 with `Retry-After: 15`, a WebSocket or native-QUIC session is closed with the reason `full`. A client with another relay to try moves on. Sessions it holds are kept, and relay peers are never refused. The egress rate is the media the relay sends to subscribers, clients and peers alike, over the last 10 s (`qumo_relay_egress_kbps`); refusals are counted in `qumo_relay_sessions_refused_total{reason="full"}`. Both default to 0, no limit. Fullness used to be judged outside the relay, by the session count alone; egress is what fills first on a line shared by every session.
+
 ### Security
 
 - **Bumped golang.org/x/net to v0.62.0** for CVE-2026-78661 (HIGH, a denial of service in `x/net/html` on crafted input). The relay does not parse HTML, but the image scan fails on the version, which blocked every PR's Build Image check.

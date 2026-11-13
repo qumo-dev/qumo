@@ -64,6 +64,9 @@ All metrics are under the `qumo_relay_` prefix.
 | Metric | Type | Description |
 |---|---|---|
 | `qumo_relay_sessions_active` | Gauge | Current number of active MoQT relay sessions. |
+| `qumo_relay_full` | Gauge | 1 while the relay is full: client sessions or egress at their watermark (`MAX_CLIENT_SESSIONS`, `MAX_EGRESS_KBPS`), until back down to 90% of it. |
+| `qumo_relay_egress_kbps` | Gauge | Media sent to subscribers, clients and peers alike, in kbit/s over the last 10 s: what `MAX_EGRESS_KBPS` is checked against. |
+| `qumo_relay_sessions_refused_total{reason}` | Counter | Client sessions refused at connect for the relay's own reasons: `full`, at its ceiling (10% above a watermark). |
 | `qumo_relay_sessions_total{transport,class}` | Counter | Sessions served, by transport (`webtransport`, `websocket` or `quic`) and class: `client` (admitted by its credential, or unchecked with auth off) or `peer` (admitted by a peer certificate: another relay, or anything else given one, such as an HLS egress). Peers run over `quic`. |
 | `qumo_relay_sessions_closed_total{transport,class,reason}` | Counter | Ended sessions, by transport, class and reason: `closed`, `dropped` (the connection was lost), or what the session's lease ended it for. |
 | `qumo_relay_session_bytes_total{transport,class,direction}` | Counter | Bytes of ended sessions, by transport, class and direction (`sent`, `received`). Added when a session ends. Traffic between relays is `class="peer"`, along with that of anything else holding a peer certificate; what clients sent and received is `class="client"`. |

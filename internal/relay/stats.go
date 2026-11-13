@@ -3,6 +3,7 @@ package relay
 import (
 	"context"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/qumo-dev/gomoqt/moqt"
@@ -65,6 +66,27 @@ type statsSampler struct {
 	// stageAgg is the server-wide stage-latency collector (see stage_latency.go).
 	// Zero-size no-op in the default build; real histograms with -tags instrument.
 	stageAgg stageCollector
+
+	// egressBytes is the media sent to subscribers, clients and peers alike,
+	// since the sampler started: what the relay's egress rate is measured
+	// from (loadMonitor).
+	egressBytes atomic.Int64
+}
+
+// addEgress counts n bytes sent to subscribers.
+func (s *statsSampler) addEgress(n int64) {
+	if s == nil {
+		return
+	}
+	s.egressBytes.Add(n)
+}
+
+// egress is the bytes sent to subscribers so far.
+func (s *statsSampler) egress() int64 {
+	if s == nil {
+		return 0
+	}
+	return s.egressBytes.Load()
 }
 
 // queueReap enqueues fn to run on the sampler goroutine after the next sweep.

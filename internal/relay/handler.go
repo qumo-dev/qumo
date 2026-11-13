@@ -973,6 +973,7 @@ func (d *trackDistributor) deliverGroup(ctx context.Context, tw *moqt.TrackWrite
 			// handed to QUIC, so they count against egress even
 			// though the group is being abandoned. The failing frame is excluded.
 			d.egressCounter.Add(float64(egressTotal))
+			d.sampler.addEgress(egressTotal)
 			return deliveryStopped
 		}
 		d.stages.egressFrame(tWrite)
@@ -980,6 +981,7 @@ func (d *trackDistributor) deliverGroup(ctx context.Context, tw *moqt.TrackWrite
 		egressTotal += n
 	}
 	d.egressCounter.Add(float64(egressTotal))
+	d.sampler.addEgress(egressTotal)
 	if cancelled {
 		return deliveryStopped
 	}
