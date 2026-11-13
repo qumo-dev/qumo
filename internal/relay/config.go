@@ -62,13 +62,13 @@ type Config struct {
 	// MaxClientSessions is the client sessions at which the relay is full
 	// (load.go): placement then offers it last, and from 10% above it new
 	// client sessions are refused. Zero or less is no limit.
-	MaxClientSessions int
+	MaxClientSessions int64
 
 	// MaxEgressKbps is the egress rate, in kbit/s, at which the relay is
 	// full, with the same ceiling 10% above it. It is the line's share the
 	// relay gives its clients: a hub's is set below an edge's, so that the
 	// rest of its line feeds the edges. Zero or less is no limit.
-	MaxEgressKbps int
+	MaxEgressKbps int64
 }
 
 // Peer represents a remote relay to connect to for announce discovery.

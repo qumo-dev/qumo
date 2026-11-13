@@ -7,6 +7,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/qumo-dev/qumo/internal/watermark"
 )
 
 // errFull refuses a client session while the relay is at its ceiling: it is
@@ -35,10 +37,9 @@ type limit struct {
 	full bool
 }
 
-// ceiling is where new client sessions are refused: max plus a tenth of it,
-// rounded up, so that a relay is offered last (full) before it refuses.
+// ceiling is where new client sessions are refused (watermark.Ceiling).
 func (l limit) ceiling() int64 {
-	return l.max + (l.max+9)/10
+	return watermark.Ceiling(l.max)
 }
 
 // judge updates whether the resource is full at value: full from max, room
@@ -50,7 +51,7 @@ func (l *limit) judge(value int64) {
 		l.full = false
 	case value >= l.max:
 		l.full = true
-	case value*10 <= l.max*9:
+	case value <= watermark.Room(l.max):
 		l.full = false
 	}
 }
@@ -92,10 +93,10 @@ type loadMonitor struct {
 	samples  []egressSample
 }
 
-func newLoadMonitor(maxClientSessions, maxEgressKbps int) *loadMonitor {
+func newLoadMonitor(maxClientSessions, maxEgressKbps int64) *loadMonitor {
 	return &loadMonitor{
-		sessions: limit{max: int64(max(maxClientSessions, 0))},
-		egress:   limit{max: int64(max(maxEgressKbps, 0))},
+		sessions: limit{max: max(maxClientSessions, 0)},
+		egress:   limit{max: max(maxEgressKbps, 0)},
 	}
 }
 

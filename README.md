@@ -75,7 +75,7 @@ qumo funnel        # Funnel many HTTP senders into one MoQT track (announce + PO
 qumo playground    # One-command local demo: in-process relay + embedded web UI on http://127.0.0.1:8080
 qumo loadgen       # Out-of-process capacity load generator (publish|subscribe) — see [docs/perf](docs/perf/README.md#benchmarking--capacity)
 qumo auth          # Set up the credentials a relay verifies (keygen / token)
-qumo doctor        # Explain effective runtime config (GC target) — read-only
+qumo doctor        # Explain effective runtime config (GC target, capacity) — read-only
 qumo update        # Update qumo to the latest release (--check to verify without applying)
 qumo version       # Print build-time version info
 ```

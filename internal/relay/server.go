@@ -259,7 +259,7 @@ func (s *Server) init() {
 		s.samplerCancel = cancel
 		go s.sampler.run(samplerCtx)
 
-		var maxSessions, maxEgress int
+		var maxSessions, maxEgress int64
 		if s.Config != nil {
 			maxSessions, maxEgress = s.Config.MaxClientSessions, s.Config.MaxEgressKbps
 		}

@@ -29,6 +29,7 @@ import (
 	"github.com/qumo-dev/qumo/internal/envconfig"
 	"github.com/qumo-dev/qumo/internal/gctune"
 	"github.com/qumo-dev/qumo/internal/quicconfig"
+	"github.com/qumo-dev/qumo/internal/watermark"
 )
 
 // sanitizeLog strips CR and LF from s to prevent log injection.
@@ -123,11 +124,11 @@ func Run(args []string) error {
 		return fmt.Errorf("invalid FRAME_CAPACITY: %w", err)
 	}
 	// The watermarks the relay is full at (load.go).
-	maxClientSessions, err := envLimit("MAX_CLIENT_SESSIONS")
+	maxClientSessions, err := watermark.FromEnv(watermark.EnvMaxClientSessions)
 	if err != nil {
 		return err
 	}
-	maxEgressKbps, err := envLimit("MAX_EGRESS_KBPS")
+	maxEgressKbps, err := watermark.FromEnv(watermark.EnvMaxEgressKbps)
 	if err != nil {
 		return err
 	}
@@ -598,15 +599,6 @@ func envInt(key string, defaultVal int) (int, error) {
 	n, err := strconv.Atoi(v)
 	if err != nil {
 		return 0, err
-	}
-	return n, nil
-}
-
-// envLimit reads a watermark: a whole number, 0 (the default) for no limit.
-func envLimit(key string) (int, error) {
-	n, err := envInt(key, 0)
-	if err != nil || n < 0 {
-		return 0, fmt.Errorf("invalid %s %q: want a whole number, 0 for no limit", key, os.Getenv(key))
 	}
 	return n, nil
 }

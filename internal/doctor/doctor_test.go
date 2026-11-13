@@ -37,7 +37,43 @@ func TestReport(t *testing.T) {
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
 			var buf bytes.Buffer
-			report(&buf, tt.env)
+			report(&buf, tt.env, capacityEnv{})
+			out := buf.String()
+			for _, want := range tt.wantContain {
+				assert.Contains(t, out, want)
+			}
+		})
+	}
+}
+
+func TestReport_Capacity(t *testing.T) {
+	tests := map[string]struct {
+		env         capacityEnv
+		wantContain []string
+	}{
+		"nothing set → no limits": {
+			env:         capacityEnv{},
+			wantContain: []string{"MAX_CLIENT_SESSIONS = (unset)", "MAX_EGRESS_KBPS     = (unset)", "Client sessions: no limit", "Egress:          no limit"},
+		},
+		"both set → full, room and ceiling": {
+			env: capacityEnv{MaxClientSessions: "500", MaxEgressKbps: "80000"},
+			wantContain: []string{
+				"Client sessions: full at 500, room again at or below 450, new client sessions refused from 550",
+				"Egress:          full at 80000 kbit/s, room again at or below 72000, new client sessions refused from 88000",
+			},
+		},
+		"invalid → the relay will not start": {
+			env:         capacityEnv{MaxEgressKbps: "80M"},
+			wantContain: []string{"Warning:", `invalid MAX_EGRESS_KBPS "80M"`, "the relay will not start"},
+		},
+	}
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			var buf bytes.Buffer
+
+			err := report(&buf, gctune.Env{}, tt.env)
+
+			assert.NoError(t, err)
 			out := buf.String()
 			for _, want := range tt.wantContain {
 				assert.Contains(t, out, want)

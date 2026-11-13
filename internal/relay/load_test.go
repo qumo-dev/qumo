@@ -8,7 +8,6 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 )
 
 func TestLimit_Judge(t *testing.T) {
@@ -166,33 +165,4 @@ func TestServer_HandleWebTransport_Full(t *testing.T) {
 	assert.Equal(t, fullRetryAfter, rec.Header().Get("Retry-After"))
 	assert.Empty(t, fake.received(), "a full relay refuses before asking")
 	assert.Equal(t, 1.0, delta)
-}
-
-func TestEnvLimit(t *testing.T) {
-	tests := map[string]struct {
-		value   string
-		want    int
-		wantErr bool
-	}{
-		"unset is no limit": {value: "", want: 0},
-		"zero is no limit":  {value: "0", want: 0},
-		"a limit":           {value: "80000", want: 80000},
-		"negative":          {value: "-1", wantErr: true},
-		"not a number":      {value: "80M", wantErr: true},
-	}
-	for name, tt := range tests {
-		t.Run(name, func(t *testing.T) {
-			t.Setenv("MAX_EGRESS_KBPS", tt.value)
-
-			got, err := envLimit("MAX_EGRESS_KBPS")
-
-			if tt.wantErr {
-				require.Error(t, err)
-				assert.Contains(t, err.Error(), "MAX_EGRESS_KBPS")
-				return
-			}
-			require.NoError(t, err)
-			assert.Equal(t, tt.want, got)
-		})
-	}
 }

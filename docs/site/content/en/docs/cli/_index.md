@@ -18,7 +18,7 @@ Commands:
   funnel     Funnel many HTTP senders into one MoQT track (announce/record over POST)
   dns        Answer one DNS name with the region nearest the client (authoritative GeoDNS)
   playground Start a local demo (relay + web UI) on http://127.0.0.1:8080
-  doctor     Explain effective runtime config (GC target) — read-only
+  doctor     Explain effective runtime config (GC target, capacity) — read-only
   loadgen    Drive an out-of-process capacity load against a relay (subscribe|publish)
   update     Update qumo to the latest release (--check to just check)
   version    Print version information

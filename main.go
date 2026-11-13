@@ -137,7 +137,7 @@ func printUsage() {
 	fmt.Fprintln(os.Stderr, "  rtsp       Pull from an RTSP source (e.g. IP camera) and republish as MoQT")
 	fmt.Fprintln(os.Stderr, "  rtsp-push  Start the RTSP push ingest server (ANNOUNCE/RECORD)")
 	fmt.Fprintln(os.Stderr, "  playground Start a local demo (relay + web UI) on http://127.0.0.1:8080")
-	fmt.Fprintln(os.Stderr, "  doctor     Explain effective runtime config (GC target) — read-only")
+	fmt.Fprintln(os.Stderr, "  doctor     Explain effective runtime config (GC target, capacity) — read-only")
 	fmt.Fprintln(os.Stderr, "  loadgen    Drive an out-of-process capacity load against a relay (subscribe|publish)")
 	fmt.Fprintln(os.Stderr, "  update     Update qumo to the latest release (--check to just check)")
 	fmt.Fprintln(os.Stderr, "  version    Print version information")
