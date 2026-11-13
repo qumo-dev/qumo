@@ -18,6 +18,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`RELAY_PPROF` also records the block and mutex profiles (`internal/relay`).** `/debug/pprof/block` and `/debug/pprof/mutex` were always empty, because the runtime records nothing until a rate is set. With `RELAY_PPROF` on, the relay now samples about one blocking event per 10 µs blocked and 1 in 10 contended locks. Both cost a little on every contended lock and blocking wait, so they stay off without `RELAY_PPROF`.
 - **Bumped gomoqt to v0.28.2.** Over WebTransport, a group stream the subscriber ended now reports its MoQ error code to the relay, as over native QUIC (webtransport-go `v0.13.0-okdaichi.4`).
 
+### Fixed
+
+- **The relay resets a subscriber's expired group streams (`internal/relay`).** Writing a group stream returns once its data is in quic-go's send buffer. A subscriber that grants many streams and stops reading, or a relay short of CPU, could therefore queue unsent streams in quic-go without bound while egress counted itself caught up, and the ring's skip never engaged. With 2000 audio subscribers on 4 cores and a 2^20 stream grant, that queue grew the heap until the relay was OOM-killed. Egress now resets a subscriber's group stream (`ExpiredGroupErrorCode`) once its group has left the ring (`GROUP_CACHE_SIZE` newer groups) and the next group arrived at the relay at least the subscriber's Max Latency ago (capped at 400 ms, with 0 taken as unset), on the relay's monotonic clock. Age is relay policy, not moq-lite's media time: it needs no frame timestamps and counts time a group waited for a relay short of CPU. At most 64 streams are kept per subscriber. quic-go reports no delivery, so streams already delivered are reset too, and the receiver ignores those resets. New metric: `qumo_relay_egress_group_resets_total`.
+
 ## [v0.18.261031] - 2026-10-31
 
 ### Added

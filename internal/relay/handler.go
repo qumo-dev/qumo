@@ -709,6 +709,14 @@ func (d *trackDistributor) egress(tw *moqt.TrackWriter, fromStart bool) {
 	// flushed after each delivered group and at every wait.
 	drops := newDropReporter(tw, d.drops)
 
+	// expiry resets this subscriber's group streams once their groups have
+	// left the ring and the next group arrived at least its Max Latency,
+	// capped at the relay's, ago (group_expiry.go). The relay does not read
+	// SUBSCRIBE_UPDATE, so the Max Latency is the one the subscription opened
+	// with.
+	expiry := groupExpiry{keep: d.ring.size}
+	maxLatency := subscriberMaxLatency(tw.TrackConfig().MaxLatency)
+
 	// Track the last seen notify sequence so we can detect new data without
 	// per-subscriber channels or RWMutex contention. Each call to broadcast()
 	// advances the sequence and closes the previous notification channel;
@@ -777,7 +785,7 @@ func (d *trackDistributor) egress(tw *moqt.TrackWriter, fromStart bool) {
 					continue
 				}
 
-				switch d.deliverGroup(twCtx, tw, openTO, woken, cache) {
+				switch d.deliverGroup(twCtx, tw, openTO, woken, cache, &expiry, maxLatency) {
 				case deliveryStopped:
 					return
 				case groupTimedOut:
@@ -872,7 +880,10 @@ const (
 
 // deliverGroup writes one group (cache) to the subscriber's track writer and
 // reports what happened to it.
-func (d *trackDistributor) deliverGroup(ctx context.Context, tw *moqt.TrackWriter, openTO *openTimeout, woken bool, cache *groupCache) deliverResult {
+//
+// The group's stream joins expiry when it opens, which may expire older
+// groups under maxLatency.
+func (d *trackDistributor) deliverGroup(ctx context.Context, tw *moqt.TrackWriter, openTO *openTimeout, woken bool, cache *groupCache, expiry *groupExpiry, maxLatency time.Duration) deliverResult {
 	// Stage stamps (no-op in the default build): tEnter closes the R stage
 	// (group arrival → egress pickup) and opens the O stage (OpenGroupAt).
 	// enterDeliver/exitDeliver bracket the concurrent-delivery gauge and the
@@ -911,6 +922,9 @@ func (d *trackDistributor) deliverGroup(ctx context.Context, tw *moqt.TrackWrite
 	}
 	defer gw.Close()
 	defer d.ring.decrRef(cache)
+	if n := expiry.open(gw, cache.ingressArrivalNano.Load(), monoNanos(), maxLatency); n > 0 {
+		metricEgressGroupResetsTotal.Add(float64(n))
+	}
 
 	d.stages.groupOpen(tEnter)
 

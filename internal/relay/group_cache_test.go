@@ -290,6 +290,20 @@ func TestGroupRing_Reserve_SlotAllocated(t *testing.T) {
 	assert.Equal(t, ringPosition(1), ring.head())
 }
 
+func TestGroupRing_Reserve_StampsArrival(t *testing.T) {
+	ring := newGroupRing(DefaultGroupCacheSize, DefaultFramePool)
+
+	before := monoNanos()
+	first := ring.reserve(moqt.GroupSequence(1))
+	second := ring.reserve(moqt.GroupSequence(2))
+	after := monoNanos()
+
+	a1, a2 := first.ingressArrivalNano.Load(), second.ingressArrivalNano.Load()
+	assert.GreaterOrEqual(t, a1, before)
+	assert.GreaterOrEqual(t, a2, a1, "groups are stamped in arrival order")
+	assert.LessOrEqual(t, a2, after)
+}
+
 func TestGroupRing_Reserve_AdvancesHead(t *testing.T) {
 	ring := newGroupRing(DefaultGroupCacheSize, DefaultFramePool)
 

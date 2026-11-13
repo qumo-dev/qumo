@@ -327,6 +327,17 @@ var (
 		Help:      "Total number of times subscribers were skipped forward due to falling behind.",
 	})
 
+	// metricEgressGroupResetsTotal counts group streams egress reset because
+	// the subscriber's Max Latency expired them or they were past
+	// maxLiveGroupStreams (group_expiry.go). quic-go does not report delivery,
+	// so streams already delivered are counted too: this is not a loss count.
+	metricEgressGroupResetsTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Namespace: "qumo",
+		Subsystem: "relay",
+		Name:      "egress_group_resets_total",
+		Help:      "Total number of group streams egress reset because they expired under the subscriber's Max Latency or exceeded the per-subscriber stream cap, including streams already delivered (not a loss count).",
+	})
+
 	// metricSubscriberDropsLostTotal counts upstream drop notifications a
 	// subscriber never received because the track's drop buffer overwrote them
 	// first. Those groups reach the subscriber neither as groups nor as drops.
