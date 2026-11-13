@@ -896,8 +896,8 @@ const (
 // reports what happened to it.
 //
 // The group's stream joins expiry when it opens, and each frame written on it
-// may expire older groups (maxLatency in milliseconds).
-func (d *trackDistributor) deliverGroup(ctx context.Context, tw *moqt.TrackWriter, openTO *openTimeout, woken bool, cache *groupCache, expiry *groupExpiry, maxLatency uint64) deliverResult {
+// may expire older groups under maxLatency.
+func (d *trackDistributor) deliverGroup(ctx context.Context, tw *moqt.TrackWriter, openTO *openTimeout, woken bool, cache *groupCache, expiry *groupExpiry, maxLatency time.Duration) deliverResult {
 	// Stage stamps (no-op in the default build): tEnter closes the R stage
 	// (group arrival → egress pickup) and opens the O stage (OpenGroupAt).
 	// enterDeliver/exitDeliver bracket the concurrent-delivery gauge and the

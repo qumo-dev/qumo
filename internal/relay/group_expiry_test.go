@@ -3,6 +3,7 @@ package relay
 import (
 	"math"
 	"testing"
+	"time"
 
 	"github.com/qumo-dev/gomoqt/moqt"
 	"github.com/stretchr/testify/assert"
@@ -149,34 +150,37 @@ func TestGroupExpiry_Open_CapsStreams(t *testing.T) {
 
 func TestMaxAgeUnits(t *testing.T) {
 	tests := map[string]struct {
-		ms, timescale, want uint64
+		maxLatency      time.Duration
+		timescale, want uint64
 	}{
-		"default timescale is milliseconds": {ms: 400, timescale: 0, want: 400},
-		"millisecond timescale":             {ms: 400, timescale: 1000, want: 400},
-		"90 kHz video":                      {ms: 400, timescale: 90_000, want: 36_000},
-		"48 kHz audio":                      {ms: 20, timescale: 48_000, want: 960},
-		"zero stays zero":                   {ms: 0, timescale: 90_000, want: 0},
-		"saturates instead of overflowing":  {ms: math.MaxUint64, timescale: 90_000, want: math.MaxUint64},
+		"default timescale is milliseconds": {maxLatency: 400 * time.Millisecond, timescale: 0, want: 400},
+		"millisecond timescale":             {maxLatency: 400 * time.Millisecond, timescale: 1000, want: 400},
+		"90 kHz video":                      {maxLatency: 400 * time.Millisecond, timescale: 90_000, want: 36_000},
+		"48 kHz audio":                      {maxLatency: 20 * time.Millisecond, timescale: 48_000, want: 960},
+		"zero stays zero":                   {maxLatency: 0, timescale: 90_000, want: 0},
+		"negative is zero":                  {maxLatency: -time.Second, timescale: 90_000, want: 0},
+		"saturates instead of overflowing":  {maxLatency: math.MaxInt64, timescale: math.MaxUint64, want: math.MaxUint64},
 	}
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
-			assert.Equal(t, tt.want, maxAgeUnits(tt.ms, tt.timescale))
+			assert.Equal(t, tt.want, maxAgeUnits(tt.maxLatency, tt.timescale))
 		})
 	}
 }
 
 func TestSubscriberMaxLatency(t *testing.T) {
 	tests := map[string]struct {
-		requested, want uint64
+		requestedMs uint64
+		want        time.Duration
 	}{
-		"0 is unset and gets the relay's": {requested: 0, want: relayMaxLatency},
-		"a shorter one is kept":           {requested: 100, want: 100},
-		"the relay's exactly":             {requested: relayMaxLatency, want: relayMaxLatency},
-		"a longer one is capped":          {requested: 60_000, want: relayMaxLatency},
+		"0 is unset and gets the relay's": {requestedMs: 0, want: relayMaxLatency},
+		"a shorter one is kept":           {requestedMs: 100, want: 100 * time.Millisecond},
+		"the relay's exactly":             {requestedMs: 400, want: relayMaxLatency},
+		"a longer one is capped":          {requestedMs: 60_000, want: relayMaxLatency},
 	}
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
-			assert.Equal(t, tt.want, subscriberMaxLatency(tt.requested))
+			assert.Equal(t, tt.want, subscriberMaxLatency(tt.requestedMs))
 		})
 	}
 }

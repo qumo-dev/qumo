@@ -3,28 +3,30 @@ package relay
 import (
 	"math"
 	"math/bits"
+	"time"
 
 	"github.com/qumo-dev/gomoqt/moqt"
 )
 
-// relayMaxLatency (milliseconds) is the longest a group may stay in flight
+// relayMaxLatency is the longest a group may stay in flight
 // to a subscriber once a later group has presented a frame: the relay's own
 // bound, since expiry protects the relay as much as the subscriber. A
 // subscriber's Max Latency can only shorten it. 400 ms is the one-way delay
 // past which conversational audio stops being acceptable (ITU-T G.114).
-const relayMaxLatency = 400
+const relayMaxLatency = 400 * time.Millisecond
 
 // subscriberMaxLatency is the Max Latency egress expires a subscriber's groups
-// at: the subscriber's own, capped at relayMaxLatency. A Max Latency of 0 is
+// at: the subscriber's own (requestedMs, in milliseconds as moq-lite carries
+// it), capped at relayMaxLatency. A Max Latency of 0 is
 // taken as unset and gets relayMaxLatency, unlike moq-lite (where 0 asks for
 // the latest group only): clients send 0 when they do not set one, and
 // honouring it as "latest only" reset groups still in flight to subscribers
 // that keep up.
-func subscriberMaxLatency(requested uint64) uint64 {
-	if requested == 0 || requested > relayMaxLatency {
+func subscriberMaxLatency(requestedMs uint64) time.Duration {
+	if requestedMs == 0 || requestedMs > uint64(relayMaxLatency/time.Millisecond) {
 		return relayMaxLatency
 	}
-	return requested
+	return time.Duration(requestedMs) * time.Millisecond
 }
 
 // maxLiveGroupStreams bounds the group streams kept for one subscriber,
@@ -115,7 +117,14 @@ func (e *groupExpiry) frame(ts, maxAge uint64) int {
 		// A group expires only once a later group has presented a frame, and
 		// its age is measured to that frame (its reach). Timestamps that run
 		// backwards count as age 0, which only a Max Latency of 0 expires.
-		if !next.started || subSat(e.latest, next.first) < maxAge {
+		if !next.started {
+			break
+		}
+		var age uint64
+		if e.latest > next.first {
+			age = e.latest - next.first
+		}
+		if age < maxAge {
 			break
 		}
 		e.streams[n].gw.CancelWrite(moqt.ExpiredGroupErrorCode)
@@ -135,25 +144,20 @@ func (e *groupExpiry) forget(n int) {
 	e.streams = e.streams[:kept]
 }
 
-// maxAgeUnits converts a Max Latency in milliseconds to frame timestamp units
-// at timescale (units per second; 0 is moqt.DefaultTimescale), saturating
-// rather than overflowing.
-func maxAgeUnits(ms, timescale uint64) uint64 {
+// maxAgeUnits converts a Max Latency to frame timestamp units at timescale
+// (units per second; 0 is moqt.DefaultTimescale), saturating rather than
+// overflowing. A negative Max Latency is 0.
+func maxAgeUnits(maxLatency time.Duration, timescale uint64) uint64 {
+	if maxLatency <= 0 {
+		return 0
+	}
 	if timescale == 0 {
 		timescale = moqt.DefaultTimescale
 	}
-	hi, lo := bits.Mul64(ms, timescale)
-	if hi >= 1000 {
+	hi, lo := bits.Mul64(uint64(maxLatency), timescale)
+	if hi >= uint64(time.Second) {
 		return math.MaxUint64
 	}
-	q, _ := bits.Div64(hi, lo, 1000)
+	q, _ := bits.Div64(hi, lo, uint64(time.Second))
 	return q
-}
-
-// subSat is a-b, or 0 when b > a.
-func subSat(a, b uint64) uint64 {
-	if b > a {
-		return 0
-	}
-	return a - b
 }
