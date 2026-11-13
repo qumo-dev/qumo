@@ -1,13 +1,19 @@
 package relay
 
 import (
+	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus/testutil"
+	"github.com/qumo-dev/qumo/internal/auth"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestLimit_Judge(t *testing.T) {
@@ -80,7 +86,7 @@ func TestLoadMonitor_Tick_EgressRate(t *testing.T) {
 	assert.LessOrEqual(t, len(m.samples), int(egressWindow/loadTick)+1, "samples are bounded by the window")
 }
 
-func TestLoadMonitor_FullAndRefusingOnEgress(t *testing.T) {
+func TestLoadMonitor_Tick_FullAndRefusingOnEgress(t *testing.T) {
 	m := newLoadMonitor(0, 1000) // full at 1,000 kbit/s, refusing from 1,100
 	at := time.Unix(1_000_000, 0)
 	total := int64(0)
@@ -90,6 +96,14 @@ func TestLoadMonitor_FullAndRefusingOnEgress(t *testing.T) {
 		total += kbps * 1000 / 8 * int64(loadTick/time.Second)
 		m.tick(at, total)
 	}
+	// admits reports whether a session gets a place, and gives it back.
+	admits := func() bool {
+		release, ok := m.reserve()
+		if ok {
+			release()
+		}
+		return ok
+	}
 	m.tick(at, 0)
 
 	// The rate is over the window, so a burst shows gradually. Drive it to a
@@ -98,19 +112,19 @@ func TestLoadMonitor_FullAndRefusingOnEgress(t *testing.T) {
 		step(1050)
 	}
 	assert.True(t, m.full.Load(), "at the watermark the relay is full")
-	assert.True(t, m.admits(), "below the ceiling it still admits")
+	assert.True(t, admits(), "below the ceiling it still admits")
 	assert.Equal(t, 1.0, testutil.ToFloat64(metricLoadFull))
 
 	for range 6 {
 		step(1200)
 	}
-	assert.False(t, m.admits(), "at the ceiling it refuses")
+	assert.False(t, admits(), "at the ceiling it refuses")
 
 	for range 6 {
 		step(950)
 	}
 	assert.True(t, m.full.Load(), "above 90% of the watermark it stays full")
-	assert.True(t, m.admits(), "below the ceiling it admits again")
+	assert.True(t, admits(), "below the ceiling it admits again")
 
 	for range 6 {
 		step(800)
@@ -119,29 +133,85 @@ func TestLoadMonitor_FullAndRefusingOnEgress(t *testing.T) {
 	assert.Equal(t, 0.0, testutil.ToFloat64(metricLoadFull))
 }
 
-func TestLoadMonitor_Admits_ClientSessions(t *testing.T) {
+func TestLoadMonitor_Reserve_ClientSessions(t *testing.T) {
 	m := newLoadMonitor(10, 0) // full at 10, refusing from 11
-	var ends []func()
-	for range 10 {
-		ends = append(ends, m.clientStarted())
+	var releases []func()
+	for range 11 {
+		release, ok := m.reserve()
+		require.True(t, ok, "up to the ceiling every session gets a place")
+		releases = append(releases, release)
 	}
-	assert.True(t, m.admits(), "at the watermark it still admits")
 
-	ends = append(ends, m.clientStarted())
-	assert.False(t, m.admits(), "at the ceiling it refuses, without waiting for a tick")
+	_, ok := m.reserve()
+	assert.False(t, ok, "at the ceiling it refuses, without waiting for a tick")
 
-	ends[0]()
-	assert.True(t, m.admits(), "a session ending makes room at once")
+	releases[0]()
+	releases[0]()
+	assert.Equal(t, int64(10), m.clients.Load(), "a place is given back once, however often release is called")
+	_, ok = m.reserve()
+	assert.True(t, ok, "a session ending makes room at once")
 
 	m.tick(time.Unix(1_000_000, 0), 0)
-	assert.True(t, m.full.Load(), "ten sessions are the watermark: full")
+	assert.True(t, m.full.Load(), "eleven sessions are past the watermark: full")
 }
 
-func TestLoadMonitor_Nil(t *testing.T) {
+func TestLoadMonitor_Reserve_Concurrent(t *testing.T) {
+	m := newLoadMonitor(100, 0) // refusing from 110
+	var got atomic.Int64
+	var wg sync.WaitGroup
+	for range 500 {
+		wg.Go(func() {
+			if _, ok := m.reserve(); ok {
+				got.Add(1)
+			}
+		})
+	}
+	wg.Wait()
+
+	assert.Equal(t, int64(110), got.Load(), "a burst of connects takes exactly the places under the ceiling")
+	assert.Equal(t, int64(110), m.clients.Load())
+}
+
+func TestLoadMonitor_Reserve_NilMonitor(t *testing.T) {
 	var m *loadMonitor
 
-	assert.True(t, m.admits(), "a server without a monitor admits")
-	m.clientStarted()()
+	release, ok := m.reserve()
+
+	assert.True(t, ok, "a server without a monitor admits")
+	release()
+}
+
+func TestServer_AdmitClient(t *testing.T) {
+	tests := map[string]struct {
+		authErr     error
+		wantErr     error
+		wantClients int64
+	}{
+		"admitted holds its place":  {wantClients: 1},
+		"refused gives it back":     {authErr: auth.RefusedError{Status: http.StatusForbidden}, wantClients: 0},
+		"unavailable gives it back": {authErr: errors.New("no key set loaded yet"), wantClients: 0},
+	}
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			fake := &fakeAuth{err: tt.authErr}
+			srv := newTestServer("127.0.0.1:0")
+			srv.Config = &Config{MaxClientSessions: 10}
+			srv.Authorize = fake.authorize
+			t.Cleanup(func() { assert.NoError(t, srv.Close()) })
+			srv.init()
+
+			_, release, err := srv.admitClient(context.Background(), auth.Request{Event: auth.EventConnect})
+
+			if tt.authErr != nil {
+				assert.ErrorIs(t, err, tt.authErr)
+			} else {
+				require.NoError(t, err)
+			}
+			assert.Equal(t, tt.wantClients, srv.load.clients.Load())
+			release()
+			assert.Zero(t, srv.load.clients.Load(), "release gives back what was held")
+		})
+	}
 }
 
 func TestServer_HandleWebTransport_Full(t *testing.T) {
@@ -149,10 +219,12 @@ func TestServer_HandleWebTransport_Full(t *testing.T) {
 	srv := newTestServer("127.0.0.1:0")
 	srv.Config = &Config{MaxClientSessions: 10}
 	srv.Authorize = fake.authorize
-	t.Cleanup(func() { _ = srv.Close() })
+	t.Cleanup(func() { assert.NoError(t, srv.Close()) })
 	srv.init()
 	for range 11 {
-		t.Cleanup(srv.load.clientStarted())
+		release, ok := srv.load.reserve()
+		require.True(t, ok)
+		t.Cleanup(release)
 	}
 	req := httptest.NewRequest(http.MethodGet, "https://relay.example/acme/app?jwt=a.b.c", nil)
 	req.Method = http.MethodConnect
@@ -165,4 +237,5 @@ func TestServer_HandleWebTransport_Full(t *testing.T) {
 	assert.Equal(t, fullRetryAfter, rec.Header().Get("Retry-After"))
 	assert.Empty(t, fake.received(), "a full relay refuses before asking")
 	assert.Equal(t, 1.0, delta)
+	assert.Equal(t, int64(11), srv.load.clients.Load(), "a refused session takes no place")
 }

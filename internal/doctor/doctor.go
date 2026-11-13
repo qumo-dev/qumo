@@ -28,14 +28,14 @@ func Run(args []string) error {
 // capacityEnv is the raw values of the capacity watermarks, as the relay
 // reads them.
 type capacityEnv struct {
-	MaxClientSessions string
-	MaxEgressKbps     string
+	maxClientSessions string
+	maxEgressKbps     string
 }
 
 func capacityEnvFromOS() capacityEnv {
 	return capacityEnv{
-		MaxClientSessions: os.Getenv(watermark.EnvMaxClientSessions),
-		MaxEgressKbps:     os.Getenv(watermark.EnvMaxEgressKbps),
+		maxClientSessions: os.Getenv(watermark.EnvMaxClientSessions),
+		maxEgressKbps:     os.Getenv(watermark.EnvMaxEgressKbps),
 	}
 }
 
@@ -56,10 +56,10 @@ func report(w io.Writer, env gctune.Env, capacity capacityEnv) error {
 func capacitySection(ew *errWriter, env capacityEnv) {
 	ew.printf("Capacity (when the relay is full, and when it refuses)\n")
 	ew.printf("  Inputs:\n")
-	ew.printf("    %s = %s\n", watermark.EnvMaxClientSessions, orUnset(env.MaxClientSessions))
-	ew.printf("    %s     = %s\n", watermark.EnvMaxEgressKbps, orUnset(env.MaxEgressKbps))
-	limitLine(ew, "Client sessions:", watermark.EnvMaxClientSessions, env.MaxClientSessions, "")
-	limitLine(ew, "Egress:         ", watermark.EnvMaxEgressKbps, env.MaxEgressKbps, " kbit/s")
+	ew.printf("    %s = %s\n", watermark.EnvMaxClientSessions, orUnset(env.maxClientSessions))
+	ew.printf("    %s     = %s\n", watermark.EnvMaxEgressKbps, orUnset(env.maxEgressKbps))
+	limitLine(ew, "Client sessions:", watermark.EnvMaxClientSessions, env.maxClientSessions, "")
+	limitLine(ew, "Egress:         ", watermark.EnvMaxEgressKbps, env.maxEgressKbps, " kbit/s")
 	ew.printf("  Guidance:     Full is reported as qumo_relay_full: a control plane that reads it\n")
 	ew.printf("                offers the relay last. At the ceiling, 10%% above, the relay refuses\n")
 	ew.printf("                new client sessions at connect (503, or a close with \"full\") and the\n")

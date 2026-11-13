@@ -56,14 +56,14 @@ func TestReport_Capacity(t *testing.T) {
 			wantContain: []string{"MAX_CLIENT_SESSIONS = (unset)", "MAX_EGRESS_KBPS     = (unset)", "Client sessions: no limit", "Egress:          no limit"},
 		},
 		"both set → full, room and ceiling": {
-			env: capacityEnv{MaxClientSessions: "500", MaxEgressKbps: "80000"},
+			env: capacityEnv{maxClientSessions: "500", maxEgressKbps: "80000"},
 			wantContain: []string{
 				"Client sessions: full at 500, room again at or below 450, new client sessions refused from 550",
 				"Egress:          full at 80000 kbit/s, room again at or below 72000, new client sessions refused from 88000",
 			},
 		},
 		"invalid → the relay will not start": {
-			env:         capacityEnv{MaxEgressKbps: "80M"},
+			env:         capacityEnv{maxEgressKbps: "80M"},
 			wantContain: []string{"Warning:", `invalid MAX_EGRESS_KBPS "80M"`, "the relay will not start"},
 		},
 	}

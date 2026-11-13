@@ -78,7 +78,13 @@ type egressSample struct {
 // and peers alike (statsSampler.addEgress): the line every relay shares is
 // what fills.
 type loadMonitor struct {
+	// clients is the client sessions admitted and not yet ended, counted
+	// from admission (reserve), so that a burst of connects can't all pass
+	// the ceiling before any is counted.
 	clients atomic.Int64
+	// sessionCeiling is where client sessions are refused; 0 is no limit.
+	// It does not change after newLoadMonitor.
+	sessionCeiling int64
 	// egressKbps is the rate measured over the last egressWindow.
 	egressKbps atomic.Int64
 	// egressRefusing is set while the egress rate is at its ceiling, as of
@@ -87,40 +93,48 @@ type loadMonitor struct {
 	// full is set while either resource is full.
 	full atomic.Bool
 
-	mu       sync.Mutex // guards sessions, egress and samples, written by tick
+	mu       sync.Mutex // guards sessions, egress and samples: tick's
 	sessions limit
 	egress   limit
 	samples  []egressSample
 }
 
 func newLoadMonitor(maxClientSessions, maxEgressKbps int64) *loadMonitor {
-	return &loadMonitor{
-		sessions: limit{max: max(maxClientSessions, 0)},
+	sessions := limit{max: max(maxClientSessions, 0)}
+	m := &loadMonitor{
+		sessions: sessions,
 		egress:   limit{max: max(maxEgressKbps, 0)},
 	}
+	if sessions.max > 0 {
+		m.sessionCeiling = sessions.ceiling()
+	}
+	return m
 }
 
-// admits reports whether a new client session is taken: not while either
-// resource is at its ceiling. The session count is read now; the egress
-// rate as of the last tick.
-func (m *loadMonitor) admits() bool {
+// reserve takes a place for a new client session, and reports whether it
+// got one: not while the egress rate is at its ceiling (as of the last
+// tick), nor once the client sessions are. release gives the place back,
+// once; the caller calls it when the session ends. Reserving and counting
+// are one step, so concurrent connects never take the count past the
+// ceiling.
+func (m *loadMonitor) reserve() (release func(), ok bool) {
 	if m == nil {
-		return true
+		return func() {}, true
 	}
-	m.mu.Lock()
-	sessions := m.sessions
-	m.mu.Unlock()
-	return !sessions.refuses(m.clients.Load()) && !m.egressRefusing.Load()
-}
-
-// clientStarted counts a client session the relay serves, until the
-// returned func is called.
-func (m *loadMonitor) clientStarted() func() {
-	if m == nil {
-		return func() {}
+	if m.egressRefusing.Load() {
+		return nil, false
 	}
-	m.clients.Add(1)
-	return func() { m.clients.Add(-1) }
+	for {
+		n := m.clients.Load()
+		if m.sessionCeiling > 0 && n >= m.sessionCeiling {
+			return nil, false
+		}
+		if m.clients.CompareAndSwap(n, n+1) {
+			break
+		}
+	}
+	var once sync.Once
+	return func() { once.Do(func() { m.clients.Add(-1) }) }, true
 }
 
 // run measures and judges every loadTick until ctx is done. egress reads the

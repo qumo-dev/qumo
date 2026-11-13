@@ -178,7 +178,7 @@ func (s *Server) HandleWebTransport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	req := s.upgradeRequest(r, auth.TransportWebTransport)
-	g, err := s.admit(r.Context(), req)
+	g, release, err := s.admitClient(r.Context(), req)
 	if err != nil {
 		if errors.Is(err, errFull) {
 			w.Header().Set("Retry-After", fullRetryAfter)
@@ -186,6 +186,9 @@ func (s *Server) HandleWebTransport(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(auth.RefusalStatus(err))
 		return
 	}
+	// The session is served within serveUpgrade, so it holds its place
+	// until it ends.
+	defer release()
 	s.serveUpgrade(w, r, s.webtransportHandler, g, req)
 }
 
@@ -213,7 +216,7 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	req := s.upgradeRequest(r, auth.TransportWebSocket)
-	g, err := s.admit(r.Context(), req)
+	g, release, err := s.admitClient(r.Context(), req)
 	if err != nil {
 		// A browser hides the status of a failed WebSocket handshake from
 		// the page, which could then not tell a refusal from a relay it
@@ -225,6 +228,7 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		h.ServeHTTP(w, r.WithContext(withAdmission(r.Context(), a)))
 		return
 	}
+	defer release()
 	s.serveUpgrade(w, r, h, g, req)
 }
 
@@ -771,7 +775,7 @@ func (s *Server) relayPeer(sess *moqt.Session) {
 		return
 	}
 	req := s.nativeRequest(sess)
-	g, err := s.admit(sess.Context(), req)
+	g, release, err := s.admitClient(sess.Context(), req)
 	if err != nil {
 		// Closed before the decision: a subscribe the client already sent
 		// then fails with the session's error (unauthorized), not with the
@@ -780,10 +784,13 @@ func (s *Server) relayPeer(sess *moqt.Session) {
 		if errors.Is(err, errFull) {
 			reason = refusalFull
 		}
-		_ = sess.CloseWithError(moqt.UnauthorizedSessionErrorCode, reason)
+		if err := sess.CloseWithError(moqt.UnauthorizedSessionErrorCode, reason); err != nil {
+			slog.Debug("relay: closing a refused session failed", "remote", sess.RemoteAddr(), "error", err)
+		}
 		a.decide(refusedGrant, req)
 		return
 	}
+	defer release()
 	if g != nil && g.Anonymous() {
 		a.countPending(&s.pendingAnonymous)
 		defer a.unwatch()
@@ -845,9 +852,6 @@ func (s *Server) serveSession(sess *moqt.Session) {
 
 	metricSessionsActive.Inc()
 	defer metricSessionsActive.Dec()
-	if admittedClass(a) == classClient {
-		defer s.load.clientStarted()()
-	}
 
 	s.sampler.addSession(addr, sess)
 	sampleSessionStats(sess, addr) // immediate first sample

@@ -656,13 +656,6 @@ func (s *Server) admit(ctx context.Context, req auth.Request) (*auth.Grant, erro
 			"transport", req.Transport, "remote", req.Remote, "path", req.Path)
 		return nil, errNoAuthorize
 	}
-	// A full relay refuses before asking, which spares the key set a check:
-	// the client tries its next relay.
-	if !s.load.admits() {
-		metricSessionsRefused.WithLabelValues(refusalFull).Inc()
-		slog.Debug("relay: session refused: at capacity", "transport", req.Transport, "remote", req.Remote, "path", req.Path)
-		return nil, errFull
-	}
 	g, err := s.Authorize(ctx, req)
 	outcome := authOutcome(g, err)
 	if outcome == authAdmitted && g.Anonymous() && !s.reservePending() {
@@ -681,6 +674,27 @@ func (s *Server) admit(ctx context.Context, req auth.Request) (*auth.Grant, erro
 			"remote", req.Remote, "path", req.Path, "error", err)
 	}
 	return g, err
+}
+
+// admitClient admits a client session: it takes the session a place under
+// the relay's ceiling (loadMonitor.reserve), then runs the connect check
+// (admit). A full relay refuses before asking, which spares the key set a
+// check, and the client tries its next relay. release gives the place back:
+// the caller calls it once the session ends. On a refusal there is no place
+// to give back, and release is a no-op.
+func (s *Server) admitClient(ctx context.Context, req auth.Request) (g *auth.Grant, release func(), err error) {
+	release, ok := s.load.reserve()
+	if !ok {
+		metricSessionsRefused.WithLabelValues(refusalFull).Inc()
+		slog.Debug("relay: session refused: at capacity", "transport", req.Transport, "remote", req.Remote, "path", req.Path)
+		return nil, func() {}, errFull
+	}
+	g, err = s.admit(ctx, req)
+	if err != nil {
+		release()
+		return nil, func() {}, err
+	}
+	return g, release, nil
 }
 
 // reportEnd sends the end event of a checked session admitted by req, with
