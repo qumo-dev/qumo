@@ -64,9 +64,9 @@ func capacitySection(ew *errWriter, env capacityEnv) {
 	ew.printf("                offers the relay last. At the ceiling, 10%% above, the relay refuses\n")
 	ew.printf("                new client sessions at connect (503, or a close with \"full\") and the\n")
 	ew.printf("                client tries its next relay; sessions it holds and relay peers are\n")
-	ew.printf("                never refused. Egress is the media sent to subscribers, clients and\n")
-	ew.printf("                peers alike: set %s to the share of the line clients may\n", watermark.EnvMaxEgressKbps)
-	ew.printf("                take, a hub's below an edge's so that the rest feeds the edges.\n")
+	ew.printf("                never refused. Egress counts all the relay sends, peers included,\n")
+	ew.printf("                since they share its line. Set a hub's %s below an\n", watermark.EnvMaxEgressKbps)
+	ew.printf("                edge's, so that a hub busy feeding its edges sends clients to them.\n")
 }
 
 // limitLine explains one watermark, or warns that the relay will not start

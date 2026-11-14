@@ -65,9 +65,11 @@ type Config struct {
 	MaxClientSessions int64
 
 	// MaxEgressKbps is the egress rate, in kbit/s, at which the relay is
-	// full, with the same ceiling 10% above it. It is the line's share the
-	// relay gives its clients: a hub's is set below an edge's, so that the
-	// rest of its line feeds the edges. Zero or less is no limit.
+	// full, with the same ceiling 10% above it. It is checked against all
+	// the relay sends, to peers too, since they share its line: past it the
+	// relay takes no more clients, whatever is sending. A hub's is set below
+	// an edge's, so that a hub feeding its edges sends new clients to them.
+	// Zero or less is no limit.
 	MaxEgressKbps int64
 }
 

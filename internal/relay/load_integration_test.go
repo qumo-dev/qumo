@@ -6,12 +6,14 @@ import (
 	"context"
 	"crypto/tls"
 	"errors"
+	"net/http"
 	"testing"
 	"time"
 
 	"github.com/quic-go/quic-go"
 	"github.com/qumo-dev/gomoqt/moqt"
 	"github.com/qumo-dev/gomoqt/transport"
+	"github.com/qumo-dev/qumo/internal/auth"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -39,9 +41,10 @@ func refusalOf(t *testing.T, sess *moqt.Session, err error) *transport.Applicati
 	return serr.ApplicationError
 }
 
-// A native-QUIC client is admitted like any client, so a full relay refuses
-// it too, with the reason "full".
-func TestServer_RelayPeer_NativeClientFull(t *testing.T) {
+// startNativeRelay starts a relay that takes native-QUIC clients, with cfg
+// and authorize, and returns a dial to it that waits for the listener.
+func startNativeRelay(t *testing.T, cfg *Config, authorize func(context.Context, auth.Request) (*auth.Grant, error)) (*Server, func() (*moqt.Session, error)) {
+	t.Helper()
 	cert, pool := chainCert(t)
 	quicCfg := &quic.Config{EnableDatagrams: true, KeepAlivePeriod: 5 * time.Second, MaxIdleTimeout: 30 * time.Second}
 	addr := chainFreeAddr(t)
@@ -50,9 +53,9 @@ func TestServer_RelayPeer_NativeClientFull(t *testing.T) {
 			Certificates: []tls.Certificate{cert}, NextProtos: []string{moqt.NextProtoMOQ}, MinVersion: tls.VersionTLS13,
 		}, QUICConfig: quicCfg},
 		MOQDialer: &moqt.Dialer{TLSConfig: chainDialerTLS(pool), QUICConfig: quicCfg},
-		Config:    &Config{NodeID: "full", MaxClientSessions: 1},
+		Config:    cfg,
 		TrackMux:  moqt.NewTrackMux(moqt.NewHopID()),
-		Authorize: admitUnchecked,
+		Authorize: authorize,
 	}
 	go func() {
 		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, moqt.ErrServerClosed) {
@@ -64,37 +67,68 @@ func TestServer_RelayPeer_NativeClientFull(t *testing.T) {
 		defer cancel()
 		assert.NoError(t, srv.Shutdown(ctx))
 	})
+	chainWaitReachable(t, addr, pool, quicCfg)
 	dialer := &moqt.Dialer{TLSConfig: chainDialerTLS(pool), QUICConfig: quicCfg}
-	dial := func() (*moqt.Session, error) {
+	return srv, func() (*moqt.Session, error) {
 		ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 		defer cancel()
 		return dialer.Dial(ctx, peerURL(addr), moqt.NewTrackMux(0))
 	}
-	// The listener may not be up yet: dial until a session holds.
-	var held []*moqt.Session
-	require.Eventually(t, func() bool {
-		sess, err := dial()
-		if err != nil {
-			return false
-		}
-		held = append(held, sess)
-		return true
-	}, 8*time.Second, 50*time.Millisecond)
+}
+
+// A native-QUIC client is admitted like any client, so a full relay refuses
+// it too, with the reason "full"; once a session ends, it admits again.
+func TestServer_RelayPeer_NativeClientFull(t *testing.T) {
+	srv, dial := startNativeRelay(t, &Config{NodeID: "full", MaxClientSessions: 1}, admitUnchecked)
+	// chainWaitReachable's probe session may still be ending.
+	require.Eventually(t, func() bool { return srv.load.clients.Load() == 0 }, 5*time.Second, 10*time.Millisecond)
+	first, err := dial()
+	require.NoError(t, err)
 	second, err := dial()
 	require.NoError(t, err)
-	held = append(held, second)
-	t.Cleanup(func() {
-		for _, s := range held {
-			assert.NoError(t, s.CloseWithError(moqt.NoError, "done"))
-		}
-	})
+	t.Cleanup(func() { assert.NoError(t, second.CloseWithError(moqt.NoError, "done")) })
 	require.Eventually(t, func() bool { return srv.load.clients.Load() == 2 }, 5*time.Second, 10*time.Millisecond)
 
 	sess, err := dial()
 	refusal := refusalOf(t, sess, err)
 
+	assert.Equal(t, transport.ApplicationErrorCode(moqt.UnauthorizedSessionErrorCode), refusal.ErrorCode)
 	assert.Equal(t, refusalFull, refusal.ErrorMessage)
 	assert.Equal(t, int64(2), srv.load.clients.Load(), "the refused session took no place")
+
+	require.NoError(t, first.CloseWithError(moqt.NoError, "done"))
+	require.Eventually(t, func() bool { return srv.load.clients.Load() == 1 }, 5*time.Second, 10*time.Millisecond,
+		"a native session that ends gives its place back")
+	third, err := dial()
+	require.NoError(t, err)
+	t.Cleanup(func() { assert.NoError(t, third.CloseWithError(moqt.NoError, "done")) })
+	assert.Eventually(t, func() bool { return srv.load.clients.Load() == 2 }, 5*time.Second, 10*time.Millisecond,
+		"the session after one ended was admitted")
+}
+
+// A native-QUIC client is told why it was refused, as a WebSocket one is:
+// refused (its credential), or unavailable (not checked just now).
+func TestServer_RelayPeer_NativeClientRefusalReason(t *testing.T) {
+	tests := map[string]struct {
+		err        error
+		wantReason string
+	}{
+		"a credential refused": {err: auth.RefusedError{Status: http.StatusForbidden}, wantReason: refusalRefused},
+		"not checked just now": {err: errors.New("no key set loaded yet"), wantReason: refusalUnavailable},
+	}
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			fake := &fakeAuth{err: tt.err}
+			srv, dial := startNativeRelay(t, &Config{NodeID: "refusing"}, fake.authorize)
+
+			sess, err := dial()
+			refusal := refusalOf(t, sess, err)
+
+			assert.Equal(t, tt.wantReason, refusal.ErrorMessage)
+			assert.Eventually(t, func() bool { return srv.load.clients.Load() == 0 }, 5*time.Second, 10*time.Millisecond,
+				"a refused session gives back its place")
+		})
+	}
 }
 
 // What a relay delivers to its subscribers is what its egress rate is

@@ -18,7 +18,8 @@ var (
 
 	// metricLoadFull is 1 while the relay is full (load.go): its client
 	// sessions or its egress at their watermark, until back down to 90% of
-	// it. The heartbeat reports it, and placement offers a full relay last.
+	// it. A control plane's heartbeat can report it (qumo-deploy's does), so
+	// that placement offers a full relay last.
 	metricLoadFull = promauto.NewGauge(prometheus.GaugeOpts{
 		Namespace: "qumo",
 		Subsystem: "relay",

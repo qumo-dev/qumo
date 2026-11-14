@@ -1,8 +1,8 @@
 package relay
 
 import (
-	"context"
 	"errors"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/qumo-dev/qumo/internal/auth"
 	"github.com/stretchr/testify/assert"
@@ -104,6 +105,7 @@ func TestLoadMonitor_Tick_EgressRate(t *testing.T) {
 
 func TestLoadMonitor_Tick_FullAndRefusingOnEgress(t *testing.T) {
 	m := newLoadMonitor(0, 1000) // full at 1,000 kbit/s, refusing from 1,100
+	m.fullGauge = prometheus.NewGauge(prometheus.GaugeOpts{Name: "test_full"})
 	at := time.Unix(1_000_000, 0)
 	total := int64(0)
 	// step sends kbps for one tick and judges.
@@ -129,7 +131,7 @@ func TestLoadMonitor_Tick_FullAndRefusingOnEgress(t *testing.T) {
 	}
 	assert.True(t, m.full.Load(), "at the watermark the relay is full")
 	assert.True(t, admits(), "below the ceiling it still admits")
-	assert.Equal(t, 1.0, testutil.ToFloat64(metricLoadFull))
+	assert.Equal(t, 1.0, testutil.ToFloat64(m.fullGauge))
 
 	for range 6 {
 		step(1200)
@@ -146,7 +148,7 @@ func TestLoadMonitor_Tick_FullAndRefusingOnEgress(t *testing.T) {
 		step(800)
 	}
 	assert.False(t, m.full.Load(), "at 90% or less it has room again")
-	assert.Equal(t, 0.0, testutil.ToFloat64(metricLoadFull))
+	assert.Equal(t, 0.0, testutil.ToFloat64(m.fullGauge))
 }
 
 func TestLoadMonitor_Reserve_ClientSessions(t *testing.T) {
@@ -216,7 +218,7 @@ func TestServer_AdmitClient(t *testing.T) {
 			t.Cleanup(func() { assert.NoError(t, srv.Close()) })
 			srv.init()
 
-			_, release, err := srv.admitClient(context.Background(), auth.Request{Event: auth.EventConnect})
+			_, release, err := srv.admitClient(t.Context(), auth.Request{Event: auth.EventConnect})
 
 			if tt.authErr != nil {
 				assert.ErrorIs(t, err, tt.authErr)
@@ -262,6 +264,87 @@ func TestServer_HandleWebTransport_Full(t *testing.T) {
 			assert.Empty(t, fake.received(), "a full relay refuses before asking")
 			assert.Equal(t, 1.0, delta)
 			assert.Equal(t, int64(11), srv.load.clients.Load(), "a refused session takes no place")
+		})
+	}
+}
+
+func TestNewLoadMonitor_Limits(t *testing.T) {
+	tests := map[string]struct {
+		maxSessions, maxEgress int64
+		reservations           int
+		wantAdmits             bool
+	}{
+		"no limits admit any number":            {maxSessions: 0, maxEgress: 0, reservations: 10_000, wantAdmits: true},
+		"negative limits are no limits":         {maxSessions: -5, maxEgress: -5, reservations: 10_000, wantAdmits: true},
+		"the largest limit admits, not refuses": {maxSessions: math.MaxInt64, maxEgress: math.MaxInt64, reservations: 10_000, wantAdmits: true},
+		"a limit refuses at its ceiling":        {maxSessions: 100, reservations: 110, wantAdmits: false},
+	}
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			m := newLoadMonitor(tt.maxSessions, tt.maxEgress)
+			for range tt.reservations {
+				_, ok := m.reserve()
+				require.True(t, ok)
+			}
+			m.tick(time.Unix(1_000_000, 0), 0)
+
+			_, ok := m.reserve()
+
+			assert.Equal(t, tt.wantAdmits, ok)
+		})
+	}
+}
+
+// A server built without a Config has no limits.
+func TestServer_AdmitClient_NoConfig(t *testing.T) {
+	srv := newTestServer("127.0.0.1:0")
+	srv.Authorize = admitUnchecked
+	t.Cleanup(func() { assert.NoError(t, srv.Close()) })
+	srv.init()
+
+	for range 1000 {
+		_, _, err := srv.admitClient(t.Context(), auth.Request{Event: auth.EventConnect})
+		require.NoError(t, err)
+	}
+}
+
+// Two ticks at the same instant measure no rate rather than divide by zero,
+// and a window with no new bytes measures zero.
+func TestLoadMonitor_Tick_NoElapsedTime(t *testing.T) {
+	m := newLoadMonitor(0, 1000)
+	at := time.Unix(1_000_000, 0)
+
+	m.tick(at, 1_000_000)
+	m.tick(at, 2_000_000)
+	assert.Zero(t, m.egressKbps.Load(), "no time elapsed: no rate")
+
+	// 1,000,000 bytes since the window's first sample, 2 s ago: 4,000 kbit/s.
+	m.tick(at.Add(loadTick), 2_000_000)
+	assert.Equal(t, int64(4000), m.egressKbps.Load())
+
+	m.tick(at.Add(egressWindow+2*loadTick), 2_000_000)
+	assert.Zero(t, m.egressKbps.Load(), "no bytes across a whole window: zero")
+}
+
+// A relay stops at startup on a watermark it can't read, rather than run
+// with no limit it was not told to.
+func TestRun_RefusesInvalidWatermark(t *testing.T) {
+	tests := map[string]struct {
+		key, value string
+	}{
+		"client sessions not a number": {key: "MAX_CLIENT_SESSIONS", value: "many"},
+		"egress negative":              {key: "MAX_EGRESS_KBPS", value: "-1"},
+		"egress with a unit":           {key: "MAX_EGRESS_KBPS", value: "80M"},
+	}
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Setenv("MAX_CLIENT_SESSIONS", "")
+			t.Setenv("MAX_EGRESS_KBPS", "")
+			t.Setenv(tt.key, tt.value)
+
+			err := Run(nil)
+
+			assert.ErrorContains(t, err, "invalid "+tt.key)
 		})
 	}
 }

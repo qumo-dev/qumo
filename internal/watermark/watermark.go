@@ -6,6 +6,7 @@ package watermark
 
 import (
 	"fmt"
+	"math"
 	"os"
 	"strconv"
 )
@@ -37,14 +38,28 @@ func Parse(key, value string) (int64, error) {
 
 // Ceiling is where a relay refuses new client sessions: max plus a tenth
 // of it, rounded up, so that a relay is offered last (full) before it
-// refuses.
+// refuses. It saturates rather than overflow, so no limit, however large,
+// refuses everything.
 func Ceiling(max int64) int64 {
-	return max + (max+9)/10
+	extra := tenth(max)
+	if max > math.MaxInt64-extra {
+		return math.MaxInt64
+	}
+	return max + extra
 }
 
 // Room is the value at or below which a full relay has room again: 90% of
 // max, rounded down, so that a value hovering at max does not make the
 // relay full and not full on every reading.
 func Room(max int64) int64 {
-	return max * 9 / 10
+	return max - tenth(max)
+}
+
+// tenth is a tenth of max, rounded up, computed without overflow.
+func tenth(max int64) int64 {
+	t := max / 10
+	if max%10 != 0 {
+		t++
+	}
+	return t
 }

@@ -9,6 +9,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/qumo-dev/qumo/internal/watermark"
 )
 
@@ -71,13 +72,15 @@ type egressSample struct {
 // loadMonitor is what the relay knows of its own load: the client sessions
 // it holds and the rate it sends at, against their watermarks
 // (Config.MaxClientSessions, Config.MaxEgressKbps). It decides whether the
-// relay is full, which the heartbeat reports so that placement offers it
-// last, and whether a new client session is refused. A relay peer is never
+// relay is full, exported as qumo_relay_full for a control plane to read
+// (qumo-deploy's heartbeat reports it, and its placement then offers the
+// relay last), and whether a new client session is refused. A relay peer is never
 // refused: peering carries what clients elsewhere watch.
 //
 // The egress rate counts the media the relay sends to subscribers, clients
 // and peers alike (statsSampler.addEgress): the line every relay shares is
-// what fills.
+// what fills. So a hub busy feeding its edges takes no more clients, which
+// then go to the edges: that is what its lower watermark is for.
 type loadMonitor struct {
 	// clients is the client sessions admitted and not yet ended, counted
 	// from admission (reserve), so that a burst of connects can't all pass
@@ -94,6 +97,11 @@ type loadMonitor struct {
 	// full is set while either resource is full.
 	full atomic.Bool
 
+	// fullGauge and egressGauge are where tick exports what it judged:
+	// qumo_relay_full and qumo_relay_egress_kbps.
+	fullGauge   prometheus.Gauge
+	egressGauge prometheus.Gauge
+
 	mu       sync.Mutex // guards sessions, egress and samples: tick's
 	sessions limit
 	egress   limit
@@ -103,8 +111,10 @@ type loadMonitor struct {
 func newLoadMonitor(maxClientSessions, maxEgressKbps int64) *loadMonitor {
 	sessions := limit{max: max(maxClientSessions, 0)}
 	m := &loadMonitor{
-		sessions: sessions,
-		egress:   limit{max: max(maxEgressKbps, 0)},
+		sessions:    sessions,
+		egress:      limit{max: max(maxEgressKbps, 0)},
+		fullGauge:   metricLoadFull,
+		egressGauge: metricLoadEgressKbps,
 	}
 	if sessions.max > 0 {
 		m.sessionCeiling = sessions.ceiling()
@@ -191,8 +201,8 @@ func (m *loadMonitor) tick(now time.Time, egressBytes int64) {
 		slog.Info("relay: load: refusing new client sessions for egress changed", "refusing", refusing,
 			"egress_kbps", kbps, "egress_ceiling_kbps", m.egress.ceiling())
 	}
-	metricLoadFull.Set(boolGauge(full))
-	metricLoadEgressKbps.Set(float64(kbps))
+	m.fullGauge.Set(boolGauge(full))
+	m.egressGauge.Set(float64(kbps))
 }
 
 // retryAfter is d as a Retry-After value: whole seconds, rounded up.

@@ -755,12 +755,12 @@ func (s *Server) Relay(sess *moqt.Session) {
 	a := admissionFrom(sess.Context())
 	if a == nil {
 		// Unreachable through HandleWebTransport; refuse rather than run open.
-		_ = sess.CloseWithError(moqt.UnauthorizedSessionErrorCode, "not admitted")
+		closeRefused(sess, moqt.UnauthorizedSessionErrorCode, "not admitted")
 		return
 	}
 	if a.refusal != "" {
 		// A WebSocket session refused at connect: see handleWebSocket.
-		_ = sess.CloseWithError(moqt.UnauthorizedSessionErrorCode, a.refusal)
+		closeRefused(sess, moqt.UnauthorizedSessionErrorCode, a.refusal)
 		return
 	}
 	s.serveSession(sess)
@@ -775,7 +775,7 @@ func (s *Server) relayPeer(sess *moqt.Session) {
 	a := admissionFrom(sess.Context())
 	if a == nil {
 		// Unreachable through ConnContext; refuse rather than run open.
-		_ = sess.CloseWithError(moqt.UnauthorizedSessionErrorCode, "not admitted")
+		closeRefused(sess, moqt.UnauthorizedSessionErrorCode, "not admitted")
 		return
 	}
 	state := sess.ConnectionState().TLS
@@ -786,7 +786,7 @@ func (s *Server) relayPeer(sess *moqt.Session) {
 		slog.Info("relay: session dropped: it presented this relay's own peer certificate (a relay that reached itself; anything else needs a certificate of its own)",
 			"remote", sess.RemoteAddr())
 		a.decide(refusedGrant, auth.Request{})
-		_ = sess.CloseWithError(moqt.NoError, "self")
+		closeRefused(sess, moqt.NoError, "self")
 		return
 	}
 	if class, identity := classify(state); class == classPeer {
@@ -800,14 +800,9 @@ func (s *Server) relayPeer(sess *moqt.Session) {
 	if err != nil {
 		// Closed before the decision: a subscribe the client already sent
 		// then fails with the session's error (unauthorized), not with the
-		// refused grant's "track does not exist", so the client learns why.
-		reason := refusalRefused
-		if errors.Is(err, errFull) {
-			reason = refusalFull
-		}
-		if err := sess.CloseWithError(moqt.UnauthorizedSessionErrorCode, reason); err != nil {
-			slog.Debug("relay: closing a refused session failed", "remote", sess.RemoteAddr(), "error", err)
-		}
+		// refused grant's "track does not exist", so the client learns why:
+		// refused, unavailable, or full, as a WebSocket session is told.
+		closeRefused(sess, moqt.UnauthorizedSessionErrorCode, refusalReason(err))
 		a.decide(refusedGrant, req)
 		return
 	}
@@ -818,6 +813,14 @@ func (s *Server) relayPeer(sess *moqt.Session) {
 	}
 	a.decide(g, req)
 	s.serveSession(sess)
+}
+
+// closeRefused closes a session the relay does not serve, with code and
+// reason. The session is ending either way; a close that fails is logged.
+func closeRefused(sess *moqt.Session, code moqt.SessionErrorCode, reason string) {
+	if err := sess.CloseWithError(code, reason); err != nil {
+		slog.Debug("relay: closing a session it does not serve failed", "remote", sess.RemoteAddr(), "reason", reason, "error", err)
+	}
 }
 
 // serveSession is the shared core for Relay, relayPeer and maintainPeer.

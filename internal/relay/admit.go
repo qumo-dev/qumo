@@ -752,6 +752,9 @@ const (
 
 // refusalReason is the close reason for a session refused with err.
 func refusalReason(err error) string {
+	if errors.Is(err, errFull) {
+		return refusalFull
+	}
 	if _, refused := errors.AsType[auth.RefusedError](err); refused {
 		return refusalRefused
 	}
