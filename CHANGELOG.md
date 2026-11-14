@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [v0.19.261114] - 2026-11-14
+
 ### Security
 
 - **Bumped golang.org/x/net to v0.62.0** for CVE-2026-78661 (HIGH, a denial of service in `x/net/html` on crafted input). The relay does not parse HTML, but the image scan fails on the version, which blocked every PR's Build Image check.
