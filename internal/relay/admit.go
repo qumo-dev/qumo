@@ -744,15 +744,14 @@ const (
 	// refusalUnavailable is a session that could not be checked just now.
 	refusalUnavailable = "unavailable"
 	// refusalFull is a relay at its ceiling (load.go): another relay may
-	// take the session now, and this one later.
+	// take the session now, and this one later. A WebTransport or WebSocket
+	// upgrade is refused before it happens (refuseFull); a native-QUIC
+	// session, already open, is closed with it.
 	refusalFull = "full"
 )
 
 // refusalReason is the close reason for a session refused with err.
 func refusalReason(err error) string {
-	if errors.Is(err, errFull) {
-		return refusalFull
-	}
 	if _, refused := errors.AsType[auth.RefusedError](err); refused {
 		return refusalRefused
 	}

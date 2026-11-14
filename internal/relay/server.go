@@ -179,10 +179,11 @@ func (s *Server) HandleWebTransport(w http.ResponseWriter, r *http.Request) {
 	}
 	req := s.upgradeRequest(r, auth.TransportWebTransport)
 	g, release, err := s.admitClient(r.Context(), req)
+	if errors.Is(err, errFull) {
+		refuseFull(w)
+		return
+	}
 	if err != nil {
-		if errors.Is(err, errFull) {
-			w.Header().Set("Retry-After", retryAfter(fullRetryAfter))
-		}
 		w.WriteHeader(auth.RefusalStatus(err))
 		return
 	}
@@ -217,6 +218,14 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	}
 	req := s.upgradeRequest(r, auth.TransportWebSocket)
 	g, release, err := s.admitClient(r.Context(), req)
+	if errors.Is(err, errFull) {
+		// A full relay is, to the client, like one it cannot reach: it
+		// moves to its next relay either way, so the page need not tell
+		// the two apart. It is refused before the upgrade, as a
+		// WebTransport session is, and takes no session.
+		refuseFull(w)
+		return
+	}
 	if err != nil {
 		// A browser hides the status of a failed WebSocket handshake from
 		// the page, which could then not tell a refusal from a relay it
@@ -230,6 +239,18 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	}
 	defer release()
 	s.serveUpgrade(w, r, h, g, req)
+}
+
+// refuseFull answers a client session refused at the relay's ceiling,
+// before it is upgraded: 503 with Retry-After, which is HTTP's "overloaded,
+// retry after this long" (RFC 9110, sections 15.6.4 and 10.2.3). A
+// WebTransport upgrade is an extended CONNECT; a WebSocket upgrade may be
+// answered with any status but 101 (RFC 6455, section 4.2.2). A browser
+// shows the page neither the status nor the header, only a session that
+// did not open; a client with another relay tries it.
+func refuseFull(w http.ResponseWriter) {
+	w.Header().Set("Retry-After", retryAfter(fullRetryAfter))
+	w.WriteHeader(http.StatusServiceUnavailable)
 }
 
 // serveUpgrade hands a request admitted with g to upgrader, with its

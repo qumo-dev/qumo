@@ -8,36 +8,14 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/qumo-dev/gomoqt/moqt"
-	"github.com/qumo-dev/gomoqt/transport"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
 // The tests here drive the ceiling through real sessions, end to end.
 
-// refusalOf waits for sess (or the dial's err) to end, and returns how the
-// relay closed it. A refusal reaches the client either while it still dials
-// or just after.
-func refusalOf(t *testing.T, sess *moqt.Session, err error) *transport.ApplicationError {
-	t.Helper()
-	var refusal *transport.ApplicationError
-	if err != nil {
-		require.ErrorAs(t, err, &refusal)
-		return refusal
-	}
-	select {
-	case <-sess.Context().Done():
-	case <-time.After(5 * time.Second):
-		require.FailNow(t, "a refused session stayed open")
-	}
-	var serr *moqt.SessionError
-	require.ErrorAs(t, moqt.Cause(sess.Context()), &serr)
-	return serr.ApplicationError
-}
-
 // A WebSocket session holds its place for as long as it is open: a full
-// relay refuses the next with the reason "full", and admits again once one
-// ends.
+// relay refuses the next handshake, and admits again once one ends.
 func TestServer_HandleWebTransport_WebSocketFull(t *testing.T) {
 	fake := &fakeAuth{}
 	srv := newWebSocketTestServer(t, fake)
@@ -47,12 +25,9 @@ func TestServer_HandleWebTransport_WebSocketFull(t *testing.T) {
 	dialTest(t, srv, "")
 	require.Eventually(t, func() bool { return srv.load.clients.Load() == 2 }, 5*time.Second, 10*time.Millisecond)
 
-	sess, err := dialWebSocket(t, srv, "/acme")
-	refusal := refusalOf(t, sess, err)
+	_, err := dialWebSocket(t, srv, "/acme")
 
-	assert.True(t, refusal.Remote)
-	assert.Equal(t, transport.ApplicationErrorCode(moqt.UnauthorizedSessionErrorCode), refusal.ErrorCode)
-	assert.Equal(t, refusalFull, refusal.ErrorMessage)
+	require.Error(t, err, "the handshake is refused: no session opens")
 	assert.Len(t, fake.received(), 2, "the refused session was not checked")
 
 	require.NoError(t, first.CloseWithError(moqt.NoError, "done"))

@@ -11,12 +11,33 @@ import (
 
 	"github.com/quic-go/quic-go"
 	"github.com/qumo-dev/gomoqt/moqt"
+	"github.com/qumo-dev/gomoqt/transport"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
 // The ceiling through real QUIC relays: tagged integration with the relay
 // chain helpers it uses.
+
+// refusalOf waits for sess (or the dial's err) to end, and returns how the
+// relay closed it. A refusal reaches the client either while it still dials
+// or just after.
+func refusalOf(t *testing.T, sess *moqt.Session, err error) *transport.ApplicationError {
+	t.Helper()
+	var refusal *transport.ApplicationError
+	if err != nil {
+		require.ErrorAs(t, err, &refusal)
+		return refusal
+	}
+	select {
+	case <-sess.Context().Done():
+	case <-time.After(5 * time.Second):
+		require.FailNow(t, "a refused session stayed open")
+	}
+	var serr *moqt.SessionError
+	require.ErrorAs(t, moqt.Cause(sess.Context()), &serr)
+	return serr.ApplicationError
+}
 
 // A native-QUIC client is admitted like any client, so a full relay refuses
 // it too, with the reason "full".

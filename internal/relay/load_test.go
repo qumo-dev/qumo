@@ -231,27 +231,37 @@ func TestServer_AdmitClient(t *testing.T) {
 }
 
 func TestServer_HandleWebTransport_Full(t *testing.T) {
-	fake := &fakeAuth{}
-	srv := newTestServer("127.0.0.1:0")
-	srv.Config = &Config{MaxClientSessions: 10}
-	srv.Authorize = fake.authorize
-	t.Cleanup(func() { assert.NoError(t, srv.Close()) })
-	srv.init()
-	for range 11 {
-		release, ok := srv.load.reserve()
-		require.True(t, ok)
-		t.Cleanup(release)
+	tests := map[string]struct {
+		request func() *http.Request
+	}{
+		"a WebTransport upgrade": {request: func() *http.Request {
+			req := httptest.NewRequest(http.MethodGet, "https://relay.example/acme/app?jwt=a.b.c", nil)
+			req.Method = http.MethodConnect
+			return req
+		}},
+		"a WebSocket upgrade": {request: func() *http.Request { return webSocketUpgrade("/acme/app?jwt=a.b.c") }},
 	}
-	req := httptest.NewRequest(http.MethodGet, "https://relay.example/acme/app?jwt=a.b.c", nil)
-	req.Method = http.MethodConnect
-	rec := httptest.NewRecorder()
-	refused := metricSessionsRefused.WithLabelValues(refusalFull)
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			fake := &fakeAuth{}
+			srv := newWebSocketTestServer(t, fake)
+			srv.Config.MaxClientSessions = 10
+			srv.init()
+			for range 11 {
+				release, ok := srv.load.reserve()
+				require.True(t, ok)
+				t.Cleanup(release)
+			}
+			rec := httptest.NewRecorder()
+			refused := metricSessionsRefused.WithLabelValues(refusalFull)
 
-	delta := counterDelta(t, func() { srv.HandleWebTransport(rec, req) }, refused)
+			delta := counterDelta(t, func() { srv.HandleWebTransport(rec, tt.request()) }, refused)
 
-	assert.Equal(t, http.StatusServiceUnavailable, rec.Code)
-	assert.Equal(t, "15", rec.Header().Get("Retry-After"), "whole seconds")
-	assert.Empty(t, fake.received(), "a full relay refuses before asking")
-	assert.Equal(t, 1.0, delta)
-	assert.Equal(t, int64(11), srv.load.clients.Load(), "a refused session takes no place")
+			assert.Equal(t, http.StatusServiceUnavailable, rec.Code, "refused before the upgrade")
+			assert.Equal(t, "15", rec.Header().Get("Retry-After"), "whole seconds")
+			assert.Empty(t, fake.received(), "a full relay refuses before asking")
+			assert.Equal(t, 1.0, delta)
+			assert.Equal(t, int64(11), srv.load.clients.Load(), "a refused session takes no place")
+		})
+	}
 }
