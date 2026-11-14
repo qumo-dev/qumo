@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -26,7 +27,7 @@ const (
 	// fullRetryAfter is the Retry-After a refused WebTransport client gets:
 	// about when the relay may have room again. A client with another relay
 	// to try does not wait for it.
-	fullRetryAfter = "15"
+	fullRetryAfter = 15 * time.Second
 )
 
 // limit is one resource's watermark: the relay is full from max until it is
@@ -192,6 +193,11 @@ func (m *loadMonitor) tick(now time.Time, egressBytes int64) {
 	}
 	metricLoadFull.Set(boolGauge(full))
 	metricLoadEgressKbps.Set(float64(kbps))
+}
+
+// retryAfter is d as a Retry-After value: whole seconds, rounded up.
+func retryAfter(d time.Duration) string {
+	return strconv.FormatInt(int64((d+time.Second-1)/time.Second), 10)
 }
 
 func boolGauge(b bool) float64 {

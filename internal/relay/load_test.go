@@ -64,6 +64,22 @@ func TestLimit_Refuses(t *testing.T) {
 	}
 }
 
+func TestRetryAfter(t *testing.T) {
+	tests := map[string]struct {
+		d    time.Duration
+		want string
+	}{
+		"whole seconds":        {d: 15 * time.Second, want: "15"},
+		"a fraction rounds up": {d: 1500 * time.Millisecond, want: "2"},
+		"zero":                 {d: 0, want: "0"},
+	}
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			assert.Equal(t, tt.want, retryAfter(tt.d))
+		})
+	}
+}
+
 func TestLoadMonitor_Tick_EgressRate(t *testing.T) {
 	m := newLoadMonitor(0, 0)
 	start := time.Unix(1_000_000, 0)
@@ -234,7 +250,7 @@ func TestServer_HandleWebTransport_Full(t *testing.T) {
 	delta := counterDelta(t, func() { srv.HandleWebTransport(rec, req) }, refused)
 
 	assert.Equal(t, http.StatusServiceUnavailable, rec.Code)
-	assert.Equal(t, fullRetryAfter, rec.Header().Get("Retry-After"))
+	assert.Equal(t, "15", rec.Header().Get("Retry-After"), "whole seconds")
 	assert.Empty(t, fake.received(), "a full relay refuses before asking")
 	assert.Equal(t, 1.0, delta)
 	assert.Equal(t, int64(11), srv.load.clients.Load(), "a refused session takes no place")

@@ -181,7 +181,7 @@ func (s *Server) HandleWebTransport(w http.ResponseWriter, r *http.Request) {
 	g, release, err := s.admitClient(r.Context(), req)
 	if err != nil {
 		if errors.Is(err, errFull) {
-			w.Header().Set("Retry-After", fullRetryAfter)
+			w.Header().Set("Retry-After", retryAfter(fullRetryAfter))
 		}
 		w.WriteHeader(auth.RefusalStatus(err))
 		return
