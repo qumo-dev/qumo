@@ -292,6 +292,8 @@ func TestRefusalReason(t *testing.T) {
 		"a wrapped refusal":    {err: fmt.Errorf("verify: %w", auth.RefusedError{Status: http.StatusUnauthorized}), want: refusalRefused},
 		"could not be checked": {err: errors.New("no key set loaded yet"), want: refusalUnavailable},
 		"no Authorize":         {err: errNoAuthorize, want: refusalUnavailable},
+		"at capacity":          {err: errFull, want: refusalFull},
+		"a wrapped capacity":   {err: fmt.Errorf("admit: %w", errFull), want: refusalFull},
 	}
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {

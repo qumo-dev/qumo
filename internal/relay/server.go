@@ -2,6 +2,7 @@ package relay
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"maps"
 	"net"
@@ -99,6 +100,12 @@ type Server struct {
 	sampler       *statsSampler
 	samplerCancel context.CancelFunc
 
+	// load is what the relay knows of its own load, against
+	// Config.MaxClientSessions and Config.MaxEgressKbps: whether it is full,
+	// and whether a new client session is refused (load.go). Created and
+	// started with the sampler.
+	load *loadMonitor
+
 	// sessionEnds counts checked sessions whose end report hasn't been sent
 	// yet (waitSessionEnds).
 	sessionEnds pendingCount
@@ -171,11 +178,18 @@ func (s *Server) HandleWebTransport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	req := s.upgradeRequest(r, auth.TransportWebTransport)
-	g, err := s.admit(r.Context(), req)
+	g, release, err := s.admitClient(r.Context(), req)
+	if errors.Is(err, errFull) {
+		refuseFull(w)
+		return
+	}
 	if err != nil {
 		w.WriteHeader(auth.RefusalStatus(err))
 		return
 	}
+	// The session is served within serveUpgrade, so it holds its place
+	// until it ends.
+	defer release()
 	s.serveUpgrade(w, r, s.webtransportHandler, g, req)
 }
 
@@ -203,7 +217,15 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	req := s.upgradeRequest(r, auth.TransportWebSocket)
-	g, err := s.admit(r.Context(), req)
+	g, release, err := s.admitClient(r.Context(), req)
+	if errors.Is(err, errFull) {
+		// A full relay is, to the client, like one it cannot reach: it
+		// moves to its next relay either way, so the page need not tell
+		// the two apart. It is refused before the upgrade, as a
+		// WebTransport session is, and takes no session.
+		refuseFull(w)
+		return
+	}
 	if err != nil {
 		// A browser hides the status of a failed WebSocket handshake from
 		// the page, which could then not tell a refusal from a relay it
@@ -215,7 +237,20 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		h.ServeHTTP(w, r.WithContext(withAdmission(r.Context(), a)))
 		return
 	}
+	defer release()
 	s.serveUpgrade(w, r, h, g, req)
+}
+
+// refuseFull answers a client session refused at the relay's ceiling,
+// before it is upgraded: 503 with Retry-After, which is HTTP's "overloaded,
+// retry after this long" (RFC 9110, sections 15.6.4 and 10.2.3). A
+// WebTransport upgrade is an extended CONNECT; a WebSocket upgrade may be
+// answered with any status but 101 (RFC 6455, section 4.2.2). A browser
+// shows the page neither the status nor the header, only a session that
+// did not open; a client with another relay tries it.
+func refuseFull(w http.ResponseWriter) {
+	w.Header().Set("Retry-After", retryAfter(fullRetryAfter))
+	w.WriteHeader(http.StatusServiceUnavailable)
 }
 
 // serveUpgrade hands a request admitted with g to upgrader, with its
@@ -248,6 +283,13 @@ func (s *Server) init() {
 		samplerCtx, cancel := context.WithCancel(context.Background())
 		s.samplerCancel = cancel
 		go s.sampler.run(samplerCtx)
+
+		var maxSessions, maxEgress int64
+		if s.Config != nil {
+			maxSessions, maxEgress = s.Config.MaxClientSessions, s.Config.MaxEgressKbps
+		}
+		s.load = newLoadMonitor(maxSessions, maxEgress)
+		go s.load.run(samplerCtx, s.sampler.egress)
 
 		if s.TrackMux == nil {
 			s.TrackMux = moqt.NewTrackMux(0)
@@ -713,12 +755,12 @@ func (s *Server) Relay(sess *moqt.Session) {
 	a := admissionFrom(sess.Context())
 	if a == nil {
 		// Unreachable through HandleWebTransport; refuse rather than run open.
-		_ = sess.CloseWithError(moqt.UnauthorizedSessionErrorCode, "not admitted")
+		closeRefused(sess, moqt.UnauthorizedSessionErrorCode, "not admitted")
 		return
 	}
 	if a.refusal != "" {
 		// A WebSocket session refused at connect: see handleWebSocket.
-		_ = sess.CloseWithError(moqt.UnauthorizedSessionErrorCode, a.refusal)
+		closeRefused(sess, moqt.UnauthorizedSessionErrorCode, a.refusal)
 		return
 	}
 	s.serveSession(sess)
@@ -733,7 +775,7 @@ func (s *Server) relayPeer(sess *moqt.Session) {
 	a := admissionFrom(sess.Context())
 	if a == nil {
 		// Unreachable through ConnContext; refuse rather than run open.
-		_ = sess.CloseWithError(moqt.UnauthorizedSessionErrorCode, "not admitted")
+		closeRefused(sess, moqt.UnauthorizedSessionErrorCode, "not admitted")
 		return
 	}
 	state := sess.ConnectionState().TLS
@@ -744,7 +786,7 @@ func (s *Server) relayPeer(sess *moqt.Session) {
 		slog.Info("relay: session dropped: it presented this relay's own peer certificate (a relay that reached itself; anything else needs a certificate of its own)",
 			"remote", sess.RemoteAddr())
 		a.decide(refusedGrant, auth.Request{})
-		_ = sess.CloseWithError(moqt.NoError, "self")
+		closeRefused(sess, moqt.NoError, "self")
 		return
 	}
 	if class, identity := classify(state); class == classPeer {
@@ -754,21 +796,31 @@ func (s *Server) relayPeer(sess *moqt.Session) {
 		return
 	}
 	req := s.nativeRequest(sess)
-	g, err := s.admit(sess.Context(), req)
+	g, release, err := s.admitClient(sess.Context(), req)
 	if err != nil {
 		// Closed before the decision: a subscribe the client already sent
 		// then fails with the session's error (unauthorized), not with the
-		// refused grant's "track does not exist", so the client learns why.
-		_ = sess.CloseWithError(moqt.UnauthorizedSessionErrorCode, "refused")
+		// refused grant's "track does not exist", so the client learns why:
+		// refused, unavailable, or full, as a WebSocket session is told.
+		closeRefused(sess, moqt.UnauthorizedSessionErrorCode, refusalReason(err))
 		a.decide(refusedGrant, req)
 		return
 	}
+	defer release()
 	if g != nil && g.Anonymous() {
 		a.countPending(&s.pendingAnonymous)
 		defer a.unwatch()
 	}
 	a.decide(g, req)
 	s.serveSession(sess)
+}
+
+// closeRefused closes a session the relay does not serve, with code and
+// reason. The session is ending either way; a close that fails is logged.
+func closeRefused(sess *moqt.Session, code moqt.SessionErrorCode, reason string) {
+	if err := sess.CloseWithError(code, reason); err != nil {
+		slog.Debug("relay: closing a session it does not serve failed", "remote", sess.RemoteAddr(), "reason", reason, "error", err)
+	}
 }
 
 // serveSession is the shared core for Relay, relayPeer and maintainPeer.

@@ -29,6 +29,7 @@ import (
 	"github.com/qumo-dev/qumo/internal/envconfig"
 	"github.com/qumo-dev/qumo/internal/gctune"
 	"github.com/qumo-dev/qumo/internal/quicconfig"
+	"github.com/qumo-dev/qumo/internal/watermark"
 )
 
 // sanitizeLog strips CR and LF from s to prevent log injection.
@@ -122,6 +123,15 @@ func Run(args []string) error {
 	if err != nil {
 		return fmt.Errorf("invalid FRAME_CAPACITY: %w", err)
 	}
+	// The watermarks the relay is full at (load.go).
+	maxClientSessions, err := watermark.FromEnv(watermark.EnvMaxClientSessions)
+	if err != nil {
+		return err
+	}
+	maxEgressKbps, err := watermark.FromEnv(watermark.EnvMaxEgressKbps)
+	if err != nil {
+		return err
+	}
 	quicConfig, err := quicConfigFromEnv()
 	if err != nil {
 		return err
@@ -202,6 +212,9 @@ func Run(args []string) error {
 		FrameCapacity:  frameCapacity,
 		Peers:          peers,
 		NextSessionURI: os.Getenv("GOAWAY_REDIRECT_URI"),
+
+		MaxClientSessions: maxClientSessions,
+		MaxEgressKbps:     maxEgressKbps,
 	}
 
 	// Setup signal handling for graceful shutdown

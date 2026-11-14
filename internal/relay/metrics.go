@@ -16,6 +16,36 @@ var (
 		Help:      "Current number of active MoQT relay sessions.",
 	})
 
+	// metricLoadFull is 1 while the relay is full (load.go): its client
+	// sessions or its egress at their watermark, until back down to 90% of
+	// it. A control plane's heartbeat can report it (qumo-deploy's does), so
+	// that placement offers a full relay last.
+	metricLoadFull = promauto.NewGauge(prometheus.GaugeOpts{
+		Namespace: "qumo",
+		Subsystem: "relay",
+		Name:      "full",
+		Help:      "1 while the relay is full: client sessions or egress at the watermark (MAX_CLIENT_SESSIONS, MAX_EGRESS_KBPS), until back down to 90% of it.",
+	})
+
+	// metricLoadEgressKbps is the rate the relay sends media to subscribers
+	// at, clients and peers alike, over the last 10 s (load.go).
+	metricLoadEgressKbps = promauto.NewGauge(prometheus.GaugeOpts{
+		Namespace: "qumo",
+		Subsystem: "relay",
+		Name:      "egress_kbps",
+		Help:      "Media the relay sends to subscribers (clients and peers), in kbit/s over the last 10 s.",
+	})
+
+	// metricSessionsRefused counts client sessions refused at connect for the
+	// relay's own reasons rather than their credential's: full, at its
+	// ceiling (load.go).
+	metricSessionsRefused = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "qumo",
+		Subsystem: "relay",
+		Name:      "sessions_refused_total",
+		Help:      "Client sessions refused at connect for the relay's own reasons, by reason (full: at its ceiling, 10% above a watermark).",
+	}, []string{"reason"})
+
 	// metricSessionsTotal counts the sessions served, by transport
 	// (webtransport, websocket or quic) and class: client (admitted by its
 	// credential, or unchecked with auth off) or peer (a relay peer, dialed

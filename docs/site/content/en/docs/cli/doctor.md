@@ -34,6 +34,16 @@ GC target (garbage collector)
                 hosts pushing >15K sessions, set RELAY_GOGC (600–1600 reached
                 ~18–20K on an 8-core host). GOGC always overrides. Do not set
                 GOMEMLIMIT for this workload.
+
+Capacity (when the relay is full, and when it refuses)
+  Inputs:
+    MAX_CLIENT_SESSIONS = (unset)
+    MAX_EGRESS_KBPS     = (unset)
+  Client sessions: no limit
+  Egress:          no limit
+  Guidance:     Full is reported as qumo_relay_full: a control plane that reads it
+                offers the relay last. At the ceiling, 10% above, the relay refuses
+                ...
 ```
 
 Because it only reads the environment, you can check what a setting would
@@ -50,7 +60,10 @@ $ RELAY_GOGC=800 qumo doctor
 
 Takes no configuration of its own — it *inspects* the relay's: the effective GC
 target (which of `GOGC` and `RELAY_GOGC` won, or the runtime default, and why),
-plus guidance for high-fan-out deployments. `GOMEMLIMIT` is shown as an input
+plus guidance for high-fan-out deployments; and the capacity watermarks
+(`MAX_CLIENT_SESSIONS`, `MAX_EGRESS_KBPS`): where each makes the relay full, where
+it has room again, and where it refuses new client sessions, or that a value would
+stop the relay from starting. `GOMEMLIMIT` is shown as an input
 and warned about when set, but is deliberately not a candidate — capping memory
 forces constant GC and collapses the relay's throughput.
 

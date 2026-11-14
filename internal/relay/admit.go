@@ -676,6 +676,27 @@ func (s *Server) admit(ctx context.Context, req auth.Request) (*auth.Grant, erro
 	return g, err
 }
 
+// admitClient admits a client session: it takes the session a place under
+// the relay's ceiling (loadMonitor.reserve), then runs the connect check
+// (admit). A full relay refuses before asking, which spares the key set a
+// check, and the client tries its next relay. release gives the place back:
+// the caller calls it once the session ends. On a refusal there is no place
+// to give back, and release is a no-op.
+func (s *Server) admitClient(ctx context.Context, req auth.Request) (g *auth.Grant, release func(), err error) {
+	release, ok := s.load.reserve()
+	if !ok {
+		metricSessionsRefused.WithLabelValues(refusalFull).Inc()
+		slog.Debug("relay: session refused: at capacity", "transport", req.Transport, "remote", req.Remote, "path", req.Path)
+		return nil, func() {}, errFull
+	}
+	g, err = s.admit(ctx, req)
+	if err != nil {
+		release()
+		return nil, func() {}, err
+	}
+	return g, release, nil
+}
+
 // reportEnd sends the end event of a checked session admitted by req, with
 // its final byte totals and why it ended. ctx is the session's: done by now,
 // so the report keeps its values but not its cancellation. A failed report is
@@ -722,10 +743,18 @@ const (
 	refusalRefused = "refused"
 	// refusalUnavailable is a session that could not be checked just now.
 	refusalUnavailable = "unavailable"
+	// refusalFull is a relay at its ceiling (load.go): another relay may
+	// take the session now, and this one later. A WebTransport or WebSocket
+	// upgrade is refused before it happens (refuseFull); a native-QUIC
+	// session, already open, is closed with it.
+	refusalFull = "full"
 )
 
 // refusalReason is the close reason for a session refused with err.
 func refusalReason(err error) string {
+	if errors.Is(err, errFull) {
+		return refusalFull
+	}
 	if _, refused := errors.AsType[auth.RefusedError](err); refused {
 		return refusalRefused
 	}

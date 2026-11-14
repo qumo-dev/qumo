@@ -58,6 +58,19 @@ type Config struct {
 	// means no redirect is advertised. GOAWAY is an escape-hatch primitive;
 	// route/subscription migration is the primary mobility mechanism (#280).
 	NextSessionURI string
+
+	// MaxClientSessions is the client sessions at which the relay is full
+	// (load.go): placement then offers it last, and from 10% above it new
+	// client sessions are refused. Zero or less is no limit.
+	MaxClientSessions int64
+
+	// MaxEgressKbps is the egress rate, in kbit/s, at which the relay is
+	// full, with the same ceiling 10% above it. It is checked against all
+	// the relay sends, to peers too, since they share its line: past it the
+	// relay takes no more clients, whatever is sending. A hub's is set below
+	// an edge's, so that a hub feeding its edges sends new clients to them.
+	// Zero or less is no limit.
+	MaxEgressKbps int64
 }
 
 // Peer represents a remote relay to connect to for announce discovery.

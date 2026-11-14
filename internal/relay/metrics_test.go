@@ -84,6 +84,9 @@ func TestMetrics_Initialization(t *testing.T) {
 	upstreamRequestErrors := metricTrackUpstreamRequestErrorsTotal.WithLabelValues("/live/camera", "video")
 	assert.Equal(t, 1.0, counterDelta(t, upstreamRequestErrors.Inc, upstreamRequestErrors))
 
+	// Reset first, as the histograms below: other tests in the package (a
+	// relay chain under -tags=integration) observe upstream requests too.
+	metricTrackUpstreamRequestDuration.Reset()
 	metricTrackUpstreamRequestDuration.WithLabelValues("/live/camera", "video").Observe(0.1)
 	assert.Equal(t, 1, testutil.CollectAndCount(metricTrackUpstreamRequestDuration))
 

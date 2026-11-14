@@ -1,7 +1,8 @@
 // Package doctor implements the read-only `qumo doctor` command: it explains
 // the relay's effective runtime configuration and offers operator guidance
-// without mutating anything. GC is its first (currently only) section; the
-// report is structured so further checks (sockets, QUIC, kernel) can slot in.
+// without mutating anything. Its sections are the GC target and the capacity
+// watermarks; the report is structured so further checks (sockets, QUIC,
+// kernel) can slot in.
 package doctor
 
 import (
@@ -10,6 +11,7 @@ import (
 	"os"
 
 	"github.com/qumo-dev/qumo/internal/gctune"
+	"github.com/qumo-dev/qumo/internal/watermark"
 )
 
 // Run executes `qumo doctor`, writing the report to stdout. It is read-only and
@@ -20,16 +22,66 @@ func Run(args []string) error {
 	if len(args) > 0 {
 		return fmt.Errorf("doctor takes no arguments (got %q); it reports all sections", args)
 	}
-	return report(os.Stdout, gctune.EnvFromOS())
+	return report(os.Stdout, gctune.EnvFromOS(), capacityEnvFromOS())
 }
 
-// report renders the doctor report for env to w. It is separated from Run so
-// tests can capture output and vary the environment without touching os.Getenv.
-func report(w io.Writer, env gctune.Env) error {
+// capacityEnv is the raw values of the capacity watermarks, as the relay
+// reads them.
+type capacityEnv struct {
+	maxClientSessions string
+	maxEgressKbps     string
+}
+
+func capacityEnvFromOS() capacityEnv {
+	return capacityEnv{
+		maxClientSessions: os.Getenv(watermark.EnvMaxClientSessions),
+		maxEgressKbps:     os.Getenv(watermark.EnvMaxEgressKbps),
+	}
+}
+
+// report renders the doctor report for env and capacity to w. It is
+// separated from Run so tests can capture output and vary the environment
+// without touching os.Getenv.
+func report(w io.Writer, env gctune.Env, capacity capacityEnv) error {
 	ew := &errWriter{w: w}
 	ew.printf("qumo doctor — effective runtime configuration\n\n")
 	gcSection(ew, env)
+	ew.printf("\n")
+	capacitySection(ew, capacity)
 	return ew.err
+}
+
+// capacitySection explains the capacity watermarks: each input, where it
+// makes the relay full and where it refuses, and what that does.
+func capacitySection(ew *errWriter, env capacityEnv) {
+	ew.printf("Capacity (when the relay is full, and when it refuses)\n")
+	ew.printf("  Inputs:\n")
+	ew.printf("    %s = %s\n", watermark.EnvMaxClientSessions, orUnset(env.maxClientSessions))
+	ew.printf("    %s     = %s\n", watermark.EnvMaxEgressKbps, orUnset(env.maxEgressKbps))
+	limitLine(ew, "Client sessions:", watermark.EnvMaxClientSessions, env.maxClientSessions, "")
+	limitLine(ew, "Egress:         ", watermark.EnvMaxEgressKbps, env.maxEgressKbps, " kbit/s")
+	ew.printf("  Guidance:     Full is reported as qumo_relay_full: a control plane that reads it\n")
+	ew.printf("                offers the relay last. At the ceiling, 10%% above, the relay refuses\n")
+	ew.printf("                new client sessions at connect (503, or a close with \"full\") and the\n")
+	ew.printf("                client tries its next relay; sessions it holds and relay peers are\n")
+	ew.printf("                never refused. Egress counts all the relay sends, peers included,\n")
+	ew.printf("                since they share its line. Set a hub's %s below an\n", watermark.EnvMaxEgressKbps)
+	ew.printf("                edge's, so that a hub busy feeding its edges sends clients to them.\n")
+}
+
+// limitLine explains one watermark, or warns that the relay will not start
+// with its value.
+func limitLine(ew *errWriter, label, key, value, unit string) {
+	limit, err := watermark.Parse(key, value)
+	switch {
+	case err != nil:
+		ew.printf("  Warning:      %v: the relay will not start with it\n", err)
+	case limit == 0:
+		ew.printf("  %s no limit\n", label)
+	default:
+		ew.printf("  %s full at %d%s, room again at or below %d, new client sessions refused from %d\n",
+			label, limit, unit, watermark.Room(limit), watermark.Ceiling(limit))
+	}
 }
 
 // gcSection explains the garbage-collector target: every input, the effective
