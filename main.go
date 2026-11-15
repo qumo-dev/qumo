@@ -6,6 +6,7 @@ import (
 	"io/fs"
 	"os"
 
+	"github.com/qumo-dev/qumo/internal/abr"
 	"github.com/qumo-dev/qumo/internal/auth"
 	"github.com/qumo-dev/qumo/internal/doctor"
 	"github.com/qumo-dev/qumo/internal/funnel"
@@ -21,6 +22,7 @@ import (
 
 var (
 	// overridable command handlers for easier unit-testing
+	runABR        = abr.Run
 	runFunnel     = funnel.Run
 	runDNS        = geodns.Run
 	runHLS        = hls.Run
@@ -87,6 +89,8 @@ func run(args []string) int {
 
 	var err error
 	switch cmd {
+	case "abr":
+		err = runABR(cmdArgs)
 	case "auth":
 		err = runAuth(cmdArgs)
 	case "dns":
@@ -128,6 +132,7 @@ func printUsage() {
 	fmt.Fprintf(os.Stderr, "Usage: qumo <command>  (%s)\n", version.Short())
 	fmt.Fprintln(os.Stderr, "")
 	fmt.Fprintln(os.Stderr, "Commands:")
+	fmt.Fprintln(os.Stderr, "  abr        Transcode broadcasts into ABR renditions (ffmpeg) and republish them")
 	fmt.Fprintln(os.Stderr, "  auth       Set up the credentials a relay verifies (keygen, token)")
 	fmt.Fprintln(os.Stderr, "  dns        Answer one DNS name with the region nearest the client (authoritative GeoDNS)")
 	fmt.Fprintln(os.Stderr, "  funnel     Funnel many HTTP senders into one MoQT track (announce/record over POST)")

@@ -1,6 +1,6 @@
 ---
 title: CLI reference
-description: qumo's subcommands — relay, rtmp, rtsp, rtsp-push, hls, funnel, dns, playground, doctor, loadgen, update, version.
+description: qumo's subcommands — relay, rtmp, rtsp, rtsp-push, hls, abr, funnel, dns, playground, doctor, loadgen, update, version.
 weight: 5
 cascade:
   type: docs
@@ -15,6 +15,7 @@ Commands:
   rtsp       Pull from an RTSP source (e.g. IP camera) and republish as MoQT
   rtsp-push  Start the RTSP push ingest server (ANNOUNCE/RECORD)
   hls        Start the HLS/DASH egress server
+  abr        Transcode broadcasts into ABR renditions (ffmpeg) and republish them
   funnel     Funnel many HTTP senders into one MoQT track (announce/record over POST)
   dns        Answer one DNS name with the region nearest the client (authoritative GeoDNS)
   playground Start a local demo (relay + web UI) on http://127.0.0.1:8080
@@ -33,6 +34,7 @@ All commands are configured via environment variables — see
 	{{< card link="rtsp" title="rtsp" icon="cloud-download" subtitle="Pull an RTSP source (IP camera) into MoQT." >}}
 	{{< card link="rtsp-push" title="rtsp-push" icon="cloud-upload" subtitle="Standalone RTSP push ingest server." >}}
 	{{< card link="hls" title="hls" icon="globe-alt" subtitle="Serve a MoQ stream as HLS/DASH." >}}
+	{{< card link="abr" title="abr" icon="adjustments" subtitle="Transcode broadcasts into an ABR ladder." >}}
 	{{< card link="funnel" title="funnel" icon="filter" subtitle="Funnel many HTTP senders into one MoQT track." >}}
 	{{< card link="dns" title="dns" icon="globe" subtitle="Send clients to the nearest region with one hostname." >}}
 	{{< card link="playground" title="playground" icon="lightning-bolt" subtitle="One-command local demo." >}}
