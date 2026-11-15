@@ -50,7 +50,9 @@ func TestABR_RenditionsBesideSource(t *testing.T) {
 	require.NoError(t, err)
 	rtmpAddr := rtmpLn.Addr().String()
 	require.NoError(t, rtmpLn.Close())
-	go func() { _ = ingest.NewRTMPServer(ingest.RTMPConfig{Addr: rtmpAddr, TrackMux: ingestMux}).ListenAndServe(ctx) }()
+	go func() {
+		_ = ingest.NewRTMPServer(ingest.RTMPConfig{Addr: rtmpAddr, TrackMux: ingestMux}).ListenAndServe(ctx)
+	}()
 	require.Eventually(t, func() bool {
 		c, err := net.DialTimeout("tcp", rtmpAddr, 200*time.Millisecond)
 		if err == nil {
