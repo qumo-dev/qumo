@@ -286,7 +286,7 @@ func TestURLKeySource(t *testing.T) {
 	ks := &fakeKeyServer{body: keySetJSON(t, []token.SigningKey{k}), etag: `"e1"`}
 	srv := httptest.NewServer(ks)
 	defer srv.Close()
-	src, err := newURLKeySource(srv.URL, "relay-token")
+	src, err := newURLKeySource(srv.URL, "relay-token", nil)
 	require.NoError(t, err)
 	var store keyStore
 	now := time.Now()
@@ -322,7 +322,7 @@ func TestURLKeySource_NoRedirect(t *testing.T) {
 	defer dest.Close()
 	redirect := httptest.NewServer(http.RedirectHandler(dest.URL, http.StatusTemporaryRedirect))
 	defer redirect.Close()
-	src, err := newURLKeySource(redirect.URL, "relay-token")
+	src, err := newURLKeySource(redirect.URL, "relay-token", nil)
 	require.NoError(t, err)
 
 	err = src.refresh(context.Background(), &keyStore{}, time.Now())
@@ -394,7 +394,7 @@ func newTestUsage(t *testing.T, sink *fakeUsageSink) *usageReporter {
 	t.Helper()
 	srv := httptest.NewServer(sink)
 	t.Cleanup(srv.Close)
-	r, err := newUsageReporter(srv.URL, "t")
+	r, err := newUsageReporter(srv.URL, "t", nil)
 	require.NoError(t, err)
 	return r
 }
@@ -563,7 +563,7 @@ func TestKeySourceFor(t *testing.T) {
 	}
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
-			src, err := keySourceFor(tt.value, "t", "")
+			src, err := keySourceFor(tt.value, "t", "", nil)
 			if tt.wantErr != "" {
 				assert.ErrorContains(t, err, tt.wantErr)
 				return

@@ -55,6 +55,8 @@ func sanitizeLog(s string) string {
 //	                               certificate CA_FILE issued for the peering
 //	                               name; set together, and only with CA_FILE.
 //	                               Needed to dial PEERS and to be dialed.
+//	                               Also signs the key-set and usage
+//	                               requests (internal/reqsign).
 //	RELAY_NAME                   - node ID (default: "relay-" + hostname)
 //	GROUP_CACHE_SIZE             - completed groups retained per track (default: 8)
 //	FRAME_CAPACITY               - frame buffer size in bytes (default: 1500)
@@ -184,6 +186,14 @@ func Run(args []string) error {
 		UsageURL:  os.Getenv("QUMO_USAGE_URL"),
 		Token:     os.Getenv("QUMO_RELAY_TOKEN"),
 	}
+	// With a peer identity, the key-set and usage requests are signed with
+	// it (qumo-dev/qumo#601), beside the token: the control plane then knows
+	// which relay calls from a key only that relay holds.
+	signer, err := requestSigner(trust, verifierCfg.UsageURL != "" || auth.KeysDownloaded(verifierCfg.Keys))
+	if err != nil {
+		return err
+	}
+	verifierCfg.Signer = signer
 	authorize := admitUnchecked
 	var reportEnd func(context.Context, auth.Request) error // nil: auth off reports nothing
 	var tickets TicketVerifier                              // nil: auth off verifies no tickets
