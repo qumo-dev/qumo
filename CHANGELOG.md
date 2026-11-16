@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`qumo abr` transcodes broadcasts into an adaptive-bitrate ladder (`internal/abr`).** A relay client: for every broadcast announced beneath `ABR_PREFIX` it publishes an ABR broadcast beside it, at the same path with `ABR_SUFFIX` appended (`/live/cam1` → `/live/cam1.abr`), carrying the source's tracks as they are plus one rendition per rung of `ABR_LADDER` (default `720:2500,360:800`) shorter than the source video, encoded by ffmpeg (`ABR_FFMPEG`, `ABR_CODEC`, `ABR_PRESET`). Every video track is in one MSF alternate group (`altGroup`) with its size, bitrate and decoder configuration, and every rendition numbers its groups as the source does, each opening with a keyframe at the same frame, so a player can switch between them at any group boundary. Rendition frames keep the exact LOC timestamp of the source frame they were encoded from. One ffmpeg decodes the source once for every rendition, adding about 10 ms per frame; the source track is forwarded without re-encoding and never waits on it. The source must be H.264 without B-frames.
+- **The playground plays ABR broadcasts adaptively (`playground`).** A broadcast whose video tracks share an alternate group is played adaptively: the viewer switches renditions at group boundaries, stepping down when frames fall behind their media time to what the rate measured since then carries, and up one rendition after a calm stretch. A step up keeps the old rendition until its last group before the switch has arrived; a step down drops it at once. The subscribe board picks a rendition by hand or automatically, and shows the rendition playing, the receive rate and the lag.
+
+### Fixed
+
+- **A subscriber that stops one group keeps its subscription (`internal/relay`).** Egress took any failed write to a group stream for the subscriber leaving and ended its subscription, so a subscriber that stopped one group's stream (STOP_SENDING), as a player gives up a late group or one of a rendition it is leaving, lost the track. A failed write while the subscription is open now abandons that group alone.
+
 ## [v0.20.261114] - 2026-11-14
 
 ### Added

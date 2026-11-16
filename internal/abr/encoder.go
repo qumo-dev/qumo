@@ -184,7 +184,9 @@ func outputFD(i int) int {
 // start starts ffmpeg. It stops when ctx ends, or when [encoder.close] closes
 // its input.
 func (e *encoder) start(ctx context.Context) error {
-	cmd := exec.CommandContext(ctx, e.cfg.FFmpeg, e.args()...)
+	// The executable is the operator's ABR_FFMPEG, and the arguments are built
+	// here from the ladder: nothing comes from a subscriber or publisher.
+	cmd := exec.CommandContext(ctx, e.cfg.FFmpeg, e.args()...) //nolint:gosec // G204: operator-configured ffmpeg
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return err
@@ -228,7 +230,9 @@ func (e *encoder) start(ctx context.Context) error {
 		e.done.Add(1)
 		go func() {
 			defer e.done.Done()
-			if err := e.read(i, r); err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, os.ErrClosed) {
+			// read returns only once its stream ends; the end of a stream
+			// ffmpeg closed is not worth a warning.
+			if err := e.read(i, r); !errors.Is(err, io.EOF) && !errors.Is(err, os.ErrClosed) {
 				slog.Warn("abr: read rendition", "rendition", e.outputs[i].Rung.TrackName(), "error", err)
 			}
 		}()
@@ -250,7 +254,8 @@ func logLines(r io.Reader) {
 	}
 }
 
-// read reads output i's FLV stream and hands its frames to the sink.
+// read reads output i's FLV stream and hands its frames to the sink, until
+// the stream ends; it returns why, io.EOF at a clean end.
 func (e *encoder) read(i int, r io.Reader) error {
 	fr := newFLVReader(r)
 	for {
