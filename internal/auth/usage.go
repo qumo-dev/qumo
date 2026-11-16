@@ -425,7 +425,7 @@ func (r *usageReporter) send(ctx context.Context, batch []usage.Record) error {
 	// Signed at each send: a batch sent again after a failure carries a
 	// fresh timestamp.
 	if err := r.signer.Sign(req, body); err != nil {
-		return err
+		return fmt.Errorf("usage report: %w", err)
 	}
 	resp, err := r.client.Do(req)
 	if err != nil {

@@ -1,73 +1,37 @@
-package relaysign
+package relaysign_test
 
 import (
 	"bytes"
-	"crypto/ecdsa"
 	"crypto/ed25519"
-	"crypto/elliptic"
 	"crypto/rand"
-	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
-	"crypto/x509/pkix"
-	"encoding/base64"
-	"encoding/hex"
 	"encoding/pem"
 	"io"
-	"math/big"
 	"net/http"
 	"net/http/httptest"
-	"strconv"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/qumo-dev/qumo/internal/relaysign"
+	"github.com/qumo-dev/qumo/internal/relaysign/relaysigntest"
 )
 
-// testPair is a peer certificate and its ECDSA P-256 key, as the relay CA
-// issues them (here self-signed: the chain is the control plane's check, not
-// the signature's).
-func testPair(tb testing.TB) tls.Certificate {
-	tb.Helper()
-	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	require.NoError(tb, err)
-	tmpl := &x509.Certificate{
-		SerialNumber: big.NewInt(1),
-		Subject:      pkix.Name{CommonName: "qumo-relay-tk1a-1"},
-		NotBefore:    time.Now().Add(-time.Hour),
-		NotAfter:     time.Now().Add(time.Hour),
-	}
-	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
-	require.NoError(tb, err)
-	return tls.Certificate{Certificate: [][]byte{der}, PrivateKey: key}
-}
-
-// verify checks r as the control plane does (foalk-inc/qumo-deploy#1724),
-// written here from the contract rather than shared with it: the
-// certificate from its header, and its key's signature over the context,
-// method, request URI as received, timestamp and hex SHA-256 of body, one
-// per line. It returns the timestamp signed.
-func verify(t *testing.T, r *http.Request, body []byte) int64 {
-	t.Helper()
-	certPEM, err := base64.StdEncoding.DecodeString(r.Header.Get(HeaderCertificate))
-	require.NoError(t, err)
-	block, _ := pem.Decode(certPEM)
-	require.NotNil(t, block)
-	cert, err := x509.ParseCertificate(block.Bytes)
-	require.NoError(t, err)
-	sig, err := base64.StdEncoding.DecodeString(r.Header.Get(HeaderSignature))
-	require.NoError(t, err)
-	sum := sha256.Sum256(body)
-	msg := "qumo-relay-request\n" + r.Method + "\n" + r.URL.RequestURI() + "\n" + r.Header.Get(HeaderTimestamp) + "\n" + hex.EncodeToString(sum[:])
-	require.NoError(t, cert.CheckSignature(x509.ECDSAWithSHA256, []byte(msg), sig))
-	ts, err := strconv.ParseInt(r.Header.Get(HeaderTimestamp), 10, 64)
-	require.NoError(t, err)
-	return ts
+// verified is what a test server saw: the timestamp a request's signature
+// verified with, or why it did not.
+type verified struct {
+	timestamp int64
+	err       error
 }
 
 // A signed request verifies at the server as it arrives, whatever its
-// method, query or body.
+// method, query or body. The server only reports; the test's goroutine
+// asserts.
 func TestSigner_Sign(t *testing.T) {
 	tests := map[string]struct {
 		method string
@@ -82,13 +46,16 @@ func TestSigner_Sign(t *testing.T) {
 	}
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
-			signer, err := New(testPair(t))
-			require.NoError(t, err)
-			verified := make(chan int64, 1)
+			signer := relaysigntest.Signer(t)
+			seen := make(chan verified, 1)
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				body, err := io.ReadAll(r.Body)
-				require.NoError(t, err)
-				verified <- verify(t, r, body)
+				if err != nil {
+					seen <- verified{err: err}
+					return
+				}
+				ts, err := relaysigntest.Verify(r, body)
+				seen <- verified{timestamp: ts, err: err}
 			}))
 			defer srv.Close()
 			req, err := http.NewRequestWithContext(t.Context(), tt.method, srv.URL+tt.path, bytes.NewReader(tt.body))
@@ -99,7 +66,9 @@ func TestSigner_Sign(t *testing.T) {
 			require.NoError(t, err)
 			require.NoError(t, resp.Body.Close())
 
-			assert.InDelta(t, time.Now().Unix(), <-verified, 5)
+			got := <-seen
+			require.NoError(t, got.err)
+			assert.InDelta(t, time.Now().Unix(), got.timestamp, 5)
 		})
 	}
 }
@@ -107,10 +76,9 @@ func TestSigner_Sign(t *testing.T) {
 // A request sent again is signed again, with the time it is sent at: a
 // retry is not refused for the age of the first attempt.
 func TestSigner_Sign_ARetryIsSignedAgain(t *testing.T) {
-	signer, err := New(testPair(t))
-	require.NoError(t, err)
+	signer := relaysigntest.Signer(t)
 	now := time.Unix(1_800_000_000, 0)
-	signer.now = func() time.Time { return now }
+	signer.SetNow(func() time.Time { return now })
 	body := []byte(`[]`)
 	send := func() *http.Request {
 		req := httptest.NewRequest(http.MethodPost, "/v1/usage/events", bytes.NewReader(body))
@@ -122,47 +90,127 @@ func TestSigner_Sign_ARetryIsSignedAgain(t *testing.T) {
 	now = now.Add(5 * time.Minute)
 	retry := send()
 
-	assert.Equal(t, int64(1_800_000_000), verify(t, first, body))
-	assert.Equal(t, int64(1_800_000_300), verify(t, retry, body))
+	firstTS, err := relaysigntest.Verify(first, body)
+	require.NoError(t, err)
+	retryTS, err := relaysigntest.Verify(retry, body)
+	require.NoError(t, err)
+	assert.Equal(t, int64(1_800_000_000), firstTS)
+	assert.Equal(t, int64(1_800_000_300), retryTS)
 }
 
-// A request whose body is not the one signed fails the control plane's check.
-func TestSigner_Sign_BindsTheBody(t *testing.T) {
-	signer, err := New(testPair(t))
-	require.NoError(t, err)
-	req := httptest.NewRequest(http.MethodPost, "/v1/usage/events", nil)
-	require.NoError(t, signer.Sign(req, []byte(`[{"egress":1}]`)))
+// What is signed is bound: a request changed in any part fails the check.
+func TestSigner_Sign_BindsTheRequest(t *testing.T) {
+	signed := []byte(`[{"egress":1}]`)
+	tests := map[string]struct {
+		change func(*http.Request) []byte // returns the body received
+	}{
+		"another body":      {change: func(*http.Request) []byte { return []byte(`[{"egress":2}]`) }},
+		"another method":    {change: func(r *http.Request) []byte { r.Method = http.MethodPut; return signed }},
+		"another path":      {change: func(r *http.Request) []byte { r.URL.Path = "/v1/relays/trust"; return signed }},
+		"another query":     {change: func(r *http.Request) []byte { r.URL.RawQuery = "x=2"; return signed }},
+		"another timestamp": {change: func(r *http.Request) []byte { r.Header.Set(relaysign.HeaderTimestamp, "1"); return signed }},
+		"another certificate": {change: func(r *http.Request) []byte {
+			other := httptest.NewRequest(http.MethodGet, "/", nil)
+			require.NoError(t, relaysigntest.Signer(t).Sign(other, nil))
+			r.Header.Set(relaysign.HeaderCertificate, other.Header.Get(relaysign.HeaderCertificate))
+			return signed
+		}},
+	}
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, "/v1/usage/events?x=1", nil)
+			require.NoError(t, relaysigntest.Signer(t).Sign(req, signed))
+			_, err := relaysigntest.Verify(req, signed)
+			require.NoError(t, err, "unchanged, it verifies")
 
-	certPEM, err := base64.StdEncoding.DecodeString(req.Header.Get(HeaderCertificate))
-	require.NoError(t, err)
-	block, _ := pem.Decode(certPEM)
-	cert, err := x509.ParseCertificate(block.Bytes)
-	require.NoError(t, err)
-	sig, err := base64.StdEncoding.DecodeString(req.Header.Get(HeaderSignature))
-	require.NoError(t, err)
+			body := tt.change(req)
+			_, err = relaysigntest.Verify(req, body)
 
-	assert.Error(t, cert.CheckSignature(x509.ECDSAWithSHA256, signed(req.Method, req.URL.RequestURI(), req.Header.Get(HeaderTimestamp), []byte(`[{"egress":2}]`)), sig))
+			assert.Error(t, err)
+		})
+	}
 }
 
 // Without a peer identity nothing is signed.
 func TestSigner_Sign_Nil(t *testing.T) {
-	var signer *Signer
+	var signer *relaysign.Signer
 	req := httptest.NewRequest(http.MethodGet, "/v1/relays/trust", nil)
 
 	require.NoError(t, signer.Sign(req, nil))
 
-	assert.Empty(t, req.Header.Get(HeaderCertificate))
-	assert.Empty(t, req.Header.Get(HeaderSignature))
+	assert.Empty(t, req.Header.Get(relaysign.HeaderCertificate))
+	assert.Empty(t, req.Header.Get(relaysign.HeaderTimestamp))
+	assert.Empty(t, req.Header.Get(relaysign.HeaderSignature))
 }
 
-// Only an ECDSA key signs what the control plane verifies.
-func TestNew_RefusesANonECDSAKey(t *testing.T) {
-	_, key, err := ed25519.GenerateKey(rand.Reader)
+func TestNew(t *testing.T) {
+	_, ed, err := ed25519.GenerateKey(rand.Reader)
 	require.NoError(t, err)
-	pair := testPair(t)
-	pair.PrivateKey = key
+	tests := map[string]struct {
+		pair    func(tls.Certificate) tls.Certificate
+		wantErr string
+	}{
+		"an ECDSA peer identity": {pair: func(p tls.Certificate) tls.Certificate { return p }},
+		"a key that is not ECDSA": {
+			pair:    func(p tls.Certificate) tls.Certificate { p.PrivateKey = ed; return p },
+			wantErr: "not ECDSA",
+		},
+		"no certificate": {
+			pair:    func(p tls.Certificate) tls.Certificate { p.Certificate = nil; return p },
+			wantErr: "no certificate",
+		},
+	}
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			signer, err := relaysign.New(tt.pair(relaysigntest.Pair(t)))
 
-	_, err = New(pair)
+			if tt.wantErr != "" {
+				assert.ErrorContains(t, err, tt.wantErr)
+				assert.Nil(t, signer)
+				return
+			}
+			require.NoError(t, err)
+			assert.NotNil(t, signer)
+		})
+	}
+}
 
-	assert.ErrorContains(t, err, "not ECDSA")
+// Load reads the pair as PEER_CERT_FILE and PEER_KEY_FILE name it.
+func TestLoad(t *testing.T) {
+	certFile, keyFile := writePair(t, relaysigntest.Pair(t))
+	tests := map[string]struct {
+		cert, key string
+		wantErr   bool
+	}{
+		"both files":      {cert: certFile, key: keyFile},
+		"no key file":     {cert: certFile, key: filepath.Join(t.TempDir(), "missing.key"), wantErr: true},
+		"the key as cert": {cert: keyFile, key: keyFile, wantErr: true},
+	}
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			signer, err := relaysign.Load(tt.cert, tt.key)
+
+			if tt.wantErr {
+				assert.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+			req := httptest.NewRequest(http.MethodGet, "/v1/relays/trust", nil)
+			require.NoError(t, signer.Sign(req, nil))
+			_, err = relaysigntest.Verify(req, nil)
+			assert.NoError(t, err)
+		})
+	}
+}
+
+// writePair writes pair as PEM files and returns their paths.
+func writePair(tb testing.TB, pair tls.Certificate) (certFile, keyFile string) {
+	tb.Helper()
+	dir := tb.TempDir()
+	der, err := x509.MarshalPKCS8PrivateKey(pair.PrivateKey)
+	require.NoError(tb, err)
+	certFile, keyFile = filepath.Join(dir, "peer.crt"), filepath.Join(dir, "peer.key")
+	require.NoError(tb, os.WriteFile(certFile, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: pair.Certificate[0]}), 0o600))
+	require.NoError(tb, os.WriteFile(keyFile, pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der}), 0o600))
+	return certFile, keyFile
 }

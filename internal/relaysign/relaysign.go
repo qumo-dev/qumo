@@ -17,6 +17,12 @@
 // with no newline after the last line. The control plane takes a timestamp
 // within two minutes of its clock and keeps no record of what it took: every
 // request signed here is a read or a resend that adds nothing.
+//
+// The host is not signed. Each deployment has its own relay CA, so a
+// signature made for one control plane verifies at no other; a proxy in
+// front of the control plane may rewrite Host, which would break a check
+// that covered it; and a client that sends signed requests must follow no
+// redirect, so that no other host is handed one (the clients here don't).
 package relaysign
 
 import (

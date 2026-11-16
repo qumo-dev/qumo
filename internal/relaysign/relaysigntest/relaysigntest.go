@@ -1,0 +1,96 @@
+// Package relaysigntest gives tests a relay's peer identity and the control
+// plane's check of what it signs (foalk-inc/qumo-deploy#1724), written here
+// from the contract in internal/relaysign rather than shared with the
+// signer, so that a client signing the wrong thing (another body, another
+// URI) fails its tests instead of passing on headers that are merely set.
+package relaysigntest
+
+import (
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/sha256"
+	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/base64"
+	"encoding/hex"
+	"encoding/pem"
+	"errors"
+	"fmt"
+	"math/big"
+	"net/http"
+	"strconv"
+	"testing"
+	"time"
+
+	"github.com/qumo-dev/qumo/internal/relaysign"
+)
+
+// Pair returns a peer certificate and its ECDSA P-256 key, as the relay CA
+// issues them (self-signed here: the chain is the control plane's check, not
+// the signature's).
+func Pair(tb testing.TB) tls.Certificate {
+	tb.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		tb.Fatalf("generate the peer key: %v", err)
+	}
+	tmpl := &x509.Certificate{
+		SerialNumber: big.NewInt(1),
+		Subject:      pkix.Name{CommonName: "qumo-relay-tk1a-1"},
+		NotBefore:    time.Now().Add(-time.Hour),
+		NotAfter:     time.Now().Add(time.Hour),
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	if err != nil {
+		tb.Fatalf("create the peer certificate: %v", err)
+	}
+	return tls.Certificate{Certificate: [][]byte{der}, PrivateKey: key}
+}
+
+// Signer returns a signer for a new Pair.
+func Signer(tb testing.TB) *relaysign.Signer {
+	tb.Helper()
+	signer, err := relaysign.New(Pair(tb))
+	if err != nil {
+		tb.Fatalf("new signer: %v", err)
+	}
+	return signer
+}
+
+// Verify checks r, received with body, as the control plane does: the
+// certificate from its header, and its key's signature over the context,
+// method, request URI as received, timestamp and hex SHA-256 of body, one
+// per line, with no newline after the last. It returns the timestamp
+// signed. It reports by error, not through a testing.TB, so that a server
+// handler can call it and hand the result to the test's goroutine.
+func Verify(r *http.Request, body []byte) (int64, error) {
+	certPEM, err := base64.StdEncoding.DecodeString(r.Header.Get(relaysign.HeaderCertificate))
+	if err != nil {
+		return 0, fmt.Errorf("certificate header: %w", err)
+	}
+	block, _ := pem.Decode(certPEM)
+	if block == nil {
+		return 0, errors.New("certificate header: no PEM block")
+	}
+	cert, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		return 0, fmt.Errorf("certificate: %w", err)
+	}
+	sig, err := base64.StdEncoding.DecodeString(r.Header.Get(relaysign.HeaderSignature))
+	if err != nil || len(sig) == 0 {
+		return 0, errors.New("signature header: missing or not base64")
+	}
+	timestamp := r.Header.Get(relaysign.HeaderTimestamp)
+	ts, err := strconv.ParseInt(timestamp, 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("timestamp header: %w", err)
+	}
+	sum := sha256.Sum256(body)
+	msg := "qumo-relay-request\n" + r.Method + "\n" + r.URL.RequestURI() + "\n" + timestamp + "\n" + hex.EncodeToString(sum[:])
+	if err := cert.CheckSignature(x509.ECDSAWithSHA256, []byte(msg), sig); err != nil {
+		return 0, fmt.Errorf("signature: %w", err)
+	}
+	return ts, nil
+}

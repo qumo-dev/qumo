@@ -6,9 +6,11 @@ import (
 	"crypto/x509"
 	"errors"
 	"fmt"
+	"log/slog"
 	"slices"
 
 	"github.com/qumo-dev/gomoqt/moqt"
+	"github.com/qumo-dev/qumo/internal/relaysign"
 )
 
 // Relay peers authenticate each other with mutual TLS on native QUIC, under a
@@ -122,6 +124,24 @@ func NewPeerTrust(caPEM []byte, cert *tls.Certificate) (*PeerTrust, error) {
 	t.cert = &c
 	t.own = c.Certificate[0]
 	return t, nil
+}
+
+// requestSigner returns the signer for the relay's requests to its control
+// plane (qumo-dev/qumo#601), made from the peer identity t already holds, so
+// that the relay signs with the very certificate it peers with; nil when it
+// has none, or when its key cannot sign what the control plane verifies. A
+// relay peers with that identity all the same: only the signing is off, and
+// its token still authenticates the requests.
+func requestSigner(t *PeerTrust) *relaysign.Signer {
+	if t == nil || t.cert == nil {
+		return nil
+	}
+	signer, err := relaysign.New(*t.cert)
+	if err != nil {
+		slog.Warn("relay: control-plane requests unsigned: the peer identity cannot sign them", "err", err)
+		return nil
+	}
+	return signer
 }
 
 // checkPeerCertificate reports why leaf would fail a peer's checks: not

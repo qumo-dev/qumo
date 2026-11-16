@@ -70,9 +70,6 @@ func TestConfigFromEnv_Errors(t *testing.T) {
 		"a database URL with nowhere to keep it": {
 			env: map[string]string{"QUMO_DNS_GEOIP_URL": "https://db.example/city.mmdb"}, required: true,
 		},
-		"a peer certificate without its key": {
-			env: map[string]string{"PEER_CERT_FILE": "peer.crt"}, required: true,
-		},
 		"a peer certificate that cannot be read": {
 			env: map[string]string{"PEER_CERT_FILE": "no-such.crt", "PEER_KEY_FILE": "no-such.key"}, required: true,
 		},

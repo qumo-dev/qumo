@@ -105,6 +105,21 @@ func serialOf(t time.Time) uint32 {
 // errFeedNotReady is a feed that has nothing yet (503): what is held stays.
 var errFeedNotReady = errors.New("geodns: the feed has nothing to serve yet")
 
+// newFeedHTTPClient is the feed's HTTP client. It follows no redirect: a
+// redirect answer is an error, never a request to the place it names. Go
+// drops the bearer token on a redirect to another host but would send the
+// signature headers on, handing that host a signature the control plane
+// takes for two minutes; and a signature covers the URI it was made for, so
+// the control plane would refuse the redirected request anyway.
+func newFeedHTTPClient() *http.Client {
+	return &http.Client{
+		Timeout: feedTimeout,
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+}
+
 // feedClient reads the feed.
 type feedClient struct {
 	url    string

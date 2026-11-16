@@ -317,7 +317,7 @@ func (u *urlKeySource) refresh(ctx context.Context, store *keyStore, now time.Ti
 		req.Header.Set("If-None-Match", u.etag)
 	}
 	if err := u.signer.Sign(req, nil); err != nil {
-		return err
+		return fmt.Errorf("key set: %w", err)
 	}
 	resp, err := u.client.Do(req)
 	if err != nil {

@@ -2,15 +2,10 @@ package auth
 
 import (
 	"context"
-	"crypto/ecdsa"
-	"crypto/elliptic"
-	"crypto/rand"
-	"crypto/tls"
-	"crypto/x509"
-	"crypto/x509/pkix"
-	"math/big"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -19,53 +14,50 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/qumo-dev/qumo/internal/relaysign"
+	"github.com/qumo-dev/qumo/internal/relaysign/relaysigntest"
 	"github.com/qumo-dev/qumo/token"
 )
 
-// testSigner is a relay's peer identity for a test (internal/relaysign
-// checks the signature itself).
-func testSigner(tb testing.TB) *relaysign.Signer {
-	tb.Helper()
-	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	require.NoError(tb, err)
-	tmpl := &x509.Certificate{SerialNumber: big.NewInt(1), Subject: pkix.Name{CommonName: "qumo-relay-tk1a-1"}, NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(time.Hour)}
-	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
-	require.NoError(tb, err)
-	signer, err := relaysign.New(tls.Certificate{Certificate: [][]byte{der}, PrivateKey: key})
-	require.NoError(tb, err)
-	return signer
-}
-
-// signedHeaders records the signature headers and bearer of each request.
-type signedHeaders struct {
+// signedRequests records, for each request, its bearer and whether its
+// signature verified as the control plane checks it (relaysigntest.Verify),
+// over the body it arrived with.
+type signedRequests struct {
 	mu   sync.Mutex
-	seen []http.Header
+	seen []signedRequest
 }
 
-func (s *signedHeaders) record(r *http.Request) {
+type signedRequest struct {
+	bearer    string
+	signature string
+	err       error // nil: the signature verified
+}
+
+func (s *signedRequests) record(r *http.Request) {
+	body, err := io.ReadAll(r.Body)
+	if err == nil {
+		_, err = relaysigntest.Verify(r, body)
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.seen = append(s.seen, r.Header.Clone())
+	s.seen = append(s.seen, signedRequest{bearer: r.Header.Get("Authorization"), signature: r.Header.Get(relaysign.HeaderSignature), err: err})
 }
 
-func (s *signedHeaders) all() []http.Header {
+func (s *signedRequests) all() []signedRequest {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.seen
+	return slices.Clone(s.seen)
 }
 
-func assertSigned(t *testing.T, h http.Header, bearer string) {
+func assertSigned(t *testing.T, got signedRequest, bearer string) {
 	t.Helper()
-	assert.NotEmpty(t, h.Get(relaysign.HeaderCertificate))
-	assert.NotEmpty(t, h.Get(relaysign.HeaderTimestamp))
-	assert.NotEmpty(t, h.Get(relaysign.HeaderSignature))
-	assert.Equal(t, "Bearer "+bearer, h.Get("Authorization"), "the token is still sent beside the signature")
+	assert.NoError(t, got.err, "the signature verifies over the body sent")
+	assert.Equal(t, "Bearer "+bearer, got.bearer, "the token is still sent beside the signature")
 }
 
 // With a signer, the key-set download and every usage send, a resend after a
 // failure included, are signed and still carry the token.
 func TestVerifier_SignsItsRequests(t *testing.T) {
-	var keyReqs, usageReqs signedHeaders
+	var keyReqs, usageReqs signedRequests
 	k := genKey(t, "acme/app")
 	keys := keySetJSON(t, []token.SigningKey{k})
 	usageStatus := []int{http.StatusServiceUnavailable, http.StatusOK}
@@ -87,7 +79,7 @@ func TestVerifier_SignsItsRequests(t *testing.T) {
 		}
 	}))
 	defer srv.Close()
-	v, err := NewVerifier(VerifierConfig{Keys: srv.URL + "/keys", UsageURL: srv.URL + "/usage", Token: "relay-token", Signer: testSigner(t)})
+	v, err := NewVerifier(VerifierConfig{Keys: srv.URL + "/keys", UsageURL: srv.URL + "/usage", Token: "relay-token", Signer: relaysigntest.Signer(t)})
 	require.NoError(t, err)
 	var store keyStore
 
@@ -99,14 +91,15 @@ func TestVerifier_SignsItsRequests(t *testing.T) {
 	require.Len(t, keyReqs.all(), 1)
 	assertSigned(t, keyReqs.all()[0], "relay-token")
 	require.Len(t, usageReqs.all(), 2)
-	for _, h := range usageReqs.all() {
-		assertSigned(t, h, "relay-token")
+	for _, got := range usageReqs.all() {
+		assertSigned(t, got, "relay-token")
 	}
+	assert.NotEqual(t, usageReqs.all()[0].signature, usageReqs.all()[1].signature, "the resend is signed again")
 }
 
 // Without one, nothing is signed: the token alone, as before.
 func TestVerifier_UnsignedWithoutASigner(t *testing.T) {
-	var reqs signedHeaders
+	var reqs signedRequests
 	k := genKey(t, "acme/app")
 	keys := keySetJSON(t, []token.SigningKey{k})
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -121,6 +114,6 @@ func TestVerifier_UnsignedWithoutASigner(t *testing.T) {
 	require.NoError(t, v.source.refresh(context.Background(), &store, time.Now()))
 
 	require.Len(t, reqs.all(), 1)
-	assert.Empty(t, reqs.all()[0].Get(relaysign.HeaderSignature))
-	assert.Equal(t, "Bearer relay-token", reqs.all()[0].Get("Authorization"))
+	assert.Empty(t, reqs.all()[0].signature)
+	assert.Equal(t, "Bearer relay-token", reqs.all()[0].bearer)
 }

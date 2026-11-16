@@ -29,7 +29,6 @@ import (
 	"github.com/qumo-dev/qumo/internal/envconfig"
 	"github.com/qumo-dev/qumo/internal/gctune"
 	"github.com/qumo-dev/qumo/internal/quicconfig"
-	"github.com/qumo-dev/qumo/internal/relaysign"
 	"github.com/qumo-dev/qumo/internal/watermark"
 )
 
@@ -190,16 +189,7 @@ func Run(args []string) error {
 	// With a peer identity, the key-set and usage requests are signed with
 	// it (qumo-dev/qumo#601), beside the token: the control plane then knows
 	// which relay calls from a key only that relay holds.
-	if certFile := os.Getenv("PEER_CERT_FILE"); trust.Identity() != "" && certFile != "" {
-		signer, err := relaysign.Load(certFile, os.Getenv("PEER_KEY_FILE"))
-		if err != nil {
-			// It peers with this identity all the same: only the signing is
-			// off, and the token still authenticates the requests.
-			slog.Warn("relay: control-plane requests unsigned: the peer identity cannot sign them", "err", err)
-		} else {
-			verifierCfg.Signer = signer
-		}
-	}
+	verifierCfg.Signer = requestSigner(trust)
 	authorize := admitUnchecked
 	var reportEnd func(context.Context, auth.Request) error // nil: auth off reports nothing
 	var tickets TicketVerifier                              // nil: auth off verifies no tickets

@@ -239,7 +239,7 @@ func newService(cfg config, reg prometheus.Registerer) (*service, error) {
 		state:   state,
 		geo:     geo,
 		metrics: m,
-		feed:    &feedClient{url: cfg.feedURL, token: cfg.feedToken, signer: cfg.feedSigner, client: &http.Client{Timeout: feedTimeout}},
+		feed:    &feedClient{url: cfg.feedURL, token: cfg.feedToken, signer: cfg.feedSigner, client: newFeedHTTPClient()},
 		auth: &authority{
 			zone:        cfg.zone,
 			name:        cfg.name,
