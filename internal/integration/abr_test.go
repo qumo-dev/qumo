@@ -21,6 +21,7 @@ import (
 	"github.com/qumo-dev/qumo/internal/abr"
 	"github.com/qumo-dev/qumo/internal/cmaf"
 	"github.com/qumo-dev/qumo/internal/ffpub"
+	"github.com/qumo-dev/qumo/internal/hlsoptin"
 	"github.com/qumo-dev/qumo/internal/ingest"
 )
 
@@ -35,8 +36,9 @@ func TestABR_RenditionsBesideSource(t *testing.T) {
 		t.Skip("ffmpeg not on PATH")
 	}
 	const (
-		src = moqt.BroadcastPath("/live/abrtest")
-		dst = moqt.BroadcastPath("/live/abrtest.abr")
+		src   = moqt.BroadcastPath("/live/abrtest")
+		dst   = moqt.BroadcastPath("/live/abrtest.abr")
+		alias = moqt.BroadcastPath("/.hls/live/abrtest")
 	)
 	addr, srv := startAuthRelay(t, authOff, nil)
 	url := "https://" + addr + "/"
@@ -67,6 +69,9 @@ func TestABR_RenditionsBesideSource(t *testing.T) {
 		Audio: true, GOP: 30, Width: 1280, Height: 720, Framerate: 30,
 	})
 	require.NoError(t, pub.Start(ctx))
+	// An HLS opt-in for the source: an alias, which redirects every
+	// subscription to it, and which is not to be transcoded again.
+	ingestMux.Publish(ctx, alias, hlsoptin.Handler(src))
 	t.Cleanup(func() {
 		cancel() // ffmpeg publishes until its context ends
 		_ = pub.Wait()
@@ -75,7 +80,7 @@ func TestABR_RenditionsBesideSource(t *testing.T) {
 
 	// The transcoder.
 	tc := &abr.Transcoder{
-		Prefix: "/live/",
+		Prefix: "/",
 		Suffix: ".abr",
 		Config: abr.Config{
 			Ladder:  []abr.Rung{{Height: 360, Bitrate: 800_000}, {Height: 240, Bitrate: 400_000}},
@@ -86,6 +91,7 @@ func TestABR_RenditionsBesideSource(t *testing.T) {
 	abrSess := dialOver(t, url, nil, abrMux)
 	go func() { _ = tc.Serve(ctx, abrSess, abrMux) }()
 	require.Eventually(t, routed(srv, dst), 10*time.Second, 50*time.Millisecond)
+	require.Never(t, routed(srv, alias+".abr"), 3*time.Second, 100*time.Millisecond, "the alias was transcoded")
 
 	// The viewer.
 	viewer := dialOver(t, url, nil, moqt.NewTrackMux(0))

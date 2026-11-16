@@ -20,7 +20,6 @@ import (
 	"github.com/qumo-dev/qumo/internal/quicconfig"
 	"github.com/qumo-dev/qumo/internal/tlsclient"
 	"github.com/qumo-dev/qumo/internal/upstream"
-	"github.com/qumo-dev/qumo/token"
 )
 
 // retryInterval is how long to wait before dialing the relay again, or
@@ -44,7 +43,9 @@ const retryInterval = 2 * time.Second
 //	RELAY_TLS_INSECURE - skip relay TLS verification, for a self-signed dev relay (default "false")
 //	ABR_PREFIX         - the directory whose broadcasts are transcoded (default "/")
 //	ABR_SUFFIX         - appended to a source's path to name its ABR broadcast (default ".abr");
-//	                     broadcasts already ending in it are not transcoded again
+//	                     broadcasts already ending in it are not transcoded again, nor are
+//	                     aliases: broadcasts that redirect subscribers to another, such as
+//	                     HLS opt-ins (only the broadcast they name is)
 //	ABR_LADDER         - the renditions, height:kbps, comma-separated (default "720:2500,360:800")
 //	ABR_FFMPEG         - the ffmpeg executable (default "ffmpeg")
 //	ABR_CODEC          - the ffmpeg H.264 encoder (default "libx264"; e.g. "h264_nvenc")
@@ -157,11 +158,6 @@ func (t *Transcoder) Serve(ctx context.Context, sess *moqt.Session, mux *moqt.Tr
 		if strings.HasSuffix(string(src), t.Suffix) {
 			continue // an ABR broadcast, perhaps this transcoder's own
 		}
-		if strings.HasPrefix(string(src), token.HLSDirectory) {
-			// A publisher's opt-in to the HLS egress: another name for a
-			// broadcast announced, and transcoded, at its own path.
-			continue
-		}
 		dst := moqt.BroadcastPath(string(src) + t.Suffix)
 		wg.Go(func() {
 			annCtx, cancel := context.WithCancel(ctx)
@@ -182,6 +178,10 @@ func (t *Transcoder) transcode(ctx context.Context, sess *moqt.Session, mux *moq
 		err := run(ctx, sess, mux, src, dst, t.Config)
 		if ctx.Err() != nil {
 			slog.Info("abr: source ended", "source", src)
+			return
+		}
+		if alias, ok := errors.AsType[*AliasError](err); ok {
+			slog.Info("abr: not transcoding an alias", "source", src, "redirects_to", alias.Target)
 			return
 		}
 		if err == nil {

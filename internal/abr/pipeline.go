@@ -28,6 +28,17 @@ type Config struct {
 	Encoder EncoderConfig
 }
 
+// An AliasError reports that a source broadcast is an alias of another: it
+// answers subscriptions with a redirect to Target, as an HLS opt-in does.
+// An alias is not transcoded; Target, announced at its own path, is.
+type AliasError struct {
+	Alias, Target moqt.BroadcastPath
+}
+
+func (e *AliasError) Error() string {
+	return fmt.Sprintf("abr: %s redirects to %s", e.Alias, e.Target)
+}
+
 // encodeQueue is how many source frames may wait for the encoder. Past it the
 // encoder is behind, and frames are dropped up to the next group, where the
 // encoder can pick up again from a keyframe.
@@ -75,6 +86,11 @@ func (p *pipeline) followCatalog(ctx context.Context, g *errgroup.Group) error {
 		return fmt.Errorf("abr: subscribe catalog: %w", err)
 	}
 	defer tr.Close() // not actionable: the pipeline is ending
+	if tr.BroadcastPath != p.src {
+		// The source redirected the subscription: it is another name for a
+		// broadcast, which is transcoded under its own name.
+		return &AliasError{Alias: p.src, Target: tr.BroadcastPath}
+	}
 	f := moqt.NewFrame(0)
 	for {
 		gr, err := tr.AcceptGroup(ctx)

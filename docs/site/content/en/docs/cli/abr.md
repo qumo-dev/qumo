@@ -11,6 +11,11 @@ broadcast beside it, at the same path with `ABR_SUFFIX` appended
 tracks as they are, plus one rendition per rung of the ladder that is shorter
 than the source video, encoded by [ffmpeg](https://ffmpeg.org/).
 
+An alias is not transcoded: a broadcast that answers subscriptions with a
+redirect to another, such as the HLS opt-in a publisher announces beneath
+`/.hls/`, is another name for the broadcast it points to, which is announced
+and transcoded at its own path.
+
 It dials the relay as an ordinary client: it subscribes to the source like any
 viewer and publishes the ABR broadcast like any publisher. The relay itself
 never decodes media.
@@ -90,7 +95,7 @@ held up by the encoder.
 | `RELAY_CA_FILE` | (unset) | PEM certificate to trust as the relay's root, instead of the system roots. |
 | `RELAY_TLS_INSECURE` | `false` | Skip relay TLS verification, for a self-signed dev relay. |
 | `ABR_PREFIX` | `/` | The directory whose broadcasts are transcoded. |
-| `ABR_SUFFIX` | `.abr` | Appended to a source's path to name its ABR broadcast. Broadcasts already ending in it are not transcoded again. |
+| `ABR_SUFFIX` | `.abr` | Appended to a source's path to name its ABR broadcast. Broadcasts already ending in it are not transcoded again, nor are aliases (broadcasts that redirect subscribers to another). |
 | `ABR_LADDER` | `720:2500,360:800` | The renditions: comma-separated `height:kbps`. Rungs as tall as the source or taller are skipped. |
 | `ABR_FFMPEG` | `ffmpeg` | The ffmpeg executable. |
 | `ABR_CODEC` | `libx264` | The ffmpeg H.264 encoder, e.g. `h264_nvenc` or `h264_vaapi` for hardware encoding. |
