@@ -189,7 +189,11 @@ func Run(args []string) error {
 	// With a peer identity, the key-set and usage requests are signed with
 	// it (qumo-dev/qumo#601), beside the token: the control plane then knows
 	// which relay calls from a key only that relay holds.
-	verifierCfg.Signer = requestSigner(trust)
+	signer, err := requestSigner(trust, verifierCfg.UsageURL != "" || auth.KeysDownloaded(verifierCfg.Keys))
+	if err != nil {
+		return err
+	}
+	verifierCfg.Signer = signer
 	authorize := admitUnchecked
 	var reportEnd func(context.Context, auth.Request) error // nil: auth off reports nothing
 	var tickets TicketVerifier                              // nil: auth off verifies no tickets

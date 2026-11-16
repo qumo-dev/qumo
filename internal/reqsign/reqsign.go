@@ -39,6 +39,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strconv"
+	"sync/atomic"
 	"time"
 )
 
@@ -75,6 +76,10 @@ func Load(certFile, keyFile string) (*Signer, error) {
 }
 
 // New returns a Signer for pair, whose first certificate is the relay's own.
+// Only that certificate is sent: the control plane chains it to the relay
+// CA directly, so it must be one the CA issued itself, not through an
+// intermediate (the relay CA in deploy/nodes issues its peer certificates
+// directly).
 func New(pair tls.Certificate) (*Signer, error) {
 	if len(pair.Certificate) == 0 {
 		return nil, errors.New("no certificate")
@@ -116,13 +121,39 @@ func signed(method, requestURI, timestamp string, body []byte) []byte {
 	return []byte(requestContext + "\n" + method + "\n" + requestURI + "\n" + timestamp + "\n" + hex.EncodeToString(sum[:]))
 }
 
-// LogUnauthorized logs a 401 from the control plane for target, with the
-// server's clock beside this one: a signed request is refused when the two
-// are more than two minutes apart, and nothing else in a 401 says so.
-func LogUnauthorized(target string, resp *http.Response) {
+// NoRedirectClient returns an HTTP client that follows no redirect: a 3xx is
+// answered like any other non-2xx. A client that sends signed requests must
+// use it: Go drops the bearer token on a redirect to another host but sends
+// the signature headers on, which would hand that host a signature the
+// control plane takes for two minutes (and a 307 or 308 resends the body).
+func NoRedirectClient(timeout time.Duration) *http.Client {
+	return &http.Client{
+		Timeout:       timeout,
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+	}
+}
+
+// Refusals logs the control plane's 401s to one client's requests: the
+// first of a run, with the server's clock beside this one (a signed request
+// is refused when the two are more than two minutes apart, and nothing else
+// in a 401 says so), and the first answer after it that is not a 401. A
+// client retrying every few seconds through a skewed clock logs twice, not
+// at every attempt. The zero value is ready to use; it must not be copied.
+type Refusals struct {
+	refused atomic.Bool
+}
+
+// Observe takes the answer resp to a request for target.
+func (r *Refusals) Observe(target string, resp *http.Response) {
 	if resp.StatusCode != http.StatusUnauthorized {
+		if r.refused.Swap(false) {
+			slog.Info("control plane answers the relay's requests again", "target", target, "status", resp.StatusCode)
+		}
 		return
 	}
-	slog.Warn("control plane refused the relay's request (401): check its credential and, for a signed request, the clock",
+	if r.refused.Swap(true) {
+		return
+	}
+	slog.Warn("control plane refused the relay's request (401): check its credential and, for a signed request, the clock; logged again once it answers otherwise",
 		"target", target, "server_date", resp.Header.Get("Date"), "local_time", time.Now().UTC().Format(http.TimeFormat))
 }

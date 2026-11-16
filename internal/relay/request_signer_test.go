@@ -14,7 +14,8 @@ import (
 )
 
 // The relay signs its control-plane requests with the identity it peers
-// with, and with nothing when it has none or its key can't sign.
+// with; with none it signs nothing. A key that can't sign is an error when
+// the relay calls a control plane, and only a warning when it does not.
 func TestRequestSigner(t *testing.T) {
 	_, ed, err := ed25519.GenerateKey(rand.Reader)
 	require.NoError(t, err)
@@ -22,18 +23,26 @@ func TestRequestSigner(t *testing.T) {
 	edPair.PrivateKey = ed
 	ecdsaPair := reqsigntest.Pair(t)
 	tests := map[string]struct {
-		trust      *PeerTrust
-		wantSigner bool
+		trust             *PeerTrust
+		callsControlPlane bool
+		wantSigner        bool
+		wantErr           bool
 	}{
-		"no trust":                {},
-		"a CA, no peer identity":  {trust: &PeerTrust{}},
-		"a peer identity":         {trust: &PeerTrust{cert: &ecdsaPair}, wantSigner: true},
-		"a key that is not ECDSA": {trust: &PeerTrust{cert: &edPair}},
+		"no trust":               {callsControlPlane: true},
+		"a CA, no peer identity": {trust: &PeerTrust{}, callsControlPlane: true},
+		"a peer identity":        {trust: &PeerTrust{cert: &ecdsaPair}, callsControlPlane: true, wantSigner: true},
+		"a key that is not ECDSA, with a control plane": {trust: &PeerTrust{cert: &edPair}, callsControlPlane: true, wantErr: true},
+		"a key that is not ECDSA, peering only":         {trust: &PeerTrust{cert: &edPair}},
 	}
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
-			signer := requestSigner(tt.trust)
+			signer, err := requestSigner(tt.trust, tt.callsControlPlane)
 
+			if tt.wantErr {
+				assert.ErrorContains(t, err, "not ECDSA")
+				return
+			}
+			require.NoError(t, err)
 			if !tt.wantSigner {
 				assert.Nil(t, signer)
 				return
@@ -41,7 +50,7 @@ func TestRequestSigner(t *testing.T) {
 			require.NotNil(t, signer)
 			req := httptest.NewRequest(http.MethodGet, "/v1/relays/trust", nil)
 			require.NoError(t, signer.Sign(req, nil))
-			_, err := reqsigntest.Verify(req, nil)
+			_, err = reqsigntest.Verify(req, nil)
 			assert.NoError(t, err)
 		})
 	}

@@ -15,7 +15,6 @@ import (
 	"net"
 	"net/http"
 	"net/url"
-	"time"
 )
 
 // maxBody bounds how much of a reply's body is drained.
@@ -79,16 +78,6 @@ func checkURL(rawURL string) error {
 		return fmt.Errorf("want an https URL, got scheme %q", u.Scheme)
 	}
 	return nil
-}
-
-// noRedirectClient returns an HTTP client that never follows a redirect: a
-// 307 or 308 would resend the request, and what it carries, to wherever
-// Location points, past checkURL. A 3xx is answered like any other non-2xx.
-func noRedirectClient(timeout time.Duration) *http.Client {
-	return &http.Client{
-		Timeout:       timeout,
-		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
-	}
 }
 
 // Request is one session event: what the relay asks its Authorize about at

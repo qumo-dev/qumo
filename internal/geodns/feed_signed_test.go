@@ -3,6 +3,7 @@ package geodns
 import (
 	"crypto/ed25519"
 	"crypto/rand"
+	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
@@ -18,6 +19,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/qumo-dev/qumo/internal/reqsign"
 	"github.com/qumo-dev/qumo/internal/reqsign/reqsigntest"
 )
 
@@ -40,7 +42,7 @@ func TestFeedClient_Fetch_Signed(t *testing.T) {
 		}
 	}))
 	defer srv.Close()
-	c := &feedClient{url: srv.URL + "/v1/relays/dns?zone=geo", token: "secret", signer: reqsigntest.Signer(t), client: newFeedHTTPClient()}
+	c := &feedClient{url: srv.URL + "/v1/relays/dns?zone=geo", token: "secret", signer: reqsigntest.Signer(t), client: reqsign.NoRedirectClient(feedTimeout)}
 
 	_, err := c.fetch(t.Context())
 
@@ -63,7 +65,7 @@ func TestFeedClient_Fetch_FollowsNoRedirect(t *testing.T) {
 		http.Redirect(w, r, elsewhere.URL+"/capture", http.StatusFound)
 	}))
 	defer srv.Close()
-	c := &feedClient{url: srv.URL, token: "secret", signer: reqsigntest.Signer(t), client: newFeedHTTPClient()}
+	c := &feedClient{url: srv.URL, token: "secret", signer: reqsigntest.Signer(t), client: reqsign.NoRedirectClient(feedTimeout)}
 
 	_, err := c.fetch(t.Context())
 
@@ -73,13 +75,12 @@ func TestFeedClient_Fetch_FollowsNoRedirect(t *testing.T) {
 
 // The peer identity settings, read by configFromEnv into the feed's signer.
 func TestConfigFromEnv_PeerIdentity(t *testing.T) {
-	dir := t.TempDir()
-	certFile, keyFile := writePeerPair(t, dir)
+	certFile, keyFile := reqsigntest.WritePair(t, reqsigntest.Pair(t))
 	_, ed, err := ed25519.GenerateKey(rand.Reader)
 	require.NoError(t, err)
 	edDER, err := x509.MarshalPKCS8PrivateKey(ed)
 	require.NoError(t, err)
-	edKey := filepath.Join(dir, "ed.key")
+	edKey := filepath.Join(t.TempDir(), "ed.key")
 	require.NoError(t, os.WriteFile(edKey, pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: edDER}), 0o600))
 
 	tests := map[string]struct {
@@ -119,12 +120,7 @@ func TestConfigFromEnv_PeerIdentityNotECDSA(t *testing.T) {
 	tmpl := &x509.Certificate{SerialNumber: big.NewInt(1), Subject: pkix.Name{CommonName: "qumo-relay-tk1a-1"}, NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(time.Hour)}
 	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, ed.Public(), ed)
 	require.NoError(t, err)
-	keyDER, err := x509.MarshalPKCS8PrivateKey(ed)
-	require.NoError(t, err)
-	dir := t.TempDir()
-	certFile, keyFile := filepath.Join(dir, "ed.crt"), filepath.Join(dir, "ed.key")
-	require.NoError(t, os.WriteFile(certFile, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}), 0o600))
-	require.NoError(t, os.WriteFile(keyFile, pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: keyDER}), 0o600))
+	certFile, keyFile := reqsigntest.WritePair(t, tls.Certificate{Certificate: [][]byte{der}, PrivateKey: ed})
 	setRequired(t)
 	t.Setenv("PEER_CERT_FILE", certFile)
 	t.Setenv("PEER_KEY_FILE", keyFile)
@@ -132,16 +128,4 @@ func TestConfigFromEnv_PeerIdentityNotECDSA(t *testing.T) {
 	_, err = configFromEnv()
 
 	assert.ErrorContains(t, err, "not ECDSA")
-}
-
-// writePeerPair writes a relay's peer certificate and key into dir.
-func writePeerPair(tb testing.TB, dir string) (certFile, keyFile string) {
-	tb.Helper()
-	pair := reqsigntest.Pair(tb)
-	der, err := x509.MarshalPKCS8PrivateKey(pair.PrivateKey)
-	require.NoError(tb, err)
-	certFile, keyFile = filepath.Join(dir, "peer.crt"), filepath.Join(dir, "peer.key")
-	require.NoError(tb, os.WriteFile(certFile, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: pair.Certificate[0]}), 0o600))
-	require.NoError(tb, os.WriteFile(keyFile, pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der}), 0o600))
-	return certFile, keyFile
 }

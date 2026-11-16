@@ -20,6 +20,8 @@ import (
 	"fmt"
 	"math/big"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strconv"
 	"testing"
 	"time"
@@ -45,6 +47,19 @@ func Pair(tb testing.TB) tls.Certificate {
 	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
 	require.NoError(tb, err)
 	return tls.Certificate{Certificate: [][]byte{der}, PrivateKey: key}
+}
+
+// WritePair writes pair as PEM files in a new temporary directory, as
+// PEER_CERT_FILE and PEER_KEY_FILE name them, and returns their paths.
+func WritePair(tb testing.TB, pair tls.Certificate) (certFile, keyFile string) {
+	tb.Helper()
+	keyDER, err := x509.MarshalPKCS8PrivateKey(pair.PrivateKey)
+	require.NoError(tb, err)
+	dir := tb.TempDir()
+	certFile, keyFile = filepath.Join(dir, "peer.crt"), filepath.Join(dir, "peer.key")
+	require.NoError(tb, os.WriteFile(certFile, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: pair.Certificate[0]}), 0o600))
+	require.NoError(tb, os.WriteFile(keyFile, pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: keyDER}), 0o600))
+	return certFile, keyFile
 }
 
 // Signer returns a signer for a new Pair.

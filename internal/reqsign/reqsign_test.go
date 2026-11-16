@@ -5,13 +5,13 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/tls"
-	"crypto/x509"
-	"encoding/pem"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"path/filepath"
+	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -102,14 +102,14 @@ func TestSigner_Sign_ARetryIsSignedAgain(t *testing.T) {
 func TestSigner_Sign_BindsTheRequest(t *testing.T) {
 	signed := []byte(`[{"egress":1}]`)
 	tests := map[string]struct {
-		change func(*http.Request) []byte // returns the body received
+		change func(*testing.T, *http.Request) []byte // returns the body received
 	}{
-		"another body":      {change: func(*http.Request) []byte { return []byte(`[{"egress":2}]`) }},
-		"another method":    {change: func(r *http.Request) []byte { r.Method = http.MethodPut; return signed }},
-		"another path":      {change: func(r *http.Request) []byte { r.URL.Path = "/v1/relays/trust"; return signed }},
-		"another query":     {change: func(r *http.Request) []byte { r.URL.RawQuery = "x=2"; return signed }},
-		"another timestamp": {change: func(r *http.Request) []byte { r.Header.Set(reqsign.HeaderTimestamp, "1"); return signed }},
-		"another certificate": {change: func(r *http.Request) []byte {
+		"another body":      {change: func(_ *testing.T, _ *http.Request) []byte { return []byte(`[{"egress":2}]`) }},
+		"another method":    {change: func(_ *testing.T, r *http.Request) []byte { r.Method = http.MethodPut; return signed }},
+		"another path":      {change: func(_ *testing.T, r *http.Request) []byte { r.URL.Path = "/v1/relays/trust"; return signed }},
+		"another query":     {change: func(_ *testing.T, r *http.Request) []byte { r.URL.RawQuery = "x=2"; return signed }},
+		"another timestamp": {change: func(_ *testing.T, r *http.Request) []byte { r.Header.Set(reqsign.HeaderTimestamp, "1"); return signed }},
+		"another certificate": {change: func(t *testing.T, r *http.Request) []byte {
 			other := httptest.NewRequest(http.MethodGet, "/", nil)
 			require.NoError(t, reqsigntest.Signer(t).Sign(other, nil))
 			r.Header.Set(reqsign.HeaderCertificate, other.Header.Get(reqsign.HeaderCertificate))
@@ -123,7 +123,7 @@ func TestSigner_Sign_BindsTheRequest(t *testing.T) {
 			_, err := reqsigntest.Verify(req, signed)
 			require.NoError(t, err, "unchanged, it verifies")
 
-			body := tt.change(req)
+			body := tt.change(t, req)
 			_, err = reqsigntest.Verify(req, body)
 
 			assert.Error(t, err)
@@ -177,7 +177,7 @@ func TestNew(t *testing.T) {
 
 // Load reads the pair as PEER_CERT_FILE and PEER_KEY_FILE name it.
 func TestLoad(t *testing.T) {
-	certFile, keyFile := writePair(t, reqsigntest.Pair(t))
+	certFile, keyFile := reqsigntest.WritePair(t, reqsigntest.Pair(t))
 	tests := map[string]struct {
 		cert, key string
 		wantErr   bool
@@ -203,14 +203,44 @@ func TestLoad(t *testing.T) {
 	}
 }
 
-// writePair writes pair as PEM files and returns their paths.
-func writePair(tb testing.TB, pair tls.Certificate) (certFile, keyFile string) {
-	tb.Helper()
-	dir := tb.TempDir()
-	der, err := x509.MarshalPKCS8PrivateKey(pair.PrivateKey)
-	require.NoError(tb, err)
-	certFile, keyFile = filepath.Join(dir, "peer.crt"), filepath.Join(dir, "peer.key")
-	require.NoError(tb, os.WriteFile(certFile, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: pair.Certificate[0]}), 0o600))
-	require.NoError(tb, os.WriteFile(keyFile, pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der}), 0o600))
-	return certFile, keyFile
+// A run of 401s is logged once, with both clocks, and its end once: not at
+// every retry.
+func TestRefusals_Observe(t *testing.T) {
+	var logs bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+	answer := func(status int) *http.Response {
+		return &http.Response{StatusCode: status, Header: http.Header{"Date": []string{"Mon, 16 Nov 2026 15:49:03 GMT"}}}
+	}
+	var r reqsign.Refusals
+
+	for _, status := range []int{http.StatusOK, http.StatusUnauthorized, http.StatusUnauthorized, http.StatusUnauthorized, http.StatusServiceUnavailable, http.StatusOK, http.StatusUnauthorized} {
+		r.Observe("https://cp.example.com/v1/relays/trust", answer(status))
+	}
+
+	out := logs.String()
+	assert.Equal(t, 2, strings.Count(out, "refused the relay's request (401)"), "the first 401 of each run")
+	assert.Equal(t, 1, strings.Count(out, "answers the relay's requests again"), "the end of the first run")
+	assert.Contains(t, out, `server_date="Mon, 16 Nov 2026 15:49:03 GMT"`)
+}
+
+// The shared client answers a redirect itself and never follows it.
+func TestNoRedirectClient(t *testing.T) {
+	var followed atomic.Bool
+	elsewhere := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { followed.Store(true) }))
+	defer elsewhere.Close()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, elsewhere.URL, http.StatusTemporaryRedirect)
+	}))
+	defer srv.Close()
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, srv.URL, nil)
+	require.NoError(t, err)
+
+	resp, err := reqsign.NoRedirectClient(time.Second).Do(req)
+
+	require.NoError(t, err)
+	require.NoError(t, resp.Body.Close())
+	assert.Equal(t, http.StatusTemporaryRedirect, resp.StatusCode)
+	assert.False(t, followed.Load())
 }

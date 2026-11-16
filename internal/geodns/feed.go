@@ -105,27 +105,14 @@ func serialOf(t time.Time) uint32 {
 // errFeedNotReady is a feed that has nothing yet (503): what is held stays.
 var errFeedNotReady = errors.New("geodns: the feed has nothing to serve yet")
 
-// newFeedHTTPClient is the feed's HTTP client. It follows no redirect: a
-// redirect answer is an error, never a request to the place it names. Go
-// drops the bearer token on a redirect to another host but would send the
-// signature headers on, handing that host a signature the control plane
-// takes for two minutes; and a signature covers the URI it was made for, so
-// the control plane would refuse the redirected request anyway.
-func newFeedHTTPClient() *http.Client {
-	return &http.Client{
-		Timeout: feedTimeout,
-		CheckRedirect: func(*http.Request, []*http.Request) error {
-			return http.ErrUseLastResponse
-		},
-	}
-}
-
 // feedClient reads the feed.
 type feedClient struct {
 	url    string
 	token  string          // sent as a bearer token when set
 	signer *reqsign.Signer // signs each request; nil signs nothing
-	client *http.Client
+	client *http.Client    // follows no redirect (reqsign.NoRedirectClient)
+	// refusals logs the control plane's 401s, the first of a run only.
+	refusals reqsign.Refusals
 }
 
 // fetch reads the feed once.
@@ -146,11 +133,11 @@ func (c *feedClient) fetch(ctx context.Context) ([]byte, error) {
 		return nil, fmt.Errorf("geodns: fetch the feed: %w", err)
 	}
 	defer func() { _ = resp.Body.Close() }() // not actionable: the body has been read
+	c.refusals.Observe(c.url, resp)
 	switch {
 	case resp.StatusCode == http.StatusServiceUnavailable:
 		return nil, errFeedNotReady
 	case resp.StatusCode != http.StatusOK:
-		reqsign.LogUnauthorized(c.url, resp)
 		return nil, fmt.Errorf("geodns: the feed answered %s", resp.Status)
 	}
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxFeedBytes+1))

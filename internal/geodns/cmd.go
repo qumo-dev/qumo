@@ -187,7 +187,7 @@ func configFromEnv() (config, error) {
 		if certFile == "" || keyFile == "" {
 			errs = append(errs, errors.New("PEER_CERT_FILE and PEER_KEY_FILE must be set together"))
 		} else if signer, err := reqsign.Load(certFile, keyFile); err != nil {
-			errs = append(errs, fmt.Errorf("PEER_CERT_FILE: %w", err))
+			errs = append(errs, fmt.Errorf("PEER_CERT_FILE, PEER_KEY_FILE: %w", err))
 		} else {
 			cfg.feedSigner = signer
 		}
@@ -239,7 +239,7 @@ func newService(cfg config, reg prometheus.Registerer) (*service, error) {
 		state:   state,
 		geo:     geo,
 		metrics: m,
-		feed:    &feedClient{url: cfg.feedURL, token: cfg.feedToken, signer: cfg.feedSigner, client: newFeedHTTPClient()},
+		feed:    &feedClient{url: cfg.feedURL, token: cfg.feedToken, signer: cfg.feedSigner, client: reqsign.NoRedirectClient(feedTimeout)},
 		auth: &authority{
 			zone:        cfg.zone,
 			name:        cfg.name,

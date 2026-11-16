@@ -129,19 +129,24 @@ func NewPeerTrust(caPEM []byte, cert *tls.Certificate) (*PeerTrust, error) {
 // requestSigner returns the signer for the relay's requests to its control
 // plane (qumo-dev/qumo#601), made from the peer identity t already holds, so
 // that the relay signs with the very certificate it peers with; nil when it
-// has none, or when its key cannot sign what the control plane verifies. A
-// relay peers with that identity all the same: only the signing is off, and
-// its token still authenticates the requests.
-func requestSigner(t *PeerTrust) *reqsign.Signer {
+// has none. A peer identity whose key can't sign what the control plane
+// verifies (not ECDSA) is an error when the relay calls one
+// (callsControlPlane), as it is for qumo dns: a relay that went on unsigned
+// would be locked out once the control plane takes signatures alone.
+// Without one the identity only peers, and the relay says so and carries on.
+func requestSigner(t *PeerTrust, callsControlPlane bool) (*reqsign.Signer, error) {
 	if t == nil || t.cert == nil {
-		return nil
+		return nil, nil
 	}
 	signer, err := reqsign.New(*t.cert)
-	if err != nil {
-		slog.Warn("relay: control-plane requests unsigned: the peer identity cannot sign them", "err", err)
-		return nil
+	if err == nil {
+		return signer, nil
 	}
-	return signer
+	if callsControlPlane {
+		return nil, fmt.Errorf("PEER_CERT_FILE, PEER_KEY_FILE: the peer identity can't sign the control-plane requests: %w", err)
+	}
+	slog.Warn("relay: the peer identity can't sign control-plane requests; there are none to sign", "err", err)
+	return nil, nil
 }
 
 // checkPeerCertificate reports why leaf would fail a peer's checks: not

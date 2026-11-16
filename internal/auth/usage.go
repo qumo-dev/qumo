@@ -76,7 +76,9 @@ type usageReporter struct {
 	token  string
 	signer *reqsign.Signer // nil: requests are not signed
 	client *http.Client
-	now    func() time.Time
+	// refusals logs the control plane's 401s, the first of a run only.
+	refusals reqsign.Refusals
+	now      func() time.Time
 	// run names this run of the relay in its viewers records: a restarted
 	// relay starts new totals rather than lowering old ones.
 	runID string
@@ -93,14 +95,15 @@ type usageReporter struct {
 	closed map[string]time.Time
 }
 
-func newUsageReporter(rawURL, bearer string) (*usageReporter, error) {
+func newUsageReporter(rawURL, bearer string, signer *reqsign.Signer) (*usageReporter, error) {
 	if err := checkURL(rawURL); err != nil {
 		return nil, err
 	}
 	return &usageReporter{
 		url:      rawURL,
 		token:    bearer,
-		client:   noRedirectClient(usageSendTimeout),
+		signer:   signer,
+		client:   reqsign.NoRedirectClient(usageSendTimeout),
 		now:      time.Now,
 		runID:    rand.Text(),
 		sessions: map[string]usageSession{},
@@ -433,13 +436,13 @@ func (r *usageReporter) send(ctx context.Context, batch []usage.Record) error {
 	}
 	defer func() { _ = resp.Body.Close() }()                       // not actionable: drained below
 	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, maxBody)) // not actionable: drained to reuse the connection
+	r.refusals.Observe(r.url, resp)
 	switch {
 	case resp.StatusCode >= 200 && resp.StatusCode < 300:
 		return nil
 	case resp.StatusCode == http.StatusBadRequest || resp.StatusCode == http.StatusUnprocessableEntity:
 		return fmt.Errorf("%w: status %d", errMalformed, resp.StatusCode)
 	default:
-		reqsign.LogUnauthorized(r.url, resp)
 		return fmt.Errorf("status %d", resp.StatusCode)
 	}
 }

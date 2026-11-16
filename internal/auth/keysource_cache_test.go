@@ -25,7 +25,7 @@ func TestURLKeySource_Cache(t *testing.T) {
 	cache := filepath.Join(t.TempDir(), "keys.cache.json")
 	now := time.Now()
 
-	first, err := keySourceFor(srv.URL, "t", cache)
+	first, err := keySourceFor(srv.URL, "t", cache, nil)
 	require.NoError(t, err)
 	var store keyStore
 	require.NoError(t, first.start(&store, now), "no cache yet is not an error")
@@ -42,7 +42,7 @@ func TestURLKeySource_Cache(t *testing.T) {
 	srv.Close() // the URL can no longer be reached
 
 	t.Run("a restarted relay loads the cache", func(t *testing.T) {
-		restarted, err := keySourceFor(srv.URL, "t", cache)
+		restarted, err := keySourceFor(srv.URL, "t", cache, nil)
 		require.NoError(t, err)
 		var fresh keyStore
 		require.NoError(t, restarted.start(&fresh, now.Add(time.Minute)))
@@ -58,7 +58,7 @@ func TestURLKeySource_Cache(t *testing.T) {
 	t.Run("the cache's age counts toward the fail-static limit", func(t *testing.T) {
 		old := now.Add(-7 * time.Hour)
 		require.NoError(t, os.Chtimes(cache, old, old))
-		restarted, err := keySourceFor(srv.URL, "t", cache)
+		restarted, err := keySourceFor(srv.URL, "t", cache, nil)
 		require.NoError(t, err)
 		var stale keyStore
 		require.NoError(t, restarted.start(&stale, now))
@@ -70,7 +70,7 @@ func TestURLKeySource_Cache(t *testing.T) {
 	t.Run("a cache that isn't a key set is ignored", func(t *testing.T) {
 		bad := filepath.Join(t.TempDir(), "bad.json")
 		require.NoError(t, os.WriteFile(bad, []byte("{"), 0o600))
-		src, err := keySourceFor(srv.URL, "t", bad)
+		src, err := keySourceFor(srv.URL, "t", bad, nil)
 		require.NoError(t, err)
 		var empty keyStore
 		require.NoError(t, src.start(&empty, now))
@@ -84,7 +84,7 @@ func TestURLKeySource_UnchangedSetKeepsTheCacheFresh(t *testing.T) {
 	srv := httptest.NewServer(&fakeKeyServer{body: keySetJSON(t, []token.SigningKey{k}), etag: `"e1"`})
 	defer srv.Close()
 	cache := filepath.Join(t.TempDir(), "keys.cache.json")
-	src, err := keySourceFor(srv.URL, "t", cache)
+	src, err := keySourceFor(srv.URL, "t", cache, nil)
 	require.NoError(t, err)
 	var store keyStore
 	now := time.Now()

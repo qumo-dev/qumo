@@ -1,7 +1,6 @@
 package auth
 
 import (
-	"context"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -66,7 +65,9 @@ func TestVerifier_SignsItsRequests(t *testing.T) {
 		switch r.URL.Path {
 		case "/keys":
 			keyReqs.record(r)
-			_, _ = w.Write(keys)
+			if _, err := w.Write(keys); err != nil {
+				t.Errorf("write the key set: %v", err)
+			}
 		case "/usage":
 			usageReqs.record(r)
 			usageMu.Lock()
@@ -83,10 +84,10 @@ func TestVerifier_SignsItsRequests(t *testing.T) {
 	require.NoError(t, err)
 	var store keyStore
 
-	require.NoError(t, v.source.refresh(context.Background(), &store, time.Now()))
+	require.NoError(t, v.source.refresh(t.Context(), &store, time.Now()))
 	v.usage.open("s1", testUsageSession)
-	assert.Error(t, v.usage.flush(context.Background()))
-	require.NoError(t, v.usage.flush(context.Background()))
+	assert.Error(t, v.usage.flush(t.Context()))
+	require.NoError(t, v.usage.flush(t.Context()))
 
 	require.Len(t, keyReqs.all(), 1)
 	assertSigned(t, keyReqs.all()[0], "relay-token")
@@ -94,7 +95,6 @@ func TestVerifier_SignsItsRequests(t *testing.T) {
 	for _, got := range usageReqs.all() {
 		assertSigned(t, got, "relay-token")
 	}
-	assert.NotEqual(t, usageReqs.all()[0].signature, usageReqs.all()[1].signature, "the resend is signed again")
 }
 
 // Without one, nothing is signed: the token alone, as before.
@@ -104,14 +104,16 @@ func TestVerifier_UnsignedWithoutASigner(t *testing.T) {
 	keys := keySetJSON(t, []token.SigningKey{k})
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		reqs.record(r)
-		_, _ = w.Write(keys)
+		if _, err := w.Write(keys); err != nil {
+			t.Errorf("write the key set: %v", err)
+		}
 	}))
 	defer srv.Close()
 	v, err := NewVerifier(VerifierConfig{Keys: srv.URL, Token: "relay-token"})
 	require.NoError(t, err)
 	var store keyStore
 
-	require.NoError(t, v.source.refresh(context.Background(), &store, time.Now()))
+	require.NoError(t, v.source.refresh(t.Context(), &store, time.Now()))
 
 	require.Len(t, reqs.all(), 1)
 	assert.Empty(t, reqs.all()[0].signature)

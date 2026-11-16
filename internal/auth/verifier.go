@@ -71,20 +71,16 @@ type Verifier struct {
 // relay would run and refuse every session. Run starts the key-set refresh
 // and usage reporting.
 func NewVerifier(cfg VerifierConfig) (*Verifier, error) {
-	src, err := keySourceFor(cfg.Keys, cfg.Token, cfg.KeysCache)
+	src, err := keySourceFor(cfg.Keys, cfg.Token, cfg.KeysCache, cfg.Signer)
 	if err != nil {
 		return nil, fmt.Errorf("QUMO_AUTH_KEYS: %w", err)
 	}
-	if u, ok := src.(*urlKeySource); ok {
-		u.signer = cfg.Signer
-	}
 	v := &Verifier{source: src, now: time.Now}
 	if cfg.UsageURL != "" {
-		u, err := newUsageReporter(cfg.UsageURL, cfg.Token)
+		u, err := newUsageReporter(cfg.UsageURL, cfg.Token, cfg.Signer)
 		if err != nil {
 			return nil, fmt.Errorf("QUMO_USAGE_URL: %w", err)
 		}
-		u.signer = cfg.Signer
 		v.usage = u
 	}
 	// Last, once the rest of the configuration is known to be good.
