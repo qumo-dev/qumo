@@ -15,6 +15,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/qumo-dev/qumo/internal/reqsign"
 )
 
 const (
@@ -117,6 +119,13 @@ func runKeySource(ctx context.Context, src keySource, store *keyStore, now func(
 	}
 }
 
+// KeysDownloaded reports whether a QUMO_AUTH_KEYS value names a key set to
+// download (an http or https URL), rather than a file.
+func KeysDownloaded(value string) bool {
+	scheme, _, hasScheme := strings.Cut(value, "://")
+	return hasScheme && (strings.EqualFold(scheme, "https") || strings.EqualFold(scheme, "http"))
+}
+
 // keySourceFor returns the key source a QUMO_AUTH_KEYS value names, by its
 // form: an https URL (or http on a loopback host) is downloaded; a file://
 // URL or anything without a scheme, a Windows path included, is a file. Any
@@ -124,12 +133,12 @@ func runKeySource(ctx context.Context, src keySource, store *keyStore, now func(
 //
 // cache is where a downloaded key set is kept between runs
 // (QUMO_AUTH_KEYS_CACHE); it applies to a URL only.
-func keySourceFor(value, bearer, cache string) (keySource, error) {
+func keySourceFor(value, bearer, cache string, signer *reqsign.Signer) (keySource, error) {
 	if value == "" {
 		return nil, errors.New("not set")
 	}
 	scheme, rest, hasScheme := strings.Cut(value, "://")
-	isURL := hasScheme && (strings.EqualFold(scheme, "https") || strings.EqualFold(scheme, "http"))
+	isURL := KeysDownloaded(value)
 	if cache != "" && !isURL {
 		return nil, errors.New("QUMO_AUTH_KEYS_CACHE keeps a downloaded key set; it has no use with a key set file")
 	}
@@ -138,7 +147,7 @@ func keySourceFor(value, bearer, cache string) (keySource, error) {
 	}
 	switch strings.ToLower(scheme) {
 	case "https", "http":
-		src, err := newURLKeySource(value, bearer)
+		src, err := newURLKeySource(value, bearer, signer)
 		if err != nil {
 			return nil, err
 		}
@@ -215,8 +224,11 @@ func (f *fileKeySource) refresh(_ context.Context, store *keyStore, now time.Tim
 type urlKeySource struct {
 	url    string
 	token  string
+	signer *reqsign.Signer // nil: requests are not signed
 	client *http.Client
-	etag   string
+	// refusals logs the control plane's 401s, the first of a run only.
+	refusals reqsign.Refusals
+	etag     string
 	// cache is a file the last downloaded key set is kept in, so a relay
 	// that restarts while the URL can't be reached still has its keys. Its
 	// modification time is when the set was last confirmed, so the
@@ -293,11 +305,11 @@ func (u *urlKeySource) touchCache(now time.Time) {
 	}
 }
 
-func newURLKeySource(rawURL, bearer string) (*urlKeySource, error) {
+func newURLKeySource(rawURL, bearer string, signer *reqsign.Signer) (*urlKeySource, error) {
 	if err := checkURL(rawURL); err != nil {
 		return nil, err
 	}
-	return &urlKeySource{url: rawURL, token: bearer, client: noRedirectClient(keysFetchTimeout)}, nil
+	return &urlKeySource{url: rawURL, token: bearer, signer: signer, client: reqsign.NoRedirectClient(keysFetchTimeout)}, nil
 }
 
 func (u *urlKeySource) String() string { return u.url }
@@ -313,11 +325,15 @@ func (u *urlKeySource) refresh(ctx context.Context, store *keyStore, now time.Ti
 	if u.etag != "" {
 		req.Header.Set("If-None-Match", u.etag)
 	}
+	if err := u.signer.Sign(req, nil); err != nil {
+		return fmt.Errorf("key set: %w", err)
+	}
 	resp, err := u.client.Do(req)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = resp.Body.Close() }() // not actionable: the body is read below
+	u.refusals.Observe(u.url, resp)
 	switch resp.StatusCode {
 	case http.StatusNotModified:
 		store.confirm(now)

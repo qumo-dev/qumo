@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/qumo-dev/qumo/internal/reqsign"
 	"github.com/qumo-dev/qumo/usage"
 )
 
@@ -73,8 +74,11 @@ type viewerTotal struct {
 type usageReporter struct {
 	url    string
 	token  string
+	signer *reqsign.Signer // nil: requests are not signed
 	client *http.Client
-	now    func() time.Time
+	// refusals logs the control plane's 401s, the first of a run only.
+	refusals reqsign.Refusals
+	now      func() time.Time
 	// run names this run of the relay in its viewers records: a restarted
 	// relay starts new totals rather than lowering old ones.
 	runID string
@@ -91,14 +95,15 @@ type usageReporter struct {
 	closed map[string]time.Time
 }
 
-func newUsageReporter(rawURL, bearer string) (*usageReporter, error) {
+func newUsageReporter(rawURL, bearer string, signer *reqsign.Signer) (*usageReporter, error) {
 	if err := checkURL(rawURL); err != nil {
 		return nil, err
 	}
 	return &usageReporter{
 		url:      rawURL,
 		token:    bearer,
-		client:   noRedirectClient(usageSendTimeout),
+		signer:   signer,
+		client:   reqsign.NoRedirectClient(usageSendTimeout),
 		now:      time.Now,
 		runID:    rand.Text(),
 		sessions: map[string]usageSession{},
@@ -420,12 +425,18 @@ func (r *usageReporter) send(ctx context.Context, batch []usage.Record) error {
 		req.Header.Set("Authorization", "Bearer "+r.token)
 	}
 	req.Header.Set("Content-Type", "application/json")
+	// Signed at each send: a batch sent again after a failure carries a
+	// fresh timestamp.
+	if err := r.signer.Sign(req, body); err != nil {
+		return fmt.Errorf("usage report: %w", err)
+	}
 	resp, err := r.client.Do(req)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = resp.Body.Close() }()                       // not actionable: drained below
 	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, maxBody)) // not actionable: drained to reuse the connection
+	r.refusals.Observe(r.url, resp)
 	switch {
 	case resp.StatusCode >= 200 && resp.StatusCode < 300:
 		return nil

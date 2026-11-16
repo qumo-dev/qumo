@@ -6,9 +6,11 @@ import (
 	"crypto/x509"
 	"errors"
 	"fmt"
+	"log/slog"
 	"slices"
 
 	"github.com/qumo-dev/gomoqt/moqt"
+	"github.com/qumo-dev/qumo/internal/reqsign"
 )
 
 // Relay peers authenticate each other with mutual TLS on native QUIC, under a
@@ -122,6 +124,29 @@ func NewPeerTrust(caPEM []byte, cert *tls.Certificate) (*PeerTrust, error) {
 	t.cert = &c
 	t.own = c.Certificate[0]
 	return t, nil
+}
+
+// requestSigner returns the signer for the relay's requests to its control
+// plane (qumo-dev/qumo#601), made from the peer identity t already holds, so
+// that the relay signs with the very certificate it peers with; nil when it
+// has none. A peer identity whose key can't sign what the control plane
+// verifies (not ECDSA) is an error when the relay calls one
+// (callsControlPlane), as it is for qumo dns: a relay that went on unsigned
+// would be locked out once the control plane takes signatures alone.
+// Without one the identity only peers, and the relay says so and carries on.
+func requestSigner(t *PeerTrust, callsControlPlane bool) (*reqsign.Signer, error) {
+	if t == nil || t.cert == nil {
+		return nil, nil
+	}
+	signer, err := reqsign.New(*t.cert)
+	if err == nil {
+		return signer, nil
+	}
+	if callsControlPlane {
+		return nil, fmt.Errorf("PEER_CERT_FILE, PEER_KEY_FILE: the peer identity can't sign the control-plane requests: %w", err)
+	}
+	slog.Warn("relay: the peer identity can't sign control-plane requests; there are none to sign", "err", err)
+	return nil, nil
 }
 
 // checkPeerCertificate reports why leaf would fail a peer's checks: not

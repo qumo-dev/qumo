@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/qumo-dev/gomoqt/moqt"
+	"github.com/qumo-dev/qumo/internal/reqsign"
 	"github.com/qumo-dev/qumo/token"
 )
 
@@ -33,6 +34,10 @@ type VerifierConfig struct {
 	// Token is sent as a bearer token to a key-set URL and UsageURL
 	// (QUMO_RELAY_TOKEN).
 	Token string
+	// Signer signs the requests to a key-set URL and UsageURL with the
+	// relay's peer identity (qumo-dev/qumo#601), beside Token. Nil signs
+	// nothing.
+	Signer *reqsign.Signer
 }
 
 // Verifier is the relay's session auth: it verifies credentials against a
@@ -66,13 +71,13 @@ type Verifier struct {
 // relay would run and refuse every session. Run starts the key-set refresh
 // and usage reporting.
 func NewVerifier(cfg VerifierConfig) (*Verifier, error) {
-	src, err := keySourceFor(cfg.Keys, cfg.Token, cfg.KeysCache)
+	src, err := keySourceFor(cfg.Keys, cfg.Token, cfg.KeysCache, cfg.Signer)
 	if err != nil {
 		return nil, fmt.Errorf("QUMO_AUTH_KEYS: %w", err)
 	}
 	v := &Verifier{source: src, now: time.Now}
 	if cfg.UsageURL != "" {
-		u, err := newUsageReporter(cfg.UsageURL, cfg.Token)
+		u, err := newUsageReporter(cfg.UsageURL, cfg.Token, cfg.Signer)
 		if err != nil {
 			return nil, fmt.Errorf("QUMO_USAGE_URL: %w", err)
 		}
