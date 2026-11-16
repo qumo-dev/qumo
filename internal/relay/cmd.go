@@ -29,6 +29,7 @@ import (
 	"github.com/qumo-dev/qumo/internal/envconfig"
 	"github.com/qumo-dev/qumo/internal/gctune"
 	"github.com/qumo-dev/qumo/internal/quicconfig"
+	"github.com/qumo-dev/qumo/internal/relaysign"
 	"github.com/qumo-dev/qumo/internal/watermark"
 )
 
@@ -55,6 +56,8 @@ func sanitizeLog(s string) string {
 //	                               certificate CA_FILE issued for the peering
 //	                               name; set together, and only with CA_FILE.
 //	                               Needed to dial PEERS and to be dialed.
+//	                               Also signs the key-set and usage
+//	                               requests (internal/relaysign).
 //	RELAY_NAME                   - node ID (default: "relay-" + hostname)
 //	GROUP_CACHE_SIZE             - completed groups retained per track (default: 8)
 //	FRAME_CAPACITY               - frame buffer size in bytes (default: 1500)
@@ -183,6 +186,19 @@ func Run(args []string) error {
 		KeysCache: os.Getenv("QUMO_AUTH_KEYS_CACHE"),
 		UsageURL:  os.Getenv("QUMO_USAGE_URL"),
 		Token:     os.Getenv("QUMO_RELAY_TOKEN"),
+	}
+	// With a peer identity, the key-set and usage requests are signed with
+	// it (qumo-dev/qumo#601), beside the token: the control plane then knows
+	// which relay calls from a key only that relay holds.
+	if certFile := os.Getenv("PEER_CERT_FILE"); trust.Identity() != "" && certFile != "" {
+		signer, err := relaysign.Load(certFile, os.Getenv("PEER_KEY_FILE"))
+		if err != nil {
+			// It peers with this identity all the same: only the signing is
+			// off, and the token still authenticates the requests.
+			slog.Warn("relay: control-plane requests unsigned: the peer identity cannot sign them", "err", err)
+		} else {
+			verifierCfg.Signer = signer
+		}
 	}
 	authorize := admitUnchecked
 	var reportEnd func(context.Context, auth.Request) error // nil: auth off reports nothing

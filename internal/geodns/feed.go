@@ -15,6 +15,8 @@ import (
 	"slices"
 	"strings"
 	"time"
+
+	"github.com/qumo-dev/qumo/internal/relaysign"
 )
 
 // maxFeedBytes bounds a feed body: a feed lists relays, not a database.
@@ -106,7 +108,8 @@ var errFeedNotReady = errors.New("geodns: the feed has nothing to serve yet")
 // feedClient reads the feed.
 type feedClient struct {
 	url    string
-	token  string // sent as a bearer token when set
+	token  string            // sent as a bearer token when set
+	signer *relaysign.Signer // signs each request; nil signs nothing
 	client *http.Client
 }
 
@@ -120,6 +123,9 @@ func (c *feedClient) fetch(ctx context.Context) ([]byte, error) {
 		req.Header.Set("Authorization", "Bearer "+c.token)
 	}
 	req.Header.Set("Accept", "application/json")
+	if err := c.signer.Sign(req, nil); err != nil {
+		return nil, fmt.Errorf("geodns: %w", err)
+	}
 	resp, err := c.client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("geodns: fetch the feed: %w", err)
@@ -129,6 +135,7 @@ func (c *feedClient) fetch(ctx context.Context) ([]byte, error) {
 	case resp.StatusCode == http.StatusServiceUnavailable:
 		return nil, errFeedNotReady
 	case resp.StatusCode != http.StatusOK:
+		relaysign.LogUnauthorized(c.url, resp)
 		return nil, fmt.Errorf("geodns: the feed answered %s", resp.Status)
 	}
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxFeedBytes+1))

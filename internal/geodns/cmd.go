@@ -38,6 +38,7 @@ import (
 	"golang.org/x/sync/errgroup"
 
 	"github.com/qumo-dev/qumo/internal/envconfig"
+	"github.com/qumo-dev/qumo/internal/relaysign"
 )
 
 const (
@@ -68,6 +69,7 @@ type config struct {
 	maxAnswers   int
 	feedURL      string
 	feedToken    string
+	feedSigner   *relaysign.Signer // nil: the feed requests are not signed
 	feedInterval time.Duration
 	stateDir     string
 	geoURL       string
@@ -83,6 +85,7 @@ type config struct {
 //	QUMO_DNS_NAMESERVERS    - the zone's name servers, comma-separated host names, as delegated (required)
 //	QUMO_DNS_FEED_URL       - where the regions and their addresses are read (required; the feed in docs/site/content/en/docs/cli/dns.md)
 //	QUMO_DNS_FEED_TOKEN     - bearer token sent to the feed (default: none)
+//	PEER_CERT_FILE, PEER_KEY_FILE - the node relay's peer certificate and key, to sign each feed request with (both or neither; default: none, unsigned)
 //	QUMO_DNS_FEED_INTERVAL  - how often the feed is read (default: "15s")
 //	QUMO_DNS_STATE_DIR      - a directory for the last good feed and a downloaded database (default: none, nothing is kept)
 //	QUMO_DNS_GEOIP_DB       - a city database (.mmdb) to place clients with (default: <state dir>/city.mmdb with a URL, else none)
@@ -180,6 +183,15 @@ func configFromEnv() (config, error) {
 		}
 		cfg.geoDB = filepath.Join(cfg.stateDir, geoFile)
 	}
+	if certFile, keyFile := os.Getenv("PEER_CERT_FILE"), os.Getenv("PEER_KEY_FILE"); certFile != "" || keyFile != "" {
+		if certFile == "" || keyFile == "" {
+			errs = append(errs, errors.New("PEER_CERT_FILE and PEER_KEY_FILE must be set together"))
+		} else if signer, err := relaysign.Load(certFile, keyFile); err != nil {
+			errs = append(errs, fmt.Errorf("PEER_CERT_FILE: %w", err))
+		} else {
+			cfg.feedSigner = signer
+		}
+	}
 	if len(errs) > 0 {
 		return config{}, fmt.Errorf("dns: %w", errors.Join(errs...))
 	}
@@ -227,7 +239,7 @@ func newService(cfg config, reg prometheus.Registerer) (*service, error) {
 		state:   state,
 		geo:     geo,
 		metrics: m,
-		feed:    &feedClient{url: cfg.feedURL, token: cfg.feedToken, client: &http.Client{Timeout: feedTimeout}},
+		feed:    &feedClient{url: cfg.feedURL, token: cfg.feedToken, signer: cfg.feedSigner, client: &http.Client{Timeout: feedTimeout}},
 		auth: &authority{
 			zone:        cfg.zone,
 			name:        cfg.name,
