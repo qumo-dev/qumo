@@ -24,6 +24,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/qumo-dev/qumo/internal/relaysign"
 )
 
@@ -33,9 +35,7 @@ import (
 func Pair(tb testing.TB) tls.Certificate {
 	tb.Helper()
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	if err != nil {
-		tb.Fatalf("generate the peer key: %v", err)
-	}
+	require.NoError(tb, err)
 	tmpl := &x509.Certificate{
 		SerialNumber: big.NewInt(1),
 		Subject:      pkix.Name{CommonName: "qumo-relay-tk1a-1"},
@@ -43,9 +43,7 @@ func Pair(tb testing.TB) tls.Certificate {
 		NotAfter:     time.Now().Add(time.Hour),
 	}
 	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
-	if err != nil {
-		tb.Fatalf("create the peer certificate: %v", err)
-	}
+	require.NoError(tb, err)
 	return tls.Certificate{Certificate: [][]byte{der}, PrivateKey: key}
 }
 
@@ -53,9 +51,7 @@ func Pair(tb testing.TB) tls.Certificate {
 func Signer(tb testing.TB) *relaysign.Signer {
 	tb.Helper()
 	signer, err := relaysign.New(Pair(tb))
-	if err != nil {
-		tb.Fatalf("new signer: %v", err)
-	}
+	require.NoError(tb, err)
 	return signer
 }
 
@@ -63,8 +59,10 @@ func Signer(tb testing.TB) *relaysign.Signer {
 // certificate from its header, and its key's signature over the context,
 // method, request URI as received, timestamp and hex SHA-256 of body, one
 // per line, with no newline after the last. It returns the timestamp
-// signed. It reports by error, not through a testing.TB, so that a server
-// handler can call it and hand the result to the test's goroutine.
+// signed. It reports by error rather than failing a test: a server handler
+// calls it, off the test's goroutine, where require would stop only the
+// handler and leave the test waiting; the test asserts on what it hands
+// back.
 func Verify(r *http.Request, body []byte) (int64, error) {
 	certPEM, err := base64.StdEncoding.DecodeString(r.Header.Get(relaysign.HeaderCertificate))
 	if err != nil {
