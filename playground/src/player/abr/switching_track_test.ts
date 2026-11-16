@@ -236,3 +236,18 @@ Deno.test("SwitchingTrack gives up a switch not yet delivering for a newer one",
 	assertStrictEquals(st!.renditionOf(2), "video-1080p");
 	st!.close();
 });
+
+Deno.test("SwitchingTrack stops waiting when the signal resolves", async () => {
+	const src = new FakeSource();
+	let stop = () => {};
+	const signal = new Promise<void>((resolve) => stop = resolve);
+	const [st] = await SwitchingTrack.open(src, "/b", "video-360p", signal);
+	const waiting = st!.acceptGroup(signal);
+	stop();
+	const [g, err] = await waiting;
+	assertStrictEquals(g, undefined);
+	assertEquals(err?.message, "stopped");
+	// Asked again with the same signal, it answers at once.
+	assertEquals((await st!.acceptGroup(signal))[1]?.message, "stopped");
+	st!.close();
+});

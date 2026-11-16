@@ -23,7 +23,7 @@ func TestTrackGroups(t *testing.T) {
 	assert.True(t, tr.openGroup(7), "sequences may skip, as the source's do")
 
 	// A new subscriber starts at the newest group.
-	v := tr.next(0, 0, 0)
+	v := tr.next(position{})
 	assert.True(t, v.found)
 	assert.Equal(t, moqt.GroupSequence(7), v.seq)
 	assert.False(t, v.done)
@@ -31,23 +31,23 @@ func TestTrackGroups(t *testing.T) {
 
 	// One that served group 5 moves on to 7 from its start.
 	tr.writeFrame(frame(2))
-	v = tr.next(5, 0, 0)
+	v = tr.next(position{served: 5, anyDone: true})
 	assert.Equal(t, moqt.GroupSequence(7), v.seq)
 	assert.Len(t, v.frames, 1)
 
 	// Serving group 5 resumes where it left off, and it is done.
-	v = tr.next(0, 5, 1)
+	v = tr.next(position{current: 5, serving: true, sentInto: 1})
 	assert.Equal(t, moqt.GroupSequence(5), v.seq)
 	assert.True(t, v.done)
 	assert.Empty(t, v.frames)
 
 	tr.endGroup()
-	v = tr.next(0, 7, 1)
+	v = tr.next(position{current: 7, serving: true, sentInto: 1})
 	assert.True(t, v.done)
 	assert.False(t, tr.writeFrame(frame(3)), "an ended group takes no frames")
 
 	// Nothing after 7 yet.
-	v = tr.next(7, 0, 0)
+	v = tr.next(position{served: 7, anyDone: true})
 	assert.False(t, v.found)
 	assert.False(t, v.closed)
 }
@@ -58,11 +58,11 @@ func TestTrackRing(t *testing.T) {
 		tr.openGroup(seq + 1)
 	}
 	// Groups 1 and 2 left the ring: a subscriber after 1 skips to 3.
-	v := tr.next(1, 0, 0)
+	v := tr.next(position{served: 1, anyDone: true})
 	assert.Equal(t, moqt.GroupSequence(3), v.seq)
 
 	// A group being served that left the ring is ended where it is.
-	v = tr.next(0, 2, 4)
+	v = tr.next(position{current: 2, serving: true, sentInto: 4})
 	assert.True(t, v.found)
 	assert.True(t, v.done)
 	assert.Equal(t, moqt.GroupSequence(2), v.seq)
@@ -71,7 +71,7 @@ func TestTrackRing(t *testing.T) {
 
 func TestTrackChangedAndClosed(t *testing.T) {
 	tr := newTrack()
-	v := tr.next(0, 0, 0)
+	v := tr.next(position{})
 	assert.False(t, v.found)
 	select {
 	case <-v.changed:
@@ -86,9 +86,31 @@ func TestTrackChangedAndClosed(t *testing.T) {
 	}
 
 	tr.close()
-	v = tr.next(1, 0, 0)
+	v = tr.next(position{served: 1, anyDone: true})
 	assert.True(t, v.closed)
 	assert.False(t, v.found)
 	assert.False(t, tr.openGroup(2), "a closed track takes no groups")
 	tr.close() // idempotent
+}
+
+func TestTrackGroupZero(t *testing.T) {
+	tr := newTrack()
+	assert.True(t, tr.openGroup(0), "a first group may be numbered 0")
+	tr.writeFrame(frame(1))
+
+	v := tr.next(position{})
+	assert.True(t, v.found)
+	assert.Equal(t, moqt.GroupSequence(0), v.seq)
+	assert.Len(t, v.frames, 1)
+
+	// Being served, group 0 is resumed, not taken for no group at all.
+	tr.writeFrame(frame(2))
+	v = tr.next(position{current: 0, serving: true, sentInto: 1})
+	assert.Equal(t, moqt.GroupSequence(0), v.seq)
+	assert.Len(t, v.frames, 1)
+
+	// Fully served, it is not served again.
+	tr.endGroup()
+	v = tr.next(position{served: 0, anyDone: true})
+	assert.False(t, v.found)
 }

@@ -185,7 +185,12 @@ func (p *pipeline) readTrack(ctx context.Context, name string,
 	}
 	defer tr.Close() // not actionable: the pipeline is ending
 
-	var last moqt.GroupSequence
+	// The sequence of the last group read; read reports there has been one,
+	// so a first group numbered 0 is read rather than taken as seen.
+	var (
+		last moqt.GroupSequence
+		read bool
+	)
 	buf := moqt.NewFrame(0)
 	for {
 		gr, err := tr.AcceptGroup(ctx)
@@ -196,11 +201,11 @@ func (p *pipeline) readTrack(ctx context.Context, name string,
 			return fmt.Errorf("abr: read %s: %w", name, err)
 		}
 		seq := gr.GroupSequence()
-		if seq <= last || !open(seq) {
+		if (read && seq <= last) || !open(seq) {
 			gr.CancelRead(moqt.InternalGroupErrorCode)
 			continue
 		}
-		last = seq
+		last, read = seq, true
 		for i := 0; ; i++ {
 			if err := gr.ReadFrame(buf); err != nil {
 				break // the group ended, or was reset
@@ -267,20 +272,9 @@ func (p *pipeline) transcode(ctx context.Context, t msf.Track, init []byte) erro
 		groups = append(groups, all)
 	}
 	sc := sourceConfig{Codec: t.Codec, Width: cfg.Width, Height: cfg.Height, Description: init}
-	var encoders []*encoder
-	for _, idx := range groups {
-		outs := make([]output, len(idx))
-		for k, i := range idx {
-			outs[k] = outputs[i]
-		}
-		enc, err := newEncoder(p.cfg.Encoder, sc, outs, remap{r, idx})
-		if err != nil {
-			return err
-		}
-		if err := enc.start(ctx); err != nil {
-			return err
-		}
-		encoders = append(encoders, enc)
+	encoders, err := startEncoders(ctx, p.cfg.Encoder, sc, outputs, groups, r)
+	if err != nil {
+		return err
 	}
 
 	// The encoders are fed from a queue, so a slow encoder never holds up the
@@ -326,6 +320,31 @@ func (p *pipeline) transcode(ctx context.Context, t msf.Track, init []byte) erro
 		err = ferr
 	}
 	return err
+}
+
+// startEncoders starts an encoder for each group of output indexes. If one
+// cannot start, those already started are closed: their ffmpeg is stopped
+// and waited for, rather than left to the context and never reaped.
+func startEncoders(ctx context.Context, cfg EncoderConfig, src sourceConfig, outputs []output, groups [][]int, r *renditions) ([]*encoder, error) {
+	var encoders []*encoder
+	for _, idx := range groups {
+		outs := make([]output, len(idx))
+		for k, i := range idx {
+			outs[k] = outputs[i]
+		}
+		enc, err := newEncoder(cfg, src, outs, remap{r, idx})
+		if err == nil {
+			err = enc.start(ctx)
+		}
+		if err != nil {
+			for _, started := range encoders {
+				_ = started.close() // not actionable: the start failed either way
+			}
+			return nil, err
+		}
+		encoders = append(encoders, enc)
+	}
+	return encoders, nil
 }
 
 // feed feeds the frames of queue to every encoder, then closes them.

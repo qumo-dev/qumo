@@ -198,8 +198,13 @@ func readGroups(ctx context.Context, t *testing.T, sess *moqt.Session, path moqt
 				g.complete = errors.Is(err, io.EOF)
 				break
 			}
+			// readGroups runs on its own goroutine, where require's
+			// FailNow must not be called.
 			ts, data, err := cmaf.DecodeLOC(f.Body())
-			require.NoError(t, err)
+			if err != nil {
+				t.Errorf("%s group %d: %v", name, gr.GroupSequence(), err)
+				return out
+			}
 			g.frames = append(g.frames, obsFrame{timestamp: ts, keyframe: hasIDR(data)})
 		}
 		out[gr.GroupSequence()] = g

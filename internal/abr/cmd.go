@@ -20,6 +20,7 @@ import (
 	"github.com/qumo-dev/qumo/internal/quicconfig"
 	"github.com/qumo-dev/qumo/internal/tlsclient"
 	"github.com/qumo-dev/qumo/internal/upstream"
+	"github.com/qumo-dev/qumo/token"
 )
 
 // retryInterval is how long to wait before dialing the relay again, or
@@ -155,6 +156,11 @@ func (t *Transcoder) Serve(ctx context.Context, sess *moqt.Session, mux *moqt.Tr
 		src := ann.BroadcastPath()
 		if strings.HasSuffix(string(src), t.Suffix) {
 			continue // an ABR broadcast, perhaps this transcoder's own
+		}
+		if strings.HasPrefix(string(src), token.HLSDirectory) {
+			// A publisher's opt-in to the HLS egress: another name for a
+			// broadcast announced, and transcoded, at its own path.
+			continue
 		}
 		dst := moqt.BroadcastPath(string(src) + t.Suffix)
 		wg.Go(func() {

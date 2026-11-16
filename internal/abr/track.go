@@ -117,31 +117,43 @@ type view struct {
 	changed <-chan struct{}
 }
 
-// next returns what to serve a subscriber that has been served groups up to
-// after (zero for none), and frames of group seq up to from. A subscriber with
-// nothing served yet starts at the newest group; one whose next group has left
-// the ring skips to the oldest still held.
-func (t *track) next(after moqt.GroupSequence, current moqt.GroupSequence, from int) view {
+// position is where a subscriber is in a track: the last group fully served,
+// and the group being served with how many of its frames were sent. Flags
+// say which are set, as any sequence, 0 included, is a group's.
+type position struct {
+	served   moqt.GroupSequence
+	anyDone  bool // a group has been fully served
+	current  moqt.GroupSequence
+	serving  bool // a group is being served
+	sentInto int  // frames of the current group sent
+}
+
+// next returns what to serve a subscriber at pos. A subscriber with nothing
+// served yet starts at the newest group; one whose next group has left the
+// ring skips to the oldest still held.
+func (t *track) next(pos position) view {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	v := view{closed: t.closed, changed: t.changed}
 	if len(t.groups) == 0 {
 		return v
 	}
+	from := pos.sentInto
 	var g *group
 	switch {
-	case current != 0:
-		g = t.find(current)
+	case pos.serving:
+		g = t.find(pos.current)
 		if g == nil {
 			// The group being served left the ring: end it where it is.
-			v.seq, v.done, v.found = current, true, true
+			v.seq, v.done, v.found = pos.current, true, true
 			return v
 		}
-	case after == 0:
+	case !pos.anyDone:
 		g = t.groups[len(t.groups)-1]
+		from = 0
 	default:
 		for _, c := range t.groups {
-			if c.seq > after {
+			if c.seq > pos.served {
 				g = c
 				break
 			}
@@ -172,21 +184,21 @@ func (t *track) find(seq moqt.GroupSequence) *group {
 func (t *track) serve(ctx context.Context, tw *moqt.TrackWriter) {
 	defer tw.Close() // not actionable: the subscription is over either way
 	var (
-		served moqt.GroupSequence // last group fully served
-		gw     *moqt.GroupWriter  // group being served
-		sent   int                // frames of it sent
+		pos position
+		gw  *moqt.GroupWriter // group being served
 	)
 	defer func() {
 		if gw != nil {
 			_ = gw.Close() // not actionable: the subscriber is leaving
 		}
 	}()
+	// finish marks the group being served as fully served.
+	finish := func(seq moqt.GroupSequence) {
+		gw = nil
+		pos = position{served: seq, anyDone: true}
+	}
 	for {
-		var current moqt.GroupSequence
-		if gw != nil {
-			current = gw.GroupSequence()
-		}
-		v := t.next(served, current, sent)
+		v := t.next(pos)
 		if v.found {
 			if gw == nil {
 				var err error
@@ -194,21 +206,19 @@ func (t *track) serve(ctx context.Context, tw *moqt.TrackWriter) {
 				if err != nil {
 					return
 				}
-				sent = 0
+				pos.current, pos.serving, pos.sentInto = v.seq, true, 0
 			}
 			for _, f := range v.frames {
 				if err := gw.WriteFrame(f); err != nil {
 					gw.CancelWrite(moqt.InternalGroupErrorCode)
-					gw = nil
-					served = v.seq
+					finish(v.seq)
 					break
 				}
-				sent++
+				pos.sentInto++
 			}
 			if gw != nil && v.done {
 				_ = gw.Close() // not actionable: the next group follows either way
-				gw = nil
-				served = v.seq
+				finish(v.seq)
 			}
 			if gw == nil {
 				continue // look for the next group straight away

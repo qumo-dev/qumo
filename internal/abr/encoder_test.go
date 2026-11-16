@@ -75,7 +75,8 @@ func testSource(t *testing.T, width, height, frames, gop int) ([]byte, []sourceF
 			if first {
 				group++
 			}
-			ts := uint64(5_021_017 + len(src)*33_367)
+			// Microseconds since 1970, past what FLV's 32-bit milliseconds hold.
+			ts := uint64(1_794_839_947_021_017 + len(src)*33_367)
 			src = append(src, sourceFrame{
 				frameInfo: frameInfo{Group: group, First: first, Timestamp: ts, WireTimestamp: ts},
 				Data:      bytes.Clone(tag.payload()),

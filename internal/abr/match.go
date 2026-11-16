@@ -41,28 +41,36 @@ const maxPending = 1024
 // dropped instead of shifting every later frame onto the wrong source.
 type matcher struct {
 	mu      sync.Mutex
-	pending []frameInfo
+	pending []pendingFrame
 }
 
-// push records a source frame about to be fed to the encoder.
-func (m *matcher) push(f frameInfo) {
+// pendingFrame is a source frame fed to the encoder and not yet matched.
+type pendingFrame struct {
+	// fed is the timestamp the encoder was given, in microseconds.
+	fed  uint64
+	info frameInfo
+}
+
+// push records a source frame about to be fed to the encoder stamped fed
+// microseconds.
+func (m *matcher) push(fed uint64, f frameInfo) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if len(m.pending) == maxPending {
 		m.pending = m.pending[1:]
 	}
-	m.pending = append(m.pending, f)
+	m.pending = append(m.pending, pendingFrame{fed: fed, info: f})
 }
 
-// head returns the timestamp of the oldest source frame remembered, for
-// diagnostics, and false when none is.
+// head returns the timestamp the oldest source frame remembered was fed
+// with, for diagnostics, and false when none is.
 func (m *matcher) head() (uint64, bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if len(m.pending) == 0 {
 		return 0, false
 	}
-	return m.pending[0].Timestamp, true
+	return m.pending[0].fed, true
 }
 
 // match returns the source frame an output frame stamped ms milliseconds was
@@ -74,7 +82,7 @@ func (m *matcher) match(ms uint32) (frameInfo, bool) {
 	out := int64(ms) * 1000
 	for len(m.pending) > 0 {
 		head := m.pending[0]
-		d := out - int64(head.Timestamp)
+		d := out - int64(head.fed)
 		switch {
 		case d >= matchTolerance:
 			// The output is later than this source frame: the encoder
@@ -85,7 +93,7 @@ func (m *matcher) match(ms uint32) (frameInfo, bool) {
 			return frameInfo{}, false
 		default:
 			m.pending = m.pending[1:]
-			return head, true
+			return head.info, true
 		}
 	}
 	return frameInfo{}, false

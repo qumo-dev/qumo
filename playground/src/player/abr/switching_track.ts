@@ -67,6 +67,8 @@ export class SwitchingTrack implements Track {
 	#handover: Handover = "seamless";
 
 	readonly #queue: Group[] = [];
+	readonly #watched = new WeakSet<Promise<void>>();
+	readonly #signalled = new WeakSet<Promise<void>>();
 	#wake: (() => void) | undefined;
 	#ended: Error | undefined;
 	#closed = false;
@@ -145,18 +147,27 @@ export class SwitchingTrack implements Track {
 	}
 
 	async acceptGroup(signal: Promise<void>): Promise<Result<Group>> {
+		this.#watch(signal);
 		for (;;) {
 			const group = this.#queue.shift();
 			if (group !== undefined) return [group, undefined];
 			if (this.#ended !== undefined) return [undefined, this.#ended];
-			let stop = false;
-			await Promise.race([
-				new Promise<void>((resolve) => this.#wake = resolve),
-				signal.then(() => stop = true),
-			]);
+			if (this.#signalled.has(signal)) return [undefined, new Error("stopped")];
+			await new Promise<void>((resolve) => this.#wake = resolve);
 			this.#wake = undefined;
-			if (stop) return [undefined, new Error("stopped")];
 		}
+	}
+
+	// Wakes a waiting acceptGroup when `signal` resolves. Each signal is
+	// watched once: the reader passes the same long-lived one to every call,
+	// and a handler added per call would pile up on it until playback stops.
+	#watch(signal: Promise<void>): void {
+		if (this.#watched.has(signal)) return;
+		this.#watched.add(signal);
+		void signal.then(() => {
+			this.#signalled.add(signal);
+			this.#wake?.();
+		});
 	}
 
 	close(): void {

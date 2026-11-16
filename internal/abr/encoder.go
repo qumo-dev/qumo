@@ -93,6 +93,7 @@ type encoder struct {
 
 	// Input state, owned by the goroutine calling encode.
 	started  bool
+	base     uint64 // timestamp of the first frame fed: ffmpeg is given timestamps from it
 	sequence uint32
 	last     uint64 // timestamp of the last frame fed
 	gap      uint32 // gap between the last two frames fed
@@ -289,6 +290,10 @@ func (e *encoder) encode(f sourceFrame) error {
 			return fmt.Errorf("abr: write init segment: %w", err)
 		}
 		e.started = true
+		// ffmpeg returns timestamps in FLV's 32-bit milliseconds, which a
+		// source on a large clock (microseconds since 1970, say) overflows.
+		// From the first frame they last 49 days.
+		e.base = f.Timestamp
 	} else {
 		if f.Timestamp <= e.last {
 			slog.Warn("abr: source timestamp does not advance; skipping frame (B-frames in the source?)",
@@ -300,14 +305,15 @@ func (e *encoder) encode(f sourceFrame) error {
 		}
 	}
 	e.sequence++
+	ts := f.Timestamp - e.base
 	frag, _, err := e.packager.Fragment(e.sequence,
-		[]cmaf.Frame{{Timestamp: f.Timestamp, Sync: f.First, Data: f.Data}}, f.Timestamp, e.gap)
+		[]cmaf.Frame{{Timestamp: ts, Sync: f.First, Data: f.Data}}, ts, e.gap)
 	if err != nil {
 		return fmt.Errorf("abr: package frame: %w", err)
 	}
 	e.last = f.Timestamp
 	for i := range e.match {
-		e.match[i].push(f.frameInfo)
+		e.match[i].push(ts, f.frameInfo)
 	}
 	if _, err := e.stdin.Write(frag); err != nil {
 		return fmt.Errorf("abr: write frame: %w", err)
