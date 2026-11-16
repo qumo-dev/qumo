@@ -1,4 +1,4 @@
-package relaysign_test
+package reqsign_test
 
 import (
 	"bytes"
@@ -18,8 +18,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/qumo-dev/qumo/internal/relaysign"
-	"github.com/qumo-dev/qumo/internal/relaysign/relaysigntest"
+	"github.com/qumo-dev/qumo/internal/reqsign"
+	"github.com/qumo-dev/qumo/internal/reqsign/reqsigntest"
 )
 
 // verified is what a test server saw: the timestamp a request's signature
@@ -46,7 +46,7 @@ func TestSigner_Sign(t *testing.T) {
 	}
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
-			signer := relaysigntest.Signer(t)
+			signer := reqsigntest.Signer(t)
 			seen := make(chan verified, 1)
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				body, err := io.ReadAll(r.Body)
@@ -54,7 +54,7 @@ func TestSigner_Sign(t *testing.T) {
 					seen <- verified{err: err}
 					return
 				}
-				ts, err := relaysigntest.Verify(r, body)
+				ts, err := reqsigntest.Verify(r, body)
 				seen <- verified{timestamp: ts, err: err}
 			}))
 			defer srv.Close()
@@ -76,7 +76,7 @@ func TestSigner_Sign(t *testing.T) {
 // A request sent again is signed again, with the time it is sent at: a
 // retry is not refused for the age of the first attempt.
 func TestSigner_Sign_ARetryIsSignedAgain(t *testing.T) {
-	signer := relaysigntest.Signer(t)
+	signer := reqsigntest.Signer(t)
 	now := time.Unix(1_800_000_000, 0)
 	signer.SetNow(func() time.Time { return now })
 	body := []byte(`[]`)
@@ -90,9 +90,9 @@ func TestSigner_Sign_ARetryIsSignedAgain(t *testing.T) {
 	now = now.Add(5 * time.Minute)
 	retry := send()
 
-	firstTS, err := relaysigntest.Verify(first, body)
+	firstTS, err := reqsigntest.Verify(first, body)
 	require.NoError(t, err)
-	retryTS, err := relaysigntest.Verify(retry, body)
+	retryTS, err := reqsigntest.Verify(retry, body)
 	require.NoError(t, err)
 	assert.Equal(t, int64(1_800_000_000), firstTS)
 	assert.Equal(t, int64(1_800_000_300), retryTS)
@@ -108,23 +108,23 @@ func TestSigner_Sign_BindsTheRequest(t *testing.T) {
 		"another method":    {change: func(r *http.Request) []byte { r.Method = http.MethodPut; return signed }},
 		"another path":      {change: func(r *http.Request) []byte { r.URL.Path = "/v1/relays/trust"; return signed }},
 		"another query":     {change: func(r *http.Request) []byte { r.URL.RawQuery = "x=2"; return signed }},
-		"another timestamp": {change: func(r *http.Request) []byte { r.Header.Set(relaysign.HeaderTimestamp, "1"); return signed }},
+		"another timestamp": {change: func(r *http.Request) []byte { r.Header.Set(reqsign.HeaderTimestamp, "1"); return signed }},
 		"another certificate": {change: func(r *http.Request) []byte {
 			other := httptest.NewRequest(http.MethodGet, "/", nil)
-			require.NoError(t, relaysigntest.Signer(t).Sign(other, nil))
-			r.Header.Set(relaysign.HeaderCertificate, other.Header.Get(relaysign.HeaderCertificate))
+			require.NoError(t, reqsigntest.Signer(t).Sign(other, nil))
+			r.Header.Set(reqsign.HeaderCertificate, other.Header.Get(reqsign.HeaderCertificate))
 			return signed
 		}},
 	}
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
 			req := httptest.NewRequest(http.MethodPost, "/v1/usage/events?x=1", nil)
-			require.NoError(t, relaysigntest.Signer(t).Sign(req, signed))
-			_, err := relaysigntest.Verify(req, signed)
+			require.NoError(t, reqsigntest.Signer(t).Sign(req, signed))
+			_, err := reqsigntest.Verify(req, signed)
 			require.NoError(t, err, "unchanged, it verifies")
 
 			body := tt.change(req)
-			_, err = relaysigntest.Verify(req, body)
+			_, err = reqsigntest.Verify(req, body)
 
 			assert.Error(t, err)
 		})
@@ -133,14 +133,14 @@ func TestSigner_Sign_BindsTheRequest(t *testing.T) {
 
 // Without a peer identity nothing is signed.
 func TestSigner_Sign_Nil(t *testing.T) {
-	var signer *relaysign.Signer
+	var signer *reqsign.Signer
 	req := httptest.NewRequest(http.MethodGet, "/v1/relays/trust", nil)
 
 	require.NoError(t, signer.Sign(req, nil))
 
-	assert.Empty(t, req.Header.Get(relaysign.HeaderCertificate))
-	assert.Empty(t, req.Header.Get(relaysign.HeaderTimestamp))
-	assert.Empty(t, req.Header.Get(relaysign.HeaderSignature))
+	assert.Empty(t, req.Header.Get(reqsign.HeaderCertificate))
+	assert.Empty(t, req.Header.Get(reqsign.HeaderTimestamp))
+	assert.Empty(t, req.Header.Get(reqsign.HeaderSignature))
 }
 
 func TestNew(t *testing.T) {
@@ -162,7 +162,7 @@ func TestNew(t *testing.T) {
 	}
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
-			signer, err := relaysign.New(tt.pair(relaysigntest.Pair(t)))
+			signer, err := reqsign.New(tt.pair(reqsigntest.Pair(t)))
 
 			if tt.wantErr != "" {
 				assert.ErrorContains(t, err, tt.wantErr)
@@ -177,7 +177,7 @@ func TestNew(t *testing.T) {
 
 // Load reads the pair as PEER_CERT_FILE and PEER_KEY_FILE name it.
 func TestLoad(t *testing.T) {
-	certFile, keyFile := writePair(t, relaysigntest.Pair(t))
+	certFile, keyFile := writePair(t, reqsigntest.Pair(t))
 	tests := map[string]struct {
 		cert, key string
 		wantErr   bool
@@ -188,7 +188,7 @@ func TestLoad(t *testing.T) {
 	}
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
-			signer, err := relaysign.Load(tt.cert, tt.key)
+			signer, err := reqsign.Load(tt.cert, tt.key)
 
 			if tt.wantErr {
 				assert.Error(t, err)
@@ -197,7 +197,7 @@ func TestLoad(t *testing.T) {
 			require.NoError(t, err)
 			req := httptest.NewRequest(http.MethodGet, "/v1/relays/trust", nil)
 			require.NoError(t, signer.Sign(req, nil))
-			_, err = relaysigntest.Verify(req, nil)
+			_, err = reqsigntest.Verify(req, nil)
 			assert.NoError(t, err)
 		})
 	}

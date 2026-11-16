@@ -38,7 +38,7 @@ import (
 	"golang.org/x/sync/errgroup"
 
 	"github.com/qumo-dev/qumo/internal/envconfig"
-	"github.com/qumo-dev/qumo/internal/relaysign"
+	"github.com/qumo-dev/qumo/internal/reqsign"
 )
 
 const (
@@ -69,7 +69,7 @@ type config struct {
 	maxAnswers   int
 	feedURL      string
 	feedToken    string
-	feedSigner   *relaysign.Signer // nil: the feed requests are not signed
+	feedSigner   *reqsign.Signer // nil: the feed requests are not signed
 	feedInterval time.Duration
 	stateDir     string
 	geoURL       string
@@ -186,7 +186,7 @@ func configFromEnv() (config, error) {
 	if certFile, keyFile := os.Getenv("PEER_CERT_FILE"), os.Getenv("PEER_KEY_FILE"); certFile != "" || keyFile != "" {
 		if certFile == "" || keyFile == "" {
 			errs = append(errs, errors.New("PEER_CERT_FILE and PEER_KEY_FILE must be set together"))
-		} else if signer, err := relaysign.Load(certFile, keyFile); err != nil {
+		} else if signer, err := reqsign.Load(certFile, keyFile); err != nil {
 			errs = append(errs, fmt.Errorf("PEER_CERT_FILE: %w", err))
 		} else {
 			cfg.feedSigner = signer

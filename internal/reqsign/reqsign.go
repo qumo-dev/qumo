@@ -1,4 +1,4 @@
-// Package relaysign signs a relay's requests to its control plane (the key
+// Package reqsign signs a relay's requests to its control plane (the key
 // set, usage reports, the DNS feed) with the relay's peer identity, so that
 // the control plane knows which relay is calling from a key only that relay
 // holds, not from a bearer token every relay of the deployment shares.
@@ -23,7 +23,7 @@
 // front of the control plane may rewrite Host, which would break a check
 // that covered it; and a client that sends signed requests must follow no
 // redirect, so that no other host is handed one (the clients here don't).
-package relaysign
+package reqsign
 
 import (
 	"crypto"

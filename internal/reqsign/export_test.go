@@ -1,4 +1,4 @@
-package relaysign
+package reqsign
 
 import "time"
 

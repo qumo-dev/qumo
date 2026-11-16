@@ -10,7 +10,7 @@ import (
 	"slices"
 
 	"github.com/qumo-dev/gomoqt/moqt"
-	"github.com/qumo-dev/qumo/internal/relaysign"
+	"github.com/qumo-dev/qumo/internal/reqsign"
 )
 
 // Relay peers authenticate each other with mutual TLS on native QUIC, under a
@@ -132,11 +132,11 @@ func NewPeerTrust(caPEM []byte, cert *tls.Certificate) (*PeerTrust, error) {
 // has none, or when its key cannot sign what the control plane verifies. A
 // relay peers with that identity all the same: only the signing is off, and
 // its token still authenticates the requests.
-func requestSigner(t *PeerTrust) *relaysign.Signer {
+func requestSigner(t *PeerTrust) *reqsign.Signer {
 	if t == nil || t.cert == nil {
 		return nil
 	}
-	signer, err := relaysign.New(*t.cert)
+	signer, err := reqsign.New(*t.cert)
 	if err != nil {
 		slog.Warn("relay: control-plane requests unsigned: the peer identity cannot sign them", "err", err)
 		return nil

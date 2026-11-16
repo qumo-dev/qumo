@@ -56,7 +56,7 @@ func sanitizeLog(s string) string {
 //	                               name; set together, and only with CA_FILE.
 //	                               Needed to dial PEERS and to be dialed.
 //	                               Also signs the key-set and usage
-//	                               requests (internal/relaysign).
+//	                               requests (internal/reqsign).
 //	RELAY_NAME                   - node ID (default: "relay-" + hostname)
 //	GROUP_CACHE_SIZE             - completed groups retained per track (default: 8)
 //	FRAME_CAPACITY               - frame buffer size in bytes (default: 1500)

@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"github.com/qumo-dev/gomoqt/moqt"
-	"github.com/qumo-dev/qumo/internal/relaysign"
+	"github.com/qumo-dev/qumo/internal/reqsign"
 	"github.com/qumo-dev/qumo/token"
 )
 
@@ -37,7 +37,7 @@ type VerifierConfig struct {
 	// Signer signs the requests to a key-set URL and UsageURL with the
 	// relay's peer identity (qumo-dev/qumo#601), beside Token. Nil signs
 	// nothing.
-	Signer *relaysign.Signer
+	Signer *reqsign.Signer
 }
 
 // Verifier is the relay's session auth: it verifies credentials against a

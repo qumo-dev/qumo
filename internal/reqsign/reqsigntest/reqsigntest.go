@@ -1,9 +1,9 @@
-// Package relaysigntest gives tests a relay's peer identity and the control
+// Package reqsigntest gives tests a relay's peer identity and the control
 // plane's check of what it signs (foalk-inc/qumo-deploy#1724), written here
-// from the contract in internal/relaysign rather than shared with the
+// from the contract in internal/reqsign rather than shared with the
 // signer, so that a client signing the wrong thing (another body, another
 // URI) fails its tests instead of passing on headers that are merely set.
-package relaysigntest
+package reqsigntest
 
 import (
 	"crypto/ecdsa"
@@ -26,7 +26,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/qumo-dev/qumo/internal/relaysign"
+	"github.com/qumo-dev/qumo/internal/reqsign"
 )
 
 // Pair returns a peer certificate and its ECDSA P-256 key, as the relay CA
@@ -48,9 +48,9 @@ func Pair(tb testing.TB) tls.Certificate {
 }
 
 // Signer returns a signer for a new Pair.
-func Signer(tb testing.TB) *relaysign.Signer {
+func Signer(tb testing.TB) *reqsign.Signer {
 	tb.Helper()
-	signer, err := relaysign.New(Pair(tb))
+	signer, err := reqsign.New(Pair(tb))
 	require.NoError(tb, err)
 	return signer
 }
@@ -64,7 +64,7 @@ func Signer(tb testing.TB) *relaysign.Signer {
 // handler and leave the test waiting; the test asserts on what it hands
 // back.
 func Verify(r *http.Request, body []byte) (int64, error) {
-	certPEM, err := base64.StdEncoding.DecodeString(r.Header.Get(relaysign.HeaderCertificate))
+	certPEM, err := base64.StdEncoding.DecodeString(r.Header.Get(reqsign.HeaderCertificate))
 	if err != nil {
 		return 0, fmt.Errorf("certificate header: %w", err)
 	}
@@ -76,11 +76,11 @@ func Verify(r *http.Request, body []byte) (int64, error) {
 	if err != nil {
 		return 0, fmt.Errorf("certificate: %w", err)
 	}
-	sig, err := base64.StdEncoding.DecodeString(r.Header.Get(relaysign.HeaderSignature))
+	sig, err := base64.StdEncoding.DecodeString(r.Header.Get(reqsign.HeaderSignature))
 	if err != nil || len(sig) == 0 {
 		return 0, errors.New("signature header: missing or not base64")
 	}
-	timestamp := r.Header.Get(relaysign.HeaderTimestamp)
+	timestamp := r.Header.Get(reqsign.HeaderTimestamp)
 	ts, err := strconv.ParseInt(timestamp, 10, 64)
 	if err != nil {
 		return 0, fmt.Errorf("timestamp header: %w", err)

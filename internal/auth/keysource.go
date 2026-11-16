@@ -16,7 +16,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/qumo-dev/qumo/internal/relaysign"
+	"github.com/qumo-dev/qumo/internal/reqsign"
 )
 
 const (
@@ -217,7 +217,7 @@ func (f *fileKeySource) refresh(_ context.Context, store *keyStore, now time.Tim
 type urlKeySource struct {
 	url    string
 	token  string
-	signer *relaysign.Signer // nil: requests are not signed
+	signer *reqsign.Signer // nil: requests are not signed
 	client *http.Client
 	etag   string
 	// cache is a file the last downloaded key set is kept in, so a relay
@@ -331,7 +331,7 @@ func (u *urlKeySource) refresh(ctx context.Context, store *keyStore, now time.Ti
 		return nil
 	case http.StatusOK:
 	default:
-		relaysign.LogUnauthorized(u.url, resp)
+		reqsign.LogUnauthorized(u.url, resp)
 		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, maxBody)) // not actionable: drained to reuse the connection
 		return fmt.Errorf("status %d", resp.StatusCode)
 	}

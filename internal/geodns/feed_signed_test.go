@@ -18,7 +18,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/qumo-dev/qumo/internal/relaysign/relaysigntest"
+	"github.com/qumo-dev/qumo/internal/reqsign/reqsigntest"
 )
 
 // feedRequest is what the test feed saw of a request: its bearer, and
@@ -33,14 +33,14 @@ type feedRequest struct {
 func TestFeedClient_Fetch_Signed(t *testing.T) {
 	seen := make(chan feedRequest, 1)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, err := relaysigntest.Verify(r, nil)
+		_, err := reqsigntest.Verify(r, nil)
 		seen <- feedRequest{bearer: r.Header.Get("Authorization"), err: err}
 		if _, err := w.Write([]byte(`{}`)); err != nil {
 			t.Errorf("write the feed: %v", err)
 		}
 	}))
 	defer srv.Close()
-	c := &feedClient{url: srv.URL + "/v1/relays/dns?zone=geo", token: "secret", signer: relaysigntest.Signer(t), client: newFeedHTTPClient()}
+	c := &feedClient{url: srv.URL + "/v1/relays/dns?zone=geo", token: "secret", signer: reqsigntest.Signer(t), client: newFeedHTTPClient()}
 
 	_, err := c.fetch(t.Context())
 
@@ -63,7 +63,7 @@ func TestFeedClient_Fetch_FollowsNoRedirect(t *testing.T) {
 		http.Redirect(w, r, elsewhere.URL+"/capture", http.StatusFound)
 	}))
 	defer srv.Close()
-	c := &feedClient{url: srv.URL, token: "secret", signer: relaysigntest.Signer(t), client: newFeedHTTPClient()}
+	c := &feedClient{url: srv.URL, token: "secret", signer: reqsigntest.Signer(t), client: newFeedHTTPClient()}
 
 	_, err := c.fetch(t.Context())
 
@@ -137,7 +137,7 @@ func TestConfigFromEnv_PeerIdentityNotECDSA(t *testing.T) {
 // writePeerPair writes a relay's peer certificate and key into dir.
 func writePeerPair(tb testing.TB, dir string) (certFile, keyFile string) {
 	tb.Helper()
-	pair := relaysigntest.Pair(tb)
+	pair := reqsigntest.Pair(tb)
 	der, err := x509.MarshalPKCS8PrivateKey(pair.PrivateKey)
 	require.NoError(tb, err)
 	certFile, keyFile = filepath.Join(dir, "peer.crt"), filepath.Join(dir, "peer.key")

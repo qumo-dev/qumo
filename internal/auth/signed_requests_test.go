@@ -13,13 +13,13 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/qumo-dev/qumo/internal/relaysign"
-	"github.com/qumo-dev/qumo/internal/relaysign/relaysigntest"
+	"github.com/qumo-dev/qumo/internal/reqsign"
+	"github.com/qumo-dev/qumo/internal/reqsign/reqsigntest"
 	"github.com/qumo-dev/qumo/token"
 )
 
 // signedRequests records, for each request, its bearer and whether its
-// signature verified as the control plane checks it (relaysigntest.Verify),
+// signature verified as the control plane checks it (reqsigntest.Verify),
 // over the body it arrived with.
 type signedRequests struct {
 	mu   sync.Mutex
@@ -35,11 +35,11 @@ type signedRequest struct {
 func (s *signedRequests) record(r *http.Request) {
 	body, err := io.ReadAll(r.Body)
 	if err == nil {
-		_, err = relaysigntest.Verify(r, body)
+		_, err = reqsigntest.Verify(r, body)
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.seen = append(s.seen, signedRequest{bearer: r.Header.Get("Authorization"), signature: r.Header.Get(relaysign.HeaderSignature), err: err})
+	s.seen = append(s.seen, signedRequest{bearer: r.Header.Get("Authorization"), signature: r.Header.Get(reqsign.HeaderSignature), err: err})
 }
 
 func (s *signedRequests) all() []signedRequest {
@@ -79,7 +79,7 @@ func TestVerifier_SignsItsRequests(t *testing.T) {
 		}
 	}))
 	defer srv.Close()
-	v, err := NewVerifier(VerifierConfig{Keys: srv.URL + "/keys", UsageURL: srv.URL + "/usage", Token: "relay-token", Signer: relaysigntest.Signer(t)})
+	v, err := NewVerifier(VerifierConfig{Keys: srv.URL + "/keys", UsageURL: srv.URL + "/usage", Token: "relay-token", Signer: reqsigntest.Signer(t)})
 	require.NoError(t, err)
 	var store keyStore
 

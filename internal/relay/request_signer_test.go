@@ -10,7 +10,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/qumo-dev/qumo/internal/relaysign/relaysigntest"
+	"github.com/qumo-dev/qumo/internal/reqsign/reqsigntest"
 )
 
 // The relay signs its control-plane requests with the identity it peers
@@ -18,9 +18,9 @@ import (
 func TestRequestSigner(t *testing.T) {
 	_, ed, err := ed25519.GenerateKey(rand.Reader)
 	require.NoError(t, err)
-	edPair := relaysigntest.Pair(t)
+	edPair := reqsigntest.Pair(t)
 	edPair.PrivateKey = ed
-	ecdsaPair := relaysigntest.Pair(t)
+	ecdsaPair := reqsigntest.Pair(t)
 	tests := map[string]struct {
 		trust      *PeerTrust
 		wantSigner bool
@@ -41,7 +41,7 @@ func TestRequestSigner(t *testing.T) {
 			require.NotNil(t, signer)
 			req := httptest.NewRequest(http.MethodGet, "/v1/relays/trust", nil)
 			require.NoError(t, signer.Sign(req, nil))
-			_, err := relaysigntest.Verify(req, nil)
+			_, err := reqsigntest.Verify(req, nil)
 			assert.NoError(t, err)
 		})
 	}

@@ -14,7 +14,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/qumo-dev/qumo/internal/relaysign"
+	"github.com/qumo-dev/qumo/internal/reqsign"
 	"github.com/qumo-dev/qumo/usage"
 )
 
@@ -74,7 +74,7 @@ type viewerTotal struct {
 type usageReporter struct {
 	url    string
 	token  string
-	signer *relaysign.Signer // nil: requests are not signed
+	signer *reqsign.Signer // nil: requests are not signed
 	client *http.Client
 	now    func() time.Time
 	// run names this run of the relay in its viewers records: a restarted
@@ -439,7 +439,7 @@ func (r *usageReporter) send(ctx context.Context, batch []usage.Record) error {
 	case resp.StatusCode == http.StatusBadRequest || resp.StatusCode == http.StatusUnprocessableEntity:
 		return fmt.Errorf("%w: status %d", errMalformed, resp.StatusCode)
 	default:
-		relaysign.LogUnauthorized(r.url, resp)
+		reqsign.LogUnauthorized(r.url, resp)
 		return fmt.Errorf("status %d", resp.StatusCode)
 	}
 }
