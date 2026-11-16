@@ -3,6 +3,7 @@ import {
 	createEffect,
 	createMemo,
 	createSignal,
+	For,
 	onCleanup,
 	onMount,
 	Show,
@@ -14,7 +15,7 @@ import { type Stat, StatsOverlay } from "../components/StatsOverlay.tsx";
 import { friendlyMessage } from "../errors.ts";
 import { createLogger, createMediaLogger, MediaTags } from "@okdaichi/media-log";
 import { moqSource } from "../player/moq_source.ts";
-import { type PlaybackObserver, Viewer } from "../player/viewer.ts";
+import { type AbrState, type PlaybackObserver, Viewer } from "../player/viewer.ts";
 import { createStatsTicker } from "../stats.ts";
 
 // Tagged, structured logging via @okdaichi/media-log. The video (decoder) logger
@@ -38,6 +39,10 @@ export function SubscribeBoard(
 	const [volume, setVolume] = createSignal(1);
 	const [muted, setMuted] = createSignal(false);
 	const [isFullscreen, setIsFullscreen] = createSignal(false);
+	// Adaptive bitrate: the renditions the broadcast offers, the one playing,
+	// and what the controller measures. "" chooses automatically.
+	const [abr, setAbr] = createSignal<AbrState | undefined>(undefined);
+	const [rendition, setRendition] = createSignal("");
 
 	// Live stats overlay (#139): fps + media bitrate from a 1s rolling meter,
 	// plus decoder queue depth and the session RTT sampled on the same tick.
@@ -109,6 +114,7 @@ export function SubscribeBoard(
 					if (config.codedWidth) setCanvasWidth(config.codedWidth);
 					if (config.codedHeight) setCanvasHeight(config.codedHeight);
 				},
+				onAbr: setAbr,
 				onVideoChunk(byteLength) {
 					// Tally the frame for the live stats overlay…
 					videoStats.mark(byteLength);
@@ -162,6 +168,27 @@ export function SubscribeBoard(
 		statsSession = undefined;
 		videoStats.stop();
 		setIsSubscribed(false);
+		setAbr(undefined);
+	};
+
+	const chooseRendition = (track: string) => {
+		setRendition(track);
+		viewer?.setRendition(track === "" ? undefined : track);
+	};
+
+	// The ABR stats are shown only for a broadcast that offers a choice.
+	const abrStats = (): Stat[] => {
+		const state = abr();
+		if (state === undefined || state.renditions.length < 2) return [];
+		const playing = state.renditions.find((r) => r.track === state.playing);
+		return [
+			{ label: "abr", value: `${playing?.label ?? "…"}${state.auto ? " (auto)" : ""}` },
+			{ label: "rx", value: `${(state.receiveRate / 1e6).toFixed(2)} Mbps` },
+			...(state.burstRate !== undefined
+				? [{ label: "burst", value: `${(state.burstRate / 1e6).toFixed(1)} Mbps` }]
+				: []),
+			{ label: "lag", value: `${Math.round(state.lag)} ms` },
+		];
 	};
 
 	const stats = createMemo((): Stat[] => [
@@ -170,6 +197,7 @@ export function SubscribeBoard(
 		{ label: "br", value: `${videoStats.stats().bitrateMbps} Mbps` },
 		...(rtt() > 0 ? [{ label: "rtt", value: `${rtt()} ms` }] : []),
 		...(decQueue() > 0 ? [{ label: "queue", value: decQueue() }] : []),
+		...abrStats(),
 	]);
 
 	return (
@@ -240,6 +268,25 @@ export function SubscribeBoard(
 					}}
 					aria-label="Volume"
 				/>
+				<Show when={(abr()?.renditions.length ?? 0) > 1}>
+					<select
+						class="rendition-select"
+						value={rendition()}
+						onChange={(e) => chooseRendition(e.currentTarget.value)}
+						aria-label="Rendition"
+						title="Video rendition"
+					>
+						<option value="">Auto</option>
+						<For each={abr()?.renditions}>
+							{(r) => (
+								<option value={r.track}>
+									{r.label}
+									{r.bitrate ? ` · ${(r.bitrate / 1e6).toFixed(1)} Mbps` : ""}
+								</option>
+							)}
+						</For>
+					</select>
+				</Show>
 				<button
 					type="button"
 					class="copy-btn"

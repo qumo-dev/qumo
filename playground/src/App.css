@@ -344,6 +344,16 @@ input[type="range"] {
 	max-width: 160px;
 }
 
+.rendition-select {
+	margin-left: auto;
+	padding: 0.3em 0.5em;
+	border: 1px solid var(--border);
+	border-radius: var(--radius-sm);
+	background: var(--surface-2);
+	color: inherit;
+	font: inherit;
+}
+
 /* --- Video empty-state placeholder --- */
 
 .video-empty {

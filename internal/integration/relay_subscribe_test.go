@@ -254,3 +254,60 @@ func isSubscribeRefused(err error, code moqt.SubscribeErrorCode) bool {
 	}
 	return err != nil && strings.HasSuffix(err.Error(), fmt.Sprintf("stream canceled with error code %d", code))
 }
+
+// A subscriber that stops one group's stream, as a player gives up a late
+// group or one of a rendition it is leaving, keeps its subscription: the relay
+// abandons that group alone and goes on delivering the next ones.
+func TestRelay_StoppedGroupKeepsSubscription(t *testing.T) {
+	const path = moqt.BroadcastPath("/stop/group")
+	addr, srv := startAuthRelay(t, authOff, nil)
+	url := "https://" + addr + "/"
+
+	// Groups of 10 frames 20 ms apart, as video sends a group over its GOP:
+	// the relay is still writing a group when the subscriber stops it.
+	pubCtx, stopPub := context.WithCancel(context.Background())
+	t.Cleanup(stopPub)
+	mux := moqt.NewTrackMux(0)
+	mux.PublishFunc(pubCtx, path, func(tw *moqt.TrackWriter) {
+		defer tw.Close()
+		for {
+			gw, err := tw.OpenGroup(pubCtx)
+			if err != nil {
+				return
+			}
+			for range 10 {
+				fr := moqt.NewFrame(8)
+				_, _ = fr.Write([]byte("frame"))
+				if gw.WriteFrame(fr) != nil {
+					break
+				}
+				select {
+				case <-tw.Context().Done():
+					_ = gw.Close()
+					return
+				case <-time.After(20 * time.Millisecond):
+				}
+			}
+			_ = gw.Close()
+		}
+	})
+	dialOver(t, url, nil, mux)
+	require.Eventually(t, routed(srv, path), 3*time.Second, 25*time.Millisecond)
+
+	sess := dialOver(t, url, nil, moqt.NewTrackMux(0))
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	tr, err := sess.Subscribe(ctx, path, testTrack, nil)
+	require.NoError(t, err)
+	defer tr.Close()
+
+	first, err := tr.AcceptGroup(ctx)
+	require.NoError(t, err)
+	first.CancelRead(moqt.ExpiredGroupErrorCode)
+
+	for range 3 {
+		gr, err := tr.AcceptGroup(ctx)
+		require.NoError(t, err, "the subscription ended with the stopped group")
+		assert.Greater(t, gr.GroupSequence(), first.GroupSequence())
+	}
+}
