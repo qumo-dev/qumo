@@ -153,3 +153,49 @@ Deno.test("AbrController measures lag against the fastest recent arrival", () =>
 	s.play(1, 1000, (i) => 20 + (i === 29 ? 300 : 0));
 	assertEquals(Math.round(s.ctl.lag()), 300);
 });
+
+Deno.test("AbrController does not step down from the lowest rendition", () => {
+	const s = setup();
+	s.ctl.switched(1, 2);
+	s.advance(3000);
+	s.play(3, 3000, (i) => 20 + i * 30);
+	s.ctl.groupLost();
+	assertEquals(s.ctl.decide(2), undefined, "there is nothing lower");
+});
+
+Deno.test("AbrController forgets a burst measurement after a while", () => {
+	const s = setup();
+	// A slow opening burst: 9 × 2,000 bytes in 54 ms rules out 720p...
+	s.play(1, 2000, (i) => (i < 10 ? 320 + i * 6 - i * FRAME_MS : 20));
+	s.play(4, 2000);
+	assertEquals(s.ctl.decide(2), undefined);
+	// ...but the link may have changed since: half a minute on, it is
+	// tried again.
+	s.play(30, 2000);
+	assertEquals(s.ctl.stats().burstRate, undefined);
+	assertEquals(s.ctl.decide(2)?.to, 1);
+});
+
+Deno.test("AbrController steps up to a rendition of unknown bitrate whatever a burst measured", () => {
+	// The source's bitrate is stated only once measured.
+	const s = setup([{ bitrate: undefined }, { bitrate: 800_000 }]);
+	s.play(1, 2000, (i) => (i < 10 ? 320 + i * 6 - i * FRAME_MS : 20));
+	s.play(4, 2000);
+	assertEquals(s.ctl.decide(1)?.to, 0);
+});
+
+Deno.test("AbrController follows a catalog update of the renditions", () => {
+	const s = setup([{ bitrate: undefined }]);
+	assertStrictEquals(s.ctl.initial(), 0);
+	s.ctl.choices = LADDER;
+	assertStrictEquals(s.ctl.initial(), 2, "the cheapest of the renditions now listed");
+});
+
+Deno.test("AbrController steps down to the lowest when even it does not fit", () => {
+	const s = setup();
+	s.ctl.switched(2, 0);
+	s.advance(3000);
+	// Frames fall far behind, arriving at ~200 kbit/s.
+	s.play(4, 2000, (i) => 20 + i * 50);
+	assertEquals(s.ctl.decide(0)?.to, 2);
+});

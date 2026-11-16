@@ -1,6 +1,7 @@
 // The playground compiles against browser libs; tests run under Deno.
 /// <reference lib="deno.ns" />
 import { assertEquals, assertStrictEquals } from "@std/assert";
+import { FakeTime } from "@std/testing/time";
 import type { Frame, Group, Result, Track, TrackSource } from "../source.ts";
 import { SwitchingTrack } from "./switching_track.ts";
 
@@ -250,4 +251,43 @@ Deno.test("SwitchingTrack stops waiting when the signal resolves", async () => {
 	// Asked again with the same signal, it answers at once.
 	assertEquals((await st!.acceptGroup(signal))[1]?.message, "stopped");
 	st!.close();
+});
+
+Deno.test("SwitchingTrack lets go of an old rendition that never sends a group at the cutoff", async () => {
+	using time = new FakeTime();
+	const src = new FakeSource();
+	const [st] = await SwitchingTrack.open(src, "/b", "video-360p", never);
+	const low = src.latest("video-360p");
+	low.push(1);
+	await time.runMicrotasks();
+	await accepted(st!);
+
+	await st!.switchTo("video-720p", "seamless");
+	src.latest("video-720p").push(2);
+	await time.runMicrotasks();
+	await accepted(st!);
+	assertStrictEquals(low.closed, false, "kept for the group before the cutoff");
+
+	// The old rendition goes quiet: its subscription is ended after 5 s.
+	await time.tickAsync(4_999);
+	assertStrictEquals(low.closed, false);
+	await time.tickAsync(1);
+	assertStrictEquals(low.closed, true);
+	st!.close();
+});
+
+Deno.test("SwitchingTrack closing ends every subscription and cancels queued groups", async () => {
+	const src = new FakeSource();
+	const [st] = await SwitchingTrack.open(src, "/b", "video-360p", never);
+	const low = src.latest("video-360p");
+	const queued = low.push(1);
+	await tick();
+	await st!.switchTo("video-720p", "seamless");
+	const high = src.latest("video-720p");
+
+	st!.close();
+	assertStrictEquals(low.closed, true);
+	assertStrictEquals(high.closed, true);
+	assertStrictEquals(queued.cancelled, true, "a group handed to no one is given up");
+	assertEquals((await st!.acceptGroup(never))[1]?.message, "closed");
 });

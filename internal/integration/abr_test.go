@@ -68,12 +68,14 @@ func TestABR_RenditionsBesideSource(t *testing.T) {
 		URL:   fmt.Sprintf("rtmp://%s%s", rtmpAddr, src),
 		Audio: true, GOP: 30, Width: 1280, Height: 720, Framerate: 30,
 	})
-	require.NoError(t, pub.Start(ctx))
+	pubCtx, stopPub := context.WithCancel(ctx)
+	defer stopPub()
+	require.NoError(t, pub.Start(pubCtx))
 	// An HLS opt-in for the source: an alias, which redirects every
 	// subscription to it, and which is not to be transcoded again.
 	ingestMux.Publish(ctx, alias, hlsoptin.Handler(src))
 	t.Cleanup(func() {
-		cancel() // ffmpeg publishes until its context ends
+		stopPub() // ffmpeg publishes until its context ends
 		_ = pub.Wait()
 	})
 	require.Eventually(t, routed(srv, src), 10*time.Second, 50*time.Millisecond)
@@ -145,11 +147,57 @@ func TestABR_RenditionsBesideSource(t *testing.T) {
 		}
 		assert.GreaterOrEqual(t, common, 2, "%s shares too few whole groups with the source", name)
 	}
+
+	t.Run("audio is forwarded", func(t *testing.T) {
+		audioCtx, stop := context.WithTimeout(ctx, 2*time.Second)
+		defer stop()
+		audio := readGroups(audioCtx, t, viewer, dst, "audio")
+		frames := 0
+		for _, g := range audio {
+			frames += len(g.frames)
+		}
+		assert.Greater(t, frames, 20, "2 s of AAC is ~90 frames")
+	})
+
+	t.Run("the source's measured bitrate is stated", func(t *testing.T) {
+		c := waitCatalogWhere(t, viewer, dst, "video with a bitrate", func(c msf.Catalog) bool {
+			for _, tr := range c.Tracks {
+				if tr.Name == "video" && tr.Bitrate != nil {
+					return true
+				}
+			}
+			return false
+		})
+		for _, tr := range c.Tracks {
+			if tr.Name == "video" {
+				// ffpub encodes 720p30 with libx264 veryfast at its default
+				// rate: well above 360p's 800 kbit/s and below 50 Mbit/s.
+				assert.Greater(t, *tr.Bitrate, int64(800_000))
+				assert.Less(t, *tr.Bitrate, int64(50_000_000))
+			}
+		}
+	})
+
+	t.Run("the ABR broadcast ends with its source", func(t *testing.T) {
+		require.True(t, routed(srv, dst)(), "routed while the source plays")
+		stopPub()
+		require.Eventually(t, func() bool { return !routed(srv, dst)() }, 15*time.Second, 100*time.Millisecond,
+			"the ABR broadcast outlived its source")
+	})
 }
 
 // waitCatalog subscribes to path's catalog and returns the first one that
 // lists every track in want.
 func waitCatalog(t *testing.T, sess *moqt.Session, path moqt.BroadcastPath, want []string) msf.Catalog {
+	t.Helper()
+	return waitCatalogWhere(t, sess, path, fmt.Sprint("listing ", want), func(c msf.Catalog) bool {
+		return listsTracks(c, want)
+	})
+}
+
+// waitCatalogWhere subscribes to path's catalog and returns the first one ok
+// accepts, the catalog being sent again on every change.
+func waitCatalogWhere(t *testing.T, sess *moqt.Session, path moqt.BroadcastPath, what string, ok func(msf.Catalog) bool) msf.Catalog {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
@@ -159,13 +207,13 @@ func waitCatalog(t *testing.T, sess *moqt.Session, path moqt.BroadcastPath, want
 	f := moqt.NewFrame(0)
 	for {
 		gr, err := tr.AcceptGroup(ctx)
-		require.NoError(t, err, "catalog never listed %v", want)
+		require.NoError(t, err, "no catalog %s", what)
 		if err := gr.ReadFrame(f); err != nil {
 			continue
 		}
 		c, err := msf.ParseCatalog(f.Body())
 		require.NoError(t, err)
-		if listsTracks(c, want) {
+		if ok(c) {
 			return c
 		}
 	}
