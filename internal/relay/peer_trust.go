@@ -68,7 +68,9 @@ func (c sessionClass) String() string {
 // PeerTrust is a relay's peer trust: the CA it trusts, and its own peer
 // identity when it has one. ServerTLS and DialerTLS derive the listener's and
 // the dialer's TLS configurations from it, and OwnCertificate is what
-// Server.PeerCertificate takes.
+// Server.PeerCertificate takes. The relay command swaps in a new PeerTrust
+// when its files are renewed, and builds its configurations with serverTLS
+// and dialerTLS, which ask for the current one at each handshake.
 type PeerTrust struct {
 	// ca is the CA; nil without one.
 	ca *x509.CertPool
@@ -85,8 +87,8 @@ type PeerTrust struct {
 // relay that could never pass a peer's checks is refused here rather than at
 // every dial.
 //
-// The certificate is taken as given: one renewed later is presented only by
-// a PeerTrust made anew.
+// A PeerTrust never changes: a CA or a certificate renewed on disk makes a
+// new one, which the relay command swaps in (cert_reload.go).
 func NewPeerTrust(caPEM []byte, cert *tls.Certificate) (*PeerTrust, error) {
 	t := &PeerTrust{}
 	if caPEM != nil {
@@ -183,30 +185,42 @@ func usageName(usage x509.ExtKeyUsage) string {
 // Without a peer identity the relay keeps answering PeeringName with its
 // public certificate, which the dialer refuses: a relay never pretends to be
 // a peer it isn't.
+//
+// The configuration holds t for good: it does not follow certificate
+// reloads. The relay command uses serverTLS with its reloader instead.
 func (t *PeerTrust) ServerTLS(public *tls.Config) *tls.Config {
+	return serverTLS(public, func() *PeerTrust { return t })
+}
+
+// serverTLS is ServerTLS for the trust current returns at each handshake,
+// so that a renewed CA or peer certificate takes effect for the next one.
+// Whether there is a CA at all is current's answer now: a relay's CA can be
+// renewed, never added or taken away.
+func serverTLS(public *tls.Config, current func() *PeerTrust) *tls.Config {
 	cfg := public.Clone()
-	if t.ca == nil {
+	if !current().HasCA() {
 		return cfg
 	}
-	// Native QUIC: a certificate is optional and verified when given.
-	native := public.Clone()
-	native.ClientAuth = tls.VerifyClientCertIfGiven
-	native.ClientCAs = t.ca
-	// A relay dialing a peer: the peer certificate, and one required back.
-	var peer *tls.Config
-	if t.cert != nil {
-		peer = native.Clone()
-		peer.Certificates = []tls.Certificate{*t.cert}
-		peer.NextProtos = []string{moqt.NextProtoMOQ}
-		peer.ClientAuth = tls.RequireAndVerifyClientCert
-	}
+	base := public.Clone()
 	cfg.GetConfigForClient = func(hello *tls.ClientHelloInfo) (*tls.Config, error) {
-		switch {
-		case slices.Contains(hello.SupportedProtos, "h3") || !slices.Contains(hello.SupportedProtos, moqt.NextProtoMOQ):
+		if slices.Contains(hello.SupportedProtos, "h3") || !slices.Contains(hello.SupportedProtos, moqt.NextProtoMOQ) {
 			return nil, nil // the public config as it is: nothing asked for
-		case hello.ServerName == PeeringName && peer != nil:
-			return peer, nil
 		}
+		t := current()
+		// Native QUIC: a certificate is optional and verified when given.
+		native := base.Clone()
+		native.ClientAuth = tls.VerifyClientCertIfGiven
+		native.ClientCAs = t.ca
+		if hello.ServerName != PeeringName || t.cert == nil {
+			return native, nil
+		}
+		// A relay dialing a peer: the peer certificate, and one required
+		// back. GetCertificate would take precedence over Certificates for
+		// a client that names a server, and answers with the public one.
+		native.GetCertificate = nil
+		native.Certificates = []tls.Certificate{*t.cert}
+		native.NextProtos = []string{moqt.NextProtoMOQ}
+		native.ClientAuth = tls.RequireAndVerifyClientCert
 		return native, nil
 	}
 	return cfg
@@ -215,14 +229,54 @@ func (t *PeerTrust) ServerTLS(public *tls.Config) *tls.Config {
 // DialerTLS returns the configuration for dialing peers: the peer certificate
 // as the client certificate, PeeringName as the server name, and the CA as
 // the only root. It needs a peer identity.
+//
+// The configuration holds t for good: it does not follow certificate
+// reloads. The relay command uses dialerTLS with its reloader instead.
 func (t *PeerTrust) DialerTLS() *tls.Config {
+	return dialerTLS(func() *PeerTrust { return t })
+}
+
+// dialerTLS is DialerTLS for the trust current returns at each handshake.
+// crypto/tls fixes RootCAs with the configuration, so the peer's certificate
+// is verified in VerifyConnection instead, against the CA current then, as
+// crypto/tls would have: the chain the peer sent, PeeringName, a server
+// certificate, valid now. It runs on every handshake, resumed ones too.
+func dialerTLS(current func() *PeerTrust) *tls.Config {
 	return &tls.Config{
-		MinVersion:   tls.VersionTLS13,
-		Certificates: []tls.Certificate{*t.cert},
-		NextProtos:   []string{moqt.NextProtoMOQ},
-		ServerName:   PeeringName,
-		RootCAs:      t.ca,
+		MinVersion: tls.VersionTLS13,
+		NextProtos: []string{moqt.NextProtoMOQ},
+		ServerName: PeeringName,
+		GetClientCertificate: func(*tls.CertificateRequestInfo) (*tls.Certificate, error) {
+			if c := current().cert; c != nil {
+				return c, nil
+			}
+			return &tls.Certificate{}, nil // none to send
+		},
+		InsecureSkipVerify: true, // verified by VerifyConnection, against the current CA
+		VerifyConnection: func(state tls.ConnectionState) error {
+			return current().verifyDialed(state.PeerCertificates)
+		},
 	}
+}
+
+// verifyDialed checks the certificates a dialed peer presented, leaf first,
+// against the CA: issued by it for PeeringName, for a server, valid now.
+func (t *PeerTrust) verifyDialed(certs []*x509.Certificate) error {
+	if t.ca == nil {
+		return errors.New("tls: no CA to verify the peer against")
+	}
+	if len(certs) == 0 {
+		return errors.New("tls: the peer presented no certificate")
+	}
+	intermediates := x509.NewCertPool()
+	for _, c := range certs[1:] {
+		intermediates.AddCert(c)
+	}
+	opts := x509.VerifyOptions{Roots: t.ca, Intermediates: intermediates, DNSName: PeeringName, KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}}
+	if _, err := certs[0].Verify(opts); err != nil {
+		return fmt.Errorf("tls: failed to verify the peer's certificate: %w", err)
+	}
+	return nil
 }
 
 // HasCA reports whether there is a CA: without one no session is a peer.
@@ -252,6 +306,16 @@ func classify(state *tls.ConnectionState) (sessionClass, string) {
 		return classPeer, leaf.Subject.CommonName
 	}
 	return classClient, ""
+}
+
+// dialedIdentity returns the identity of a peer this relay dialed: the
+// subject common name of the certificate it presented, which the dialer
+// verified (dialerTLS), or "" without one.
+func dialedIdentity(state *tls.ConnectionState) string {
+	if state == nil || len(state.PeerCertificates) == 0 {
+		return ""
+	}
+	return state.PeerCertificates[0].Subject.CommonName
 }
 
 // isSelf reports whether the session's peer presented this relay's own peer

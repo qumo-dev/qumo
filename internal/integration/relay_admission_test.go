@@ -45,11 +45,11 @@ func startAuthRelay(t *testing.T, authorize func(context.Context, auth.Request) 
 		InsecureSkipVerify: true, //nolint:gosec // test-only self-signed cert
 		MinVersion:         tls.VersionTLS13,
 	}
-	var own []byte
+	var own func() []byte
 	if trust != nil {
 		serverTLS = trust.ServerTLS(serverTLS)
-		own = trust.OwnCertificate()
-		if own != nil {
+		own = trust.OwnCertificate
+		if trust.OwnCertificate() != nil {
 			dialerTLS = trust.DialerTLS()
 		}
 	}

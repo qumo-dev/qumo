@@ -91,7 +91,7 @@ ACME `_acme-challenge` record for that name) in the parent zone.
 | `QUMO_DNS_NAMESERVERS` | required | The zone's NS set, comma-separated; the first is the SOA's primary. |
 | `QUMO_DNS_FEED_URL` | required | Where the regions are read. |
 | `QUMO_DNS_FEED_TOKEN` | none | Sent as `Authorization: Bearer`. |
-| `PEER_CERT_FILE` / `PEER_KEY_FILE` | none | The node relay's peer certificate and ECDSA key. Set together, each feed read is signed with them, beside the token: `X-Relay-Certificate` (base64 of the certificate's PEM), `X-Relay-Timestamp` (unix seconds) and `X-Relay-Signature`, the key's ECDSA signature (ASN.1, base64) over SHA-256 of `qumo-relay-request`, the method, the request URI (path and query), the timestamp and the hex SHA-256 of the body, one per line. |
+| `PEER_CERT_FILE` / `PEER_KEY_FILE` | none | The node relay's peer certificate and ECDSA key. Set together, each feed read is signed with them, beside the token: `X-Relay-Certificate` (base64 of the certificate's PEM), `X-Relay-Timestamp` (unix seconds) and `X-Relay-Signature`, the key's ECDSA signature (ASN.1, base64) over SHA-256 of `qumo-relay-request`, the method, the request URI (path and query), the timestamp and the hex SHA-256 of the body, one per line. Re-read about once a minute, like the relay does: a renewed pair signs the feed reads from the next on, with no restart, and a pair that can't be read or can't sign is logged once and the one in use kept. Replace the files atomically (write, then rename) ([Certificate renewal]({{< relref "../deployment/tls" >}}#certificate-renewal)). |
 | `QUMO_DNS_FEED_INTERVAL` | `15s` | How often the feed is read. |
 | `QUMO_DNS_STATE_DIR` | none | Keeps the last good feed (`feed.json`) and a downloaded database (`city.mmdb`). |
 | `QUMO_DNS_GEOIP_DB` | `<state dir>/city.mmdb` with a URL | A city database to place clients with. |
@@ -119,3 +119,5 @@ the key is never logged.
 | `qumo_dns_feed_last_success_timestamp_seconds` | When the feed was last read. |
 | `qumo_dns_geo_refresh_total{outcome}` | Database refreshes: `updated`, `unchanged`, `error`. |
 | `qumo_dns_zone_regions`, `qumo_dns_zone_addresses` | What is served. |
+| `qumo_dns_cert_reloads_total{cert,result}` | With a peer identity: `PEER_CERT_FILE` / `PEER_KEY_FILE` read anew (`cert="peer"`), `ok` when taken, `error` when refused and the pair in use kept. Files that hold what is in use count nothing. |
+| `qumo_dns_cert_not_after_seconds{cert}` | When the peer certificate the feed reads are signed with expires, in unix seconds. Alert on this, not on reload errors. |

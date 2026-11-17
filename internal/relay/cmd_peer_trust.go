@@ -28,9 +28,8 @@ import (
 // no fallback to the public certificate (CERT_FILE): a relay without the two
 // peer settings has no peer identity.
 //
-// The files are read once, here. A certificate renewed on disk is presented
-// only after the relay restarts, so whatever renews it restarts the relay
-// before the old one expires.
+// The files are read here at startup, and again while the relay runs
+// (cert_reload.go), which takes renewed ones through NewPeerTrust's checks.
 func loadPeerTrust(caFile, certFile, keyFile string, hasPeers bool) (*PeerTrust, error) {
 	if (certFile == "") != (keyFile == "") {
 		return nil, errors.New("PEER_CERT_FILE and PEER_KEY_FILE must be set together")

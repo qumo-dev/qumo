@@ -23,17 +23,22 @@ type Server struct {
 	MOQServer *moqt.Server
 	// MOQDialer is used for outbound peer connections. The caller must set
 	// TLSConfig with NextProtos: []string{moqt.NextProtoMOQ} only, so that
-	// ALPN negotiation does not accidentally select "h3"; the relay command
-	// sets (*PeerTrust).DialerTLS, which also names PeeringName. The relay
-	// dials with a copy whose CheckRedirect follows no redirect.
+	// ALPN negotiation does not accidentally select "h3". The relay command
+	// sets one that also names PeeringName and asks its certificate
+	// reloader (cert_reload.go) for the peer certificate and CA at each
+	// handshake, so that renewed ones take effect without a restart.
+	// (*PeerTrust).DialerTLS gives the same configuration for one fixed
+	// PeerTrust, which does not follow reloads. The relay dials with a copy
+	// whose CheckRedirect follows no redirect.
 	MOQDialer *moqt.Dialer
-	// PeerCertificate is this relay's own peer certificate (DER), or nil
-	// without a peer identity. A dialed peer that presents it is this relay
+	// PeerCertificate returns this relay's own peer certificate (DER), the
+	// one it holds at the time, or nil without a peer identity; nil itself
+	// for none. A dialed peer that presents it is this relay
 	// itself, reached through a name in Config.Peers that resolves to it
 	// too: that session is dropped and not retried. So is a session with another relay holding the same
 	// certificate, which nothing tells apart from this one: every relay
 	// needs a peer certificate of its own.
-	PeerCertificate []byte
+	PeerCertificate func() []byte
 	Config          *Config
 	TrackMux        *moqt.TrackMux
 
@@ -650,7 +655,7 @@ func (s *Server) maintainPeer(ctx context.Context, peer Peer) {
 			// The handshake verified the peer's certificate against the CA
 			// for the peering name; the one peer it must not be is this
 			// relay.
-			if isSelf(sess.ConnectionState().TLS, s.PeerCertificate) {
+			if isSelf(sess.ConnectionState().TLS, s.ownCertificate()) {
 				// Expected for a name among the peers that resolves to this
 				// relay too. A relay sharing this one's certificate looks the
 				// same, and would never be peered with: hence the reminder.
@@ -659,8 +664,7 @@ func (s *Server) maintainPeer(ctx context.Context, peer Peer) {
 				closeRefused(sess, moqt.NoError, "self")
 				return
 			}
-			_, identity := classify(sess.ConnectionState().TLS)
-			slog.Info("relay: peer connected", "address", peer.Address, "identity", identity)
+			slog.Info("relay: peer connected", "address", peer.Address, "identity", dialedIdentity(sess.ConnectionState().TLS))
 			s.setPeerSession(peer.Address, true)
 			// When ctx ends (the peer left its name's answer, or the relay is
 			// stopping), the session is closed without error, so the peer
@@ -696,6 +700,14 @@ func (s *Server) maintainPeer(ctx context.Context, peer Peer) {
 			return
 		}
 	}
+}
+
+// ownCertificate is PeerCertificate's answer, or nil without one.
+func (s *Server) ownCertificate() []byte {
+	if s.PeerCertificate == nil {
+		return nil
+	}
+	return s.PeerCertificate()
 }
 
 // closePeerSession closes a session this relay dialed, without error, when
@@ -742,7 +754,7 @@ func (s *Server) relayPeer(sess *moqt.Session) {
 		return
 	}
 	state := sess.ConnectionState().TLS
-	if isSelf(state, s.PeerCertificate) {
+	if isSelf(state, s.ownCertificate()) {
 		// This relay dialed itself through a name among its peers; the
 		// dialing side drops the session too. Anything else that presents
 		// this relay's own peer certificate is dropped the same way.

@@ -39,7 +39,7 @@ func startPeerRelay(t *testing.T, ca *devcert.CA, name string) (*Server, string)
 		Config:          &Config{NodeID: name},
 		TrackMux:        moqt.NewTrackMux(moqt.NewHopID()),
 		Authorize:       admitUnchecked,
-		PeerCertificate: trust.OwnCertificate(),
+		PeerCertificate: trust.OwnCertificate,
 	}
 	served := make(chan error, 1)
 	go func() { served <- s.ListenAndServe() }()
