@@ -19,6 +19,7 @@ import (
 	"github.com/qumo-dev/qumo/internal/auth"
 	"github.com/qumo-dev/qumo/internal/cors"
 	"github.com/qumo-dev/qumo/internal/envconfig"
+	"github.com/qumo-dev/qumo/internal/optin"
 	"github.com/qumo-dev/qumo/internal/quicconfig"
 	"github.com/qumo-dev/qumo/internal/upstream"
 	"github.com/qumo-dev/qumo/token"
@@ -41,6 +42,7 @@ const (
 //	QUMO_AUTH_KEYS       - the key set a publisher's credential (?jwt= on the stream key) is verified against, as the relay reads it (default: none, every publish is accepted)
 //	QUMO_AUTH_KEYS_CACHE - a file a downloaded key set is kept in between runs
 //	QUMO_RELAY_TOKEN     - bearer token sent to a key-set URL
+//	INGEST_OPT_IN        - the egresses (hls, abr) a stream is opted into on its publisher's behalf, comma-separated: with auth on, those a second ?jwt= on the stream key may publish the opt-in of (/.abr/live/cam for /live/cam); with it off, every stream's (default: none)
 //	RELAY_URL, RELAY_SIGNING_KEY, RELAY_PUBLISH, RELAY_CA_FILE, RELAY_TLS_INSECURE
 //	                     - the relay to publish through (upstream.FromEnv lists them)
 //	CERT_FILE            - TLS certificate file for the MoQT listener (default: "certs/server.crt")
@@ -49,8 +51,8 @@ const (
 //	QUIC_*               - QUIC transport settings (quicconfig.FromEnv lists them)
 func RunRTMP(_ []string) error {
 	return runPush("rtmp", "RTMP_INGEST_ADDR", defaultRTMPIngestAddr, "RTMP_SERVE_ADDR",
-		func(addr string, mux *moqt.TrackMux, authorize PublishAuthorizer) pushServer {
-			return NewRTMPServer(RTMPConfig{Addr: addr, TrackMux: mux, Authorize: authorize})
+		func(addr string, mux *moqt.TrackMux, authorize PublishAuthorizer, optIns []token.OptIn) pushServer {
+			return NewRTMPServer(RTMPConfig{Addr: addr, TrackMux: mux, Authorize: authorize, OptIns: optIns})
 		})
 }
 
@@ -63,8 +65,8 @@ func RunRTMP(_ []string) error {
 // on the URL it pushes to.
 func RunRTSP(_ []string) error {
 	return runPush("rtsp", "RTSP_INGEST_ADDR", defaultRTSPIngestAddr, "RTSP_SERVE_ADDR",
-		func(addr string, mux *moqt.TrackMux, authorize PublishAuthorizer) pushServer {
-			return NewRTSPServer(RTSPConfig{Addr: addr, TrackMux: mux, Authorize: authorize})
+		func(addr string, mux *moqt.TrackMux, authorize PublishAuthorizer, optIns []token.OptIn) pushServer {
+			return NewRTSPServer(RTSPConfig{Addr: addr, TrackMux: mux, Authorize: authorize, OptIns: optIns})
 		})
 }
 
@@ -82,7 +84,7 @@ var (
 // runPush runs the push ingest server newServer makes, named name, until
 // SIGINT or SIGTERM, with its broadcasts published as originFromEnv says.
 func runPush(name, ingestEnv, defaultIngestAddr, serveEnv string,
-	newServer func(addr string, mux *moqt.TrackMux, authorize PublishAuthorizer) pushServer) error {
+	newServer func(addr string, mux *moqt.TrackMux, authorize PublishAuthorizer, optIns []token.OptIn) pushServer) error {
 	ingestAddr := envconfig.String(ingestEnv, defaultIngestAddr)
 	quicConfig, err := quicconfig.FromEnv(nil)
 	if err != nil {
@@ -102,7 +104,7 @@ func runPush(name, ingestEnv, defaultIngestAddr, serveEnv string,
 		return err
 	}
 	trackMux := moqt.NewTrackMux(0)
-	srv := newServer(ingestAddr, trackMux, authorize)
+	srv := newServer(ingestAddr, trackMux, authorize, out.optIns)
 
 	log.Println("	Ingest  :", ingestAddr)
 	out.logBanner()
@@ -138,13 +140,19 @@ type origin struct {
 	certFile, keyFile string
 	allowedOrigins    []string
 	quic              *quic.Config
+	// optIns are the egresses streams are opted into (INGEST_OPT_IN).
+	optIns []token.OptIn
 }
 
 // originFromEnv reads where the ingest command name publishes: through the
 // relay upstream.FromEnv reads, and on a MoQT listener at serveEnv, which
 // defaults to ":4433" without a relay and to none with one.
 func originFromEnv(name, serveEnv string, quicConfig *quic.Config) (*origin, error) {
-	up, err := upstream.FromEnv(name, quicConfig)
+	optIns, err := token.ParseOptIns(envconfig.String("INGEST_OPT_IN", ""))
+	if err != nil {
+		return nil, fmt.Errorf("%s: INGEST_OPT_IN: %w", name, err)
+	}
+	up, err := upstream.FromEnv(name, quicConfig, optIns)
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", name, err)
 	}
@@ -161,6 +169,7 @@ func originFromEnv(name, serveEnv string, quicConfig *quic.Config) (*origin, err
 		keyFile:        envconfig.String("KEY_FILE", "certs/server.key"),
 		allowedOrigins: cors.LoadAllowed(),
 		quic:           quicConfig,
+		optIns:         optIns,
 	}, nil
 }
 
@@ -172,6 +181,11 @@ func (o *origin) logBanner() {
 		serve = "none"
 	}
 	log.Println("	Serve   :", serve)
+	optIns := "none"
+	if len(o.optIns) > 0 {
+		optIns = fmt.Sprint(o.optIns)
+	}
+	log.Println("	Opt-ins :", optIns)
 }
 
 // serve publishes trackMux's broadcasts until ctx ends: through the relay, and
@@ -255,6 +269,10 @@ func publishAuthorizerFromEnv(ctx context.Context, name, beneath string) (Publis
 // server: its path lies outside RELAY_PUBLISH.
 var errOutsidePublish = errors.New("the path lies outside RELAY_PUBLISH, beneath which the relay takes this server's broadcasts")
 
+// errOptInNamesNone refuses an opt-in path with a "." or ".." segment, which
+// names no broadcast (optin.Broadcast).
+var errOptInNamesNone = errors.New("an opt-in path with a . or .. segment names no broadcast")
+
 // errNoCredential refuses a push that presented no credential while auth is
 // on.
 var errNoCredential = errors.New("no credential: present a token that may publish the broadcast as ?jwt=")
@@ -263,13 +281,25 @@ var errNoCredential = errors.New("no credential: present a token that may publis
 // beneath, a directory the relay takes the server's broadcasts beneath (""
 // for anywhere), and, with v, its credential must let it publish there; the
 // push is then cut when the credential expires. It returns nil, accepting
-// every push, for neither.
+// every push, for neither. An opt-in's path, such as /.abr/live/cam, lies
+// beneath beneath when its broadcast's does; whether a credential may publish
+// it is v's, which grants it only to a key that holds the opt-in.
 func publishAuthorizer(v *auth.Verifier, beneath string) PublishAuthorizer {
 	if v == nil && beneath == "" {
 		return nil
 	}
 	return func(credential string, path moqt.BroadcastPath) (time.Time, error) {
-		if beneath != "" && !strings.HasPrefix(string(path), beneath) {
+		broadcast := path
+		if dir, ok := optInDirectory(path); ok {
+			b, named := optin.Broadcast(string(path), dir)
+			if !named {
+				// Cleaned, it could name a broadcast outside the
+				// directory the relay grants its exact path in.
+				return time.Time{}, fmt.Errorf("%s: %w", path, errOptInNamesNone)
+			}
+			broadcast = moqt.BroadcastPath(b)
+		}
+		if beneath != "" && !strings.HasPrefix(string(broadcast), beneath) {
 			return time.Time{}, fmt.Errorf("%s: %w (%s)", path, errOutsidePublish, beneath)
 		}
 		if v == nil {

@@ -10,6 +10,7 @@ import (
 
 	"github.com/qumo-dev/gomoqt/moqt"
 	"github.com/qumo-dev/qumo/internal/rtmp"
+	"github.com/qumo-dev/qumo/token"
 )
 
 // RTMPConfig holds configuration for an [RTMPServer].
@@ -21,10 +22,16 @@ type RTMPConfig struct {
 	TrackMux *moqt.TrackMux
 
 	// Authorize, when set, decides whether each publish may go ahead, from
-	// the ?jwt= its stream key (or app) carries; a refused one is answered
-	// NetStream.Publish.Denied. The stream is cut when the permission
-	// lapses. Nil accepts every publish.
+	// the ?jwt= its stream key (or app) carries, or any of several; a
+	// refused one is answered NetStream.Publish.Denied. The stream is cut
+	// when the permission lapses. Nil accepts every publish.
 	Authorize PublishAuthorizer
+
+	// OptIns are the egresses each stream is opted into, on the publisher's
+	// behalf, when one of its credentials may publish the opt-in (Authorize
+	// is asked for the opt-in's path, such as /.abr/live/cam): a publisher
+	// presents a second ?jwt= for it. Nil opts none in.
+	OptIns []token.OptIn
 }
 
 // RTMPServer accepts RTMP publish connections and bridges each stream to
@@ -144,17 +151,20 @@ func (s *RTMPServer) handleConn(ctx context.Context, conn *rtmp.Conn) {
 	defer conn.Close()
 
 	var (
-		path   moqt.BroadcastPath
-		lapses time.Time
+		path        moqt.BroadcastPath
+		credentials []string
+		lapses      time.Time
 	)
 	mr, err := conn.AcceptStreamFunc(func(app, streamKey string) error {
-		var credential string
-		path, credential = rtmpTarget(app, streamKey)
+		path, credentials = rtmpTarget(app, streamKey)
+		if err := checkPushPath(path); err != nil {
+			return err
+		}
 		if s.config.Authorize == nil {
 			return nil
 		}
 		var err error
-		lapses, err = s.config.Authorize(credential, path)
+		lapses, err = authorizeAny(s.config.Authorize, credentials, path)
 		return err
 	})
 	if err != nil {
@@ -187,6 +197,7 @@ func (s *RTMPServer) handleConn(ctx context.Context, conn *rtmp.Conn) {
 		return
 	}
 	defer sess.Close()
+	optIn(sess, s.config.Authorize, credentials, s.config.OptIns)
 
 	slog.Info("RTMP ingest started",
 		"remote", conn.RemoteAddr(),

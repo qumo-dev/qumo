@@ -74,17 +74,6 @@ func prefixLabel(prefix string, optIns []token.OptIn) string {
 	return label + " or its opt-ins " + strings.Join(mirrors, ", ")
 }
 
-// parseOptIns reads a comma-separated list of opt-ins: "" is none.
-func parseOptIns(s string) []token.OptIn {
-	var out []token.OptIn
-	for part := range strings.SplitSeq(s, ",") {
-		if part = strings.TrimSpace(part); part != "" {
-			out = append(out, token.OptIn(part))
-		}
-	}
-	return out
-}
-
 // runKeygen writes a new signing key pair: the private key, for the app that
 // signs tokens, and a key set holding its public key, for the relay. The key
 // and the two paths it will be written to are shown before any file is; on a
@@ -109,14 +98,12 @@ func runKeygen(args []string, out, info io.Writer, in io.Reader) error {
 		return err
 	}
 	pub := key.Public()
-	pub.OptIns = parseOptIns(*optIns)
+	if pub.OptIns, err = token.ParseOptIns(*optIns); err != nil {
+		return fmt.Errorf("-opt-ins: %w", err)
+	}
 	set, err := token.MarshalKeySet(pub)
 	if err != nil {
 		return err
-	}
-	// MarshalKeySet checked them: what the key set holds is what is shown.
-	if keys, err := token.ParseKeySet(set); err == nil {
-		pub = keys[pub.ID]
 	}
 	// The key and where it lies, before any file does: the key's prefix is
 	// the one setting a re-issue won't give back, and a bare prefix makes

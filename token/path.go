@@ -93,6 +93,19 @@ func OptIns() []OptIn {
 	return []OptIn{OptInHLS, OptInABR}
 }
 
+// ParseOptIns reads a comma-separated list of opt-ins, such as "hls,abr", in
+// the canonical order OptIns returns them, each once. "" is none, nil. It
+// refuses an unknown opt-in.
+func ParseOptIns(s string) ([]OptIn, error) {
+	var optIns []OptIn
+	for part := range strings.SplitSeq(s, ",") {
+		if part = strings.TrimSpace(part); part != "" {
+			optIns = append(optIns, OptIn(part))
+		}
+	}
+	return normalizeOptIns(optIns)
+}
+
 // within reports whether root, a MoQ directory, lies at or beneath prefix,
 // another one, or at or beneath prefix's mirror under the directory of one of
 // optIns. Both are in Directory's form, so a plain prefix comparison holds at

@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/url"
+	"strings"
 	"time"
 
 	"github.com/quic-go/quic-go"
@@ -42,6 +43,10 @@ type Upstream struct {
 	// and a fresh one on the session before its grant lapses.
 	key     *token.SigningKey
 	publish string
+	// optIns are the opt-ins the publisher announces beside its broadcasts:
+	// with key, each session holds a ticket for publishing beneath publish's
+	// mirror beneath each one's directory.
+	optIns []token.OptIn
 }
 
 // Config is how a publisher reaches the relay it publishes through.
@@ -64,20 +69,29 @@ type Config struct {
 	// for longer than its lifetime needs a signing key.
 	SigningKeyFile string
 	Publish        string
+	// OptIns are the opt-ins the publisher announces beside its broadcasts
+	// (see package optin), such as /.abr/room/cam beside /room/cam. With
+	// SigningKeyFile, each session presents a ticket granting publishing
+	// beneath Publish's mirror beneath each one's directory (/.abr/room/), and
+	// keeps it in force; the relay grants it when the key's entry in its key
+	// set holds the opt-in. Without one, the credential in URL must grant
+	// them.
+	OptIns []token.OptIn
 	// QUIC is the QUIC configuration of the session, whether moqt:// or
 	// https://; nil is quic-go's defaults.
 	QUIC *quic.Config
 }
 
 // FromEnv reads the relay the publisher name publishes through from the
-// environment, or returns nil when RELAY_URL is unset:
+// environment, or returns nil when RELAY_URL is unset. optIns are the opt-ins
+// it announces beside its broadcasts (Config.OptIns):
 //
 //	RELAY_URL          - the relay to publish through, dialed as a client, e.g. "https://relay:4433" or "moqt://relay:4433"; it may carry a credential as ?jwt=
 //	RELAY_SIGNING_KEY  - a signing key (qumo auth keygen) to sign a fresh relay credential with on every dial, replacing ?jwt=, and again on the session before its grant lapses
 //	RELAY_PUBLISH      - the directory that credential grants publishing beneath, e.g. "/room/"; set with RELAY_SIGNING_KEY
 //	RELAY_CA_FILE      - PEM cert to trust as the relay's root (default: the system roots)
 //	RELAY_TLS_INSECURE - skip relay TLS verification, for a self-signed dev relay (default: "false")
-func FromEnv(name string, quicConfig *quic.Config) (*Upstream, error) {
+func FromEnv(name string, quicConfig *quic.Config, optIns []token.OptIn) (*Upstream, error) {
 	relayURL := envconfig.String("RELAY_URL", "")
 	if relayURL == "" {
 		return nil, nil
@@ -89,6 +103,7 @@ func FromEnv(name string, quicConfig *quic.Config) (*Upstream, error) {
 		Insecure:       envconfig.String("RELAY_TLS_INSECURE", "false") == "true",
 		SigningKeyFile: envconfig.String("RELAY_SIGNING_KEY", ""),
 		Publish:        envconfig.String("RELAY_PUBLISH", ""),
+		OptIns:         optIns,
 		QUIC:           quicConfig,
 	})
 }
@@ -119,7 +134,7 @@ func newUpstream(cfg Config) (*Upstream, error) {
 	if err := tlsclient.Apply(tc, cfg.CAFile, cfg.Insecure); err != nil {
 		return nil, fmt.Errorf("relay TLS: %w", err)
 	}
-	u := &Upstream{name: cfg.Name, url: cfg.URL, tls: tc, quic: cfg.QUIC}
+	u := &Upstream{name: cfg.Name, url: cfg.URL, tls: tc, quic: cfg.QUIC, optIns: cfg.OptIns}
 	switch {
 	case cfg.SigningKeyFile == "" && cfg.Publish == "":
 	case cfg.SigningKeyFile == "" || cfg.Publish == "":
@@ -138,6 +153,9 @@ func newUpstream(cfg Config) (*Upstream, error) {
 		if _, err := token.Sign(key, publishGrant(publish), token.MaxLifetime); err != nil {
 			return nil, fmt.Errorf("RELAY_PUBLISH: %w", err)
 		}
+		// Its opt-in grants need no check of their own: Sign signs for
+		// every opt-in of a directory it signs for, and leaves which ones
+		// the key holds to the relay.
 		u.key, u.publish = &key, publish
 	}
 	return u, nil
@@ -159,6 +177,12 @@ func publishGrant(dir string) token.Grant {
 	return token.Grant{Root: dir, Publish: []string{"/"}}
 }
 
+// optInGrant grants publishing every opt-in o of a broadcast beneath dir, a
+// directory: publishing beneath dir's mirror beneath o's directory.
+func optInGrant(o token.OptIn, dir string) token.Grant {
+	return publishGrant(o.Directory() + strings.TrimPrefix(dir, "/"))
+}
+
 // Run keeps a session to the relay open until ctx ends, dialing again after
 // each one ends, with a signed credential fresh on every dial and renewed on
 // the session before its grant lapses.
@@ -170,6 +194,9 @@ func (u *Upstream) Run(ctx context.Context, mux *moqt.TrackMux) {
 			slog.Info("publishing through the relay", "publisher", u.name)
 			if u.key != nil {
 				go relaycred.Keep(sess, *u.key, publishGrant(u.publish), lapses)
+				for _, o := range u.optIns {
+					go relaycred.Hold(sess, *u.key, optInGrant(o, u.publish))
+				}
 			}
 			select {
 			case <-ctx.Done():

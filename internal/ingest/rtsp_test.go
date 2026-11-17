@@ -13,6 +13,7 @@ import (
 
 	"github.com/qumo-dev/gomoqt/moqt"
 	"github.com/qumo-dev/qumo/internal/rtsp"
+	"github.com/qumo-dev/qumo/token"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -26,12 +27,13 @@ const testH264SDP = "v=0\r\no=- 0 0 IN IP4 127.0.0.1\r\ns=No Name\r\nc=IN IP4 12
 // none) on an ephemeral loopback port and returns the bound address once it is
 // listening. The server (and its
 // ListenAndServe goroutine) are torn down on test cleanup.
-func startRTSPServer(t *testing.T, authorize PublishAuthorizer) (*RTSPServer, net.Addr) {
+func startRTSPServer(t *testing.T, authorize PublishAuthorizer, optIns ...token.OptIn) (*RTSPServer, net.Addr) {
 	t.Helper()
 	server := NewRTSPServer(RTSPConfig{
 		Addr:      "127.0.0.1:0",
 		TrackMux:  moqt.NewTrackMux(0),
 		Authorize: authorize,
+		OptIns:    optIns,
 	})
 	ctx, cancel := context.WithCancel(context.Background())
 	errCh := make(chan error, 1)
@@ -233,6 +235,38 @@ func TestRTSPServer_Authorize(t *testing.T) {
 				"the credential from the URL's query, the path without it")
 		})
 	}
+}
+
+// TestRTSPServer_OptIns verifies an ANNOUNCE is opted into an egress with a
+// second ?jwt= on its URL that may publish the opt-in, asked for every
+// credential in order.
+func TestRTSPServer_OptIns(t *testing.T) {
+	authorize := &fakePublishAuthorizer{answer: func(ask publishAsk) (time.Time, error) {
+		if ask.path == "/.abr/live/cam" && ask.credential != "abr" {
+			return time.Time{}, errors.New("no grant")
+		}
+		return time.Time{}, nil
+	}}
+	server, addr := startRTSPServer(t, authorize.authorize, token.OptInABR)
+	rc := dialRTSP(t, addr)
+
+	require.Equal(t, rtsp.StatusOK, announce(t, rc, addr, "/live/cam?jwt=tok&jwt=abr").StatusCode)
+
+	assert.Equal(t, []publishAsk{
+		{credential: "tok", path: "/live/cam"},
+		{credential: "tok", path: "/.abr/live/cam"},
+		{credential: "abr", path: "/.abr/live/cam"},
+	}, authorize.questions())
+	assert.Eventually(t, func() bool { return published(server.config.TrackMux, "/.abr/live/cam") }, 3*time.Second, 10*time.Millisecond)
+}
+
+// TestRTSPServer_RefusesOptInPaths verifies an ANNOUNCE can't name an
+// opt-in's path itself.
+func TestRTSPServer_RefusesOptInPaths(t *testing.T) {
+	_, addr := startRTSPServer(t, nil, token.OptInABR)
+	rc := dialRTSP(t, addr)
+
+	assert.Equal(t, rtsp.StatusBadRequest, announce(t, rc, addr, "/.abr/live/cam").StatusCode)
 }
 
 // TestRTSPServer_Authorize_CutsAtLapse verifies a push is cut when its

@@ -50,6 +50,35 @@ $ QUMO_AUTH_KEYS=keys.json qumo rtmp
 # OBS: Server rtmp://host:1935/live, Stream Key cam?jwt=$(qumo auth token -root /live/ -publish /cam)
 ```
 
+## Opting streams into HLS and ABR
+
+A pushed stream can't announce an opt-in for [`qumo hls`]({{< relref "hls" >}})
+or [`qumo abr`]({{< relref "abr" >}}) itself, as an MoQ publisher does, so the
+server announces it on the publisher's behalf: `/.abr/live/cam` beside
+`/live/cam`, a redirect to the broadcast. `INGEST_OPT_IN` lists the egresses
+it offers (`hls`, `abr`, comma-separated; none by default).
+
+With auth off, every stream is opted into each of them. With auth on, a
+stream is opted into one only when a token it presents may publish the
+opt-in: a second `?jwt=` on the stream key, signed for the opt-in's path
+(`-root /.abr/live/ -publish /cam`). The relay's key set decides, as for an
+MoQ publisher: a tenant's key signs it only while its entry lists the opt-in
+(`"optIns": ["abr"]`, see [abr → Paying for the opt-in]({{< relref "abr#paying-for-the-opt-in" >}})).
+A refused opt-in token leaves the stream on air without the opt-in, and the
+opt-in is withdrawn when its token expires. A push to an opt-in's path itself
+(`/.abr/live/cam`) is refused: the server keeps those paths for its opt-ins.
+
+```console
+$ QUMO_AUTH_KEYS=keys.json INGEST_OPT_IN=abr qumo rtmp
+# OBS: Stream Key cam?jwt=$(qumo auth token -root /live/ -publish /cam)&jwt=$(qumo auth token -root /.abr/live/ -publish /cam)
+```
+
+Through a relay with `RELAY_SIGNING_KEY`, the server also presents a ticket
+for each egress in `INGEST_OPT_IN` (publishing beneath `/.abr/live/` for
+`RELAY_PUBLISH=/live/`), so the relay takes the opt-ins: the key must hold the
+opt-ins in the relay's key set, as a key for the whole namespace (`-prefix /`)
+does.
+
 ## Publishing through a relay
 
 With `RELAY_URL` set, the server publishes what it ingests through that relay,
@@ -69,6 +98,7 @@ $ RELAY_URL=moqt://relay:4433 RELAY_SIGNING_KEY=ingest-key.jwk RELAY_PUBLISH=/li
 | `RTMP_SERVE_ADDR` | `:4433`; none with `RELAY_URL` | MoQT listen address for subscribers to dial directly. |
 | `QUMO_AUTH_KEYS` | (unset) | The key set a publisher's credential is verified against, as the relay reads it (a file or URL). Unset accepts every publish. |
 | `QUMO_AUTH_KEYS_CACHE` / `QUMO_RELAY_TOKEN` | (unset) | A file a downloaded key set is kept in, and the bearer token sent to a key-set URL. |
+| `INGEST_OPT_IN` | (unset) | The egresses (`hls`, `abr`) a stream is opted into on its publisher's behalf, comma-separated: with auth on, those a second `?jwt=` may publish the opt-in of. |
 | `RELAY_URL` | (unset) | The relay to publish through, dialed as a client (`https://…` or `moqt://…`); it may carry a credential as `?jwt=`. |
 | `RELAY_SIGNING_KEY`, `RELAY_PUBLISH` | (unset) | Set together: a signing key (`qumo auth keygen`) the server signs a fresh relay credential with on every dial and renews on the session, granting publishing beneath the directory `RELAY_PUBLISH`. A push outside it is refused. |
 | `RELAY_CA_FILE` / `RELAY_TLS_INSECURE` | (unset) / `false` | Trust this PEM as the relay's root, or skip verification for a self-signed dev relay. |

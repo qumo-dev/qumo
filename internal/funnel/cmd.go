@@ -110,7 +110,7 @@ func Run(_ []string) error {
 	}
 	quicconfig.LogEnvSet("funnel")
 
-	up, err := upstream.FromEnv("funnel", quicConfig)
+	up, err := upstream.FromEnv("funnel", quicConfig, nil)
 	if err != nil {
 		return fmt.Errorf("funnel: %w", err)
 	}
