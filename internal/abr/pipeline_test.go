@@ -76,9 +76,9 @@ func TestOutputTrack(t *testing.T) {
 	assert.Equal(t, "avc1.64001f", got.Codec)
 }
 
-func TestAliasError(t *testing.T) {
-	err := &AliasError{Alias: "/.hls/live/cam1", Target: "/live/cam1"}
-	assert.Equal(t, "abr: /.hls/live/cam1 redirects to /live/cam1", err.Error())
+func TestMisdirectedError(t *testing.T) {
+	err := &MisdirectedError{OptIn: "/.abr/live/cam1", Broadcast: "/live/cam1", To: "/live/other"}
+	assert.Equal(t, "abr: the opt-in /.abr/live/cam1 leads to /live/other, not /live/cam1", err.Error())
 }
 
 // newTestRenditions returns renditions publishing into a fresh output

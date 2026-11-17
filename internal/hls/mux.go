@@ -12,23 +12,6 @@ import (
 	"github.com/qumo-dev/gomoqt/moqt"
 )
 
-// broadcastPathFromAnnounce strips the announcement prefix from annPath to find
-// the target broadcast path where the publisher uploads media.
-//
-// For example, with prefix "/.hls/":
-//
-//	"/.hls/live/cam1" -> "/live/cam1"
-//	"/.hls/cam"       -> "/cam"
-//	"/.hls"           -> "/"
-func broadcastPathFromAnnounce(annPath, prefix string) string {
-	cleanPrefix := strings.TrimSuffix(prefix, "/")
-	p := strings.TrimPrefix(annPath, cleanPrefix)
-	if !strings.HasPrefix(p, "/") {
-		p = "/" + p
-	}
-	return path.Clean(p)
-}
-
 // sameBroadcast reports whether a and b name one broadcast, however spelled:
 // the egress cleans the paths it derives, a publisher may not.
 func sameBroadcast(a, b moqt.BroadcastPath) bool {

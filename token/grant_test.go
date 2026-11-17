@@ -60,6 +60,16 @@ func TestVerify_Grant(t *testing.T) {
 			claims: map[string]any{"root": "/.hls/acme/app/room/42/", "publish": []string{"/cam"}},
 			want:   Grant{Root: "/.hls/acme/app/room/42/", Publish: []string{"/cam"}},
 		},
+		// And its ABR opt-in.
+		"the key's prefix mirrored under /.abr/": {
+			prefix: "/acme/app/",
+			claims: map[string]any{"root": "/.abr/acme/app/room/42/", "publish": []string{"/cam"}},
+			want:   Grant{Root: "/.abr/acme/app/room/42/", Publish: []string{"/cam"}},
+		},
+		"another tenant's /.abr/ mirror": {
+			prefix: "/acme/app/", claims: map[string]any{"root": "/.abr/other/app/", "publish": []string{"/"}},
+			wantErr: ErrForbidden, reason: "prefix",
+		},
 		"another tenant's /.hls/ mirror": {
 			prefix: "/acme/app/", claims: map[string]any{"root": "/.hls/other/app/", "publish": []string{"/"}},
 			wantErr: ErrForbidden, reason: "prefix",
@@ -163,6 +173,7 @@ func TestSign_RoundTrip(t *testing.T) {
 		"a subject alone": {Subject: "42"},
 		"a root alone":    {Root: "/acme/app/x/"},
 		"an HLS opt-in":   {Root: "/.hls/acme/app/room/42/", Publish: []string{"/7"}},
+		"an ABR opt-in":   {Root: "/.abr/acme/app/room/42/", Publish: []string{"/7"}},
 	}
 	for name, grant := range tests {
 		t.Run(name, func(t *testing.T) {
@@ -230,6 +241,8 @@ func TestSign_Refusals(t *testing.T) {
 		"a root above the HLS mirror":     {grant: Grant{Root: "/.hls/acme/", Publish: []string{"/app/"}}, ttl: time.Minute, wantErr: ErrForbidden, wantErrText: "outside"},
 		"a root beside the HLS mirror":    {grant: Grant{Root: "/.hls/acme/apple/", Publish: []string{"/"}}, ttl: time.Minute, wantErr: ErrForbidden, wantErrText: "outside"},
 		"a root in another opt-in":        {grant: Grant{Root: "/.other/acme/app/", Publish: []string{"/"}}, ttl: time.Minute, wantErr: ErrForbidden, wantErrText: "outside"},
+		"a root above the ABR mirror":     {grant: Grant{Root: "/.abr/acme/", Publish: []string{"/app/"}}, ttl: time.Minute, wantErr: ErrForbidden, wantErrText: "outside"},
+		"a root beside the ABR mirror":    {grant: Grant{Root: "/.abr/acme/apple/", Publish: []string{"/"}}, ttl: time.Minute, wantErr: ErrForbidden, wantErrText: "outside"},
 		"patterns without a root":         {grant: Grant{Publish: []string{"/"}}, ttl: time.Minute, wantErr: ErrInvalid, wantErrText: "without a root"},
 		"a bare root":                     {grant: Grant{Root: "acme/app"}, ttl: time.Minute, wantErr: ErrInvalid, wantErrText: "directory"},
 		"a dot-dot root":                  {grant: Grant{Root: "/acme/app/../x/"}, ttl: time.Minute, wantErr: ErrInvalid, wantErrText: ".."},

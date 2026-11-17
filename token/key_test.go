@@ -230,8 +230,8 @@ func TestLoadKeySet_MissingFile(t *testing.T) {
 }
 
 // Holds is what the relay re-checks a live session's tickets with, so it
-// must agree with Sign: the key's prefix and its /.hls/ mirror, at a "/"
-// boundary, and nothing else.
+// must agree with Sign: the key's prefix and its mirrors under the opt-in
+// directories (/.hls/, /.abr/), at a "/" boundary, and nothing else.
 func TestKey_Holds(t *testing.T) {
 	tests := map[string]struct {
 		prefix string
@@ -250,6 +250,13 @@ func TestKey_Holds(t *testing.T) {
 		"above the mirror":                {prefix: "/acme/", root: "/.hls/", want: false},
 		"another tenant's mirror":         {prefix: "/acme/", root: "/.hls/other/", want: false},
 		"a mirror of the mirror":          {prefix: "/acme/", root: "/.hls/.hls/acme/", want: false},
+		"beneath the ABR mirror":          {prefix: "/acme/", root: "/.abr/acme/room/42/", want: true},
+		"the ABR mirror itself":           {prefix: "/acme/", root: "/.abr/acme/", want: true},
+		"a sibling of the ABR mirror":     {prefix: "/acme/", root: "/.abr/acme2/", want: false},
+		"above the ABR mirror":            {prefix: "/acme/", root: "/.abr/", want: false},
+		"another tenant's ABR mirror":     {prefix: "/acme/", root: "/.abr/other/", want: false},
+		"one mirror inside another":       {prefix: "/acme/", root: "/.abr/.hls/acme/", want: false},
+		"a directory that is no opt-in":   {prefix: "/acme/", root: "/.other/acme/", want: false},
 	}
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {

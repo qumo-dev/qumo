@@ -17,9 +17,11 @@ import (
 	"github.com/qumo-dev/gomoqt/moqt"
 
 	"github.com/qumo-dev/qumo/internal/envconfig"
+	"github.com/qumo-dev/qumo/internal/optin"
 	"github.com/qumo-dev/qumo/internal/quicconfig"
 	"github.com/qumo-dev/qumo/internal/tlsclient"
 	"github.com/qumo-dev/qumo/internal/upstream"
+	"github.com/qumo-dev/qumo/token"
 )
 
 // retryInterval is how long to wait before dialing the relay again, or
@@ -27,25 +29,30 @@ import (
 const retryInterval = 2 * time.Second
 
 // Run starts the ABR transcoder. It connects to a relay, and for every
-// broadcast announced beneath ABR_PREFIX publishes an ABR broadcast beside it,
-// at the same path with ABR_SUFFIX appended (/live/cam1 → /live/cam1.abr): the
-// source's tracks as they are, plus each rendition of the ladder shorter than
-// the source video, encoded by ffmpeg. Every video track is in one MSF
-// alternate group, and every rendition numbers its groups as the source does,
-// so a player can switch between them at any group boundary.
+// broadcast a publisher opts in, by announcing it beneath token.ABRDirectory
+// (/.abr/live/cam1 for /live/cam1) as qumo hls is opted into beneath /.hls/,
+// publishes an ABR broadcast beside it, at the same path with ABR_SUFFIX
+// appended (/live/cam1.abr): the source's tracks as they are, plus each
+// rendition of the ladder shorter than the source video, encoded by ffmpeg.
+// Every video track is in one MSF alternate group, and every rendition numbers
+// its groups as the source does, so a player can switch between them at any
+// group boundary.
+//
+// The opt-in carries no media: it redirects every subscription to the
+// broadcast (see internal/optin), and the transcoder follows a redirect only
+// there. A publisher opts in only what it may publish: a key confined to a
+// prefix also signs for the prefix's mirror beneath /.abr/.
 //
 // Configuration is read from environment variables (qumo convention):
 //
 //	RELAY_URL          - the relay, e.g. "https://relay:4433" (default "https://localhost:4433");
-//	                     it may carry a credential as ?jwt= that grants subscribing
-//	                     to the sources and publishing the ABR broadcasts
+//	                     it may carry a credential as ?jwt= that grants listing and
+//	                     subscribing to the opt-ins beneath /.abr/ and the broadcasts
+//	                     they name, and publishing the ABR broadcasts
 //	RELAY_CA_FILE      - PEM cert to trust as the relay's root (default: the system roots)
 //	RELAY_TLS_INSECURE - skip relay TLS verification, for a self-signed dev relay (default "false")
-//	ABR_PREFIX         - the directory whose broadcasts are transcoded (default "/")
 //	ABR_SUFFIX         - appended to a source's path to name its ABR broadcast (default ".abr");
-//	                     broadcasts already ending in it are not transcoded again, nor are
-//	                     aliases: broadcasts that redirect subscribers to another, such as
-//	                     HLS opt-ins (only the broadcast they name is)
+//	                     an opt-in for a broadcast already ending in it is ignored
 //	ABR_LADDER         - the renditions, height:kbps, comma-separated (default "720:2500,360:800")
 //	ABR_FFMPEG         - the ffmpeg executable (default "ffmpeg")
 //	ABR_CODEC          - the ffmpeg H.264 encoder (default "libx264"; e.g. "h264_nvenc")
@@ -73,10 +80,6 @@ func Run(_ []string) error {
 	if _, err := exec.LookPath(cfg.Encoder.FFmpeg); err != nil {
 		return fmt.Errorf("abr: ABR_FFMPEG: %w", err)
 	}
-	prefix := envconfig.String("ABR_PREFIX", "/")
-	if !strings.HasPrefix(prefix, "/") {
-		return fmt.Errorf("abr: ABR_PREFIX %q must start with /", prefix)
-	}
 	suffix := envconfig.String("ABR_SUFFIX", ".abr")
 	if suffix == "" {
 		return errors.New("abr: ABR_SUFFIX must not be empty: the ABR broadcast would replace its source")
@@ -97,11 +100,10 @@ func Run(_ []string) error {
 	defer cancel()
 
 	t := &Transcoder{
-		Prefix: prefix,
 		Suffix: suffix,
 		Config: cfg,
 	}
-	slog.Info("abr: starting", "relay", upstream.RelayName(relayURL), "prefix", prefix, "suffix", suffix,
+	slog.Info("abr: starting", "relay", upstream.RelayName(relayURL), "opt_in", token.ABRDirectory, "suffix", suffix,
 		"ladder", envconfig.String("ABR_LADDER", DefaultLadder), "codec", cfg.Encoder.Codec)
 	for {
 		// A TrackMux per session, so a session's ABR broadcasts end with it.
@@ -125,38 +127,39 @@ func Run(_ []string) error {
 	}
 }
 
-// A Transcoder publishes an ABR broadcast for every broadcast announced
-// beneath Prefix.
+// A Transcoder publishes an ABR broadcast for every broadcast opted in
+// beneath token.ABRDirectory.
 type Transcoder struct {
-	// Prefix is the directory whose broadcasts are transcoded.
-	Prefix string
 	// Suffix is appended to a source's path to name its ABR broadcast.
 	Suffix string
 	// Config is what each pipeline makes of its source.
 	Config Config
 }
 
-// Serve transcodes the broadcasts sess announces beneath Prefix, publishing the
-// ABR broadcasts on mux, the TrackMux sess was dialed with, until ctx or sess
-// ends.
+// Serve transcodes the broadcasts opted in beneath token.ABRDirectory on
+// sess, publishing the ABR broadcasts on mux, the TrackMux sess was dialed
+// with, until ctx or sess ends.
 func (t *Transcoder) Serve(ctx context.Context, sess *moqt.Session, mux *moqt.TrackMux) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	stop := context.AfterFunc(sess.Context(), cancel)
 	defer stop()
 
-	ar, err := sess.AcceptAnnounce(t.Prefix)
+	ar, err := sess.AcceptAnnounce(token.ABRDirectory)
 	if err != nil {
-		return fmt.Errorf("abr: accept announcements: %w", err)
+		return fmt.Errorf("abr: accept opt-ins: %w", err)
 	}
 	defer ar.Close() // not actionable: the session is ending
 
 	var wg sync.WaitGroup
 	defer wg.Wait()
 	for ann := range ar.Announcements(ctx) {
-		src := ann.BroadcastPath()
-		if strings.HasSuffix(string(src), t.Suffix) {
-			continue // an ABR broadcast, perhaps this transcoder's own
+		optIn := ann.BroadcastPath()
+		src := moqt.BroadcastPath(optin.Broadcast(string(optIn), token.ABRDirectory))
+		if src == "/" || strings.HasSuffix(string(src), t.Suffix) {
+			// No broadcast, or an ABR broadcast: it is not transcoded again.
+			slog.Info("abr: ignoring opt-in", "opt_in", optIn)
+			continue
 		}
 		dst := moqt.BroadcastPath(string(src) + t.Suffix)
 		wg.Go(func() {
@@ -164,24 +167,26 @@ func (t *Transcoder) Serve(ctx context.Context, sess *moqt.Session, mux *moqt.Tr
 			defer cancel()
 			stop := ann.AfterFunc(cancel)
 			defer stop()
-			t.transcode(annCtx, sess, mux, src, dst)
+			t.transcode(annCtx, sess, mux, optIn, src, dst)
 		})
 	}
 	return context.Cause(ctx)
 }
 
-// transcode runs the pipeline for src until ctx ends, restarting it when it
-// fails while src is still announced.
-func (t *Transcoder) transcode(ctx context.Context, sess *moqt.Session, mux *moqt.TrackMux, src, dst moqt.BroadcastPath) {
+// transcode runs the pipeline for src, opted in as optIn, until ctx ends,
+// restarting it when it fails while the opt-in is still announced.
+func (t *Transcoder) transcode(ctx context.Context, sess *moqt.Session, mux *moqt.TrackMux, optIn, src, dst moqt.BroadcastPath) {
 	for {
-		slog.Info("abr: transcoding", "source", src, "abr", dst)
-		err := run(ctx, sess, mux, src, dst, t.Config)
+		slog.Info("abr: transcoding", "opt_in", optIn, "source", src, "abr", dst)
+		err := run(ctx, sess, mux, optIn, src, dst, t.Config)
 		if ctx.Err() != nil {
-			slog.Info("abr: source ended", "source", src)
+			slog.Info("abr: opt-in ended", "opt_in", optIn)
 			return
 		}
-		if alias, ok := errors.AsType[*AliasError](err); ok {
-			slog.Info("abr: not transcoding an alias", "source", src, "redirects_to", alias.Target)
+		if mis, ok := errors.AsType[*MisdirectedError](err); ok {
+			// Not worth retrying: the opt-in names another broadcast than
+			// the one it would have transcoded.
+			slog.Warn("abr: refusing opt-in", "error", mis)
 			return
 		}
 		if err == nil {

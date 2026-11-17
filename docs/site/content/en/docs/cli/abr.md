@@ -5,16 +5,27 @@ weight: 5
 ---
 
 Transcodes the broadcasts on a relay into an adaptive-bitrate (ABR) ladder.
-For every broadcast announced beneath `ABR_PREFIX`, it publishes an ABR
-broadcast beside it, at the same path with `ABR_SUFFIX` appended
-(`/live/cam1` → `/live/cam1.abr`). The ABR broadcast carries the source's
-tracks as they are, plus one rendition per rung of the ladder that is shorter
-than the source video, encoded by [ffmpeg](https://ffmpeg.org/).
+A publisher opts a broadcast in as it opts one into [`qumo hls`]({{< relref "hls" >}}):
+by announcing it again beneath `/.abr/` (`/.abr/live/cam1` for `/live/cam1`).
+For every opt-in, `qumo abr` publishes an ABR broadcast beside the broadcast,
+at the same path with `ABR_SUFFIX` appended (`/live/cam1.abr`). It carries the
+source's tracks as they are, plus one rendition per rung of the ladder that is
+shorter than the source video, encoded by [ffmpeg](https://ffmpeg.org/).
 
-An alias is not transcoded: a broadcast that answers subscriptions with a
-redirect to another, such as the HLS opt-in a publisher announces beneath
-`/.hls/`, is another name for the broadcast it points to, which is announced
-and transcoded at its own path.
+## Opting in
+
+The opt-in carries no media. It answers every subscription with a redirect to
+the broadcast, keeping the track name (`internal/optin`, the same handler as
+the HLS opt-in). `qumo abr` reads the catalog through it and follows the
+redirect only to the broadcast the opt-in names: an opt-in that redirects
+elsewhere, or answers itself, is refused, so no one can have another
+publisher's broadcast transcoded under their own name. Withdrawing the opt-in
+withdraws the ABR broadcast; the broadcast itself plays on.
+
+A publisher opts in only what it may publish. A signing key confined to a
+prefix (`qumo auth keygen -prefix acme/`) also signs for the prefix's mirrors
+beneath `/.hls/` and `/.abr/`, so the app that grants a broadcast grants its
+opt-ins with the same key.
 
 It dials the relay as an ordinary client: it subscribes to the source like any
 viewer and publishes the ABR broadcast like any publisher. The relay itself
@@ -32,13 +43,14 @@ variables. Needs `ffmpeg` (or `ABR_FFMPEG`) on the host.
 ## Example
 
 ```console
-$ RELAY_URL=https://relay:4433 ABR_PREFIX=/live/ ABR_LADDER=720:2500,360:800 qumo abr
-INFO abr: starting relay=https://relay:4433 prefix=/live/ suffix=.abr ladder=720:2500,360:800 codec=libx264
+$ RELAY_URL=https://relay:4433 ABR_LADDER=720:2500,360:800 qumo abr
+INFO abr: starting relay=https://relay:4433 opt_in=/.abr/ suffix=.abr ladder=720:2500,360:800 codec=libx264
 INFO abr: connected to the relay
-INFO abr: transcoding source=/live/cam1 abr=/live/cam1.abr
+INFO abr: transcoding opt_in=/.abr/live/cam1 source=/live/cam1 abr=/live/cam1.abr
 ```
 
-A 1080p source at `/live/cam1` then has `/live/cam1.abr` beside it, whose
+A 1080p source at `/live/cam1`, opted in at `/.abr/live/cam1`, then has
+`/live/cam1.abr` beside it, whose
 catalog lists:
 
 | Track | Picture | Bitrate | From |
@@ -91,11 +103,10 @@ held up by the encoder.
 
 | Variable | Default | Description |
 |---|---|---|
-| `RELAY_URL` | `https://localhost:4433` | The relay to transcode broadcasts of, dialed as a client. It may carry a credential as `?jwt=` that grants subscribing to the sources and publishing the ABR broadcasts. |
+| `RELAY_URL` | `https://localhost:4433` | The relay to transcode broadcasts of, dialed as a client. It may carry a credential as `?jwt=` that grants listing and subscribing to the opt-ins beneath `/.abr/` and the broadcasts they name, and publishing the ABR broadcasts. |
 | `RELAY_CA_FILE` | (unset) | PEM certificate to trust as the relay's root, instead of the system roots. |
 | `RELAY_TLS_INSECURE` | `false` | Skip relay TLS verification, for a self-signed dev relay. |
-| `ABR_PREFIX` | `/` | The directory whose broadcasts are transcoded. |
-| `ABR_SUFFIX` | `.abr` | Appended to a source's path to name its ABR broadcast. Broadcasts already ending in it are not transcoded again, nor are aliases (broadcasts that redirect subscribers to another). |
+| `ABR_SUFFIX` | `.abr` | Appended to a source's path to name its ABR broadcast. An opt-in for a broadcast already ending in it is ignored. |
 | `ABR_LADDER` | `720:2500,360:800` | The renditions: comma-separated `height:kbps`. Rungs as tall as the source or taller are skipped. |
 | `ABR_FFMPEG` | `ffmpeg` | The ffmpeg executable. |
 | `ABR_CODEC` | `libx264` | The ffmpeg H.264 encoder, e.g. `h264_nvenc` or `h264_vaapi` for hardware encoding. |

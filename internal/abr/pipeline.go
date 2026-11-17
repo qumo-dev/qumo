@@ -28,15 +28,16 @@ type Config struct {
 	Encoder EncoderConfig
 }
 
-// An AliasError reports that a source broadcast is an alias of another: it
-// answers subscriptions with a redirect to Target, as an HLS opt-in does.
-// An alias is not transcoded; Target, announced at its own path, is.
-type AliasError struct {
-	Alias, Target moqt.BroadcastPath
+// A MisdirectedError reports that an opt-in redirected the transcoder
+// elsewhere than to the broadcast it names, or answered itself: the
+// transcoder follows an opt-in's redirect only to its broadcast, so an opt-in
+// cannot have another's broadcast transcoded under its name.
+type MisdirectedError struct {
+	OptIn, Broadcast, To moqt.BroadcastPath
 }
 
-func (e *AliasError) Error() string {
-	return fmt.Sprintf("abr: %s redirects to %s", e.Alias, e.Target)
+func (e *MisdirectedError) Error() string {
+	return fmt.Sprintf("abr: the opt-in %s leads to %s, not %s", e.OptIn, e.To, e.Broadcast)
 }
 
 // encodeQueue is how many source frames may wait for the encoder. Past it the
@@ -46,10 +47,11 @@ const encodeQueue = 120
 
 // pipeline turns one source broadcast into its output broadcast.
 type pipeline struct {
-	sess *moqt.Session
-	src  moqt.BroadcastPath
-	cfg  Config
-	out  *outputBroadcast
+	sess  *moqt.Session
+	optIn moqt.BroadcastPath // the opt-in the catalog is read through
+	src   moqt.BroadcastPath
+	cfg   Config
+	out   *outputBroadcast
 
 	// started names the source tracks being handled, and transcoding
 	// reports that one of them is being transcoded. Only the catalog
@@ -58,9 +60,10 @@ type pipeline struct {
 	transcoding bool
 }
 
-// run runs the pipeline for src until ctx ends or the source broadcast ends,
-// publishing the output broadcast at dst on mux while it runs.
-func run(ctx context.Context, sess *moqt.Session, mux *moqt.TrackMux, src, dst moqt.BroadcastPath, cfg Config) error {
+// run runs the pipeline for src, opted in as optIn, until ctx ends or the
+// source broadcast ends, publishing the output broadcast at dst on mux while
+// it runs.
+func run(ctx context.Context, sess *moqt.Session, mux *moqt.TrackMux, optIn, src, dst moqt.BroadcastPath, cfg Config) error {
 	out, err := newOutputBroadcast()
 	if err != nil {
 		return err
@@ -69,28 +72,42 @@ func run(ctx context.Context, sess *moqt.Session, mux *moqt.TrackMux, src, dst m
 
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
+
+	p := &pipeline{sess: sess, optIn: optIn, src: src, cfg: cfg, out: out, started: map[string]bool{}}
+	// The ABR broadcast is announced once its source is reached, so an
+	// opt-in whose broadcast is gone announces nothing while it is retried.
+	catalog, err := p.subscribeCatalog(ctx)
+	if err != nil {
+		return err
+	}
+	defer catalog.Close() // not actionable: the pipeline is ending
 	mux.Publish(ctx, dst, out)
 
-	p := &pipeline{sess: sess, src: src, cfg: cfg, out: out, started: map[string]bool{}}
 	g, ctx := errgroup.WithContext(ctx)
-	g.Go(func() error { return p.followCatalog(ctx, g) })
+	g.Go(func() error { return p.followCatalog(ctx, g, catalog) })
 	return g.Wait()
 }
 
-// followCatalog reads the source's catalog, and each update of it, and starts
-// handling every track as it first appears in it. It returns when the source
-// ends its catalog track.
-func (p *pipeline) followCatalog(ctx context.Context, g *errgroup.Group) error {
-	tr, err := p.sess.Subscribe(ctx, p.src, msf.DefaultCatalogTrackName, &moqt.SubscribeConfig{Ordered: true})
+// subscribeCatalog subscribes to the source's catalog through the opt-in,
+// which must redirect to the source.
+func (p *pipeline) subscribeCatalog(ctx context.Context) (*moqt.TrackReader, error) {
+	tr, err := p.sess.Subscribe(ctx, p.optIn, msf.DefaultCatalogTrackName, &moqt.SubscribeConfig{Ordered: true})
 	if err != nil {
-		return fmt.Errorf("abr: subscribe catalog: %w", err)
+		return nil, fmt.Errorf("abr: subscribe catalog through the opt-in %s: %w", p.optIn, err)
 	}
-	defer tr.Close() // not actionable: the pipeline is ending
 	if tr.BroadcastPath != p.src {
-		// The source redirected the subscription: it is another name for a
-		// broadcast, which is transcoded under its own name.
-		return &AliasError{Alias: p.src, Target: tr.BroadcastPath}
+		// The opt-in redirected elsewhere than to its broadcast, or did not
+		// redirect at all: its media would not be the broadcast's.
+		_ = tr.Close() // not actionable: refused either way
+		return nil, &MisdirectedError{OptIn: p.optIn, Broadcast: p.src, To: tr.BroadcastPath}
 	}
+	return tr, nil
+}
+
+// followCatalog reads the source's catalog from tr, and each update of it,
+// and starts handling every track as it first appears in it. It returns when
+// the source ends its catalog track.
+func (p *pipeline) followCatalog(ctx context.Context, g *errgroup.Group, tr *moqt.TrackReader) error {
 	f := moqt.NewFrame(0)
 	for {
 		gr, err := tr.AcceptGroup(ctx)

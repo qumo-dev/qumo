@@ -17,7 +17,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/qumo-dev/qumo/internal/devcert"
-	"github.com/qumo-dev/qumo/internal/hlsoptin"
+	"github.com/qumo-dev/qumo/internal/optin"
 	"github.com/qumo-dev/qumo/internal/relay"
 )
 
@@ -105,12 +105,12 @@ func TestFetchCatalog_OptIn(t *testing.T) {
 	defer cancel()
 	mux := moqt.NewTrackMux(0)
 	mux.PublishFunc(ctx, "/acme/cam", serveCatalog(t, catalog))
-	mux.Publish(ctx, "/.hls/acme/cam", hlsoptin.Handler("/acme/cam"))
+	mux.Publish(ctx, "/.hls/acme/cam", optin.Handler("/acme/cam"))
 	mux.PublishFunc(ctx, "/legacy/cam", serveCatalog(t, catalog))
 	mux.Publish(ctx, "/.hls/legacy/cam", moqt.NotFoundTrackHandler)
 	// An opt-in that redirects to its broadcast before that is published: an
 	// error to retry, not an opt-in from before the redirect.
-	mux.Publish(ctx, "/.hls/early/cam", hlsoptin.Handler("/early/cam"))
+	mux.Publish(ctx, "/.hls/early/cam", optin.Handler("/early/cam"))
 	mux.Publish(ctx, "/.hls/gone/cam", moqt.NotFoundTrackHandler)
 	sess := loopbackPublisher(t, ctx, mux)
 

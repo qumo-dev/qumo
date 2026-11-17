@@ -10,59 +10,6 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func Test_broadcastPathFromAnnounce(t *testing.T) {
-	tests := []struct {
-		name     string
-		annPath  string
-		prefix   string
-		expected string
-	}{
-		{
-			name:     "standard .hls prefix with trailing slash",
-			annPath:  "/.hls/live/cam1",
-			prefix:   "/.hls/",
-			expected: "/live/cam1",
-		},
-		{
-			name:     "standard .hls prefix without trailing slash",
-			annPath:  "/.hls/live/cam1",
-			prefix:   "/.hls",
-			expected: "/live/cam1",
-		},
-		{
-			name:     "single segment path",
-			annPath:  "/.hls/cam",
-			prefix:   "/.hls/",
-			expected: "/cam",
-		},
-		{
-			name:     "hls/live under .hls prefix",
-			annPath:  "/.hls/hls/live",
-			prefix:   "/.hls/",
-			expected: "/hls/live",
-		},
-		{
-			name:     "custom prefix",
-			annPath:  "/custom/stream/room1",
-			prefix:   "/custom/stream/",
-			expected: "/room1",
-		},
-		{
-			name:     "bare prefix",
-			annPath:  "/.hls",
-			prefix:   "/.hls/",
-			expected: "/",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := broadcastPathFromAnnounce(tt.annPath, tt.prefix)
-			assert.Equal(t, tt.expected, got)
-		})
-	}
-}
-
 func Test_renderMasterPlaylist(t *testing.T) {
 	t.Run("single video track", func(t *testing.T) {
 		tracks := []trackInfo{
