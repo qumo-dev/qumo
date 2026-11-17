@@ -67,9 +67,12 @@ token of its own:
   `/.hls/acme/room/42/cam`, which a token rooted at `/acme/room/42/` doesn't
   cover; the opt-in is a token rooted at, e.g., `/.hls/acme/room/42/` with
   `publish` `/cam`.
-- **Signed by the app's own key.** A key confined to `/acme/` also signs for
-  `/.hls/acme/`, so the opt-in needs no other key, and a client presents it
-  as a ticket on the session it publishes on.
+- **Signed by the app's own key, once its key holds HLS.** A key confined to
+  `/acme/` signs for `/.hls/acme/` when its entry in the relay's key set lists
+  the opt-in (`"optIns": ["hls"]`, written by `qumo auth keygen -opt-ins hls`
+  or set by a control plane as its tenant pays), so the opt-in needs no other
+  key, and a client presents it as a ticket on the session it publishes on. A
+  key whose entry lists no `optIns` holds none: the relay refuses the token.
 - **The app decides.** Neither the relay nor the egress checks that the
   bearer publishes `/acme/room/42/cam`: the egress subscribes with its own
   grant. Issue an opt-in only for a broadcast the app means to serve over
@@ -82,8 +85,13 @@ token of its own:
 
 ```bash
 # an opt-in for /acme/room/42/cam, signed by the app's key confined to /acme/
+# (its key set entry lists "optIns": ["hls"])
 qumo auth token -key signing-key.jwk -root /.hls/acme/room/42/ -publish /cam
 ```
+
+A stream pushed over RTMP or RTSP is opted in by the ingest on its publisher's
+behalf, with `INGEST_OPT_IN=hls` and the same token as a second `?jwt=` on the
+stream key: see [rtmp → Opting streams into HLS and ABR]({{< relref "rtmp#opting-streams-into-hls-and-abr" >}}).
 
 ## Viewers
 

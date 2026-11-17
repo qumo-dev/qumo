@@ -3,9 +3,16 @@ package relay
 import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
+
+	"github.com/qumo-dev/qumo/internal/certreload"
 )
 
 var (
+	// certMetrics are qumo_relay_cert_reloads_total{cert,result} and
+	// qumo_relay_cert_not_after_seconds{cert}, by certificate: public
+	// (CERT_FILE) or peer (PEER_CERT_FILE and CA_FILE) (cert_reload.go).
+	certMetrics = certreload.NewMetrics(prometheus.DefaultRegisterer, "relay")
+
 	// metricSessionsActive tracks the number of currently active MoQT sessions
 	// being served by Relay(). Replaces the active_connections field that was
 	// previously tracked inside statusHandler.

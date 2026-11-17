@@ -5,10 +5,8 @@ import (
 	"errors"
 	"log/slog"
 	"maps"
-	"net"
 	"net/http"
 	"slices"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -25,17 +23,22 @@ type Server struct {
 	MOQServer *moqt.Server
 	// MOQDialer is used for outbound peer connections. The caller must set
 	// TLSConfig with NextProtos: []string{moqt.NextProtoMOQ} only, so that
-	// ALPN negotiation does not accidentally select "h3"; the relay command
-	// sets (*PeerTrust).DialerTLS, which also names PeeringName. The relay
-	// dials with a copy whose CheckRedirect follows no redirect.
+	// ALPN negotiation does not accidentally select "h3". The relay command
+	// sets one that also names PeeringName and asks its certificate
+	// reloader (cert_reload.go) for the peer certificate and CA at each
+	// handshake, so that renewed ones take effect without a restart.
+	// (*PeerTrust).DialerTLS gives the same configuration for one fixed
+	// PeerTrust, which does not follow reloads. The relay dials with a copy
+	// whose CheckRedirect follows no redirect.
 	MOQDialer *moqt.Dialer
-	// PeerCertificate is this relay's own peer certificate (DER), or nil
-	// without a peer identity. A dialed peer that presents it is this relay
+	// PeerCertificate returns this relay's own peer certificate (DER), the
+	// one it holds at the time, or nil without a peer identity; nil itself
+	// for none. A dialed peer that presents it is this relay
 	// itself, reached through a name in Config.Peers that resolves to it
 	// too: that session is dropped and not retried. So is a session with another relay holding the same
 	// certificate, which nothing tells apart from this one: every relay
 	// needs a peer certificate of its own.
-	PeerCertificate []byte
+	PeerCertificate func() []byte
 	Config          *Config
 	TrackMux        *moqt.TrackMux
 
@@ -117,6 +120,10 @@ type Server struct {
 	// peerSessions holds the dialed addresses this relay has a session to
 	// right now, a subset of connected; also guarded by connectedMu.
 	peerSessions map[string]struct{}
+
+	// resolver resolves the names among Config.Peers (peer_resolve.go);
+	// nil is net.DefaultResolver.
+	resolver peerResolver
 
 	// routeMu guards alternates: per-BroadcastPath route-election losers that
 	// are retained (not cancelled) so they can be promoted if the active route's
@@ -541,63 +548,6 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	return nil
 }
 
-// ConnectPeers dials configured peer relays and upstream addresses, discovering
-// their announcements via ANNOUNCE_PLEASE. Received announcements are registered
-// on the local TrackMux so that subscribers can transparently access remote content.
-// It blocks until ctx is cancelled.
-func (s *Server) ConnectPeers(ctx context.Context) {
-	s.init()
-	var wg sync.WaitGroup
-
-	dialPeer := func(addr string) {
-		addr = strings.TrimSpace(addr)
-		if addr == "" {
-			return
-		}
-		if !s.markConnected(addr) {
-			return
-		}
-		wg.Go(func() {
-			s.maintainPeer(ctx, Peer{Address: addr})
-			s.markUnconnected(addr)
-		})
-	}
-
-	// Each configured peer host is resolved to all its A/AAAA records (e.g. a
-	// Consul DNS name for a group of hubs), and every address is dialed, so an
-	// edge acts as a multi-homed L7 load balancer across them.
-	for _, peer := range s.Config.Peers {
-		for _, addr := range resolvePeerAddrs(ctx, peer.Address) {
-			dialPeer(addr)
-		}
-	}
-
-	wg.Wait()
-}
-
-// resolvePeerAddrs resolves one peer entry (host:port) to ip:port for every
-// A/AAAA record of its host. An IP address, an unparseable entry, or a host
-// that fails to resolve is returned as is, so the dial loop retries it.
-func resolvePeerAddrs(ctx context.Context, entry string) []string {
-	host, port, err := net.SplitHostPort(entry)
-	if err != nil || net.ParseIP(host) != nil {
-		return []string{entry}
-	}
-
-	lookupCtx, cancel := context.WithTimeout(ctx, 500*time.Millisecond)
-	ips, err := net.DefaultResolver.LookupIPAddr(lookupCtx, host)
-	cancel()
-	if err != nil || len(ips) == 0 {
-		return []string{entry}
-	}
-
-	addrs := make([]string, 0, len(ips))
-	for _, ip := range ips {
-		addrs = append(addrs, net.JoinHostPort(ip.IP.String(), port))
-	}
-	return addrs
-}
-
 // ConnectedPeers returns the addresses of the peers this relay has dialed
 // and holds a session to, for tests. A dial that reached this relay itself,
 // or that is between retries, is not among them.
@@ -705,21 +655,25 @@ func (s *Server) maintainPeer(ctx context.Context, peer Peer) {
 			// The handshake verified the peer's certificate against the CA
 			// for the peering name; the one peer it must not be is this
 			// relay.
-			if isSelf(sess.ConnectionState().TLS, s.PeerCertificate) {
+			if isSelf(sess.ConnectionState().TLS, s.ownCertificate()) {
 				// Expected for a name among the peers that resolves to this
 				// relay too. A relay sharing this one's certificate looks the
 				// same, and would never be peered with: hence the reminder.
 				slog.Info("relay: dialed peer is this relay; not dialing it again (a relay sharing this peer certificate looks the same: each needs its own)",
 					"address", peer.Address)
-				_ = sess.CloseWithError(moqt.NoError, "self")
+				closeRefused(sess, moqt.NoError, "self")
 				return
 			}
-			_, identity := classify(sess.ConnectionState().TLS)
-			slog.Info("relay: peer connected", "address", peer.Address, "identity", identity)
+			slog.Info("relay: peer connected", "address", peer.Address, "identity", dialedIdentity(sess.ConnectionState().TLS))
 			s.setPeerSession(peer.Address, true)
+			// When ctx ends (the peer left its name's answer, or the relay is
+			// stopping), the session is closed without error, so the peer
+			// sees a clean close and its announcements end here.
+			stopClose := context.AfterFunc(ctx, func() { closePeerSession(sess, context.Cause(ctx)) })
 			s.serveSession(sess)
 
 			<-sess.Context().Done()
+			stopClose()
 
 			s.setPeerSession(peer.Address, false)
 			slog.Info("peer disconnected", "address", peer.Address)
@@ -745,6 +699,27 @@ func (s *Server) maintainPeer(ctx context.Context, peer Peer) {
 		if !backoff.Wait(ctx) {
 			return
 		}
+	}
+}
+
+// ownCertificate is PeerCertificate's answer, or nil without one.
+func (s *Server) ownCertificate() []byte {
+	if s.PeerCertificate == nil {
+		return nil
+	}
+	return s.PeerCertificate()
+}
+
+// closePeerSession closes a session this relay dialed, without error, when
+// it no longer peers with it: cause says why.
+func closePeerSession(sess *moqt.Session, cause error) {
+	reason := "peer dropped"
+	if errors.Is(cause, errPeerLeft) {
+		reason = "peer left"
+	}
+	slog.Info("relay: closing peer session", "remote", sess.RemoteAddr(), "cause", cause)
+	if err := sess.CloseWithError(moqt.NoError, reason); err != nil {
+		slog.Debug("relay: closing peer session failed", "remote", sess.RemoteAddr(), "error", err)
 	}
 }
 
@@ -779,7 +754,7 @@ func (s *Server) relayPeer(sess *moqt.Session) {
 		return
 	}
 	state := sess.ConnectionState().TLS
-	if isSelf(state, s.PeerCertificate) {
+	if isSelf(state, s.ownCertificate()) {
 		// This relay dialed itself through a name among its peers; the
 		// dialing side drops the session too. Anything else that presents
 		// this relay's own peer certificate is dropped the same way.

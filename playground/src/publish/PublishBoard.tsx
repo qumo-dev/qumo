@@ -76,6 +76,9 @@ export function PublishBoard(
 	const [resolution, setResolution] = createSignal<Resolution>("720p");
 	const [framerate, setFramerate] = createSignal<Framerate>(30);
 	const [bitrate, setBitrate] = createSignal(2_500_000);
+	// Opt the broadcast into the ABR transcoder (`qumo abr`), which then
+	// publishes renditions of it at the path with ".abr" appended.
+	const [abr, setAbr] = createSignal(false);
 
 	// Live stats overlay (#139): fps + media bitrate from a 1s rolling meter, plus
 	// the encoder's queue depth sampled on the same tick. Cleared on stop.
@@ -144,6 +147,7 @@ export function PublishBoard(
 			const picture = await publisher.start(stream, {
 				path: props.path(),
 				hls: props.hls,
+				abr: abr(),
 				framerate: framerate(),
 				bitrate: bitrate(),
 			});
@@ -257,6 +261,18 @@ export function PublishBoard(
 							disabled={isStreaming()}
 						/>
 						<span class="bitrate-value">{(bitrate() / 1_000_000).toFixed(1)} Mbps</span>
+					</label>
+					<label
+						class="abr-control"
+						title="Opt into qumo abr: renditions are published at the path with .abr appended"
+					>
+						<input
+							type="checkbox"
+							checked={abr()}
+							onChange={(e) => setAbr(e.currentTarget.checked)}
+							disabled={isStreaming()}
+						/>
+						ABR
 					</label>
 				</div>
 

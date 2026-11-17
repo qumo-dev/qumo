@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/url"
 	"time"
 
 	"github.com/qumo-dev/gomoqt/moqt"
@@ -39,6 +40,26 @@ func Sign(key token.SigningKey, g token.Grant) (string, time.Time, error) {
 	return tok, lapses, nil
 }
 
+// Target returns relayURL carrying a credential granting g, freshly signed
+// with key, as ?jwt= in place of any it carried, and when that credential's
+// grant lapses (Sign).
+func Target(relayURL string, key token.SigningKey, g token.Grant) (string, time.Time, error) {
+	credential, lapses, err := Sign(key, g)
+	if err != nil {
+		return "", time.Time{}, err
+	}
+	u, err := url.Parse(relayURL)
+	if err != nil {
+		// url.Parse's error quotes the URL, whose query may carry a
+		// credential: report only that it is invalid.
+		return "", time.Time{}, errors.New("RELAY_URL: invalid URL")
+	}
+	query := u.Query()
+	query.Set("jwt", credential)
+	u.RawQuery = query.Encode()
+	return u.String(), lapses, nil
+}
+
 // credential is a token presented on an Auth Stream, as keeping a grant in
 // force needs one: *moqt.Credential.
 type credential interface {
@@ -56,20 +77,59 @@ type credential interface {
 // nothing. A relay that verifies no credentials (NOT_SUPPORTED) lets the
 // session's grant last for good, and Keep stops.
 func Keep(sess *moqt.Session, key token.SigningKey, g token.Grant, lapses time.Time) {
-	keep(sess.Context(), func(ctx context.Context, tok []byte) (credential, error) {
-		c, err := sess.Auth(ctx, tok)
-		if err != nil {
-			return nil, err
-		}
-		return c, nil
-	}, func() {
+	keep(sess.Context(), slog.Default(), renewGrant, presentOn(sess), func() {
 		// not actionable: the session is ending either way.
 		_ = sess.CloseWithError(moqt.UnauthorizedSessionErrorCode, "relay credential lapsed")
 	}, func() (string, time.Time, error) { return Sign(key, g) }, lapses)
 }
 
-// keep is Keep, presenting with present and closing the session with end.
-func keep(ctx context.Context, present func(context.Context, []byte) (credential, error), end func(),
+// Hold adds g to sess's grant until sess ends: it presents a credential
+// granting g, signed with key, on sess's Auth Stream as a ticket, and a fresh
+// one each time the ticket in force is two thirds through its lifetime, as
+// Keep does. A ticket that can't be signed or is not granted is tried again
+// every retryInterval, and sess is kept: what it connected with stays in
+// force, so a relay that grants g later (a key set that comes to hold an
+// opt-in) takes the ticket then. A relay that verifies no credentials
+// (NOT_SUPPORTED) needs no ticket, and Hold stops.
+func Hold(sess *moqt.Session, key token.SigningKey, g token.Grant) {
+	// No grant in force yet (a zero lapses): the first ticket is presented
+	// at once.
+	keep(sess.Context(), slog.Default(), renewTicket, presentOn(sess), nil, func() (string, time.Time, error) { return Sign(key, g) }, time.Time{})
+}
+
+// presentOn presents a credential on sess's Auth Stream. It returns a nil
+// credential with an error: a nil *moqt.Credential returned as is would be a
+// credential interface that is not nil.
+func presentOn(sess *moqt.Session) func(context.Context, []byte) (credential, error) {
+	return func(ctx context.Context, tok []byte) (credential, error) {
+		c, err := sess.Auth(ctx, tok)
+		if err != nil {
+			return nil, err
+		}
+		return c, nil
+	}
+}
+
+// renewal is what keep keeps in force, which sets what it does with a
+// credential not granted.
+type renewal int
+
+const (
+	// renewGrant renews the grant a session connected with (Keep): a
+	// credential not granted is retried, warning each time, until the
+	// grant in force would lapse first; then keep ends.
+	renewGrant renewal = iota
+	// renewTicket renews a ticket added to a session's grant (Hold): a
+	// credential not granted is retried for as long as the session lasts,
+	// warning once, and noting when one is granted again.
+	renewTicket
+)
+
+// keep is Keep and Hold, as r says: it presents credentials signed with sign
+// through present, logging to log, until ctx ends. The first is presented two
+// thirds of the way to lapses. end, when not nil, is called when keep ends
+// because the grant lapses (renewGrant only); a nil end does nothing then.
+func keep(ctx context.Context, log *slog.Logger, r renewal, present func(context.Context, []byte) (credential, error), end func(),
 	sign func() (string, time.Time, error), lapses time.Time) {
 	var held credential
 	defer func() {
@@ -78,6 +138,7 @@ func keep(ctx context.Context, present func(context.Context, []byte) (credential
 		}
 	}()
 	wait := time.Duration(float64(time.Until(lapses)) * renewAt)
+	failing := false
 	for {
 		select {
 		case <-ctx.Done():
@@ -90,19 +151,35 @@ func keep(ctx context.Context, present func(context.Context, []byte) (credential
 				return
 			}
 			if notSupported(err) {
-				slog.Info("relay credential not renewed: the relay verifies none, and the session's grant does not lapse")
+				log.Info("relay credential not renewed: the relay verifies none, and the session's grant does not lapse")
 				return
+			}
+			if r == renewTicket {
+				// A ticket refused stays refused until the relay's key set
+				// changes: say so once, not every retry.
+				if !failing {
+					log.Warn("relay ticket not granted, retrying", "error", err)
+				}
+				failing = true
+				wait = retryInterval
+				continue
 			}
 			// A retry signs, then may wait presentTimeout for an answer: the
 			// session must not outlive its grant meanwhile.
 			if time.Until(lapses) <= retryInterval+presentTimeout {
-				slog.Error("relay credential lapsing: closing the session to dial again", "error", err)
-				end()
+				log.Error("relay credential lapsing: closing the session to dial again", "error", err)
+				if end != nil {
+					end()
+				}
 				return
 			}
-			slog.Warn("relay credential not renewed, retrying", "error", err, "lapses_in", time.Until(lapses).Round(time.Second))
+			log.Warn("relay credential not renewed, retrying", "error", err, "lapses_in", time.Until(lapses).Round(time.Second))
 			wait = retryInterval
 			continue
+		}
+		if failing {
+			log.Info("relay ticket granted", "root", next.Grant().Root)
+			failing = false
 		}
 		if held != nil {
 			_ = held.Close() // not actionable: the fresh grant is in force

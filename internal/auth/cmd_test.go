@@ -180,24 +180,56 @@ func TestRunToken_NoTicketFlag(t *testing.T) {
 func TestRunKeygen_SaysWhatTheKeyGrants(t *testing.T) {
 	tests := map[string]struct {
 		prefix string
+		args   []string
 		want   []string
+		// wantOptIns is what keys.json lists.
+		wantOptIns []token.OptIn
 	}{
-		"a prefix": {prefix: "acme/app", want: []string{"a root at or beneath /acme/app/ or its HLS opt-in /.hls/acme/app/", "-root /acme/app/ -publish /demo"}},
-		"none":     {want: []string{"any root (no prefix)", "-root / -publish /demo"}},
+		"a prefix, no opt-ins": {prefix: "acme/app", want: []string{"a root at or beneath /acme/app/ (no opt-ins)", "-root /acme/app/ -publish /demo"}},
+		"HLS": {
+			prefix: "acme/app", args: []string{"-opt-ins", "hls"},
+			want:       []string{"a root at or beneath /acme/app/ or its opt-ins /.hls/acme/app/"},
+			wantOptIns: []token.OptIn{token.OptInHLS},
+		},
+		"none": {want: []string{"any root (no prefix)", "-root / -publish /demo"}},
+		"ABR paid for": {
+			prefix: "acme/app", args: []string{"-opt-ins", "abr, hls"},
+			want:       []string{"a root at or beneath /acme/app/ or its opt-ins /.hls/acme/app/, /.abr/acme/app/"},
+			wantOptIns: []token.OptIn{token.OptInHLS, token.OptInABR},
+		},
+		"an empty list": {
+			prefix: "acme/app", args: []string{"-opt-ins", ""},
+			want: []string{"a root at or beneath /acme/app/ (no opt-ins)"},
+		},
 	}
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
 			dir := t.TempDir()
+			keysPath := filepath.Join(dir, "keys.json")
 			var out bytes.Buffer
 
-			require.NoError(t, runKeygen([]string{"-prefix", tt.prefix,
-				"-out", filepath.Join(dir, "signing-key.jwk"), "-keys", filepath.Join(dir, "keys.json")}, &out, io.Discard, nil))
+			require.NoError(t, runKeygen(append([]string{"-prefix", tt.prefix,
+				"-out", filepath.Join(dir, "signing-key.jwk"), "-keys", keysPath}, tt.args...), &out, io.Discard, nil))
 
 			for _, w := range tt.want {
 				assert.Contains(t, out.String(), w)
 			}
+			keys, err := token.LoadKeySet(keysPath)
+			require.NoError(t, err)
+			for _, k := range keys {
+				assert.Equal(t, tt.wantOptIns, k.OptIns)
+			}
 		})
 	}
+}
+
+func TestRunKeygen_RefusesAnUnknownOptIn(t *testing.T) {
+	dir := t.TempDir()
+	err := runKeygen([]string{"-prefix", "acme", "-opt-ins", "dash",
+		"-out", filepath.Join(dir, "signing-key.jwk"), "-keys", filepath.Join(dir, "keys.json")}, &bytes.Buffer{}, io.Discard, nil)
+	assert.ErrorContains(t, err, "dash")
+	_, statErr := os.Stat(filepath.Join(dir, "signing-key.jwk"))
+	assert.ErrorIs(t, statErr, os.ErrNotExist, "nothing written")
 }
 
 // The summary names the two paths and what the key grants, and stops

@@ -134,7 +134,11 @@ func signAt(key SigningKey, g Grant, ttl time.Duration, now time.Time) (string, 
 	if ttl <= 0 || ttl > MaxLifetime {
 		return "", fmt.Errorf("token: ttl %s must be positive and at most %s", ttl, MaxLifetime)
 	}
-	g, err := g.checked(key.Prefix)
+	// The app signs for every opt-in: which ones a key holds is the key
+	// set's to say (Key.OptIns), which a control plane changes as options are
+	// paid for without reissuing the app's private key, and the relay
+	// refuses a token for one the key does not hold.
+	g, err := g.checked(key.Prefix, OptIns())
 	if err != nil {
 		return "", err
 	}
@@ -240,13 +244,13 @@ func verify(token string, keys map[string]Key, now time.Time, expiry bool) (Clai
 	case hasPathAuth && hasGrant:
 		return Claims{}, invalid("a token carries path_auth or root and patterns, not both")
 	case !hasPathAuth:
-		g, err = c.grant().checked(key.Prefix)
+		g, err = c.grant().checked(key.Prefix, key.OptIns)
 	case c.PathAuth == nil:
 		return Claims{}, invalid("path_auth is null")
 	case hasSubject:
 		return Claims{}, invalid("sub goes with root and patterns, not with path_auth")
 	default:
-		g, err = grantOf(*c.PathAuth, key.Prefix)
+		g, err = grantOf(*c.PathAuth, key.Prefix, key.OptIns)
 	}
 	if err != nil {
 		return Claims{}, err
@@ -257,9 +261,9 @@ func verify(token string, keys map[string]Key, now time.Time, expiry bool) (Clai
 // grantOf reads path_auth as a grant: its root as the root, pub as publish,
 // and sub as subscribe, each on its path and every path beneath it,
 // or on everything beneath the root for an empty one. The root must lie
-// within prefix at a "/" boundary: the rule that stops a key from signing for
-// another tenant's paths.
-func grantOf(pa pathAuth, prefix string) (Grant, error) {
+// within prefix, or its mirror beneath one of optIns, at a "/" boundary: the
+// rule that stops a key from signing for another tenant's paths.
+func grantOf(pa pathAuth, prefix string, optIns []OptIn) (Grant, error) {
 	if pa.Pub == nil && pa.Sub == nil {
 		return Grant{}, forbidden("path_auth grants neither pub nor sub")
 	}
@@ -267,8 +271,8 @@ func grantOf(pa pathAuth, prefix string) (Grant, error) {
 	if err != nil {
 		return Grant{}, invalid("path_auth root: %v", err)
 	}
-	if !within(root, prefix) {
-		return Grant{}, forbidden("path_auth root %q lies outside the signing key's prefix %q", root, prefix)
+	if !within(root, prefix, optIns) {
+		return Grant{}, forbidden("path_auth root %q lies outside the signing key's prefix %q and the opt-ins it holds %v", root, prefix, optIns)
 	}
 	g := Grant{Grant: moqt.Grant{Root: root}}
 	if pa.Pub != nil {

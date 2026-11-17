@@ -25,6 +25,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/qumo-dev/gomoqt/moqt"
 	"github.com/qumo-dev/qumo/internal/auth"
+	"github.com/qumo-dev/qumo/internal/certreload"
 	"github.com/qumo-dev/qumo/internal/cors"
 	"github.com/qumo-dev/qumo/internal/envconfig"
 	"github.com/qumo-dev/qumo/internal/gctune"
@@ -64,9 +65,13 @@ func sanitizeLog(s string) string {
 //	                               size, path MTU discovery, keep-alive, idle
 //	                               timeouts and receive windows
 //	                               (quicConfigFromEnv lists them)
-//	PEERS                        - comma-separated relays to dial (host:port);
-//	                               each host is resolved to all its addresses
-//	                               (e.g. "role-hub.qumo-relay.service.consul:4433").
+//	PEERS                        - comma-separated relays to dial: ip:port,
+//	                               host:port (each of the host's addresses),
+//	                               or an SRV name without a port (each
+//	                               target at its port). Names are resolved
+//	                               again every 30 s; peers that join are
+//	                               dialed, peers that leave dropped
+//	                               (peer_resolve.go).
 //	                               Needs CA_FILE and the peer identity.
 //	CORS_ALLOWED_ORIGINS     - comma-separated WebTransport origins allowed to
 //	                           connect (default: same-origin only; "*" allows any;
@@ -144,6 +149,10 @@ func Run(args []string) error {
 	for _, p := range splitAddrList(os.Getenv("PEERS")) {
 		peers = append(peers, Peer{Address: p})
 	}
+	peerEntries, err := parsePeerEntries(peers)
+	if err != nil {
+		return fmt.Errorf("invalid PEERS: %w", err)
+	}
 
 	// Peer trust (peer_trust.go): a CA and this relay's own peer identity,
 	// checked before anything is loaded so a settings mistake is what fails.
@@ -152,20 +161,16 @@ func Run(args []string) error {
 		return err
 	}
 
-	tlsConfig, err := setupTLS(certFile, keyFile)
+	publicCert, err := loadPublicCertificate(certFile, keyFile)
 	if err != nil {
 		return fmt.Errorf("failed to setup TLS: %w", err)
 	}
-	// The relay's certificate, for the WebSocket listener too: tlsConfig
-	// itself goes on to carry the peer trust, which is QUIC's.
-	certificates := tlsConfig.Certificates
 
 	ws, err := loadWebSocketSettings(addr)
 	if err != nil {
 		return err
 	}
 
-	tlsConfig = trust.ServerTLS(tlsConfig)
 	switch {
 	case trust.Identity() != "":
 		slog.Info("relay: peering on: sessions with a certificate from CA_FILE that carries the peering name are peers",
@@ -194,6 +199,17 @@ func Run(args []string) error {
 		return err
 	}
 	verifierCfg.Signer = signer
+
+	// The certificates are re-read while the relay runs (cert_reload.go):
+	// every TLS configuration asks the reloader at each handshake. The
+	// public certificate serves the WebSocket listener too; the QUIC
+	// listener's configuration also carries the peer trust.
+	certs := newCertReloader(certFiles{
+		cert: certFile, key: keyFile,
+		ca:       os.Getenv("CA_FILE"),
+		peerCert: os.Getenv("PEER_CERT_FILE"), peerKey: os.Getenv("PEER_KEY_FILE"),
+	}, publicCert, trust, signer)
+	tlsConfig := serverTLS(certs.publicTLS(), certs.currentTrust)
 	authorize := admitUnchecked
 	var reportEnd func(context.Context, auth.Request) error // nil: auth off reports nothing
 	var tickets TicketVerifier                              // nil: auth off verifies no tickets
@@ -239,9 +255,9 @@ func Run(args []string) error {
 	// dialer advertises only the moqt ALPN: with "h3" too, ALPN would pick
 	// h3 and QPACK decompression fail. Without a peer identity there are no
 	// PEERS to dial (loadPeerTrust), so the dialer never runs.
-	var dialerTLS *tls.Config
+	var peerDialTLS *tls.Config
 	if trust.Identity() != "" {
-		dialerTLS = trust.DialerTLS()
+		peerDialTLS = dialerTLS(certs.currentTrust)
 	}
 
 	// Override the QUIC listener's UDP receive buffer (SO_RCVBUF) to a
@@ -264,7 +280,7 @@ func Run(args []string) error {
 	relayServer := &Server{
 		MOQServer: moqtServer,
 		MOQDialer: &moqt.Dialer{
-			TLSConfig:  dialerTLS,
+			TLSConfig:  peerDialTLS,
 			QUICConfig: quicConfig,
 			OnGoaway:   handlePeerGoaway,
 		},
@@ -274,7 +290,7 @@ func Run(args []string) error {
 		Authorize:       authorize,
 		End:             reportEnd,
 		Tickets:         tickets,
-		PeerCertificate: trust.OwnCertificate(),
+		PeerCertificate: certs.ownCertificate,
 	}
 
 	httpMux.HandleFunc("/", relayServer.HandleWebTransport)
@@ -315,7 +331,7 @@ func Run(args []string) error {
 		return listenerServer{
 			Server: &http.Server{
 				Handler:           http.HandlerFunc(relayServer.HandleWebSocket),
-				TLSConfig:         &tls.Config{MinVersion: tls.VersionTLS12, Certificates: certificates},
+				TLSConfig:         &tls.Config{MinVersion: tls.VersionTLS12, GetCertificate: certs.certificate},
 				ReadHeaderTimeout: 5 * time.Second,
 				// A WebSocket upgrade is HTTP/1.1.
 				TLSNextProto: map[string]func(*http.Server, *tls.Conn, http.Handler){},
@@ -399,7 +415,9 @@ func Run(args []string) error {
 	defer relayServer.waitSessionEnds(endReportGrace)
 
 	// Start peer connections in background
-	go relayServer.ConnectPeers(ctx)
+	go relayServer.connectPeers(ctx, peerEntries)
+	// Ends with ctx; it only swaps what new handshakes are given.
+	go certreload.Run(ctx, certs.reload)
 
 	// Delegate to testable helper that runs servers until ctx is cancelled
 	if err := serveComponents(ctx, relayServer, httpServers, 10*time.Second); err != nil {
@@ -613,17 +631,14 @@ func envInt(key string, defaultVal int) (int, error) {
 	return n, nil
 }
 
-func setupTLS(certFile, keyFile string) (*tls.Config, error) {
+// loadPublicCertificate reads the relay's public certificate (CERT_FILE,
+// KEY_FILE), as it starts; the reloader reads it again while it runs.
+func loadPublicCertificate(certFile, keyFile string) (tls.Certificate, error) {
 	cert, err := tls.LoadX509KeyPair(certFile, keyFile)
 	if err != nil {
-		return nil, fmt.Errorf("failed to load TLS certificates: %w", err)
+		return tls.Certificate{}, fmt.Errorf("failed to load TLS certificates: %w", err)
 	}
-
-	return &tls.Config{
-		MinVersion:   tls.VersionTLS12,
-		Certificates: []tls.Certificate{cert},
-		NextProtos:   []string{"h3", moqt.NextProtoMOQ}, // HTTP/3 for WebTransport, MOQ native QUIC
-	}, nil
+	return cert, nil
 }
 
 // relayUsage writes the `qumo relay` flag summary to w. Flags cover execution

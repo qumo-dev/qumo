@@ -34,7 +34,7 @@ func TestRelayChain_KeepsPublisherSequences(t *testing.T) {
 			origin := spinRelay(t, "origin", chainFreeAddr(t), cert, pool, quicCfg)
 			leaf := spinRelay(t, "leaf", chainFreeAddr(t), cert, pool, quicCfg)
 			leaf.Config.Peers = []Peer{{Address: origin.MOQServer.Addr}}
-			go leaf.ConnectPeers(ctx) //nolint:errcheck // ends with ctx
+			go leaf.ConnectPeers(ctx)
 
 			pubMux := moqt.NewTrackMux(moqt.NewHopID())
 			pubMux.PublishFunc(ctx, chainBroadcastPath, func(tw *moqt.TrackWriter) {
@@ -84,7 +84,7 @@ func startRelayChain(tb testing.TB, ctx context.Context) (*Server, *Server, *x50
 	origin := spinRelay(tb, "origin", chainFreeAddr(tb), cert, pool, quicCfg)
 	leaf := spinRelay(tb, "leaf", chainFreeAddr(tb), cert, pool, quicCfg)
 	leaf.Config.Peers = []Peer{{Address: origin.MOQServer.Addr}}
-	go leaf.ConnectPeers(ctx) //nolint:errcheck // ends with ctx
+	go leaf.ConnectPeers(ctx)
 	return origin, leaf, pool
 }
 

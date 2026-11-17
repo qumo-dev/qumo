@@ -1,7 +1,10 @@
 package relaycred
 
 import (
+	"bytes"
 	"context"
+	"log/slog"
+	"strings"
 	"sync"
 	"testing"
 	"testing/synctest"
@@ -68,7 +71,7 @@ func TestKeep_Renews(t *testing.T) {
 		done := make(chan struct{})
 		go func() {
 			defer close(done)
-			keep(ctx, relay.present, func() { ended = true }, sign, start.Add(time.Hour))
+			keep(ctx, discard, renewGrant, relay.present, func() { ended = true }, sign, start.Add(time.Hour))
 		}()
 
 		time.Sleep(time.Hour)
@@ -92,7 +95,7 @@ func TestKeep_ClosesBeforeTheGrantLapses(t *testing.T) {
 		var endedAt time.Time
 		start := time.Now()
 
-		keep(t.Context(), relay.present, func() { endedAt = time.Now() }, sign, start.Add(2*time.Minute))
+		keep(t.Context(), discard, renewGrant, relay.present, func() { endedAt = time.Now() }, sign, start.Add(2*time.Minute))
 
 		assert.Equal(t, []time.Time{start.Add(80 * time.Second), start.Add(90 * time.Second), start.Add(100 * time.Second)},
 			relay.presented, "first at 2/3 of the grant, then every retryInterval")
@@ -113,7 +116,7 @@ func TestKeep_StopsWhenNotSupported(t *testing.T) {
 				ended := false
 				start := time.Now()
 
-				keep(t.Context(), relay.present, func() { ended = true }, sign, start.Add(time.Hour))
+				keep(t.Context(), discard, renewGrant, relay.present, func() { ended = true }, sign, start.Add(time.Hour))
 
 				assert.Equal(t, []time.Time{start.Add(40 * time.Minute)}, relay.presented)
 				assert.False(t, ended)
@@ -132,7 +135,7 @@ func TestKeep_RecoversBeforeTheLapse(t *testing.T) {
 		done := make(chan struct{})
 		go func() {
 			defer close(done)
-			keep(ctx, relay.present, func() { ended = true }, sign, start.Add(time.Hour))
+			keep(ctx, discard, renewGrant, relay.present, func() { ended = true }, sign, start.Add(time.Hour))
 		}()
 
 		time.Sleep(40*time.Minute + time.Second)
@@ -145,6 +148,82 @@ func TestKeep_RecoversBeforeTheLapse(t *testing.T) {
 		assert.Len(t, relay.granted, 1)
 		assert.False(t, ended)
 	})
+}
+
+// discard drops keep's logs, for tests that do not look at them.
+var discard = slog.New(slog.DiscardHandler)
+
+// A ticket (renewTicket, no grant in force yet) is presented at once, and one
+// not granted is presented again every retryInterval for as long as the
+// session lasts, until the relay grants it: a key set that comes to hold an
+// opt-in. That is so whether or not keep has an end: an end is only cleanup,
+// never what makes keep retry. It warns once, not every retry, and notes the
+// grant.
+func TestKeep_TicketRetriesUntilGranted(t *testing.T) {
+	for name, withEnd := range map[string]bool{"no end": false, "an end": true} {
+		t.Run(name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				ctx, cancel := context.WithCancel(t.Context())
+				relay := &fakeRelay{refusing: errRefused, maxAge: time.Hour}
+				var logs bytes.Buffer
+				ended := false
+				var end func()
+				if withEnd {
+					end = func() { ended = true }
+				}
+				start := time.Now()
+				done := make(chan struct{})
+				go func() {
+					defer close(done)
+					keep(ctx, slog.New(slog.NewTextHandler(&logs, nil)), renewTicket, relay.present, end, sign, time.Time{})
+				}()
+
+				time.Sleep(25 * time.Second)
+				relay.refuse(nil)
+				time.Sleep(retryInterval)
+				synctest.Wait()
+				cancel()
+				<-done
+
+				assert.Equal(t, []time.Time{start, start.Add(10 * time.Second), start.Add(20 * time.Second), start.Add(30 * time.Second)},
+					relay.presented, "at once, then every retryInterval")
+				require.Len(t, relay.granted, 1)
+				assert.True(t, relay.granted[0].closed, "withdrawn with the session")
+				assert.False(t, ended, "a ticket never ends the session")
+				assert.Equal(t, 1, strings.Count(logs.String(), "relay ticket not granted, retrying"), "warned once")
+				assert.Equal(t, 1, strings.Count(logs.String(), "relay ticket granted"))
+				assert.NotContains(t, logs.String(), "level=ERROR")
+			})
+		})
+	}
+}
+
+// A grant (renewGrant) not renewed is retried, warning each time, until it
+// would lapse first: then keep stops renewing, calling end when there is one.
+// A nil end is no cleanup, not retrying for good.
+func TestKeep_GrantStopsAtTheLapse(t *testing.T) {
+	for name, withEnd := range map[string]bool{"no end": false, "an end": true} {
+		t.Run(name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				relay := &fakeRelay{refusing: errRefused}
+				var logs bytes.Buffer
+				ended := false
+				var end func()
+				if withEnd {
+					end = func() { ended = true }
+				}
+				start := time.Now()
+
+				keep(t.Context(), slog.New(slog.NewTextHandler(&logs, nil)), renewGrant, relay.present, end, sign, start.Add(2*time.Minute))
+
+				assert.Equal(t, []time.Time{start.Add(80 * time.Second), start.Add(90 * time.Second), start.Add(100 * time.Second)},
+					relay.presented, "first at 2/3 of the grant, then every retryInterval, then no more")
+				assert.Equal(t, withEnd, ended)
+				assert.Equal(t, 2, strings.Count(logs.String(), "relay credential not renewed, retrying"), "warned each retry")
+				assert.Equal(t, 1, strings.Count(logs.String(), "relay credential lapsing"))
+			})
+		})
+	}
 }
 
 // Sign's lapse is the token's lifetime from before it was signed.

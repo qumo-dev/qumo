@@ -25,8 +25,12 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"time"
 
 	"github.com/qumo-dev/gomoqt/moqt"
+
+	"github.com/qumo-dev/qumo/internal/optin"
+	"github.com/qumo-dev/qumo/token"
 )
 
 // Session manages the MoQT announcement and fan-out for a single ingested
@@ -37,10 +41,13 @@ import (
 // A Session is safe for concurrent use; however, callers should typically
 // push video and audio from a single goroutine per track.
 type Session struct {
-	path    moqt.BroadcastPath
-	handler *ingestHandler
-	endAnn  func()
-	cancel  context.CancelFunc
+	path     moqt.BroadcastPath
+	trackMux *moqt.TrackMux
+	handler  *ingestHandler
+	endAnn   func()
+	// ctx ends when the session closes, and with it every opt-in.
+	ctx    context.Context
+	cancel context.CancelFunc
 }
 
 // NewSession creates a new ingest session that announces path on trackMux.
@@ -66,11 +73,34 @@ func NewSession(trackMux *moqt.TrackMux, path moqt.BroadcastPath) (*Session, err
 	slog.Info("ingest session started", "broadcast_path", path)
 
 	return &Session{
-		path:    path,
-		handler: h,
-		endAnn:  endAnn,
-		cancel:  cancel,
+		path:     path,
+		trackMux: trackMux,
+		handler:  h,
+		endAnn:   endAnn,
+		ctx:      ctx,
+		cancel:   cancel,
 	}, nil
+}
+
+// OptIn opts the session's broadcast into the egress o names, as a MoQT
+// publisher does (see package optin): it announces the broadcast's path
+// beneath o's directory, redirecting every subscription to the broadcast, on
+// the session's TrackMux. The opt-in is withdrawn at lapses, or when the
+// session closes; the zero time never lapses.
+func (s *Session) OptIn(o token.OptIn, lapses time.Time) {
+	ctx, cancel := s.ctx, context.CancelFunc(func() {})
+	if !lapses.IsZero() {
+		ctx, cancel = context.WithDeadline(s.ctx, lapses)
+	}
+	path := optin.Path(o.Directory(), s.path)
+	// The announcement ends with ctx.
+	ann, _ := moqt.NewAnnouncement(ctx, path)
+	context.AfterFunc(ctx, func() {
+		cancel()
+		slog.Info("ingest opt-in withdrawn", "broadcast_path", s.path, "opt_in", o)
+	})
+	s.trackMux.Announce(ann, optin.Handler(s.path))
+	slog.Info("ingest opted in", "broadcast_path", s.path, "opt_in", o, "opt_in_path", path)
 }
 
 // RegisterVideo registers (or replaces) the video track in the MSF catalog

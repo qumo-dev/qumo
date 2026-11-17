@@ -315,6 +315,17 @@
 	min-width: 16ch;
 }
 
+/* A checkbox reads beside its label, not above it. */
+.encoder-controls label.abr-control {
+	flex-direction: row;
+	align-items: center;
+	gap: 6px;
+}
+
+.abr-control input[type="checkbox"] {
+	accent-color: var(--accent);
+}
+
 .bitrate-value {
 	font-size: 0.75rem;
 	color: var(--text-muted);
@@ -342,6 +353,16 @@ input[type="range"] {
 .volume-slider {
 	flex: 1;
 	max-width: 160px;
+}
+
+.rendition-select {
+	margin-left: auto;
+	padding: 0.3em 0.5em;
+	border: 1px solid var(--border);
+	border-radius: var(--radius-sm);
+	background: var(--surface-2);
+	color: inherit;
+	font: inherit;
 }
 
 /* --- Video empty-state placeholder --- */

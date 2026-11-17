@@ -12,15 +12,17 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/qumo-dev/qumo/internal/rtmp"
+	"github.com/qumo-dev/qumo/token"
 )
 
 // startRTMPServer stands up an RTMPServer checking publishes with authorize
-// (nil: none) on an ephemeral loopback port, and returns its TrackMux and the
-// bound address once it is listening. It is torn down on test cleanup.
-func startRTMPServer(t *testing.T, authorize PublishAuthorizer) (*moqt.TrackMux, net.Addr) {
+// (nil: none) and opting streams into optIns, on an ephemeral loopback port,
+// and returns its TrackMux and the bound address once it is listening. It is
+// torn down on test cleanup.
+func startRTMPServer(t *testing.T, authorize PublishAuthorizer, optIns ...token.OptIn) (*moqt.TrackMux, net.Addr) {
 	t.Helper()
 	mux := moqt.NewTrackMux(0)
-	server := NewRTMPServer(RTMPConfig{Addr: "127.0.0.1:0", TrackMux: mux, Authorize: authorize})
+	server := NewRTMPServer(RTMPConfig{Addr: "127.0.0.1:0", TrackMux: mux, Authorize: authorize, OptIns: optIns})
 	ctx, cancel := context.WithCancel(context.Background())
 	errCh := make(chan error, 1)
 	go func() { errCh <- server.ListenAndServe(ctx) }()
@@ -94,4 +96,60 @@ func TestRTMPServer_Authorize_CutsAtLapse(t *testing.T) {
 
 	require.Eventually(t, func() bool { return published(mux, "/live/cam") }, 3*time.Second, 10*time.Millisecond)
 	assert.Eventually(t, func() bool { return !published(mux, "/live/cam") }, 3*time.Second, 20*time.Millisecond)
+}
+
+// TestRTMPServer_OptIns verifies a stream is opted into each egress the
+// server offers that one of its credentials may publish the opt-in of: a
+// second ?jwt= on the stream key, which the broadcast's own does not grant.
+func TestRTMPServer_OptIns(t *testing.T) {
+	errNoGrant := errors.New("no grant")
+	// tok publishes the broadcast; abr publishes its ABR opt-in alone.
+	grants := map[publishAsk]bool{
+		{credential: "tok", path: "/live/cam"}:      true,
+		{credential: "abr", path: "/.abr/live/cam"}: true,
+	}
+	tests := map[string]struct {
+		authorize bool
+		streamKey string
+		wantABR   bool
+	}{
+		"a second credential that may publish the opt-in": {authorize: true, streamKey: "cam?jwt=tok&jwt=abr", wantABR: true},
+		"the broadcast's credential alone":                {authorize: true, streamKey: "cam?jwt=tok"},
+		"auth off opts every stream in":                   {streamKey: "cam", wantABR: true},
+	}
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			var authorize PublishAuthorizer
+			if tt.authorize {
+				fake := &fakePublishAuthorizer{answer: func(ask publishAsk) (time.Time, error) {
+					if grants[ask] {
+						return time.Time{}, nil
+					}
+					return time.Time{}, errNoGrant
+				}}
+				authorize = fake.authorize
+			}
+			mux, addr := startRTMPServer(t, authorize, token.OptInABR)
+
+			publishRTMP(t, addr, "live", tt.streamKey)
+
+			require.Eventually(t, func() bool { return published(mux, "/live/cam") }, 3*time.Second, 10*time.Millisecond)
+			if tt.wantABR {
+				assert.Eventually(t, func() bool { return published(mux, "/.abr/live/cam") }, 3*time.Second, 10*time.Millisecond)
+			} else {
+				assert.Never(t, func() bool { return published(mux, "/.abr/live/cam") }, 300*time.Millisecond, 50*time.Millisecond)
+			}
+			assert.False(t, published(mux, "/.hls/live/cam"), "an egress the server does not offer")
+		})
+	}
+}
+
+// TestRTMPServer_RefusesOptInPaths verifies a push can't name an opt-in's
+// path itself: the server announces opt-ins there.
+func TestRTMPServer_RefusesOptInPaths(t *testing.T) {
+	mux, addr := startRTMPServer(t, nil, token.OptInABR)
+
+	publishRTMP(t, addr, ".abr", "live/cam")
+
+	assert.Never(t, func() bool { return published(mux, "/.abr/live/cam") }, 300*time.Millisecond, 50*time.Millisecond)
 }

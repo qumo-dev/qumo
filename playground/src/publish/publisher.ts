@@ -44,19 +44,26 @@ export interface PublishSettings extends VideoWanted {
 	/** The broadcast's path on the relay. */
 	path: string;
 	/**
-	 * Also announce the path beneath {@link HLS_OPT_IN_PREFIX}, asking the HLS
-	 * egress (`qumo hls`) to serve the broadcast.
+	 * Also announce the path beneath {@link OPT_IN_PREFIXES}.hls, asking the
+	 * HLS egress (`qumo hls`) to serve the broadcast.
 	 */
 	hls?: boolean;
+	/**
+	 * Also announce the path beneath {@link OPT_IN_PREFIXES}.abr, asking the
+	 * ABR transcoder (`qumo abr`) to publish renditions of the broadcast
+	 * beside it, at the path with ".abr" appended.
+	 */
+	abr?: boolean;
 }
 
 /**
- * Where a publisher opts into the HLS egress: announcing `/.hls/hls/x` asks it
- * to serve the broadcast `/hls/x`. The announcement carries no tracks: it
+ * Where a publisher opts into an egress: announcing `/.hls/hls/x` asks the HLS
+ * egress to serve the broadcast `/hls/x`, and `/.abr/live/x` asks the ABR
+ * transcoder to transcode `/live/x`. The announcement carries no tracks: it
  * redirects every subscription to the broadcast, where the egress reads the
  * media.
  */
-const HLS_OPT_IN_PREFIX = "/.hls";
+const OPT_IN_PREFIXES = { hls: "/.hls", abr: "/.abr" } as const;
 
 /** The size of the picture being published, in pixels. */
 export interface Picture {
@@ -297,27 +304,10 @@ export class Publisher {
 					this.onerror?.(err);
 				});
 			announced = true;
-			if (settings.hls === true) {
-				const optIn = `${HLS_OPT_IN_PREFIX}${settings.path}`;
-				log.info("publish: opting into the HLS egress", { path: optIn });
-				// reason: built from the user's path, as above.
-				this.#init.mux.publish(context.done(), optIn as BroadcastPath, {
-					// The opt-in has no tracks of its own: it sends every
-					// subscription to the broadcast, keeping the track name. A
-					// subscriber that does not follow redirects is refused.
-					async serveTrack(writer: TrackWriter) {
-						// reason: the user's path, as above.
-						const err = await writer.redirect({ broadcastPath: settings.path as BroadcastPath });
-						if (err !== undefined) {
-							await NotFound(writer);
-						}
-					},
-				})
-					.catch((err: unknown) => {
-						if (run.stopped) return;
-						// The broadcast itself is up: only the HLS view is lost.
-						log.error("publish: the HLS opt-in was not announced", { err });
-					});
+			for (const egress of ["hls", "abr"] as const) {
+				if (settings[egress] === true) {
+					this.#optIn(context.done(), run, egress, settings.path);
+				}
 			}
 
 			return { width: video.config.width, height: video.config.height };
@@ -363,6 +353,35 @@ export class Publisher {
 			log.warn("audio setup failed, continuing without audio", { err });
 			return undefined;
 		}
+	}
+
+	// Announces the opt-in of the broadcast at path into egress, until done.
+	#optIn(
+		done: Promise<void>,
+		run: Run,
+		egress: keyof typeof OPT_IN_PREFIXES,
+		path: string,
+	): void {
+		const optIn = `${OPT_IN_PREFIXES[egress]}${path}`;
+		log.info(`publish: opting into the ${egress.toUpperCase()} egress`, { path: optIn });
+		// reason: built from the user's path, which the relay accepts or rejects.
+		this.#init.mux.publish(done, optIn as BroadcastPath, {
+			// The opt-in has no tracks of its own: it sends every
+			// subscription to the broadcast, keeping the track name. A
+			// subscriber that does not follow redirects is refused.
+			async serveTrack(writer: TrackWriter) {
+				// reason: the user's path, as above.
+				const err = await writer.redirect({ broadcastPath: path as BroadcastPath });
+				if (err !== undefined) {
+					await NotFound(writer);
+				}
+			},
+		})
+			.catch((err: unknown) => {
+				if (run.stopped) return;
+				// The broadcast itself is up: only the egress's view is lost.
+				log.error(`publish: the ${egress.toUpperCase()} opt-in was not announced`, { err });
+			});
 	}
 
 	// Replaces the catalog. Resolves either way: a catalog that could not be

@@ -14,12 +14,13 @@ type publishAsk struct {
 	path       moqt.BroadcastPath
 }
 
-// fakePublishAuthorizer answers every publish with lapses and err, and records
-// what it was asked. The servers ask from their connection goroutines, so the
-// record is guarded.
+// fakePublishAuthorizer answers every publish with lapses and err, or with
+// answer when it is set, and records what it was asked. The servers ask from
+// their connection goroutines, so the record is guarded.
 type fakePublishAuthorizer struct {
 	lapses time.Time
 	err    error
+	answer func(publishAsk) (time.Time, error)
 
 	mu    sync.Mutex
 	asked []publishAsk
@@ -30,7 +31,11 @@ var _ PublishAuthorizer = (*fakePublishAuthorizer)(nil).authorize
 func (f *fakePublishAuthorizer) authorize(credential string, path moqt.BroadcastPath) (time.Time, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.asked = append(f.asked, publishAsk{credential: credential, path: path})
+	ask := publishAsk{credential: credential, path: path}
+	f.asked = append(f.asked, ask)
+	if f.answer != nil {
+		return f.answer(ask)
+	}
 	return f.lapses, f.err
 }
 
