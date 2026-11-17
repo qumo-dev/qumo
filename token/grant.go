@@ -106,12 +106,13 @@ func (g Grant) Allows(action Action, path string) bool {
 	return false
 }
 
-// checked returns g if a token may carry it under a key confined to prefix:
-// a MoQ grant moqt.Grant.Validate accepts, with no MaxAge and its root in
-// Directory's form (ErrInvalid); every other action's patterns parsed as
-// moqt.ParseGrantPattern reads them (ErrInvalid); no "." or ".." segment in
-// any pattern (ErrInvalid); and a root at or beneath prefix (ErrForbidden).
-func (g Grant) checked(prefix string) (Grant, error) {
+// checked returns g if a token may carry it under a key confined to prefix
+// holding optIns: a MoQ grant moqt.Grant.Validate accepts, with no MaxAge and
+// its root in Directory's form (ErrInvalid); every other action's patterns
+// parsed as moqt.ParseGrantPattern reads them (ErrInvalid); no "." or ".."
+// segment in any pattern (ErrInvalid); and a root at or beneath prefix or its
+// mirror beneath one of optIns (ErrForbidden).
+func (g Grant) checked(prefix string, optIns []OptIn) (Grant, error) {
 	if g.MaxAge != 0 {
 		return Grant{}, invalid("max age %s: a token's expiry is its exp", g.MaxAge)
 	}
@@ -138,8 +139,8 @@ func (g Grant) checked(prefix string) (Grant, error) {
 	if err := g.Validate(); err != nil {
 		return Grant{}, invalid("%v", err)
 	}
-	if !within(g.Root, prefix) {
-		return Grant{}, forbidden("root %q lies outside the signing key's prefix %q", g.Root, prefix)
+	if !within(g.Root, prefix, optIns) {
+		return Grant{}, forbidden("root %q lies outside the signing key's prefix %q and the opt-ins it holds %v", g.Root, prefix, optIns)
 	}
 	return g, nil
 }

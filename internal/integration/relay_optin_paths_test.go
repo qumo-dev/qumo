@@ -19,7 +19,7 @@ import (
 // /.hls/acme/ announces /.hls/acme/../victim/cam, which cleans to an opt-in
 // for /victim/cam. So the HLS egress, which may read every broadcast, must
 // refuse an opt-in path with a "." or ".." segment rather than clean it
-// (broadcastPathFromAnnounce).
+// (optin.Broadcast).
 func TestRelay_RoutesOptInDotSegmentsAsGranted(t *testing.T) {
 	key, _, keysFile := writeKeys(t)
 	verifier, err := auth.NewVerifier(auth.VerifierConfig{Keys: keysFile})

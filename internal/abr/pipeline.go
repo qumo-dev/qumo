@@ -27,15 +27,17 @@ type Config struct {
 	Encoder EncoderConfig
 }
 
-// An AliasError reports that a source broadcast is an alias of another: it
-// answers subscriptions with a redirect to Target, as an HLS opt-in does.
-// An alias is not transcoded; Target, announced at its own path, is.
-type AliasError struct {
-	Alias, Target moqt.BroadcastPath
+// A MisdirectedError reports that an opt-in redirected the transcoder
+// elsewhere than to the broadcast it names, or answered itself, or that a
+// track of that broadcast redirected elsewhere: the transcoder reads only the
+// broadcast an opt-in names, so an opt-in cannot have another's broadcast
+// transcoded under its name.
+type MisdirectedError struct {
+	OptIn, Broadcast, To moqt.BroadcastPath
 }
 
-func (e *AliasError) Error() string {
-	return fmt.Sprintf("abr: %s redirects to %s", e.Alias, e.Target)
+func (e *MisdirectedError) Error() string {
+	return fmt.Sprintf("abr: the opt-in %s leads to %s, not %s", e.OptIn, e.To, e.Broadcast)
 }
 
 // encodeQueue is how many source frames may wait for the encoder. Past it the
@@ -45,10 +47,11 @@ const encodeQueue = 120
 
 // pipeline turns one source broadcast into its output broadcast.
 type pipeline struct {
-	sess *moqt.Session
-	src  moqt.BroadcastPath
-	cfg  Config
-	out  *outputBroadcast
+	sess  *moqt.Session
+	optIn moqt.BroadcastPath // the opt-in the catalog is read through
+	src   moqt.BroadcastPath
+	cfg   Config
+	out   *outputBroadcast
 
 	// started names the source tracks being handled, and transcoding
 	// reports that one of them is being transcoded. Only the catalog
@@ -57,9 +60,10 @@ type pipeline struct {
 	transcoding bool
 }
 
-// run runs the pipeline for src until ctx ends or the source broadcast ends,
-// publishing the output broadcast at dst on mux while it runs.
-func run(ctx context.Context, sess *moqt.Session, mux *moqt.TrackMux, src, dst moqt.BroadcastPath, cfg Config) error {
+// run runs the pipeline for src, opted in as optIn, until ctx ends or the
+// source broadcast ends, publishing the output broadcast at dst on mux while
+// it runs.
+func run(ctx context.Context, sess *moqt.Session, mux *moqt.TrackMux, optIn, src, dst moqt.BroadcastPath, cfg Config) error {
 	out, err := newOutputBroadcast()
 	if err != nil {
 		return err
@@ -68,28 +72,42 @@ func run(ctx context.Context, sess *moqt.Session, mux *moqt.TrackMux, src, dst m
 
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
+
+	p := &pipeline{sess: sess, optIn: optIn, src: src, cfg: cfg, out: out, started: map[string]bool{}}
+	// The ABR broadcast is announced once its source is reached, so an
+	// opt-in whose broadcast is gone announces nothing while it is retried.
+	catalog, err := p.subscribeCatalog(ctx)
+	if err != nil {
+		return err
+	}
+	defer catalog.Close() // not actionable: the pipeline is ending
 	mux.Publish(ctx, dst, out)
 
-	p := &pipeline{sess: sess, src: src, cfg: cfg, out: out, started: map[string]bool{}}
 	g, ctx := errgroup.WithContext(ctx)
-	g.Go(func() error { return p.followCatalog(ctx, g) })
+	g.Go(func() error { return p.followCatalog(ctx, g, catalog) })
 	return g.Wait()
 }
 
-// followCatalog reads the source's catalog, and each update of it, and starts
-// handling every track as it first appears in it. It returns when the source
-// ends its catalog track.
-func (p *pipeline) followCatalog(ctx context.Context, g *errgroup.Group) error {
-	tr, err := p.sess.Subscribe(ctx, p.src, msf.DefaultCatalogTrackName, &moqt.SubscribeConfig{Ordered: true})
+// subscribeCatalog subscribes to the source's catalog through the opt-in,
+// which must redirect to the source.
+func (p *pipeline) subscribeCatalog(ctx context.Context) (*moqt.TrackReader, error) {
+	tr, err := p.sess.Subscribe(ctx, p.optIn, msf.DefaultCatalogTrackName, &moqt.SubscribeConfig{Ordered: true})
 	if err != nil {
-		return fmt.Errorf("abr: subscribe catalog: %w", err)
+		return nil, fmt.Errorf("abr: subscribe catalog through the opt-in %s: %w", p.optIn, err)
 	}
-	defer tr.Close() // not actionable: the pipeline is ending
 	if tr.BroadcastPath != p.src {
-		// The source redirected the subscription: it is another name for a
-		// broadcast, which is transcoded under its own name.
-		return &AliasError{Alias: p.src, Target: tr.BroadcastPath}
+		// The opt-in redirected elsewhere than to its broadcast, or did not
+		// redirect at all: its media would not be the broadcast's.
+		_ = tr.Close() // not actionable: refused either way
+		return nil, &MisdirectedError{OptIn: p.optIn, Broadcast: p.src, To: tr.BroadcastPath}
 	}
+	return tr, nil
+}
+
+// followCatalog reads the source's catalog from tr, and each update of it,
+// and starts handling every track as it first appears in it. It returns when
+// the source ends its catalog track.
+func (p *pipeline) followCatalog(ctx context.Context, g *errgroup.Group, tr *moqt.TrackReader) error {
 	f := moqt.NewFrame(0)
 	for {
 		gr, err := tr.AcceptGroup(ctx)
@@ -121,9 +139,10 @@ func (p *pipeline) followCatalog(ctx context.Context, g *errgroup.Group) error {
 			if err != nil {
 				slog.Warn("abr: source track has unusable init data; forwarding it without", "broadcast", p.src, "track", t.Name, "error", err)
 			}
-			if t.Role == msf.RoleVideo && !p.transcoding && isAVC(t.Codec) && init != nil {
+			format, transcodable := formatOf(t, init)
+			if t.Role == msf.RoleVideo && !p.transcoding && transcodable {
 				p.transcoding = true
-				g.Go(func() error { return p.transcode(ctx, t, init) })
+				g.Go(func() error { return p.transcode(ctx, t, init, format) })
 			} else {
 				g.Go(func() error { return p.forward(ctx, t, init) })
 			}
@@ -170,6 +189,37 @@ func outputTrack(t msf.Track) msf.Track {
 	return t
 }
 
+// sourceSize returns the size of the source video track t, whose decoded
+// configuration is sc (nil until known): the catalog's when it states a
+// positive width and height, else sc's, and false when neither is known. A
+// size of zero names no picture, so a catalog stating one states none.
+func sourceSize(t msf.Track, sc *sourceConfig) (width, height int, ok bool) {
+	if t.Width != nil && t.Height != nil && *t.Width > 0 && *t.Height > 0 {
+		return int(*t.Width), int(*t.Height), true
+	}
+	if sc != nil && sc.Width > 0 && sc.Height > 0 {
+		return sc.Width, sc.Height, true
+	}
+	return 0, 0, false
+}
+
+// sourceRendition returns the catalog entry of the source video track t as
+// the top rendition, sized by sourceSize, and labelled by its height when t
+// has no label. Without a known size it states none, rather than the
+// catalog's unusable one.
+func sourceRendition(t msf.Track, sc *sourceConfig) msf.Track {
+	src := outputTrack(t)
+	src.AltGroup = new(int64(videoAltGroup))
+	src.Width, src.Height = nil, nil
+	if width, height, ok := sourceSize(t, sc); ok {
+		src.Width, src.Height = new(int64(width)), new(int64(height))
+		if src.Label == "" {
+			src.Label = fmt.Sprintf("%dp (source)", height)
+		}
+	}
+	return src
+}
+
 // forward republishes a source track as it is, group for group.
 func (p *pipeline) forward(ctx context.Context, t msf.Track, init []byte) error {
 	def := defaultAudioInfo
@@ -199,6 +249,12 @@ func (p *pipeline) readTrack(ctx context.Context, name string,
 		return fmt.Errorf("abr: subscribe %s: %w", name, err)
 	}
 	defer tr.Close() // not actionable: the pipeline is ending
+	if tr.BroadcastPath != p.src {
+		// The session follows redirects, and the transcoder may read every
+		// broadcast: followed elsewhere, a source could have another's
+		// media published as its own renditions.
+		return &MisdirectedError{OptIn: p.optIn, Broadcast: p.src, To: tr.BroadcastPath}
+	}
 
 	// The sequence of the last group read; read reports there has been one,
 	// so a first group numbered 0 is read rather than taken as seen.
@@ -232,31 +288,118 @@ func (p *pipeline) readTrack(ctx context.Context, name string,
 }
 
 // transcode forwards the source video track and encodes it into the
-// renditions of the ladder shorter than it.
-func (p *pipeline) transcode(ctx context.Context, t msf.Track, init []byte) error {
-	cfg, err := ingest.ParseAVCConfig(append([]byte{0x17, 0, 0, 0, 0}, init...))
+// renditions of the ladder shorter than it. The encoders start once the
+// source's configuration is known: at once, or for an Annex B source at its
+// first keyframe.
+func (p *pipeline) transcode(ctx context.Context, t msf.Track, init []byte, format sourceFormat) error {
+	in, err := newSource(t, init, format)
 	if err != nil {
-		return fmt.Errorf("abr: source decoder configuration: %w", err)
-	}
-	width, height := cfg.Width, cfg.Height
-	if t.Width != nil && t.Height != nil && *t.Width > 0 && *t.Height > 0 {
-		width, height = int(*t.Width), int(*t.Height)
+		return err
 	}
 	info := p.publishInfo(ctx, t.Name, defaultVideoInfo)
 
 	// The source itself is the top rendition.
-	src := outputTrack(t)
-	src.AltGroup = new(int64(videoAltGroup))
-	src.Width, src.Height = new(int64(width)), new(int64(height))
-	if src.Label == "" {
-		src.Label = fmt.Sprintf("%dp (source)", height)
-	}
+	src := sourceRendition(t, in.config)
 	srcOut := newTrack()
 	defer srcOut.close()
 	if err := p.out.addTrack(src, init, info, srcOut); err != nil {
 		return err
 	}
 
+	ctx, cancel := context.WithCancelCause(ctx)
+	defer cancel(nil)
+	var enc *encoding
+	defer func() {
+		if enc != nil {
+			enc.closeTracks()
+		}
+	}()
+	startEncoding := func(sc sourceConfig) bool {
+		if src.Height == nil {
+			// Published before its size was known (an Annex B source whose
+			// catalog states none): state the decoded one now.
+			if sized := sourceRendition(t, &sc); sized.Height != nil {
+				if err := p.out.setSize(src.Name, *sized.Width, *sized.Height, sized.Label); err != nil {
+					slog.Warn("abr: state source size", "error", err)
+				}
+			}
+		}
+		width, height, _ := sourceSize(t, &sc)
+		slog.Info("abr: encoding renditions", "broadcast", p.src, "source", format, "width", width, "height", height)
+		e, err := p.startEncoding(ctx, sc, width, height, info)
+		if err != nil {
+			cancel(err)
+			return false
+		}
+		enc = e
+		return true
+	}
+	if in.config != nil && !startEncoding(*in.config) {
+		return context.Cause(ctx)
+	}
+
+	rate := newBitrateMeter()
+	dropping := false
+	err = p.readTrack(ctx, t.Name, srcOut.openGroup, func(seq moqt.GroupSequence, i int, f *moqt.Frame) {
+		srcOut.writeFrame(f)
+		ts, data, err := cmaf.DecodeLOC(f.Body())
+		if err != nil {
+			slog.Warn("abr: source frame is not LOC", "broadcast", p.src, "error", err)
+			return
+		}
+		if bps, ok := rate.add(ts, len(data), i == 0); ok {
+			if err := p.out.setBitrate(src.Name, bps); err != nil {
+				slog.Warn("abr: state source bitrate", "error", err)
+			}
+		}
+		data, ok := in.frame(data, i == 0)
+		if !ok {
+			return // not decodable yet, before the first keyframe of an Annex B source
+		}
+		// Once the encoders failed to start, ctx is cancelled: the rest of
+		// the group must not start ffmpeg again for each frame.
+		if enc == nil && (ctx.Err() != nil || !startEncoding(*in.config)) {
+			return
+		}
+		if len(enc.encoders) == 0 || (dropping && i != 0) {
+			return
+		}
+		select {
+		case enc.queue <- sourceFrame{frameInfo: frameInfo{Group: seq, First: i == 0, Timestamp: ts, WireTimestamp: f.Timestamp}, Data: data}:
+			dropping = false
+		default:
+			if !dropping {
+				slog.Warn("abr: encoder is behind; dropping source frames up to the next group", "broadcast", p.src)
+			}
+			dropping = true
+		}
+	}, srcOut.endGroup)
+	if cause := context.Cause(ctx); cause != nil && !errors.Is(cause, context.Canceled) {
+		err = cause // the encoders did not start
+	}
+	if enc != nil {
+		if ferr := enc.finish(); ferr != nil && err == nil && ctx.Err() == nil {
+			err = ferr
+		}
+	}
+	return err
+}
+
+// encoding is the renditions of a source being encoded, and the encoders and
+// queue that encode them.
+type encoding struct {
+	r        *renditions
+	encoders []*encoder
+	// queue feeds the encoders, so a slow encoder never holds up the source
+	// track's own forwarding; fed reports how feeding them ended.
+	queue chan sourceFrame
+	fed   chan error
+}
+
+// startEncoding starts encoding the renditions of the ladder shorter than a
+// source of width×height, configured as sc, publishing them with the
+// source's publisher properties info.
+func (p *pipeline) startEncoding(ctx context.Context, sc sourceConfig, width, height int, info moqt.PublishInfo) (*encoding, error) {
 	var outputs []output
 	for _, r := range below(p.cfg.Ladder, height) {
 		w, h := r.Size(width, height)
@@ -268,7 +411,6 @@ func (p *pipeline) transcode(ctx context.Context, t msf.Track, init []byte) erro
 	r := &renditions{out: p.out, outputs: outputs, info: info, tracks: make([]*track, len(outputs)), configured: make([]bool, len(outputs))}
 	for i := range r.tracks {
 		r.tracks[i] = newTrack()
-		defer r.tracks[i].close()
 	}
 
 	// One ffmpeg decodes the source once for every rendition. Windows cannot
@@ -286,55 +428,32 @@ func (p *pipeline) transcode(ctx context.Context, t msf.Track, init []byte) erro
 		}
 		groups = append(groups, all)
 	}
-	sc := sourceConfig{Codec: t.Codec, Width: cfg.Width, Height: cfg.Height, Description: init}
 	encoders, err := startEncoders(ctx, p.cfg.Encoder, sc, outputs, groups, r)
 	if err != nil {
-		return err
+		for _, t := range r.tracks {
+			t.close()
+		}
+		return nil, err
 	}
-
-	// The encoders are fed from a queue, so a slow encoder never holds up the
-	// source track's own forwarding.
-	queue := make(chan sourceFrame, encodeQueue)
-	fed := make(chan error, 1)
+	e := &encoding{r: r, encoders: encoders, queue: make(chan sourceFrame, encodeQueue), fed: make(chan error, 1)}
 	go func() {
-		fed <- feed(queue, encoders)
+		e.fed <- feed(e.queue, encoders)
 	}()
+	return e, nil
+}
 
-	rate := newBitrateMeter()
-	dropping := false
-	err = p.readTrack(ctx, t.Name, srcOut.openGroup, func(seq moqt.GroupSequence, i int, f *moqt.Frame) {
-		srcOut.writeFrame(f)
-		ts, data, err := cmaf.DecodeLOC(f.Body())
-		if err != nil {
-			slog.Warn("abr: source frame is not LOC", "broadcast", p.src, "error", err)
-			return
-		}
-		if bps, ok := rate.add(ts, len(data), i == 0); ok {
-			if err := p.out.setBitrate(src.Name, bps); err != nil {
-				slog.Warn("abr: state source bitrate", "error", err)
-			}
-		}
-		if len(encoders) == 0 {
-			return
-		}
-		if dropping && i != 0 {
-			return
-		}
-		select {
-		case queue <- sourceFrame{frameInfo: frameInfo{Group: seq, First: i == 0, Timestamp: ts, WireTimestamp: f.Timestamp}, Data: data}:
-			dropping = false
-		default:
-			if !dropping {
-				slog.Warn("abr: encoder is behind; dropping source frames up to the next group", "broadcast", p.src)
-			}
-			dropping = true
-		}
-	}, srcOut.endGroup)
-	close(queue)
-	if ferr := <-fed; ferr != nil && err == nil && ctx.Err() == nil {
-		err = ferr
+// finish closes the queue, waits for the encoders to drain and exit, and
+// returns how feeding them ended.
+func (e *encoding) finish() error {
+	close(e.queue)
+	return <-e.fed
+}
+
+// closeTracks ends the renditions' tracks for their subscribers.
+func (e *encoding) closeTracks() {
+	for _, t := range e.r.tracks {
+		t.close()
 	}
-	return err
 }
 
 // startEncoders starts an encoder for each group of output indexes. If one

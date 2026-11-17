@@ -22,9 +22,13 @@ type Key struct {
 	Public ed25519.PublicKey
 	// Prefix is the directory, in MoQ's form ("/acme/"), every root a token
 	// signed by this key may grant lies at or beneath, or at or beneath its
-	// mirror under HLSDirectory ("/.hls/acme/"). "/" leaves the key
-	// unconstrained.
+	// mirror under the directory of an opt-in the key holds ("/.hls/acme/",
+	// "/.abr/acme/"; see OptIns). "/" leaves the key unconstrained.
 	Prefix string
+	// OptIns lists the opt-ins the key signs for: the key set's "optIns"
+	// member, which a control plane sets as its tenant pays for an egress.
+	// A key holds exactly these, every opt-in alike: none listed holds none.
+	OptIns []OptIn
 	// Pause lists what the key starts no new sessions for. Only ActionPublish
 	// can be paused: a verifier then starts no session that may publish with
 	// the key, and a funnel creates no track with it (ActionCreate), even one
@@ -36,11 +40,11 @@ type Key struct {
 }
 
 // Holds reports whether root, a directory in MoQ's form, lies at or beneath
-// the key's prefix or its mirror under HLSDirectory: whether a token the key
-// signed may grant beneath it. The empty root, which grants nothing, is every
-// key's.
+// the key's prefix or its mirror under the directory of an opt-in it holds:
+// whether a token the key signed may grant beneath it. The empty root, which
+// grants nothing, is every key's.
 func (k Key) Holds(root string) bool {
-	return root == "" || within(root, k.Prefix)
+	return root == "" || within(root, k.Prefix, k.OptIns)
 }
 
 // Pauses reports whether the key starts no new sessions for action.
@@ -81,8 +85,9 @@ func (k SigningKey) Public() Key {
 	return Key{ID: k.ID, Public: k.Private.Public().(ed25519.PublicKey), Prefix: k.Prefix}
 }
 
-// jwk is one Ed25519 key in JWK form (RFC 8037), plus "prefix" and "pause"
-// members. D is set only for a private key.
+// jwk is one Ed25519 key in JWK form (RFC 8037), plus "prefix", "pause" and
+// "optIns" members (RFC 7517 §4 lets a JWK carry members of its own). D is
+// set only for a private key.
 type jwk struct {
 	Kty    string   `json:"kty"`
 	Crv    string   `json:"crv"`
@@ -91,10 +96,11 @@ type jwk struct {
 	Kid    string   `json:"kid,omitempty"`
 	Prefix string   `json:"prefix,omitempty"`
 	Pause  []Action `json:"pause,omitempty"`
+	OptIns []OptIn  `json:"optIns,omitempty"`
 }
 
 func (k Key) jwk() jwk {
-	return jwk{Kty: "OKP", Crv: "Ed25519", X: base64.RawURLEncoding.EncodeToString(k.Public), Kid: k.ID, Prefix: k.Prefix, Pause: k.Pause}
+	return jwk{Kty: "OKP", Crv: "Ed25519", X: base64.RawURLEncoding.EncodeToString(k.Public), Kid: k.ID, Prefix: k.Prefix, Pause: k.Pause, OptIns: k.OptIns}
 }
 
 // MarshalKeySet encodes keys as a JWK Set, the file a relay loads
@@ -109,8 +115,13 @@ func MarshalKeySet(keys ...Key) ([]byte, error) {
 		if err != nil {
 			return nil, fmt.Errorf("token: key %d: %w", i, err)
 		}
+		optIns, err := normalizeOptIns(k.OptIns)
+		if err != nil {
+			return nil, fmt.Errorf("token: key %d: %w", i, err)
+		}
 		j := k.jwk()
 		j.Pause = pause
+		j.OptIns = optIns
 		set.Keys = append(set.Keys, j)
 	}
 	return json.Marshal(set, jsontext.WithIndent("  "))
@@ -128,6 +139,24 @@ func normalizePause(pause []Action) ([]Action, error) {
 		return nil, nil
 	}
 	return []Action{ActionPublish}, nil
+}
+
+// normalizeOptIns checks that optIns names only known opt-ins and returns
+// them once each, in OptIns order, or nil for none, so equal sets compare
+// equal.
+func normalizeOptIns(optIns []OptIn) ([]OptIn, error) {
+	for _, o := range optIns {
+		if o.Directory() == "" {
+			return nil, fmt.Errorf("optIns %q: not one of %v", o, OptIns())
+		}
+	}
+	var out []OptIn
+	for _, o := range OptIns() {
+		if slices.Contains(optIns, o) {
+			out = append(out, o)
+		}
+	}
+	return out, nil
 }
 
 // MarshalJWK encodes k as a private JWK, the file an app signs with
@@ -218,7 +247,11 @@ func ParseKeySet(raw []byte) (map[string]Key, error) {
 		if err != nil {
 			return nil, fmt.Errorf("token: key %d: %w", i, err)
 		}
-		keys[kid] = Key{ID: kid, Public: ed25519.PublicKey(x), Prefix: prefix, Pause: pause}
+		optIns, err := normalizeOptIns(k.OptIns)
+		if err != nil {
+			return nil, fmt.Errorf("token: key %d: %w", i, err)
+		}
+		keys[kid] = Key{ID: kid, Public: ed25519.PublicKey(x), Prefix: prefix, Pause: pause, OptIns: optIns}
 	}
 	return keys, nil
 }

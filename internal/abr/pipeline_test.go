@@ -77,9 +77,55 @@ func TestOutputTrack(t *testing.T) {
 	assert.Equal(t, "avc1.64001f", got.Codec)
 }
 
-func TestAliasError(t *testing.T) {
-	err := &AliasError{Alias: "/.hls/live/cam1", Target: "/live/cam1"}
-	assert.Equal(t, "abr: /.hls/live/cam1 redirects to /live/cam1", err.Error())
+// The source rendition is sized by its catalog when that states a positive
+// width and height, else by its decoded configuration, and states no size
+// (nor a label from one) when neither is known: never 0p.
+func TestSourceRendition(t *testing.T) {
+	decoded := &sourceConfig{Width: 640, Height: 360}
+	tests := map[string]struct {
+		width, height *int64
+		label         string
+		config        *sourceConfig
+		wantSize      []int64 // width, height; nil for none
+		wantLabel     string
+	}{
+		"catalog size":                     {width: new(int64(1280)), height: new(int64(720)), config: decoded, wantSize: []int64{1280, 720}, wantLabel: "720p (source)"},
+		"catalog size, not decoded yet":    {width: new(int64(1280)), height: new(int64(720)), wantSize: []int64{1280, 720}, wantLabel: "720p (source)"},
+		"catalog label kept":               {width: new(int64(1280)), height: new(int64(720)), label: "HD", wantSize: []int64{1280, 720}, wantLabel: "HD"},
+		"no catalog size, decoded":         {config: decoded, wantSize: []int64{640, 360}, wantLabel: "360p (source)"},
+		"no catalog size, not decoded yet": {},
+		"no catalog height, decoded":       {width: new(int64(1280)), config: decoded, wantSize: []int64{640, 360}, wantLabel: "360p (source)"},
+		"zero width, decoded":              {width: new(int64(0)), height: new(int64(720)), config: decoded, wantSize: []int64{640, 360}, wantLabel: "360p (source)"},
+		"zero height, decoded":             {width: new(int64(1280)), height: new(int64(0)), config: decoded, wantSize: []int64{640, 360}, wantLabel: "360p (source)"},
+		"zero size, decoded":               {width: new(int64(0)), height: new(int64(0)), config: decoded, wantSize: []int64{640, 360}, wantLabel: "360p (source)"},
+		"zero size, not decoded yet":       {width: new(int64(0)), height: new(int64(0))},
+		"zero size, catalog label kept":    {width: new(int64(0)), height: new(int64(0)), label: "cam", wantLabel: "cam"},
+		"negative size, decoded":           {width: new(int64(-1)), height: new(int64(-1)), config: decoded, wantSize: []int64{640, 360}, wantLabel: "360p (source)"},
+		"decoded size unusable":            {config: &sourceConfig{}},
+	}
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			track := msf.Track{Name: "video", Namespace: "/live/cam1", Codec: "avc1.42c01e", Width: tt.width, Height: tt.height, Label: tt.label}
+			got := sourceRendition(track, tt.config)
+			require.NotNil(t, got.AltGroup)
+			assert.EqualValues(t, videoAltGroup, *got.AltGroup)
+			assert.Empty(t, got.Namespace)
+			assert.Equal(t, tt.wantLabel, got.Label)
+			if tt.wantSize == nil {
+				assert.Nil(t, got.Width)
+				assert.Nil(t, got.Height)
+				return
+			}
+			require.NotNil(t, got.Width)
+			require.NotNil(t, got.Height)
+			assert.Equal(t, tt.wantSize, []int64{*got.Width, *got.Height})
+		})
+	}
+}
+
+func TestMisdirectedError(t *testing.T) {
+	err := &MisdirectedError{OptIn: "/.abr/live/cam1", Broadcast: "/live/cam1", To: "/live/other"}
+	assert.Equal(t, "abr: the opt-in /.abr/live/cam1 leads to /live/other, not /live/cam1", err.Error())
 }
 
 // newTestRenditions returns renditions publishing into a fresh output

@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/url"
 	"time"
 
 	"github.com/qumo-dev/gomoqt/moqt"
@@ -37,6 +38,26 @@ func Sign(key token.SigningKey, g token.Grant) (string, time.Time, error) {
 		return "", time.Time{}, fmt.Errorf("sign relay credential: %w", err)
 	}
 	return tok, lapses, nil
+}
+
+// Target returns relayURL carrying a credential granting g, freshly signed
+// with key, as ?jwt= in place of any it carried, and when that credential's
+// grant lapses (Sign).
+func Target(relayURL string, key token.SigningKey, g token.Grant) (string, time.Time, error) {
+	credential, lapses, err := Sign(key, g)
+	if err != nil {
+		return "", time.Time{}, err
+	}
+	u, err := url.Parse(relayURL)
+	if err != nil {
+		// url.Parse's error quotes the URL, whose query may carry a
+		// credential: report only that it is invalid.
+		return "", time.Time{}, errors.New("RELAY_URL: invalid URL")
+	}
+	query := u.Query()
+	query.Set("jwt", credential)
+	u.RawQuery = query.Encode()
+	return u.String(), lapses, nil
 }
 
 // credential is a token presented on an Auth Stream, as keeping a grant in

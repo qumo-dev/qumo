@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -21,24 +22,28 @@ import (
 	"github.com/qumo-dev/qumo/internal/abr"
 	"github.com/qumo-dev/qumo/internal/cmaf"
 	"github.com/qumo-dev/qumo/internal/ffpub"
-	"github.com/qumo-dev/qumo/internal/hlsoptin"
 	"github.com/qumo-dev/qumo/internal/ingest"
+	"github.com/qumo-dev/qumo/internal/optin"
+	"github.com/qumo-dev/qumo/token"
 )
 
 // TestABR_RenditionsBesideSource publishes a 720p broadcast over RTMP to an
-// ingest behind a relay, runs the ABR transcoder against the relay, and
-// subscribes to the ABR broadcast it publishes: the catalog lists the source
-// video and each rendition shorter than it in one alternate group, and every
-// video track numbers its groups as the source does, each group starting at
-// the same frame with a keyframe.
+// ingest behind a relay, opts it into the ABR transcoder beneath /.abr/, runs
+// the transcoder against the relay, and subscribes to the ABR broadcast it
+// publishes: the catalog lists the source video and each rendition shorter
+// than it in one alternate group, and every video track numbers its groups as
+// the source does, each group starting at the same frame with a keyframe.
 func TestABR_RenditionsBesideSource(t *testing.T) {
 	if !ffpub.Available() {
 		t.Skip("ffmpeg not on PATH")
 	}
 	const (
-		src   = moqt.BroadcastPath("/live/abrtest")
-		dst   = moqt.BroadcastPath("/live/abrtest.abr")
-		alias = moqt.BroadcastPath("/.hls/live/abrtest")
+		src = moqt.BroadcastPath("/live/abrtest")
+		dst = moqt.BroadcastPath("/live/abrtest.abr")
+		// A broadcast announced without an opt-in.
+		plain = moqt.BroadcastPath("/live/plain")
+		// An opt-in that redirects to another's broadcast than its own.
+		misdirected = moqt.BroadcastPath("/live/misdirected")
 	)
 	addr, srv := startAuthRelay(t, authOff, nil)
 	url := "https://" + addr + "/"
@@ -71,9 +76,14 @@ func TestABR_RenditionsBesideSource(t *testing.T) {
 	pubCtx, stopPub := context.WithCancel(ctx)
 	defer stopPub()
 	require.NoError(t, pub.Start(pubCtx))
-	// An HLS opt-in for the source: an alias, which redirects every
-	// subscription to it, and which is not to be transcoded again.
-	ingestMux.Publish(ctx, alias, hlsoptin.Handler(src))
+	// The opt-in, as an MoQ publisher announces it: no media, a redirect to
+	// the broadcast. It may be withdrawn on its own.
+	optInCtx, withdraw := context.WithCancel(ctx)
+	defer withdraw()
+	ingestMux.Publish(optInCtx, optin.Path(token.ABRDirectory, src), optin.Handler(src))
+	// Neither of these is transcoded.
+	ingestMux.PublishFunc(ctx, plain, func(tw *moqt.TrackWriter) { tw.CloseWithError(moqt.SubscribeErrorCodeNotFound) })
+	ingestMux.Publish(ctx, optin.Path(token.ABRDirectory, misdirected), optin.Handler(src))
 	t.Cleanup(func() {
 		stopPub() // ffmpeg publishes until its context ends
 		_ = pub.Wait()
@@ -82,18 +92,25 @@ func TestABR_RenditionsBesideSource(t *testing.T) {
 
 	// The transcoder.
 	tc := &abr.Transcoder{
-		Prefix: "/",
 		Suffix: ".abr",
 		Config: abr.Config{
 			Ladder:  []abr.Rung{{Height: 360, Bitrate: 800_000}, {Height: 240, Bitrate: 400_000}},
 			Encoder: abr.EncoderConfig{FFmpeg: "ffmpeg", Codec: "libx264", Preset: "ultrafast"},
 		},
 	}
+	// Every announcement beneath /live/ from here on, however briefly made.
+	watcher := dialOver(t, url, nil, moqt.NewTrackMux(0))
+	announced := watchAnnouncements(t, ctx, watcher, "/live/")
+
 	abrMux := moqt.NewTrackMux(0)
 	abrSess := dialOver(t, url, nil, abrMux)
 	go func() { _ = tc.Serve(ctx, abrSess, abrMux) }()
 	require.Eventually(t, routed(srv, dst), 10*time.Second, 50*time.Millisecond)
-	require.Never(t, routed(srv, alias+".abr"), 3*time.Second, 100*time.Millisecond, "the alias was transcoded")
+	// Long enough for a refused opt-in to have been retried, had it been.
+	time.Sleep(3 * time.Second)
+	for _, p := range []moqt.BroadcastPath{plain + ".abr", misdirected + ".abr"} {
+		assert.NotContains(t, announced(), p, "a broadcast was transcoded without its own opt-in")
+	}
 
 	// The viewer.
 	viewer := dialOver(t, url, nil, moqt.NewTrackMux(0))
@@ -178,12 +195,50 @@ func TestABR_RenditionsBesideSource(t *testing.T) {
 		}
 	})
 
+	t.Run("withdrawing the opt-in ends the ABR broadcast", func(t *testing.T) {
+		require.True(t, routed(srv, dst)(), "routed while opted in")
+		withdraw()
+		require.Eventually(t, func() bool { return !routed(srv, dst)() }, 15*time.Second, 100*time.Millisecond,
+			"the ABR broadcast outlived its opt-in")
+		require.True(t, routed(srv, src)(), "the source itself plays on")
+
+		// Opting in again brings it back.
+		ingestMux.Publish(ctx, optin.Path(token.ABRDirectory, src), optin.Handler(src))
+		require.Eventually(t, routed(srv, dst), 15*time.Second, 100*time.Millisecond)
+	})
+
 	t.Run("the ABR broadcast ends with its source", func(t *testing.T) {
 		require.True(t, routed(srv, dst)(), "routed while the source plays")
 		stopPub()
 		require.Eventually(t, func() bool { return !routed(srv, dst)() }, 15*time.Second, 100*time.Millisecond,
 			"the ABR broadcast outlived its source")
 	})
+}
+
+// watchAnnouncements records every broadcast announced beneath prefix on
+// sess from now until ctx ends, and returns what it has recorded so far.
+// Unlike polling a route, it misses no announcement however brief.
+func watchAnnouncements(t *testing.T, ctx context.Context, sess *moqt.Session, prefix string) func() []moqt.BroadcastPath {
+	t.Helper()
+	ar, err := sess.AcceptAnnounce(prefix)
+	require.NoError(t, err)
+	var (
+		mu   sync.Mutex
+		seen []moqt.BroadcastPath
+	)
+	go func() {
+		defer ar.Close()
+		for ann := range ar.Announcements(ctx) {
+			mu.Lock()
+			seen = append(seen, ann.BroadcastPath())
+			mu.Unlock()
+		}
+	}()
+	return func() []moqt.BroadcastPath {
+		mu.Lock()
+		defer mu.Unlock()
+		return slices.Clone(seen)
+	}
 }
 
 // waitCatalog subscribes to path's catalog and returns the first one that

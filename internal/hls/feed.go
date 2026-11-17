@@ -24,6 +24,7 @@ import (
 	"github.com/okdaichi/qumo-ledger/ledger/store"
 
 	"github.com/qumo-dev/qumo/internal/cmaf"
+	"github.com/qumo-dev/qumo/internal/optin"
 	"github.com/qumo-dev/qumo/internal/relay"
 	"github.com/qumo-dev/qumo/internal/relaycred"
 	"github.com/qumo-dev/qumo/internal/tlsclient"
@@ -175,18 +176,7 @@ func (c feedConfig) target() (string, time.Time, error) {
 	if c.signingKey == nil {
 		return c.relayURL, time.Time{}, nil
 	}
-	credential, lapses, err := relaycred.Sign(*c.signingKey, c.grant())
-	if err != nil {
-		return "", time.Time{}, err
-	}
-	u, err := url.Parse(c.relayURL)
-	if err != nil {
-		return "", time.Time{}, errors.New("RELAY_URL: invalid URL")
-	}
-	query := u.Query()
-	query.Set("jwt", credential)
-	u.RawQuery = query.Encode()
-	return u.String(), lapses, nil
+	return relaycred.Target(c.relayURL, *c.signingKey, c.grant())
 }
 
 // relayTLSConfig builds the client TLS config for dialing the relay. The egress
@@ -374,7 +364,7 @@ func (g *broadcastGate) acquire(ctx context.Context, broadcast string) (func(), 
 // them into ledger tracks until the announcement ends.
 func handleAnnouncement(ctx context.Context, session *moqt.Session, ann *moqt.Announcement, store store.Store, mux *streamMux, gate *broadcastGate, window uint64, cfg feedConfig) {
 	annPath := string(ann.BroadcastPath())
-	realBroadcast, ok := broadcastPathFromAnnounce(annPath, announcePrefix)
+	realBroadcast, ok := optin.Broadcast(annPath, announcePrefix)
 	if !ok {
 		slog.Warn("hls: refusing opt-in with a . or .. segment", "announce", annPath)
 		return

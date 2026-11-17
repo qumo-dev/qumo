@@ -210,18 +210,7 @@ func (u *Upstream) target() (string, time.Time, error) {
 	if u.key == nil {
 		return u.url, time.Time{}, nil
 	}
-	credential, lapses, err := relaycred.Sign(*u.key, publishGrant(u.publish))
-	if err != nil {
-		return "", time.Time{}, err
-	}
-	parsed, err := url.Parse(u.url)
-	if err != nil {
-		return "", time.Time{}, err
-	}
-	query := parsed.Query()
-	query.Set("jwt", credential)
-	parsed.RawQuery = query.Encode()
-	return parsed.String(), lapses, nil
+	return relaycred.Target(u.url, *u.key, publishGrant(u.publish))
 }
 
 // RelayName describes relayURL for a startup banner without its credential:
