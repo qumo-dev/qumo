@@ -36,7 +36,7 @@ func TestUsageReporter_ViewersAreTotalled(t *testing.T) {
 	for _, rec := range first {
 		byKID[rec.KID] = rec
 		assert.Equal(t, usage.Viewers, rec.Type)
-		assert.Equal(t, r.runID, rec.Run)
+		assert.Equal(t, r.meter.RunID(), rec.Run)
 		assert.Empty(t, rec.SessionID)
 		assert.NoError(t, rec.Validate())
 	}
@@ -93,11 +93,6 @@ func TestUsageReporter_PublishersStayPerSession(t *testing.T) {
 		assert.NoError(t, rec.Validate())
 	}
 	assert.ElementsMatch(t, []string{"session_open p1", "session_open p2", "usage p1"}, got)
-}
-
-func TestUsageReporter_EachRunHasItsOwnTotals(t *testing.T) {
-	a, b := newTestUsage(t, &fakeUsageSink{}), newTestUsage(t, &fakeUsageSink{})
-	assert.NotEqual(t, a.runID, b.runID, "a restarted relay starts new totals rather than lowering old ones")
 }
 
 // publishing turns a viewer into a publisher once: a session it doesn't know,

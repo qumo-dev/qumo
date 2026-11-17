@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **A relay signs its key-set and usage requests, and `qumo dns` its feed reads, with its peer identity (`internal/reqsign`, #601).** With `PEER_CERT_FILE` and `PEER_KEY_FILE` (an ECDSA key; `qumo dns` takes the same two settings), each request carries `X-Relay-Certificate`, `X-Relay-Timestamp` and `X-Relay-Signature`: the key's ECDSA signature (ASN.1, base64) over SHA-256 of `qumo-relay-request`, the method, the request URI (path and query), the timestamp and the hex SHA-256 of the body, one per line, signed again on every retry. The receiver then knows which relay is calling from a key only that relay holds, and a captured request can't be changed or used for long, where a bearer token copied from a node could be reused until it is replaced. The bearer token (`QUMO_RELAY_TOKEN`, `QUMO_DNS_FEED_TOKEN`) is still sent beside it. A 401 is logged with the server's `Date` beside the local time. Funnel, HLS and ingest, which have no peer identity, are unchanged.
 
+### Changed
+
+- **Usage reporting is a package of its own, for every server to use (`internal/meter`).** What sends usage records (`usage.Record`) to `QUMO_USAGE_URL` is no longer the relay's: `meter.Reporter` takes a server's sessions (`Open`, `Report` with cumulative metrics, `Close`) and running totals per key (`Total`), and keeps them in memory, coalesces each session's usage, batches by 500, retries through an outage, signs the requests when given a signer and sends what is left at shutdown, as the relay did. The relay reports through it, with what it decides itself (a publisher by itself, viewers in one total per key) kept in `internal/auth`. The records the relay sends are unchanged.
+
 ## [v0.20.261114] - 2026-11-14
 
 ### Added
