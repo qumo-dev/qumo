@@ -10,7 +10,6 @@ import (
 
 // FLV tag types (FLV specification v10.1, E.4.1).
 const (
-	flvTagAudio  = 8
 	flvTagVideo  = 9
 	flvTagScript = 18
 )

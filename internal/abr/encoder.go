@@ -324,9 +324,6 @@ func (e *encoder) encode(f sourceFrame) error {
 // close closes the encoder's input, waits for ffmpeg to flush and exit and for
 // every output to be read, and returns how ffmpeg exited.
 func (e *encoder) close() error {
-	if e.cmd == nil {
-		return nil
-	}
 	_ = e.stdin.Close() // not actionable: ffmpeg sees end of input either way
 	// Every pipe is read to its end before Wait, which closes them.
 	e.done.Wait()

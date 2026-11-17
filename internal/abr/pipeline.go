@@ -9,7 +9,6 @@ import (
 	"log/slog"
 	"runtime"
 	"strings"
-	"sync"
 
 	"github.com/qumo-dev/gomoqt/moqt"
 	"github.com/qumo-dev/gomoqt/msf"
@@ -521,8 +520,8 @@ type renditions struct {
 	outputs []output
 	info    moqt.PublishInfo
 	tracks  []*track
-
-	mu         sync.Mutex
+	// configured reports, per rendition, that its track is in the catalog.
+	// Only that rendition's goroutine touches its element (renditionSink).
 	configured []bool
 }
 
@@ -551,19 +550,14 @@ func (r *renditions) Configure(i int, record []byte) {
 		slog.Warn("abr: add rendition", "rendition", t.Name, "error", err)
 		return
 	}
-	r.mu.Lock()
 	r.configured[i] = true
-	r.mu.Unlock()
 }
 
 // WriteFrame adds a frame to rendition i's track, opening a group wherever the
 // source opened one, so the rendition's groups are numbered as the source's
 // and start at the same frames.
 func (r *renditions) WriteFrame(i int, f renditionFrame) {
-	r.mu.Lock()
-	configured := r.configured[i]
-	r.mu.Unlock()
-	if !configured {
+	if !r.configured[i] {
 		return
 	}
 	tr := r.tracks[i]

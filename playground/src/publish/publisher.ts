@@ -355,8 +355,6 @@ export class Publisher {
 		}
 	}
 
-	// Replaces the catalog. Resolves either way: a catalog that could not be
-	// updated is logged, and the broadcast goes on with the one it has.
 	// Announces the opt-in of the broadcast at path into egress, until done.
 	#optIn(
 		done: Promise<void>,
@@ -386,6 +384,8 @@ export class Publisher {
 			});
 	}
 
+	// Replaces the catalog. Resolves either way: a catalog that could not be
+	// updated is logged, and the broadcast goes on with the one it has.
 	async #describe(broadcast: Broadcast, tracks: Track[]): Promise<void> {
 		try {
 			await broadcast.setCatalog({ version: 1, tracks });
