@@ -268,6 +268,12 @@ func TestSameBroadcast(t *testing.T) {
 		"a doubled slash":       {a: "/acme//cam", b: "/acme/cam", want: true},
 		"another broadcast":     {a: "/other/cam", b: "/acme/cam", want: false},
 		"beneath the broadcast": {a: "/acme/cam/hd", b: "/acme/cam", want: false},
+		// The relay routes /victim/../acme/cam beneath /victim/: a redirect
+		// there is not to /acme/cam, however it cleans.
+		"climbing out of another's directory": {a: "/victim/../acme/cam", b: "/acme/cam", want: false},
+		"a . segment":                         {a: "/acme/./cam", b: "/acme/cam", want: false},
+		"a .. segment on either side":         {a: "/acme/cam", b: "/acme/x/../cam", want: false},
+		"a name with dots":                    {a: "/acme/cam..hd", b: "/acme/cam..hd", want: true},
 	}
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
