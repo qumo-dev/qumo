@@ -1081,7 +1081,9 @@ func (s *Server) serveTicket(w *moqt.AuthWriter, r *moqt.AuthRequest) {
 	release, current := a.roots.registerTicket(h)
 	defer release()
 	// A ticket a later one replaced before it registered is withdrawn
-	// already: it holds, binds or publishes nothing, and is counted refused.
+	// already: it holds, binds or publishes nothing. Its presenter was
+	// answered AUTH_OK and is told it was superseded, so it is counted
+	// granted and superseded, as one replaced once registered is.
 	if current && grantsSomething(grant) {
 		a.holding()
 		defer a.released()
@@ -1095,13 +1097,14 @@ func (s *Server) serveTicket(w *moqt.AuthWriter, r *moqt.AuthRequest) {
 			func(publishes bool) { s.Tickets.Bind(a.req.ID, tg.KeyID(), publishes) },
 			func() { s.Tickets.Publishing(a.req.ID) })
 	}
+	metricTickets.WithLabelValues(ticketGranted).Inc()
 	if !current {
-		metricTickets.WithLabelValues(ticketRefused).Inc()
+		metricTickets.WithLabelValues(ticketSuperseded).Inc()
+		slog.Debug("relay: ticket superseded by a later one for its root", "id", a.req.ID, "root", tg.Token().Root)
 		// not actionable: a failure to tell the presenter is its stream failing.
 		_ = w.Refuse(moqt.NoError, "superseded by a later ticket for its root")
 		return
 	}
-	metricTickets.WithLabelValues(ticketGranted).Inc()
 	if publishes && !anonymous {
 		s.Tickets.Publishing(a.req.ID)
 	}

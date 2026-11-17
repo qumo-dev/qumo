@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **A relay signs its key-set and usage requests, and `qumo dns` its feed reads, with its peer identity (`internal/reqsign`, #601).** With `PEER_CERT_FILE` and `PEER_KEY_FILE` (an ECDSA key; `qumo dns` takes the same two settings), each request carries `X-Relay-Certificate`, `X-Relay-Timestamp` and `X-Relay-Signature`: the key's ECDSA signature (ASN.1, base64) over SHA-256 of `qumo-relay-request`, the method, the request URI (path and query), the timestamp and the hex SHA-256 of the body, one per line, signed again on every retry. The receiver then knows which relay is calling from a key only that relay holds, and a captured request can't be changed or used for long, where a bearer token copied from a node could be reused until it is replaced. The bearer token (`QUMO_RELAY_TOKEN`, `QUMO_DNS_FEED_TOKEN`) is still sent beside it. A 401 is logged with the server's `Date` beside the local time. Funnel, HLS and ingest, which have no peer identity, are unchanged.
 
+### Fixed
+
+- **A ticket superseded right after its AUTH_OK is counted superseded, not refused (`internal/relay`).** The relay answers AUTH_OK for a ticket before registering it, so that what it replaces ends with no moment when neither covers what both do. A later ticket for the same root presented in that window could register first: the earlier one was then withdrawn with NO_ERROR ("superseded by a later ticket for its root"), as its presenter was told, but counted in `qumo_relay_tickets_total{result="refused"}`, and never as granted. It is now counted `granted` and `superseded`, as a ticket replaced once registered is. A ticket replaced before its AUTH_OK is still counted refused. This also fixes the flaky `TestServer_ServeAuth_TicketSupersedes` test.
+
 ## [v0.20.261114] - 2026-11-14
 
 ### Added
