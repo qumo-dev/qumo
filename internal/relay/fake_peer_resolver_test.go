@@ -10,18 +10,23 @@ var _ peerResolver = (*fakePeerResolver)(nil)
 
 // fakePeerResolver is DNS from tables: hosts maps a name to its addresses,
 // srv an SRV name to its records. A name in neither is not found; with err
-// set, every lookup fails with it. A zero value knows no name. The relay
-// looks up from its own goroutine while a test changes the answers, so
-// everything is read and written under mu: tests change it with answer,
-// answerSRV and fail.
+// set, every lookup fails with it. A lookup of a name in hung blocks until
+// its context ends, as one of an unresponsive DNS server does. A zero value
+// knows no name. The relay looks up from its own goroutines while a test
+// changes the answers, so everything is read and written under mu: tests
+// change it with answer, answerSRV, fail and hang.
 type fakePeerResolver struct {
 	mu    sync.Mutex
 	hosts map[string][]net.IPAddr
 	srv   map[string][]*net.SRV
+	hung  map[string]bool
 	err   error
 }
 
-func (f *fakePeerResolver) LookupIPAddr(_ context.Context, host string) ([]net.IPAddr, error) {
+func (f *fakePeerResolver) LookupIPAddr(ctx context.Context, host string) ([]net.IPAddr, error) {
+	if err := f.wait(ctx, host); err != nil {
+		return nil, err
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.err != nil {
@@ -34,7 +39,10 @@ func (f *fakePeerResolver) LookupIPAddr(_ context.Context, host string) ([]net.I
 	return ips, nil
 }
 
-func (f *fakePeerResolver) LookupSRV(_ context.Context, _, _, name string) (string, []*net.SRV, error) {
+func (f *fakePeerResolver) LookupSRV(ctx context.Context, _, _, name string) (string, []*net.SRV, error) {
+	if err := f.wait(ctx, name); err != nil {
+		return "", nil, err
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.err != nil {
@@ -45,6 +53,31 @@ func (f *fakePeerResolver) LookupSRV(_ context.Context, _, _, name string) (stri
 		return "", nil, &net.DNSError{Err: "no such host", Name: name, IsNotFound: true}
 	}
 	return name, records, nil
+}
+
+// wait blocks until ctx ends if name is hung, and returns ctx's error.
+func (f *fakePeerResolver) wait(ctx context.Context, name string) error {
+	if !f.isHung(name) {
+		return nil
+	}
+	<-ctx.Done()
+	return ctx.Err()
+}
+
+func (f *fakePeerResolver) isHung(name string) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.hung[name]
+}
+
+// hang makes every lookup of name block until its context ends.
+func (f *fakePeerResolver) hang(name string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.hung == nil {
+		f.hung = make(map[string]bool)
+	}
+	f.hung[name] = true
 }
 
 // answer sets host's addresses.

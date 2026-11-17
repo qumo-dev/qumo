@@ -10,6 +10,7 @@ import (
 	"testing/synctest"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/quic-go/quic-go"
 	"github.com/qumo-dev/gomoqt/moqt"
 	"github.com/stretchr/testify/assert"
@@ -89,15 +90,60 @@ func TestPeerEntry_Resolve(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			e, err := parsePeerEntry(tt.raw)
 			require.NoError(t, err)
-			got, err := e.resolve(t.Context(), r)
+			got, err := e.resolve(t.Context(), r, nil)
 			if tt.wantErr {
 				assert.Error(t, err)
+				assert.Nil(t, got)
 				return
 			}
 			require.NoError(t, err)
-			assert.Equal(t, tt.want, got)
+			assert.Equal(t, tt.want, got.addrs())
 		})
 	}
+}
+
+// TestPeerEntry_Resolve_SRVPartialFailure checks that an SRV target whose
+// lookup fails keeps its last addresses, while the targets that resolved
+// are used, and that a target gone from the SRV answer is dropped.
+func TestPeerEntry_Resolve_SRVPartialFailure(t *testing.T) {
+	const name = "_moqt._udp.hubs.example.com"
+	e, err := parsePeerEntry(name)
+	require.NoError(t, err)
+	r := &fakePeerResolver{}
+	r.answer("hub-1.example.com.", "10.0.0.1")
+	r.answer("hub-2.example.com.", "10.0.0.2")
+	r.answerSRV(name,
+		&net.SRV{Target: "hub-1.example.com.", Port: 4433},
+		&net.SRV{Target: "hub-2.example.com.", Port: 4433})
+	prev, err := e.resolve(t.Context(), r, nil)
+	require.NoError(t, err)
+
+	// hub-2's lookup now fails, and hub-3 joins.
+	r.answer("hub-2.example.com.")
+	r.answer("hub-3.example.com.", "10.0.0.3")
+	r.answerSRV(name,
+		&net.SRV{Target: "hub-1.example.com.", Port: 4433},
+		&net.SRV{Target: "hub-2.example.com.", Port: 4433},
+		&net.SRV{Target: "hub-3.example.com.", Port: 4433})
+	got, err := e.resolve(t.Context(), r, prev)
+	assert.ErrorContains(t, err, "hub-2.example.com.", "the failed target is reported")
+	assert.Equal(t, []string{"10.0.0.1:4433", "10.0.0.2:4433", "10.0.0.3:4433"}, got.addrs(),
+		"hub-3 is used, hub-2 keeps its last address")
+
+	// A failed target with no last address is left out.
+	r.answer("hub-4.example.com.")
+	r.answerSRV(name,
+		&net.SRV{Target: "hub-1.example.com.", Port: 4433},
+		&net.SRV{Target: "hub-4.example.com.", Port: 4433})
+	got, err = e.resolve(t.Context(), r, prev)
+	assert.ErrorContains(t, err, "hub-4.example.com.")
+	assert.Equal(t, []string{"10.0.0.1:4433"}, got.addrs(), "hub-2, gone from the SRV answer, is dropped")
+
+	// A failed SRV query answers nothing: the caller keeps its last answer.
+	r.fail(errors.New("i/o timeout"))
+	got, err = e.resolve(t.Context(), r, prev)
+	assert.Error(t, err)
+	assert.Nil(t, got)
 }
 
 func TestPeerEntry_Resolve_Failure(t *testing.T) {
@@ -108,14 +154,15 @@ func TestPeerEntry_Resolve_Failure(t *testing.T) {
 
 	e, err := parsePeerEntry("hubs.example.com:4433")
 	require.NoError(t, err)
-	_, err = e.resolve(t.Context(), r)
+	got, err := e.resolve(t.Context(), r, peerAnswer{"": {"10.0.0.1:4433"}})
 	assert.ErrorIs(t, err, errTimeout)
+	assert.Nil(t, got, "the caller keeps its last answer")
 
 	literal, err := parsePeerEntry("10.0.0.9:4433")
 	require.NoError(t, err)
-	got, err := literal.resolve(t.Context(), r)
+	got, err = literal.resolve(t.Context(), r, nil)
 	require.NoError(t, err, "a literal address asks no DNS")
-	assert.Equal(t, []string{"10.0.0.9:4433"}, got)
+	assert.Equal(t, []string{"10.0.0.9:4433"}, got.addrs())
 }
 
 // peerDials counts the dials each peer address got from a test relay whose
@@ -166,7 +213,7 @@ func runPeers(tb testing.TB, server *Server) (stop func()) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		server.ConnectPeers(ctx)
+		assert.NoError(tb, server.ConnectPeers(ctx))
 	}()
 	return func() {
 		cancel()
@@ -192,7 +239,7 @@ func TestServer_ConnectPeers_FollowsAnswer(t *testing.T) {
 		assert.True(t, server.isConnected("192.0.2.7:4433"), "a literal address is dialed beside the name")
 
 		r.answer("hubs.example.com", "10.0.0.2", "10.0.0.3")
-		time.Sleep(34 * time.Second) // past the interval and its jitter
+		time.Sleep(31 * time.Second) // past the interval
 		synctest.Wait()
 		assert.False(t, server.isConnected("10.0.0.1:4433"), "an address that left is dropped")
 		assert.True(t, server.isConnected("10.0.0.2:4433"))
@@ -202,7 +249,7 @@ func TestServer_ConnectPeers_FollowsAnswer(t *testing.T) {
 
 		// Back in the answer, a dropped address is dialed again.
 		r.answer("hubs.example.com", "10.0.0.1", "10.0.0.2", "10.0.0.3")
-		time.Sleep(34 * time.Second)
+		time.Sleep(31 * time.Second)
 		synctest.Wait()
 		assert.True(t, server.isConnected("10.0.0.1:4433"))
 		assert.Equal(t, 2, dials.count("10.0.0.1:4433"))
@@ -227,7 +274,7 @@ func TestServer_ConnectPeers_FailureKeepsLastAnswer(t *testing.T) {
 			&net.DNSError{Err: "no such host", Name: "hubs.example.com", IsNotFound: true},
 		} {
 			r.fail(err)
-			time.Sleep(34 * time.Second)
+			time.Sleep(31 * time.Second)
 			synctest.Wait()
 			assert.True(t, server.isConnected("10.0.0.1:4433"), "kept through %v", err)
 			assert.True(t, server.isConnected("10.0.0.2:4433"), "kept through %v", err)
@@ -267,7 +314,7 @@ func TestServer_ConnectPeers_SharedAddress(t *testing.T) {
 		assert.Equal(t, 1, dials.count("10.0.0.1:4433"))
 
 		r.answer("hubs.example.com", "10.0.0.2")
-		time.Sleep(34 * time.Second)
+		time.Sleep(31 * time.Second)
 		synctest.Wait()
 		assert.True(t, server.isConnected("10.0.0.1:4433"), "the literal entry still names it")
 		assert.Equal(t, 1, dials.count("10.0.0.1:4433"))
@@ -290,23 +337,122 @@ func TestServer_ConnectPeers_StopsDialLoops(t *testing.T) {
 	})
 }
 
-// TestServer_ConnectPeers_SkipsBadEntry checks that an entry that doesn't
-// parse is skipped and the others are dialed.
-func TestServer_ConnectPeers_SkipsBadEntry(t *testing.T) {
+// TestServer_ConnectPeers_BadEntry checks that ConnectPeers refuses an
+// entry that doesn't parse, dialing nothing.
+func TestServer_ConnectPeers_BadEntry(t *testing.T) {
+	server, dials := newPeerTestServer(t, &fakePeerResolver{}, 0, "10.0.0.1:4433", "[2001:db8::1]")
+	err := server.ConnectPeers(t.Context())
+	assert.ErrorContains(t, err, "[2001:db8::1]")
+	assert.Equal(t, 0, dials.count("10.0.0.1:4433"))
+}
+
+// TestServer_ConnectPeers_LiteralFirst checks that a literal address is
+// dialed while names are still being looked up, and that names are looked
+// up together: two that hang hold up a third for one lookup timeout, not two.
+func TestServer_ConnectPeers_LiteralFirst(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		server, _ := newPeerTestServer(t, &fakePeerResolver{}, 0, "[2001:db8::1]", "10.0.0.1:4433")
+		r := &fakePeerResolver{}
+		r.hang("slow-1.example.com")
+		r.hang("slow-2.example.com")
+		r.answer("hubs.example.com", "10.0.0.1")
+		server, _ := newPeerTestServer(t, r, 30*time.Second,
+			"slow-1.example.com:4433", "slow-2.example.com:4433", "hubs.example.com:4433", "192.0.2.7:4433")
 		stop := runPeers(t, server)
 		defer stop()
 
 		synctest.Wait()
+		assert.True(t, server.isConnected("192.0.2.7:4433"), "the literal address is dialed at once")
+		assert.False(t, server.isConnected("10.0.0.1:4433"), "names wait for the slowest lookup")
+
+		time.Sleep(peerLookupTimeout)
+		synctest.Wait()
+		assert.True(t, server.isConnected("10.0.0.1:4433"), "the hung lookups timed out together")
+	})
+}
+
+// TestServer_ConnectPeers_SRVPartialFailure checks that a new SRV target is
+// dialed while another target's lookup fails, and that the failing target
+// is kept until it leaves the SRV answer.
+func TestServer_ConnectPeers_SRVPartialFailure(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		const name = "_moqt._udp.hubs.example.com"
+		r := &fakePeerResolver{}
+		r.answer("hub-1.example.com.", "10.0.0.1")
+		r.answer("hub-2.example.com.", "10.0.0.2")
+		r.answerSRV(name,
+			&net.SRV{Target: "hub-1.example.com.", Port: 4433},
+			&net.SRV{Target: "hub-2.example.com.", Port: 4433})
+		server, _ := newPeerTestServer(t, r, 30*time.Second, name)
+		stop := runPeers(t, server)
+		defer stop()
+
+		synctest.Wait()
+		require.True(t, server.isConnected("10.0.0.2:4433"))
+
+		r.answer("hub-2.example.com.")
+		r.answer("hub-3.example.com.", "10.0.0.3")
+		r.answerSRV(name,
+			&net.SRV{Target: "hub-1.example.com.", Port: 4433},
+			&net.SRV{Target: "hub-2.example.com.", Port: 4433},
+			&net.SRV{Target: "hub-3.example.com.", Port: 4433})
+		time.Sleep(31 * time.Second)
+		synctest.Wait()
+		assert.True(t, server.isConnected("10.0.0.3:4433"), "a new target is dialed")
+		assert.True(t, server.isConnected("10.0.0.2:4433"), "a failing target keeps its address")
+
+		r.answerSRV(name,
+			&net.SRV{Target: "hub-1.example.com.", Port: 4433},
+			&net.SRV{Target: "hub-3.example.com.", Port: 4433})
+		time.Sleep(31 * time.Second)
+		synctest.Wait()
+		assert.False(t, server.isConnected("10.0.0.2:4433"), "a target gone from the SRV answer is dropped")
 		assert.True(t, server.isConnected("10.0.0.1:4433"))
 	})
 }
 
-func TestJitter(t *testing.T) {
-	for range 100 {
-		d := jitter(30 * time.Second)
-		assert.GreaterOrEqual(t, d, 27*time.Second)
-		assert.Less(t, d, 33*time.Second)
+// peerSeries counts the series of the peer metrics labelled with addr.
+func peerSeries(tb testing.TB, addr string) int {
+	tb.Helper()
+	reg := prometheus.NewPedanticRegistry()
+	require.NoError(tb, reg.Register(metricPeerDialAttempts))
+	require.NoError(tb, reg.Register(metricDialRetriesTotal))
+	families, err := reg.Gather()
+	require.NoError(tb, err)
+	n := 0
+	for _, f := range families {
+		for _, m := range f.GetMetric() {
+			for _, l := range m.GetLabel() {
+				if l.GetName() == "peer" && l.GetValue() == addr {
+					n++
+				}
+			}
+		}
 	}
+	return n
+}
+
+// TestServer_ConnectPeers_ForgetsDroppedPeerMetrics checks that the series
+// labelled with an address go once the address is dropped and its dial loop
+// has ended, so they don't pile up as a name's addresses change.
+func TestServer_ConnectPeers_ForgetsDroppedPeerMetrics(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		const dropped = "10.0.9.1:4433"
+		r := &fakePeerResolver{}
+		r.answer("metrics.example.com", "10.0.9.1", "10.0.9.2")
+		server, _ := newPeerTestServer(t, r, 30*time.Second, "metrics.example.com:4433")
+		stop := runPeers(t, server)
+		defer stop()
+
+		synctest.Wait()
+		r.answer("metrics.example.com", "10.0.9.2")
+		time.Sleep(31 * time.Second)
+		synctest.Wait()
+		require.False(t, server.isConnected(dropped))
+		// Its stopped dial failed, and was counted.
+		assert.Positive(t, peerSeries(t, dropped))
+
+		time.Sleep(30 * time.Second)
+		synctest.Wait()
+		assert.Zero(t, peerSeries(t, dropped))
+	})
 }

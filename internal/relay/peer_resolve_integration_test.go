@@ -88,7 +88,7 @@ func TestPeerResolve_SessionsFollowTheAnswer(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		a.ConnectPeers(ctx)
+		assert.NoError(t, a.ConnectPeers(ctx))
 	}()
 	t.Cleanup(func() { cancel(); <-done })
 

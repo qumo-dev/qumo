@@ -43,7 +43,6 @@ qumo relay --role hub    # or "edge"; omit for a standalone / flat relay
 | Variable | Default | Description |
 |---|---|---|
 | `PEERS` | (empty) | Comma-separated relays to dial: `ip:port`, `host:port`, or an SRV name without a port (below). The node relays their announcements. Needs `CA_FILE` and a peer identity (below). |
-| `PEERS_RESOLVE_INTERVAL` | `30s` | How often the names in `PEERS` are resolved again, jittered by ±10%. |
 
 A `PEERS` entry takes one of three forms:
 
@@ -58,14 +57,19 @@ A `PEERS` entry takes one of three forms:
   Priority and weight choose among targets, and a relay peers with all of
   them, so both are ignored.
 
-Names are resolved again every `PEERS_RESOLVE_INTERVAL`, as gRPC's and
-Envoy's DNS resolvers do: an address that joins a name's answer is dialed,
-and one that leaves it is dropped, its session closed without error. A
-lookup that fails, or that answers no address, keeps the name's last answer
-and is logged, so a DNS outage drops no peer; a name that has never resolved
-is retried sooner, with backoff from 1 s up to the interval. A relay that
+Literal addresses are dialed at once, and the names are looked up together.
+Names are resolved again every 30 s, as gRPC's and Envoy's DNS resolvers do:
+an address that joins a name's answer is dialed, and one that leaves it is
+dropped, its session closed without error. A lookup that fails, or that
+answers no address, keeps the name's last answer and is logged, so a DNS
+outage drops no peer; an SRV target whose own lookup fails keeps its last
+addresses while the others are updated. A name that has never resolved is
+retried sooner, with backoff from 1 s up to the interval. A relay that
 finds its own address in an answer drops that session once and doesn't dial
-the address again while it stays in the answer.
+the address again while it stays in the answer. The relay takes each DNS
+answer as the full set of a name's peers, so a DNS server that returns only
+some of a name's records (Route 53 multivalue answers, Consul's
+`a_record_limit`) makes peers come and go.
 
 An address is retried with backoff for as long as it is in the answer (a
 literal one, for as long as the relay runs), so name peers by addresses they

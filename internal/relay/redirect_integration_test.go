@@ -43,7 +43,7 @@ func TestRelay_PassesRedirectOn(t *testing.T) {
 			if tt.relays == 2 {
 				edge = spinRelay(t, "leaf", chainFreeAddr(t), cert, pool, quicCfg)
 				edge.Config.Peers = []Peer{{Address: origin.MOQServer.Addr}}
-				go edge.ConnectPeers(ctx) //nolint:errcheck // ends with ctx
+				go edge.ConnectPeers(ctx)
 			}
 			dial := func(mux *moqt.TrackMux, addr string) *moqt.Session {
 				sess, err := (&moqt.Dialer{TLSConfig: chainDialerTLS(pool), QUICConfig: &quic.Config{EnableDatagrams: true}}).Dial(ctx, "moqt://"+addr, mux)
@@ -117,7 +117,7 @@ func TestRelay_RefusesRedirectToAnotherRelay(t *testing.T) {
 
 	leaf := spinRelay(t, "leaf", chainFreeAddr(t), cert, pool, quicCfg)
 	leaf.Config.Peers = []Peer{{Address: pubAddr}}
-	go leaf.ConnectPeers(ctx) //nolint:errcheck // ends with ctx
+	go leaf.ConnectPeers(ctx)
 	waitForHandler(t, leaf, optIn)
 
 	sess, err := (&moqt.Dialer{TLSConfig: chainDialerTLS(pool), QUICConfig: &quic.Config{EnableDatagrams: true}}).Dial(ctx, "moqt://"+leaf.MOQServer.Addr, moqt.NewTrackMux(0))

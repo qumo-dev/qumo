@@ -68,12 +68,10 @@ func sanitizeLog(s string) string {
 //	                               host:port (each of the host's addresses),
 //	                               or an SRV name without a port (each
 //	                               target at its port). Names are resolved
-//	                               again every PEERS_RESOLVE_INTERVAL; peers
-//	                               that join are dialed, peers that leave
-//	                               dropped (peer_resolve.go).
+//	                               again every 30 s; peers that join are
+//	                               dialed, peers that leave dropped
+//	                               (peer_resolve.go).
 //	                               Needs CA_FILE and the peer identity.
-//	PEERS_RESOLVE_INTERVAL       - how often PEERS names are resolved again
-//	                               (default and 0: 30s, jittered by ±10%)
 //	CORS_ALLOWED_ORIGINS     - comma-separated WebTransport origins allowed to
 //	                           connect (default: same-origin only; "*" allows any;
 //	                           "same-host" allows any port on the request's host).
@@ -150,12 +148,9 @@ func Run(args []string) error {
 	for _, p := range splitAddrList(os.Getenv("PEERS")) {
 		peers = append(peers, Peer{Address: p})
 	}
-	if _, err := parsePeerEntries(peers); err != nil {
-		return fmt.Errorf("invalid PEERS: %w", err)
-	}
-	peerResolveInterval, _, err := envconfig.Duration("PEERS_RESOLVE_INTERVAL")
+	peerEntries, err := parsePeerEntries(peers)
 	if err != nil {
-		return err
+		return fmt.Errorf("invalid PEERS: %w", err)
 	}
 
 	// Peer trust (peer_trust.go): a CA and this relay's own peer identity,
@@ -239,7 +234,6 @@ func Run(args []string) error {
 		MaxClientSessions: maxClientSessions,
 		MaxEgressKbps:     maxEgressKbps,
 	}
-	relayCfg.PeerResolveInterval = peerResolveInterval
 
 	// Setup signal handling for graceful shutdown
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -413,7 +407,7 @@ func Run(args []string) error {
 	defer relayServer.waitSessionEnds(endReportGrace)
 
 	// Start peer connections in background
-	go relayServer.ConnectPeers(ctx)
+	go relayServer.connectPeers(ctx, peerEntries)
 
 	// Delegate to testable helper that runs servers until ctx is cancelled
 	if err := serveComponents(ctx, relayServer, httpServers, 10*time.Second); err != nil {

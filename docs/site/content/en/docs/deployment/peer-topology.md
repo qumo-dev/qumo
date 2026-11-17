@@ -30,9 +30,9 @@ hub(s), or any relay it peers with. Each host is resolved to all its addresses
 and every address is dialed, so a name for a group of relays (a Consul DNS
 name, a Kubernetes headless service, a Docker network alias) connects to each
 of them; an entry without a port is an SRV name, whose records give the ports.
-Names are resolved again every 30 s (`PEERS_RESOLVE_INTERVAL`): relays that
-join the name are dialed and relays that leave it are dropped, so the group
-can grow and shrink without restarting the relays that dial it. A failed
+Names are resolved again every 30 s: relays that join the name are dialed
+and relays that leave it are dropped, so the group can grow and shrink
+without restarting the relays that dial it. A failed
 lookup keeps the last answer. DNS is the only discovery: the relay needs no
 other service. See [Configuration]({{< relref "../configuration" >}}#peers)
 for the entry forms and [Nomad]({{< relref "nomad" >}}) for a worked example on

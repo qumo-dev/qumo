@@ -32,7 +32,7 @@ Running on Nomad is no different: point each relay's `PEERS` at a stable address
 
 | Variable | Default | Description |
 |---|---|---|
-| `PEERS` | (empty) | Comma-separated relays to dial, e.g. an edge's hub(s); each host is resolved to all its addresses, again every `PEERS_RESOLVE_INTERVAL`; an entry without a port is an SRV name. Needs the three settings below. |
+| `PEERS` | (empty) | Comma-separated relays to dial, e.g. an edge's hub(s); each host is resolved to all its addresses, again every 30 s; an entry without a port is an SRV name. Needs the three settings below. |
 | `CA_FILE` | (empty) | The relay CA's certificate (PEM), a path relative to the task's working directory. |
 | `PEER_CERT_FILE` / `PEER_KEY_FILE` | (empty) | This relay's own peer certificate and key, issued by that CA. One per relay: render them per allocation, never one pair for the whole job. |
 
@@ -75,8 +75,8 @@ is usually the simpler stable address to put in `PEERS` instead of a fixed
 per-index alias: `<service>.service.consul:4433` for the service's addresses
 at a fixed port, or `<service>.service.consul` without a port, which Consul
 answers as an SRV name with each instance's port. The relay resolves it
-again every `PEERS_RESOLVE_INTERVAL` (30 s), so hubs that register or
-deregister are dialed or dropped without restarting the edges.
+again every 30 s, so hubs that register or deregister are dialed or dropped
+without restarting the edges.
 
 ## Verify
 
