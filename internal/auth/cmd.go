@@ -57,12 +57,35 @@ func Run(args []string) error {
 	}
 }
 
-// prefixLabel describes what a key with prefix may grant, for the terminal.
-func prefixLabel(prefix string) string {
+// prefixLabel describes what a key with prefix, holding optIns (nil: the
+// default, HLS alone), may grant, for the terminal.
+func prefixLabel(prefix string, optIns []token.OptIn) string {
 	if prefix == "/" {
 		return "any root (no prefix)"
 	}
-	return "a root at or beneath " + prefix + " or its HLS opt-in " + token.HLSDirectory + strings.TrimPrefix(prefix, "/")
+	if optIns == nil {
+		optIns = []token.OptIn{token.OptInHLS}
+	}
+	label := "a root at or beneath " + prefix
+	if len(optIns) == 0 {
+		return label + " (no opt-ins)"
+	}
+	mirrors := make([]string, len(optIns))
+	for i, o := range optIns {
+		mirrors[i] = o.Directory() + strings.TrimPrefix(prefix, "/")
+	}
+	return label + " or its opt-ins " + strings.Join(mirrors, ", ")
+}
+
+// parseOptIns reads a comma-separated list of opt-ins: "" is none.
+func parseOptIns(s string) []token.OptIn {
+	out := []token.OptIn{}
+	for part := range strings.SplitSeq(s, ",") {
+		if part = strings.TrimSpace(part); part != "" {
+			out = append(out, token.OptIn(part))
+		}
+	}
+	return out
 }
 
 // runKeygen writes a new signing key pair: the private key, for the app that
@@ -72,7 +95,8 @@ func prefixLabel(prefix string) string {
 // one. The summary goes to out and the prompt to info.
 func runKeygen(args []string, out, info io.Writer, in io.Reader) error {
 	fs := flag.NewFlagSet("qumo auth keygen", flag.ContinueOnError)
-	prefix := fs.String("prefix", "/", "confine the key to this directory (e.g. /acme/app/) and its HLS opt-in mirror (/.hls/acme/app/); / for none")
+	prefix := fs.String("prefix", "/", "confine the key to this directory (e.g. /acme/app/) and its mirrors beneath the opt-ins it holds (/.hls/acme/app/); / for none")
+	optIns := fs.String("opt-ins", "", "the opt-ins the key signs for, comma-separated (hls, abr), written to the key set as \"optIns\" (a control plane sets them as its tenant pays); unset holds hls alone, empty holds none")
 	privPath := fs.String("out", "signing-key.jwk", "where to write the private signing key (keep it on the app's server)")
 	pubPath := fs.String("keys", "keys.json", "where to write the public key set (QUMO_AUTH_KEYS)")
 	yes := fs.Bool("yes", false, "confirm without asking, as a piped run does")
@@ -87,9 +111,19 @@ func runKeygen(args []string, out, info io.Writer, in io.Reader) error {
 	if err != nil {
 		return err
 	}
-	set, err := token.MarshalKeySet(key.Public())
+	pub := key.Public()
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == "opt-ins" {
+			pub.OptIns = parseOptIns(*optIns)
+		}
+	})
+	set, err := token.MarshalKeySet(pub)
 	if err != nil {
 		return err
+	}
+	// MarshalKeySet checked them: what the key set holds is what is shown.
+	if keys, err := token.ParseKeySet(set); err == nil {
+		pub = keys[pub.ID]
 	}
 	// The key and where it lies, before any file does: the key's prefix is
 	// the one setting a re-issue won't give back, and a bare prefix makes
@@ -97,7 +131,7 @@ func runKeygen(args []string, out, info io.Writer, in io.Reader) error {
 	var fields strings.Builder
 	fmt.Fprintf(&fields, "Generated an Ed25519 signing key.\n\n")
 	fmt.Fprintf(&fields, "  %-13s %s\n", "Key ID:", key.ID)
-	fmt.Fprintf(&fields, "  %-13s %s\n", "Grants:", prefixLabel(key.Prefix))
+	fmt.Fprintf(&fields, "  %-13s %s\n", "Grants:", prefixLabel(key.Prefix, pub.OptIns))
 	fmt.Fprintf(&fields, "  %-13s %s  (private: keep it on your app's server)\n", "Signing key:", *privPath)
 	fmt.Fprintf(&fields, "  %-13s %s  (public: for the relay)\n", "Key set:", *pubPath)
 	var next strings.Builder

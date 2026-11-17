@@ -13,7 +13,9 @@ import (
 // generated on first use, and prefix is what the trusted key is confined to,
 // read as Directory reads it.
 type rawSigner struct {
-	prefix  string
+	prefix string
+	// optIns is what the verifier's key set lists for the key (nil: absent).
+	optIns  []OptIn
 	private ed25519.PrivateKey
 }
 
@@ -32,7 +34,7 @@ func (s *rawSigner) trusted(tb testing.TB) Key {
 	if err != nil {
 		tb.Fatalf("prefix: %v", err)
 	}
-	return Key{ID: thumbprint(pub), Public: pub, Prefix: prefix}
+	return Key{ID: thumbprint(pub), Public: pub, Prefix: prefix, OptIns: s.optIns}
 }
 
 // keys is a trusted key set holding only this signer's key.

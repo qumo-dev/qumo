@@ -4,6 +4,7 @@ package integration
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -21,14 +22,10 @@ import (
 	"github.com/qumo-dev/qumo/token"
 )
 
-// verifierFor returns a Verifier trusting the public halves of keys.
-func verifierFor(t *testing.T, keys ...token.SigningKey) *auth.Verifier {
+// verifierFor returns a Verifier trusting keys, as a key set lists them.
+func verifierFor(t *testing.T, keys ...token.Key) *auth.Verifier {
 	t.Helper()
-	public := make([]token.Key, len(keys))
-	for i, k := range keys {
-		public[i] = k.Public()
-	}
-	set, err := token.MarshalKeySet(public...)
+	set, err := token.MarshalKeySet(keys...)
 	require.NoError(t, err)
 	path := filepath.Join(t.TempDir(), "keys.json")
 	require.NoError(t, os.WriteFile(path, set, 0o600))
@@ -37,13 +34,30 @@ func verifierFor(t *testing.T, keys ...token.SigningKey) *auth.Verifier {
 	return v
 }
 
-// TestABR_OptInNeedsItsOwnGrant runs the opt-in against a relay that
-// verifies tokens: a tenant's key signs for its broadcasts but not for their
-// opt-ins beneath /.abr/, which transcoding makes a paid option. A publisher
-// whose credential reaches only its broadcast cannot announce the opt-in, so
-// the transcoder, connected with its own credential (abr.RelayGrant), never
-// transcodes it.
-func TestABR_OptInNeedsItsOwnGrant(t *testing.T) {
+// TestABR_PaidOptIn runs the opt-in against a relay that verifies tokens, as
+// a control plane sells ABR: the tenant's key holds the ABR opt-in once the
+// key set lists it (optIns), which the control plane sets when ABR is paid
+// for. Unpaid, a ticket for the opt-in is refused, the opt-in is not routed
+// and nothing is transcoded; paid, the same ticket is granted, the opt-in is
+// routed and the transcoder, connected with its own credential
+// (abr.RelayGrant), publishes the ABR broadcast.
+func TestABR_PaidOptIn(t *testing.T) {
+	tests := map[string]struct {
+		optIns []token.OptIn // the key set's optIns for the tenant's key
+		paid   bool
+	}{
+		"unpaid: the key set lists no ABR": {optIns: nil},
+		"unpaid: an empty list":            {optIns: []token.OptIn{}},
+		"paid: the key set lists ABR":      {optIns: []token.OptIn{token.OptInHLS, token.OptInABR}, paid: true},
+	}
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			runPaidOptIn(t, tt.optIns, tt.paid)
+		})
+	}
+}
+
+func runPaidOptIn(t *testing.T, optIns []token.OptIn, paid bool) {
 	const (
 		src = moqt.BroadcastPath("/live/paid")
 		dst = moqt.BroadcastPath("/live/paid.abr")
@@ -54,9 +68,11 @@ func TestABR_OptInNeedsItsOwnGrant(t *testing.T) {
 		require.NoError(t, err)
 		return k
 	}
-	tenant := newKey("/live/") // the tenant's own key
+	tenant := newKey("/live/") // the tenant's key; its app signs every token below
 	operator := newKey("/")    // the transcoder's (RELAY_SIGNING_KEY)
-	verifier := verifierFor(t, tenant, operator)
+	tenantPub := tenant.Public()
+	tenantPub.OptIns = optIns
+	verifier := verifierFor(t, tenantPub, operator.Public())
 	addr, srv := startAuthRelay(t, verifier.Authorize, nil, func(s *relay.Server) { s.Tickets = verifier })
 	sign := func(key token.SigningKey, g token.Grant) string {
 		tok, err := token.Sign(key, g, time.Minute)
@@ -76,8 +92,10 @@ func TestABR_OptInNeedsItsOwnGrant(t *testing.T) {
 	}, moqt.TrackHandlerFunc(func(tw *moqt.TrackWriter) { <-tw.Context().Done() })))
 	pubMux := moqt.NewTrackMux(0)
 	pubMux.Publish(ctx, src, b)
-	pubMux.Publish(ctx, optInPath, optin.Handler(src))
-	dialOver(t, "https://"+addr+"/?jwt="+sign(tenant, token.Grant{Root: "/live/", Publish: []string{"/paid"}}), nil, pubMux)
+	// Native QUIC, as TestRelay_Tickets uses: over WebTransport, a relay
+	// closing a session that holds a granted ticket waits on its Auth
+	// Stream's reader, which waits on the session to be gone.
+	pub := dialOver(t, nativeURL(addr)+"/?jwt="+sign(tenant, token.Grant{Root: "/live/", Publish: []string{"/paid"}}), nil, pubMux)
 	require.Eventually(t, routed(srv, src), 5*time.Second, 25*time.Millisecond)
 
 	// The transcoder, with the credential qumo abr signs for itself.
@@ -89,14 +107,27 @@ func TestABR_OptInNeedsItsOwnGrant(t *testing.T) {
 	}}
 	go func() { _ = tc.Serve(ctx, abrSess, abrMux) }()
 
-	// The tenant's key does not reach beneath /.abr/: it cannot even sign a
-	// grant for the opt-in (and a relay refuses one forged without Sign, as
-	// Verify checks the key's prefix too).
-	_, err = token.Sign(tenant, token.Grant{Root: "/.abr/live/", Publish: []string{"/paid"}}, time.Minute)
-	assert.ErrorIs(t, err, token.ErrForbidden)
+	// The publisher's app signs a ticket for the opt-in with the tenant's
+	// key, on the same session: whether the key holds it is the key set's.
+	actx, acancel := context.WithTimeout(ctx, 3*time.Second)
+	defer acancel()
+	cred, err := pub.Auth(actx, []byte(sign(tenant, token.Grant{Root: "/.abr/live/", Publish: []string{"/paid"}})))
+	if !paid {
+		authErr, ok := errors.AsType[*moqt.AuthError](err)
+		require.True(t, ok, "the ticket is refused with AUTH_ERROR, not %v", err)
+		assert.Equal(t, moqt.UnauthorizedSessionErrorCode, authErr.Code)
 
-	// So the opt-in, announced on a session the tenant's key admitted, is not
-	// routed, and nothing is transcoded.
-	assert.Never(t, func() bool { return routed(srv, optInPath)() || routed(srv, dst)() },
-		2*time.Second, 25*time.Millisecond, "an opt-in was announced without a grant that reaches /.abr/")
+		pubMux.Publish(ctx, optInPath, optin.Handler(src))
+		assert.Never(t, func() bool { return routed(srv, optInPath)() || routed(srv, dst)() },
+			2*time.Second, 25*time.Millisecond, "an opt-in was announced without ABR paid for")
+		return
+	}
+	require.NoError(t, err, "the ticket is granted once ABR is paid for")
+	t.Cleanup(func() { _ = cred.Close() })
+	assert.Equal(t, "/.abr/live/", cred.Grant().Root)
+
+	pubMux.Publish(ctx, optInPath, optin.Handler(src))
+	require.Eventually(t, routed(srv, optInPath), 5*time.Second, 25*time.Millisecond)
+	require.Eventually(t, routed(srv, dst), 10*time.Second, 50*time.Millisecond,
+		"the transcoder, on its own credential, did not publish the ABR broadcast")
 }

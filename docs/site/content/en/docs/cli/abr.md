@@ -22,11 +22,30 @@ elsewhere, or answers itself, is refused, so no one can have another
 publisher's broadcast transcoded under their own name. Withdrawing the opt-in
 withdraws the ABR broadcast; the broadcast itself plays on.
 
-A publisher opts in only what it may publish, and the opt-in is a path of its
-own. Unlike `/.hls/`, a signing key confined to a prefix
-(`qumo auth keygen -prefix acme/`) does **not** also sign for the prefix's
-mirror beneath `/.abr/`: transcoding costs the operator, so a tenant's key alone
-does not let its publishers opt in.
+### Paying for the opt-in
+
+Transcoding costs the operator, so the opt-in is an option a tenant holds,
+not one every key has. A signing key confined to a prefix
+(`qumo auth keygen -prefix acme/`) signs for the prefix's mirror beneath an
+opt-in directory only when its entry in the relay's key set (`QUMO_AUTH_KEYS`)
+lists that opt-in:
+
+```json
+{ "kid": "…", "prefix": "/acme/", "optIns": ["hls", "abr"] }
+```
+
+A control plane that sells ABR sets `optIns` when the tenant pays and removes
+`abr` when it stops. The relay re-reads the key set every 30 s, so a new opt-in
+is refused within half a minute, and one on air ends at the next 30 s check of
+live sessions. A key whose entry lists no `optIns` holds `hls` alone, as every
+key did before; `"optIns": []` holds none.
+
+The tenant's app signs the opt-in's token with the same key as the
+broadcast's: `/.abr/acme/live/cam1` beside `/acme/live/cam1`, presented on the
+publisher's session as a ticket, since a session's credentials all come from
+one key. The app needs no new key when its tenant pays; the relay refuses the
+token until the key set lists `abr`. `qumo auth keygen -opt-ins hls,abr` writes
+the member for a key set kept by hand.
 
 It dials the relay as an ordinary client: it subscribes to the source like any
 viewer and publishes the ABR broadcast like any publisher. The relay itself

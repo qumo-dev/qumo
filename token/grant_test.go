@@ -240,7 +240,7 @@ func TestSign_Refusals(t *testing.T) {
 		"a root above the HLS mirror":     {grant: Grant{Root: "/.hls/acme/", Publish: []string{"/app/"}}, ttl: time.Minute, wantErr: ErrForbidden, wantErrText: "outside"},
 		"a root beside the HLS mirror":    {grant: Grant{Root: "/.hls/acme/apple/", Publish: []string{"/"}}, ttl: time.Minute, wantErr: ErrForbidden, wantErrText: "outside"},
 		"a root in another opt-in":        {grant: Grant{Root: "/.other/acme/app/", Publish: []string{"/"}}, ttl: time.Minute, wantErr: ErrForbidden, wantErrText: "outside"},
-		"a root in the ABR directory":     {grant: Grant{Root: "/.abr/acme/app/", Publish: []string{"/"}}, ttl: time.Minute, wantErr: ErrForbidden, wantErrText: "outside"},
+		"another tenant's ABR opt-in":     {grant: Grant{Root: "/.abr/other/app/", Publish: []string{"/"}}, ttl: time.Minute, wantErr: ErrForbidden, wantErrText: "outside"},
 		"patterns without a root":         {grant: Grant{Publish: []string{"/"}}, ttl: time.Minute, wantErr: ErrInvalid, wantErrText: "without a root"},
 		"a bare root":                     {grant: Grant{Root: "acme/app"}, ttl: time.Minute, wantErr: ErrInvalid, wantErrText: "directory"},
 		"a dot-dot root":                  {grant: Grant{Root: "/acme/app/../x/"}, ttl: time.Minute, wantErr: ErrInvalid, wantErrText: ".."},
@@ -333,5 +333,51 @@ func TestGrant_Patterns(t *testing.T) {
 		t.Run(string(action), func(t *testing.T) {
 			assert.Equal(t, want, g.Patterns(action))
 		})
+	}
+}
+
+// Which opt-ins a key holds is the key set's to say, as a control plane sells
+// them: a token for an opt-in its key does not hold is refused at Verify,
+// while Sign signs for every opt-in of the key's prefix and leaves that to
+// the relay, so an app need not be reissued its key when its tenant pays.
+func TestVerify_OptIns(t *testing.T) {
+	now := time.Unix(1_800_000_000, 0)
+	hls := map[string]any{"root": "/.hls/acme/room/", "publish": []string{"/cam"}}
+	abr := map[string]any{"root": "/.abr/acme/room/", "publish": []string{"/cam"}}
+	own := map[string]any{"root": "/acme/room/", "publish": []string{"/cam"}}
+	tests := map[string]struct {
+		optIns []OptIn
+		claims map[string]any
+		ok     bool
+	}{
+		"none listed holds HLS, as before":    {optIns: nil, claims: hls, ok: true},
+		"none listed does not hold ABR":       {optIns: nil, claims: abr, ok: false},
+		"ABR paid for":                        {optIns: []OptIn{OptInHLS, OptInABR}, claims: abr, ok: true},
+		"ABR alone holds no HLS":              {optIns: []OptIn{OptInABR}, claims: hls, ok: false},
+		"an empty list holds no HLS":          {optIns: []OptIn{}, claims: hls, ok: false},
+		"an empty list holds no ABR":          {optIns: []OptIn{}, claims: abr, ok: false},
+		"the key's own prefix, whatever held": {optIns: []OptIn{}, claims: own, ok: true},
+	}
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			signer := &rawSigner{prefix: "/acme/", optIns: tt.optIns}
+			_, err := Verify(signer.sign(t, grantClaimsOf(now, tt.claims)), signer.keys(t), now)
+			if tt.ok {
+				assert.NoError(t, err)
+			} else {
+				assert.ErrorIs(t, err, ErrForbidden)
+			}
+		})
+	}
+}
+
+func TestSign_EveryOptInOfTheKeysPrefix(t *testing.T) {
+	key, err := GenerateKey("/acme/")
+	require.NoError(t, err)
+	for _, o := range OptIns() {
+		_, err := Sign(key, Grant{Grant: moqt.Grant{Root: o.Directory() + "acme/room/", Publish: []string{"/cam"}}}, time.Minute)
+		assert.NoError(t, err, "%s: the relay, not Sign, decides whether the key holds it", o)
+		_, err = Sign(key, Grant{Grant: moqt.Grant{Root: o.Directory() + "other/", Publish: []string{"/cam"}}}, time.Minute)
+		assert.ErrorIs(t, err, ErrForbidden, "%s: never another tenant's", o)
 	}
 }

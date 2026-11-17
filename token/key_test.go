@@ -3,8 +3,10 @@ package token
 import (
 	"cmp"
 	"encoding/base64"
+	"encoding/json/v2"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -264,4 +266,75 @@ func TestKey_Holds(t *testing.T) {
 			assert.Equal(t, tt.want, Key{Prefix: tt.prefix}.Holds(tt.root))
 		})
 	}
+}
+
+func TestKey_HoldsOptIns(t *testing.T) {
+	tests := map[string]struct {
+		optIns []OptIn
+		root   string
+		want   bool
+	}{
+		"default: HLS":              {optIns: nil, root: "/.hls/acme/x/", want: true},
+		"default: no ABR":           {optIns: nil, root: "/.abr/acme/x/", want: false},
+		"ABR held":                  {optIns: []OptIn{OptInABR}, root: "/.abr/acme/x/", want: true},
+		"ABR held, not another's":   {optIns: []OptIn{OptInABR}, root: "/.abr/other/x/", want: false},
+		"ABR held, HLS not":         {optIns: []OptIn{OptInABR}, root: "/.hls/acme/x/", want: false},
+		"none held":                 {optIns: []OptIn{}, root: "/.hls/acme/x/", want: false},
+		"none held, own prefix":     {optIns: []OptIn{}, root: "/acme/x/", want: true},
+		"unknown opt-in holds none": {optIns: []OptIn{"dash"}, root: "/.dash/acme/x/", want: false},
+	}
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			assert.Equal(t, tt.want, Key{Prefix: "/acme/", OptIns: tt.optIns}.Holds(tt.root))
+		})
+	}
+}
+
+func TestKeySet_OptIns(t *testing.T) {
+	key, err := GenerateKey("/acme/")
+	require.NoError(t, err)
+	pub := key.Public()
+	jwkWith := func(member string) []byte {
+		j := pub.jwk()
+		raw, err := json.Marshal(j)
+		require.NoError(t, err)
+		obj := strings.TrimSuffix(string(raw), "}")
+		if member != "" {
+			obj += "," + member
+		}
+		return []byte(`{"keys":[` + obj + `}]}`)
+	}
+	tests := map[string]struct {
+		member  string
+		want    []OptIn
+		wantErr bool
+	}{
+		"absent is the default":      {member: "", want: nil},
+		"empty holds none":           {member: `"optIns":[]`, want: []OptIn{}},
+		"listed, in canonical order": {member: `"optIns":["abr","hls","abr"]`, want: []OptIn{OptInHLS, OptInABR}},
+		"an unknown opt-in":          {member: `"optIns":["dash"]`, wantErr: true},
+	}
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			keys, err := ParseKeySet(jwkWith(tt.member))
+			if tt.wantErr {
+				assert.ErrorContains(t, err, "optIns")
+				return
+			}
+			require.NoError(t, err)
+			got := keys[pub.ID].OptIns
+			assert.Equal(t, tt.want, got)
+			assert.Equal(t, tt.want == nil, got == nil, "absent and empty stay apart")
+
+			// And they survive a round trip through MarshalKeySet.
+			raw, err := MarshalKeySet(keys[pub.ID])
+			require.NoError(t, err)
+			again, err := ParseKeySet(raw)
+			require.NoError(t, err)
+			assert.Equal(t, got, again[pub.ID].OptIns)
+			assert.Equal(t, got == nil, again[pub.ID].OptIns == nil)
+		})
+	}
+	_, err = MarshalKeySet(Key{ID: pub.ID, Public: pub.Public, Prefix: "/acme/", OptIns: []OptIn{"dash"}})
+	assert.Error(t, err, "an unknown opt-in is not written")
 }
