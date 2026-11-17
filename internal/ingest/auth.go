@@ -52,14 +52,12 @@ func rtmpTarget(app, streamKey string) (moqt.BroadcastPath, []string) {
 // and media there would answer an egress that expects a redirect.
 var errOptInPath = errors.New("the path lies beneath an opt-in directory, where the server opts streams in: push to the broadcast's own path")
 
-// optInOf reports whether path lies beneath an opt-in directory, and returns
-// the broadcast it opts in: /live/cam for /.abr/live/cam. A path beneath one
-// with a "." or ".." segment opts in none, and the broadcast is "".
-func optInOf(path moqt.BroadcastPath) (moqt.BroadcastPath, bool) {
+// optInDirectory returns the opt-in directory path lies beneath, such as
+// /.abr/ for /.abr/live/cam, and false when it lies beneath none.
+func optInDirectory(path moqt.BroadcastPath) (string, bool) {
 	for _, o := range token.OptIns() {
 		if dir := o.Directory(); strings.HasPrefix(string(path), dir) {
-			b, _ := optin.Broadcast(string(path), dir)
-			return moqt.BroadcastPath(b), true
+			return dir, true
 		}
 	}
 	return "", false
@@ -68,7 +66,7 @@ func optInOf(path moqt.BroadcastPath) (moqt.BroadcastPath, bool) {
 // checkPushPath refuses a push to path when the server keeps it for opt-ins
 // (errOptInPath).
 func checkPushPath(path moqt.BroadcastPath) error {
-	if _, ok := optInOf(path); ok {
+	if _, ok := optInDirectory(path); ok {
 		return fmt.Errorf("%s: %w", path, errOptInPath)
 	}
 	return nil

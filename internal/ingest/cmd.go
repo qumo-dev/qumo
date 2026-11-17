@@ -19,6 +19,7 @@ import (
 	"github.com/qumo-dev/qumo/internal/auth"
 	"github.com/qumo-dev/qumo/internal/cors"
 	"github.com/qumo-dev/qumo/internal/envconfig"
+	"github.com/qumo-dev/qumo/internal/optin"
 	"github.com/qumo-dev/qumo/internal/quicconfig"
 	"github.com/qumo-dev/qumo/internal/upstream"
 	"github.com/qumo-dev/qumo/token"
@@ -289,13 +290,14 @@ func publishAuthorizer(v *auth.Verifier, beneath string) PublishAuthorizer {
 	}
 	return func(credential string, path moqt.BroadcastPath) (time.Time, error) {
 		broadcast := path
-		if b, ok := optInOf(path); ok {
-			if b == "" {
+		if dir, ok := optInDirectory(path); ok {
+			b, named := optin.Broadcast(string(path), dir)
+			if !named {
 				// Cleaned, it could name a broadcast outside the
 				// directory the relay grants its exact path in.
 				return time.Time{}, fmt.Errorf("%s: %w", path, errOptInNamesNone)
 			}
-			broadcast = b
+			broadcast = moqt.BroadcastPath(b)
 		}
 		if beneath != "" && !strings.HasPrefix(string(broadcast), beneath) {
 			return time.Time{}, fmt.Errorf("%s: %w (%s)", path, errOutsidePublish, beneath)
