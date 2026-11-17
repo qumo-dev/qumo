@@ -62,11 +62,7 @@ func prefixLabel(prefix string) string {
 	if prefix == "/" {
 		return "any root (no prefix)"
 	}
-	mirrors := make([]string, 0, 2)
-	for _, dir := range token.OptInDirectories() {
-		mirrors = append(mirrors, dir+strings.TrimPrefix(prefix, "/"))
-	}
-	return "a root at or beneath " + prefix + " or its opt-ins " + strings.Join(mirrors, ", ")
+	return "a root at or beneath " + prefix + " or its HLS opt-in " + token.HLSDirectory + strings.TrimPrefix(prefix, "/")
 }
 
 // runKeygen writes a new signing key pair: the private key, for the app that

@@ -36,7 +36,7 @@ func TestPath(t *testing.T) {
 }
 
 func TestPathRoundTrip(t *testing.T) {
-	for _, dir := range token.OptInDirectories() {
+	for _, dir := range []string{token.HLSDirectory, token.ABRDirectory} {
 		for _, b := range []string{"/live/cam1", "/a", "/room/42/cam"} {
 			assert.Equal(t, b, Broadcast(string(Path(dir, moqt.BroadcastPath(b))), dir), "%s %s", dir, b)
 		}

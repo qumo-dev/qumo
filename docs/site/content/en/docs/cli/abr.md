@@ -22,10 +22,11 @@ elsewhere, or answers itself, is refused, so no one can have another
 publisher's broadcast transcoded under their own name. Withdrawing the opt-in
 withdraws the ABR broadcast; the broadcast itself plays on.
 
-A publisher opts in only what it may publish. A signing key confined to a
-prefix (`qumo auth keygen -prefix acme/`) also signs for the prefix's mirrors
-beneath `/.hls/` and `/.abr/`, so the app that grants a broadcast grants its
-opt-ins with the same key.
+A publisher opts in only what it may publish, and the opt-in is a path of its
+own. Unlike `/.hls/`, a signing key confined to a prefix
+(`qumo auth keygen -prefix acme/`) does **not** also sign for the prefix's
+mirror beneath `/.abr/`: transcoding costs the operator, so a tenant's key alone
+does not let its publishers opt in.
 
 It dials the relay as an ordinary client: it subscribes to the source like any
 viewer and publishes the ABR broadcast like any publisher. The relay itself
@@ -116,6 +117,7 @@ held up by the encoder.
 | Variable | Default | Description |
 |---|---|---|
 | `RELAY_URL` | `https://localhost:4433` | The relay to transcode broadcasts of, dialed as a client. It may carry a credential as `?jwt=` that grants listing and subscribing to the opt-ins beneath `/.abr/` and the broadcasts they name, and publishing the ABR broadcasts. |
+| `RELAY_SIGNING_KEY` | (unset) | A signing key (`qumo auth keygen`) the relay's key set trusts, for the whole namespace (prefix `/`). The transcoder signs a fresh credential with it on every dial, in place of any `?jwt=`, granting what it needs (subscribing anywhere, to read opt-ins and their broadcasts, and publishing the ABR broadcasts), and renews it on the session before it lapses. A credential fixed in `RELAY_URL` lapses with its token. |
 | `RELAY_CA_FILE` | (unset) | PEM certificate to trust as the relay's root, instead of the system roots. |
 | `RELAY_TLS_INSECURE` | `false` | Skip relay TLS verification, for a self-signed dev relay. |
 | `ABR_SUFFIX` | `.abr` | Appended to a source's path to name its ABR broadcast. An opt-in for a broadcast already ending in it is ignored. |

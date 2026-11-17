@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/url"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -14,11 +15,13 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/quic-go/quic-go"
 	"github.com/qumo-dev/gomoqt/moqt"
 
 	"github.com/qumo-dev/qumo/internal/envconfig"
 	"github.com/qumo-dev/qumo/internal/optin"
 	"github.com/qumo-dev/qumo/internal/quicconfig"
+	"github.com/qumo-dev/qumo/internal/relaycred"
 	"github.com/qumo-dev/qumo/internal/tlsclient"
 	"github.com/qumo-dev/qumo/internal/upstream"
 	"github.com/qumo-dev/qumo/token"
@@ -46,9 +49,12 @@ const retryInterval = 2 * time.Second
 // Configuration is read from environment variables (qumo convention):
 //
 //	RELAY_URL          - the relay, e.g. "https://relay:4433" (default "https://localhost:4433");
-//	                     it may carry a credential as ?jwt= that grants listing and
-//	                     subscribing to the opt-ins beneath /.abr/ and the broadcasts
-//	                     they name, and publishing the ABR broadcasts
+//	                     it may carry a credential as ?jwt= granting what RelayGrant
+//	                     does, which lapses with it
+//	RELAY_SIGNING_KEY  - a signing key (qumo auth keygen) the relay's key set trusts,
+//	                     for the whole namespace (prefix "/"): the transcoder signs a
+//	                     credential granting RelayGrant with it on every dial, in place
+//	                     of any ?jwt=, and a fresh one on the session before it lapses
 //	RELAY_CA_FILE      - PEM cert to trust as the relay's root (default: the system roots)
 //	RELAY_TLS_INSECURE - skip relay TLS verification, for a self-signed dev relay (default "false")
 //	ABR_SUFFIX         - appended to a source's path to name its ABR broadcast (default ".abr");
@@ -97,6 +103,17 @@ func Run(_ []string) error {
 	if err := tlsclient.Apply(tc, envconfig.String("RELAY_CA_FILE", ""), envconfig.String("RELAY_TLS_INSECURE", "false") == "true"); err != nil {
 		return fmt.Errorf("abr: relay TLS: %w", err)
 	}
+	d := relayDialer{url: relayURL, tls: tc, quic: quicConfig}
+	if keyFile := envconfig.String("RELAY_SIGNING_KEY", ""); keyFile != "" {
+		key, err := token.LoadSigningKey(keyFile)
+		if err != nil {
+			return fmt.Errorf("abr: RELAY_SIGNING_KEY: %w", err)
+		}
+		if err := checkSigningKey(key); err != nil {
+			return fmt.Errorf("abr: RELAY_SIGNING_KEY: %w", err)
+		}
+		d.key = &key
+	}
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
@@ -110,7 +127,7 @@ func Run(_ []string) error {
 	for {
 		// A TrackMux per session, so a session's ABR broadcasts end with it.
 		mux := moqt.NewTrackMux(0)
-		sess, err := (&moqt.Dialer{TLSConfig: tc.Clone(), QUICConfig: quicConfig}).Dial(ctx, relayURL, mux)
+		sess, err := d.dial(ctx, mux)
 		if err == nil {
 			slog.Info("abr: connected to the relay")
 			err = t.Serve(ctx, sess, mux)
@@ -127,6 +144,79 @@ func Run(_ []string) error {
 		case <-time.After(retryInterval):
 		}
 	}
+}
+
+// RelayGrant is what the transcoder's session to the relay needs: listing
+// and subscribing to the opt-ins beneath token.ABRDirectory and the
+// broadcasts they name, and publishing the ABR broadcasts beside those. The
+// opt-ins and the broadcasts lie anywhere, so the grant is the whole
+// namespace.
+func RelayGrant() token.Grant {
+	return token.Grant{Root: "/", Subscribe: []string{"/"}, Publish: []string{"/"}}
+}
+
+// checkSigningKey reports why key cannot sign the transcoder's credential:
+// confined to less than the whole namespace, which RelayGrant needs, or
+// unusable.
+func checkSigningKey(key token.SigningKey) error {
+	if p := key.Prefix; p != "" && p != "/" {
+		return fmt.Errorf("the key is confined to %q, but the transcoder reads the opt-ins beneath %q and the broadcasts they name, and publishes beside them: use a key for the whole namespace (prefix \"/\")",
+			p, token.ABRDirectory)
+	}
+	if _, err := token.Sign(key, RelayGrant(), token.MaxLifetime); err != nil {
+		return err
+	}
+	return nil
+}
+
+// relayDialer opens the transcoder's sessions to the relay.
+type relayDialer struct {
+	url  string
+	tls  *tls.Config
+	quic *quic.Config
+	// key, when set, signs a credential granting RelayGrant for each
+	// session in place of any ?jwt= in url, and a fresh one on the session
+	// before its grant lapses.
+	key *token.SigningKey
+}
+
+// dial opens a session to the relay serving mux.
+func (d relayDialer) dial(ctx context.Context, mux *moqt.TrackMux) (*moqt.Session, error) {
+	target, lapses, err := d.target()
+	if err != nil {
+		return nil, err
+	}
+	sess, err := (&moqt.Dialer{TLSConfig: d.tls.Clone(), QUICConfig: d.quic}).Dial(ctx, target, mux)
+	if err != nil {
+		return nil, fmt.Errorf("abr: dial relay: %w", err)
+	}
+	if d.key != nil {
+		go relaycred.Keep(sess, *d.key, RelayGrant(), lapses)
+	}
+	return sess, nil
+}
+
+// target returns the URL to dial, carrying a freshly signed credential when
+// the transcoder signs its own, and when that credential's grant lapses (zero
+// for none).
+func (d relayDialer) target() (string, time.Time, error) {
+	if d.key == nil {
+		return d.url, time.Time{}, nil
+	}
+	credential, lapses, err := relaycred.Sign(*d.key, RelayGrant())
+	if err != nil {
+		return "", time.Time{}, err
+	}
+	u, err := url.Parse(d.url)
+	if err != nil {
+		// url.Parse's error quotes the URL, whose query may carry a
+		// credential: report only that it is invalid.
+		return "", time.Time{}, errors.New("abr: RELAY_URL: invalid URL")
+	}
+	query := u.Query()
+	query.Set("jwt", credential)
+	u.RawQuery = query.Encode()
+	return u.String(), lapses, nil
 }
 
 // A Transcoder publishes an ABR broadcast for every broadcast opted in

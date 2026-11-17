@@ -230,8 +230,9 @@ func TestLoadKeySet_MissingFile(t *testing.T) {
 }
 
 // Holds is what the relay re-checks a live session's tickets with, so it
-// must agree with Sign: the key's prefix and its mirrors under the opt-in
-// directories (/.hls/, /.abr/), at a "/" boundary, and nothing else.
+// must agree with Sign: the key's prefix and its /.hls/ mirror, at a "/"
+// boundary, and nothing else. /.abr/ is not mirrored: an ABR opt-in is paid
+// for, and takes a key of its own.
 func TestKey_Holds(t *testing.T) {
 	tests := map[string]struct {
 		prefix string
@@ -250,12 +251,12 @@ func TestKey_Holds(t *testing.T) {
 		"above the mirror":                {prefix: "/acme/", root: "/.hls/", want: false},
 		"another tenant's mirror":         {prefix: "/acme/", root: "/.hls/other/", want: false},
 		"a mirror of the mirror":          {prefix: "/acme/", root: "/.hls/.hls/acme/", want: false},
-		"beneath the ABR mirror":          {prefix: "/acme/", root: "/.abr/acme/room/42/", want: true},
-		"the ABR mirror itself":           {prefix: "/acme/", root: "/.abr/acme/", want: true},
-		"a sibling of the ABR mirror":     {prefix: "/acme/", root: "/.abr/acme2/", want: false},
-		"above the ABR mirror":            {prefix: "/acme/", root: "/.abr/", want: false},
-		"another tenant's ABR mirror":     {prefix: "/acme/", root: "/.abr/other/", want: false},
-		"one mirror inside another":       {prefix: "/acme/", root: "/.abr/.hls/acme/", want: false},
+		"not the ABR directory":           {prefix: "/acme/", root: "/.abr/acme/room/42/", want: false},
+		"not the ABR directory itself":    {prefix: "/acme/", root: "/.abr/acme/", want: false},
+		"an ABR key, beneath its prefix":  {prefix: "/.abr/acme/", root: "/.abr/acme/room/42/", want: true},
+		"an ABR key, not the tenant":      {prefix: "/.abr/acme/", root: "/acme/room/42/", want: false},
+		"an ABR key, not another tenant":  {prefix: "/.abr/acme/", root: "/.abr/other/", want: false},
+		"an ABR key, not mirrored to HLS": {prefix: "/.abr/acme/", root: "/.hls/acme/", want: false},
 		"a directory that is no opt-in":   {prefix: "/acme/", root: "/.other/acme/", want: false},
 	}
 	for name, tt := range tests {

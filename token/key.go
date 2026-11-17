@@ -22,8 +22,9 @@ type Key struct {
 	Public ed25519.PublicKey
 	// Prefix is the directory, in MoQ's form ("/acme/"), every root a token
 	// signed by this key may grant lies at or beneath, or at or beneath its
-	// mirror under an opt-in directory ("/.hls/acme/", "/.abr/acme/"; see
-	// OptInDirectories). "/" leaves the key unconstrained.
+	// mirror under HLSDirectory ("/.hls/acme/"). ABRDirectory is not
+	// mirrored: a key for ABR opt-ins has a prefix beneath it ("/.abr/acme/").
+	// "/" leaves the key unconstrained.
 	Prefix string
 	// Pause lists what the key starts no new sessions for. Only ActionPublish
 	// can be paused: a verifier then starts no session that may publish with
@@ -36,7 +37,7 @@ type Key struct {
 }
 
 // Holds reports whether root, a directory in MoQ's form, lies at or beneath
-// the key's prefix or its mirror under an opt-in directory: whether a token the key
+// the key's prefix or its mirror under HLSDirectory: whether a token the key
 // signed may grant beneath it. The empty root, which grants nothing, is every
 // key's.
 func (k Key) Holds(root string) bool {
