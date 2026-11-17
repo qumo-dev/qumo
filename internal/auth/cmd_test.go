@@ -182,20 +182,24 @@ func TestRunKeygen_SaysWhatTheKeyGrants(t *testing.T) {
 		prefix string
 		args   []string
 		want   []string
-		// wantOptIns is what keys.json lists; nil for the member absent.
+		// wantOptIns is what keys.json lists.
 		wantOptIns []token.OptIn
 	}{
-		"a prefix": {prefix: "acme/app", want: []string{"a root at or beneath /acme/app/ or its opt-ins /.hls/acme/app/", "-root /acme/app/ -publish /demo"}},
-		"none":     {want: []string{"any root (no prefix)", "-root / -publish /demo"}},
+		"a prefix, no opt-ins": {prefix: "acme/app", want: []string{"a root at or beneath /acme/app/ (no opt-ins)", "-root /acme/app/ -publish /demo"}},
+		"HLS": {
+			prefix: "acme/app", args: []string{"-opt-ins", "hls"},
+			want:       []string{"a root at or beneath /acme/app/ or its opt-ins /.hls/acme/app/"},
+			wantOptIns: []token.OptIn{token.OptInHLS},
+		},
+		"none": {want: []string{"any root (no prefix)", "-root / -publish /demo"}},
 		"ABR paid for": {
 			prefix: "acme/app", args: []string{"-opt-ins", "abr, hls"},
 			want:       []string{"a root at or beneath /acme/app/ or its opt-ins /.hls/acme/app/, /.abr/acme/app/"},
 			wantOptIns: []token.OptIn{token.OptInHLS, token.OptInABR},
 		},
-		"no opt-ins": {
+		"an empty list": {
 			prefix: "acme/app", args: []string{"-opt-ins", ""},
-			want:       []string{"a root at or beneath /acme/app/ (no opt-ins)"},
-			wantOptIns: []token.OptIn{},
+			want: []string{"a root at or beneath /acme/app/ (no opt-ins)"},
 		},
 	}
 	for name, tt := range tests {
@@ -214,7 +218,6 @@ func TestRunKeygen_SaysWhatTheKeyGrants(t *testing.T) {
 			require.NoError(t, err)
 			for _, k := range keys {
 				assert.Equal(t, tt.wantOptIns, k.OptIns)
-				assert.Equal(t, tt.wantOptIns == nil, k.OptIns == nil)
 			}
 		})
 	}

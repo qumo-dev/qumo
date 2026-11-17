@@ -37,8 +37,8 @@ lists that opt-in:
 A control plane that sells ABR sets `optIns` when the tenant pays and removes
 `abr` when it stops. The relay re-reads the key set every 30 s, so a new opt-in
 is refused within half a minute, and one on air ends at the next 30 s check of
-live sessions. A key whose entry lists no `optIns` holds `hls` alone, as every
-key did before; `"optIns": []` holds none.
+live sessions. HLS is held the same way (`"hls"`), and a key whose entry lists
+no `optIns` holds none.
 
 The tenant's app signs the opt-in's token with the same key as the
 broadcast's: `/.abr/acme/live/cam1` beside `/acme/live/cam1`, presented on the

@@ -232,9 +232,9 @@ func TestLoadKeySet_MissingFile(t *testing.T) {
 }
 
 // Holds is what the relay re-checks a live session's tickets with, so it
-// must agree with Sign: the key's prefix and its /.hls/ mirror, at a "/"
-// boundary, and nothing else. /.abr/ is not mirrored: an ABR opt-in is paid
-// for, and takes a key of its own.
+// must agree with Verify: the key's prefix and its mirrors beneath the
+// opt-ins it holds, at a "/" boundary, and nothing else. Every key here holds
+// HLS, and none ABR.
 func TestKey_Holds(t *testing.T) {
 	tests := map[string]struct {
 		prefix string
@@ -263,7 +263,7 @@ func TestKey_Holds(t *testing.T) {
 	}
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
-			assert.Equal(t, tt.want, Key{Prefix: tt.prefix}.Holds(tt.root))
+			assert.Equal(t, tt.want, Key{Prefix: tt.prefix, OptIns: []OptIn{OptInHLS}}.Holds(tt.root))
 		})
 	}
 }
@@ -274,8 +274,9 @@ func TestKey_HoldsOptIns(t *testing.T) {
 		root   string
 		want   bool
 	}{
-		"default: HLS":              {optIns: nil, root: "/.hls/acme/x/", want: true},
-		"default: no ABR":           {optIns: nil, root: "/.abr/acme/x/", want: false},
+		"none listed: no HLS":       {optIns: nil, root: "/.hls/acme/x/", want: false},
+		"none listed: no ABR":       {optIns: nil, root: "/.abr/acme/x/", want: false},
+		"HLS held":                  {optIns: []OptIn{OptInHLS}, root: "/.hls/acme/x/", want: true},
 		"ABR held":                  {optIns: []OptIn{OptInABR}, root: "/.abr/acme/x/", want: true},
 		"ABR held, not another's":   {optIns: []OptIn{OptInABR}, root: "/.abr/other/x/", want: false},
 		"ABR held, HLS not":         {optIns: []OptIn{OptInABR}, root: "/.hls/acme/x/", want: false},
@@ -309,8 +310,8 @@ func TestKeySet_OptIns(t *testing.T) {
 		want    []OptIn
 		wantErr bool
 	}{
-		"absent is the default":      {member: "", want: nil},
-		"empty holds none":           {member: `"optIns":[]`, want: []OptIn{}},
+		"absent holds none":          {member: "", want: nil},
+		"empty holds none":           {member: `"optIns":[]`, want: nil},
 		"listed, in canonical order": {member: `"optIns":["abr","hls","abr"]`, want: []OptIn{OptInHLS, OptInABR}},
 		"an unknown opt-in":          {member: `"optIns":["dash"]`, wantErr: true},
 	}
@@ -324,7 +325,6 @@ func TestKeySet_OptIns(t *testing.T) {
 			require.NoError(t, err)
 			got := keys[pub.ID].OptIns
 			assert.Equal(t, tt.want, got)
-			assert.Equal(t, tt.want == nil, got == nil, "absent and empty stay apart")
 
 			// And they survive a round trip through MarshalKeySet.
 			raw, err := MarshalKeySet(keys[pub.ID])
@@ -332,7 +332,6 @@ func TestKeySet_OptIns(t *testing.T) {
 			again, err := ParseKeySet(raw)
 			require.NoError(t, err)
 			assert.Equal(t, got, again[pub.ID].OptIns)
-			assert.Equal(t, got == nil, again[pub.ID].OptIns == nil)
 		})
 	}
 	_, err = MarshalKeySet(Key{ID: pub.ID, Public: pub.Public, Prefix: "/acme/", OptIns: []OptIn{"dash"}})

@@ -244,13 +244,13 @@ func verify(token string, keys map[string]Key, now time.Time, expiry bool) (Clai
 	case hasPathAuth && hasGrant:
 		return Claims{}, invalid("a token carries path_auth or root and patterns, not both")
 	case !hasPathAuth:
-		g, err = c.grant().checked(key.Prefix, key.optIns())
+		g, err = c.grant().checked(key.Prefix, key.OptIns)
 	case c.PathAuth == nil:
 		return Claims{}, invalid("path_auth is null")
 	case hasSubject:
 		return Claims{}, invalid("sub goes with root and patterns, not with path_auth")
 	default:
-		g, err = grantOf(*c.PathAuth, key.Prefix, key.optIns())
+		g, err = grantOf(*c.PathAuth, key.Prefix, key.OptIns)
 	}
 	if err != nil {
 		return Claims{}, err

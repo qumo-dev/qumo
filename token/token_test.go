@@ -197,6 +197,8 @@ func TestVerify_LeewayAdmitsSmallSkew(t *testing.T) {
 func TestVerify_PathConfinement(t *testing.T) {
 	now := time.Unix(1_800_000_000, 0)
 	tests := map[string]struct {
+		// optIns is what the key set lists for the key.
+		optIns   []OptIn
 		prefix   string
 		pathAuth map[string]any
 		want     Grant
@@ -229,6 +231,7 @@ func TestVerify_PathConfinement(t *testing.T) {
 			want:     Grant{Root: "/", Publish: []string{"/"}},
 		},
 		"the key's prefix mirrored under /.hls/": {
+			optIns:   []OptIn{OptInHLS},
 			prefix:   "acme/app",
 			pathAuth: map[string]any{"root": ".hls/acme/app/room", "pub": "cam"},
 			want:     Grant{Root: "/.hls/acme/app/room/", Publish: []string{"/cam", "/cam/"}},
@@ -246,7 +249,7 @@ func TestVerify_PathConfinement(t *testing.T) {
 	}
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
-			signer := &rawSigner{prefix: tt.prefix}
+			signer := &rawSigner{prefix: tt.prefix, optIns: tt.optIns}
 			c := validClaims(now)
 			c["path_auth"] = tt.pathAuth
 

@@ -93,10 +93,6 @@ func OptIns() []OptIn {
 	return []OptIn{OptInHLS, OptInABR}
 }
 
-// defaultOptIns are the opt-ins of a key whose key set entry lists none:
-// HLS alone, as every key held before opt-ins were listed.
-var defaultOptIns = []OptIn{OptInHLS}
-
 // within reports whether root, a MoQ directory, lies at or beneath prefix,
 // another one, or at or beneath prefix's mirror under the directory of one of
 // optIns. Both are in Directory's form, so a plain prefix comparison holds at

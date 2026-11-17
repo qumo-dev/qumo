@@ -27,8 +27,7 @@ type Key struct {
 	Prefix string
 	// OptIns lists the opt-ins the key signs for: the key set's "optIns"
 	// member, which a control plane sets as its tenant pays for an egress.
-	// Nil, the member absent, holds HLS alone, as every key did before
-	// opt-ins were listed; an empty list holds none.
+	// A key holds exactly these, every opt-in alike: none listed holds none.
 	OptIns []OptIn
 	// Pause lists what the key starts no new sessions for. Only ActionPublish
 	// can be paused: a verifier then starts no session that may publish with
@@ -45,16 +44,7 @@ type Key struct {
 // whether a token the key signed may grant beneath it. The empty root, which
 // grants nothing, is every key's.
 func (k Key) Holds(root string) bool {
-	return root == "" || within(root, k.Prefix, k.optIns())
-}
-
-// optIns returns the opt-ins the key holds: OptIns, or the default for none
-// listed.
-func (k Key) optIns() []OptIn {
-	if k.OptIns == nil {
-		return defaultOptIns
-	}
-	return k.OptIns
+	return root == "" || within(root, k.Prefix, k.OptIns)
 }
 
 // Pauses reports whether the key starts no new sessions for action.
@@ -106,9 +96,7 @@ type jwk struct {
 	Kid    string   `json:"kid,omitempty"`
 	Prefix string   `json:"prefix,omitempty"`
 	Pause  []Action `json:"pause,omitempty"`
-	// OptIns is omitted when nil, the default, but kept when empty, which
-	// holds none.
-	OptIns []OptIn `json:"optIns,omitzero"`
+	OptIns []OptIn  `json:"optIns,omitempty"`
 }
 
 func (k Key) jwk() jwk {
@@ -154,18 +142,15 @@ func normalizePause(pause []Action) ([]Action, error) {
 }
 
 // normalizeOptIns checks that optIns names only known opt-ins and returns
-// them once each, in OptIns order. Nil stays nil (the default) and an empty
-// list stays empty (none), so the two are told apart.
+// them once each, in OptIns order, or nil for none, so equal sets compare
+// equal.
 func normalizeOptIns(optIns []OptIn) ([]OptIn, error) {
-	if optIns == nil {
-		return nil, nil
-	}
 	for _, o := range optIns {
 		if o.Directory() == "" {
 			return nil, fmt.Errorf("optIns %q: not one of %v", o, OptIns())
 		}
 	}
-	out := []OptIn{}
+	var out []OptIn
 	for _, o := range OptIns() {
 		if slices.Contains(optIns, o) {
 			out = append(out, o)

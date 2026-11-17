@@ -26,6 +26,8 @@ func grantClaimsOf(now time.Time, grant map[string]any) map[string]any {
 func TestVerify_Grant(t *testing.T) {
 	now := time.Unix(1_800_000_000, 0)
 	tests := map[string]struct {
+		// optIns is what the key set lists for the key.
+		optIns  []OptIn
 		prefix  string
 		claims  map[string]any
 		want    Grant
@@ -54,8 +56,10 @@ func TestVerify_Grant(t *testing.T) {
 			claims: map[string]any{"root": "/acme/app/", "subscribe": []string{"/"}},
 			want:   Grant{Root: "/acme/app/", Subscribe: []string{"/"}},
 		},
-		// The key that grants a broadcast grants its HLS opt-in.
+		// The key that grants a broadcast grants its HLS opt-in, once its key
+		// set entry lists it.
 		"the key's prefix mirrored under /.hls/": {
+			optIns: []OptIn{OptInHLS},
 			prefix: "/acme/app/",
 			claims: map[string]any{"root": "/.hls/acme/app/room/42/", "publish": []string{"/cam"}},
 			want:   Grant{Root: "/.hls/acme/app/room/42/", Publish: []string{"/cam"}},
@@ -138,7 +142,7 @@ func TestVerify_Grant(t *testing.T) {
 	}
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
-			signer := &rawSigner{prefix: tt.prefix}
+			signer := &rawSigner{prefix: tt.prefix, optIns: tt.optIns}
 
 			got, err := Verify(signer.sign(t, grantClaimsOf(now, tt.claims)), signer.keys(t), now)
 
@@ -182,7 +186,11 @@ func TestSign_RoundTrip(t *testing.T) {
 
 			tok, err := signAt(key, grant, 30*time.Minute, now)
 			require.NoError(t, err)
-			c, err := Verify(tok, map[string]Key{key.ID: key.Public()}, now)
+			// The verifier's key holds every opt-in: what is checked here is
+			// that the grant survives the round trip.
+			trusted := key.Public()
+			trusted.OptIns = OptIns()
+			c, err := Verify(tok, map[string]Key{key.ID: trusted}, now)
 
 			require.NoError(t, err)
 			assert.Equal(t, grant, c.Grant)
@@ -350,7 +358,8 @@ func TestVerify_OptIns(t *testing.T) {
 		claims map[string]any
 		ok     bool
 	}{
-		"none listed holds HLS, as before":    {optIns: nil, claims: hls, ok: true},
+		"none listed holds no HLS":            {optIns: nil, claims: hls, ok: false},
+		"HLS paid for":                        {optIns: []OptIn{OptInHLS}, claims: hls, ok: true},
 		"none listed does not hold ABR":       {optIns: nil, claims: abr, ok: false},
 		"ABR paid for":                        {optIns: []OptIn{OptInHLS, OptInABR}, claims: abr, ok: true},
 		"ABR alone holds no HLS":              {optIns: []OptIn{OptInABR}, claims: hls, ok: false},

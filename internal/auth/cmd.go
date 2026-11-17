@@ -57,14 +57,11 @@ func Run(args []string) error {
 	}
 }
 
-// prefixLabel describes what a key with prefix, holding optIns (nil: the
-// default, HLS alone), may grant, for the terminal.
+// prefixLabel describes what a key with prefix, holding optIns, may grant,
+// for the terminal.
 func prefixLabel(prefix string, optIns []token.OptIn) string {
 	if prefix == "/" {
 		return "any root (no prefix)"
-	}
-	if optIns == nil {
-		optIns = []token.OptIn{token.OptInHLS}
 	}
 	label := "a root at or beneath " + prefix
 	if len(optIns) == 0 {
@@ -79,7 +76,7 @@ func prefixLabel(prefix string, optIns []token.OptIn) string {
 
 // parseOptIns reads a comma-separated list of opt-ins: "" is none.
 func parseOptIns(s string) []token.OptIn {
-	out := []token.OptIn{}
+	var out []token.OptIn
 	for part := range strings.SplitSeq(s, ",") {
 		if part = strings.TrimSpace(part); part != "" {
 			out = append(out, token.OptIn(part))
@@ -96,7 +93,7 @@ func parseOptIns(s string) []token.OptIn {
 func runKeygen(args []string, out, info io.Writer, in io.Reader) error {
 	fs := flag.NewFlagSet("qumo auth keygen", flag.ContinueOnError)
 	prefix := fs.String("prefix", "/", "confine the key to this directory (e.g. /acme/app/) and its mirrors beneath the opt-ins it holds (/.hls/acme/app/); / for none")
-	optIns := fs.String("opt-ins", "", "the opt-ins the key signs for, comma-separated (hls, abr), written to the key set as \"optIns\" (a control plane sets them as its tenant pays); unset holds hls alone, empty holds none")
+	optIns := fs.String("opt-ins", "", "the opt-ins the key signs for, comma-separated (hls, abr), written to the key set as \"optIns\" (a control plane sets them as its tenant pays); none by default")
 	privPath := fs.String("out", "signing-key.jwk", "where to write the private signing key (keep it on the app's server)")
 	pubPath := fs.String("keys", "keys.json", "where to write the public key set (QUMO_AUTH_KEYS)")
 	yes := fs.Bool("yes", false, "confirm without asking, as a piped run does")
@@ -112,11 +109,7 @@ func runKeygen(args []string, out, info io.Writer, in io.Reader) error {
 		return err
 	}
 	pub := key.Public()
-	fs.Visit(func(f *flag.Flag) {
-		if f.Name == "opt-ins" {
-			pub.OptIns = parseOptIns(*optIns)
-		}
-	})
+	pub.OptIns = parseOptIns(*optIns)
 	set, err := token.MarshalKeySet(pub)
 	if err != nil {
 		return err
