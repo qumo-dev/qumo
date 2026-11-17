@@ -64,12 +64,12 @@ func TestVerify_Grant(t *testing.T) {
 			claims: map[string]any{"root": "/.hls/acme/app/room/42/", "publish": []string{"/cam"}},
 			want:   Grant{Root: "/.hls/acme/app/room/42/", Publish: []string{"/cam"}},
 		},
-		// But not its ABR opt-in, which is paid for: that takes a key of its own.
+		// But not its ABR opt-in, which its key set entry does not list.
 		"the key's prefix, beneath /.abr/": {
 			prefix: "/acme/app/", claims: map[string]any{"root": "/.abr/acme/app/room/42/", "publish": []string{"/cam"}},
 			wantErr: ErrForbidden, reason: "prefix",
 		},
-		"an ABR key's own prefix": {
+		"a key confined beneath /.abr/": {
 			prefix: "/.abr/acme/app/",
 			claims: map[string]any{"root": "/.abr/acme/app/room/42/", "publish": []string{"/cam"}},
 			want:   Grant{Root: "/.abr/acme/app/room/42/", Publish: []string{"/cam"}},

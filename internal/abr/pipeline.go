@@ -29,9 +29,10 @@ type Config struct {
 }
 
 // A MisdirectedError reports that an opt-in redirected the transcoder
-// elsewhere than to the broadcast it names, or answered itself: the
-// transcoder follows an opt-in's redirect only to its broadcast, so an opt-in
-// cannot have another's broadcast transcoded under its name.
+// elsewhere than to the broadcast it names, or answered itself, or that a
+// track of that broadcast redirected elsewhere: the transcoder reads only the
+// broadcast an opt-in names, so an opt-in cannot have another's broadcast
+// transcoded under its name.
 type MisdirectedError struct {
 	OptIn, Broadcast, To moqt.BroadcastPath
 }
@@ -218,6 +219,12 @@ func (p *pipeline) readTrack(ctx context.Context, name string,
 		return fmt.Errorf("abr: subscribe %s: %w", name, err)
 	}
 	defer tr.Close() // not actionable: the pipeline is ending
+	if tr.BroadcastPath != p.src {
+		// The session follows redirects, and the transcoder may read every
+		// broadcast: followed elsewhere, a source could have another's
+		// media published as its own renditions.
+		return &MisdirectedError{OptIn: p.optIn, Broadcast: p.src, To: tr.BroadcastPath}
+	}
 
 	// The sequence of the last group read; read reports there has been one,
 	// so a first group numbered 0 is read rather than taken as seen.
@@ -320,7 +327,9 @@ func (p *pipeline) transcode(ctx context.Context, t msf.Track, init []byte, form
 		if !ok {
 			return // not decodable yet, before the first keyframe of an Annex B source
 		}
-		if enc == nil && !startEncoding(*in.config) {
+		// Once the encoders failed to start, ctx is cancelled: the rest of
+		// the group must not start ffmpeg again for each frame.
+		if enc == nil && (ctx.Err() != nil || !startEncoding(*in.config)) {
 			return
 		}
 		if len(enc.encoders) == 0 || (dropping && i != 0) {

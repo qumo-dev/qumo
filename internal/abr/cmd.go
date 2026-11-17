@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"net/url"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -44,7 +43,8 @@ const retryInterval = 2 * time.Second
 // The opt-in carries no media: it redirects every subscription to the
 // broadcast (see internal/optin), and the transcoder follows a redirect only
 // there. A publisher opts in only what it may publish: a key confined to a
-// prefix also signs for the prefix's mirror beneath /.abr/.
+// prefix signs for the prefix's mirror beneath /.abr/ once its key set entry
+// holds the abr opt-in (token.Key.OptIns).
 //
 // Configuration is read from environment variables (qumo convention):
 //
@@ -156,15 +156,11 @@ func RelayGrant() token.Grant {
 }
 
 // checkSigningKey reports why key cannot sign the transcoder's credential:
-// confined to less than the whole namespace, which RelayGrant needs, or
-// unusable.
+// confined to less than the whole namespace, which RelayGrant needs.
 func checkSigningKey(key token.SigningKey) error {
 	if p := key.Prefix; p != "" && p != "/" {
 		return fmt.Errorf("the key is confined to %q, but the transcoder reads the opt-ins beneath %q and the broadcasts they name, and publishes beside them: use a key for the whole namespace (prefix \"/\")",
 			p, token.ABRDirectory)
-	}
-	if _, err := token.Sign(key, RelayGrant(), token.MaxLifetime); err != nil {
-		return err
 	}
 	return nil
 }
@@ -203,20 +199,7 @@ func (d relayDialer) target() (string, time.Time, error) {
 	if d.key == nil {
 		return d.url, time.Time{}, nil
 	}
-	credential, lapses, err := relaycred.Sign(*d.key, RelayGrant())
-	if err != nil {
-		return "", time.Time{}, err
-	}
-	u, err := url.Parse(d.url)
-	if err != nil {
-		// url.Parse's error quotes the URL, whose query may carry a
-		// credential: report only that it is invalid.
-		return "", time.Time{}, errors.New("abr: RELAY_URL: invalid URL")
-	}
-	query := u.Query()
-	query.Set("jwt", credential)
-	u.RawQuery = query.Encode()
-	return u.String(), lapses, nil
+	return relaycred.Target(d.url, *d.key, RelayGrant())
 }
 
 // A Transcoder publishes an ABR broadcast for every broadcast opted in
