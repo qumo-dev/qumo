@@ -47,6 +47,16 @@ one key. The app needs no new key when its tenant pays; the relay refuses the
 token until the key set lists `abr`. `qumo auth keygen -opt-ins hls,abr` writes
 the member for a key set kept by hand.
 
+### RTMP and RTSP
+
+A stream pushed over RTMP or RTSP, or pulled from a camera, can't announce its
+opt-in, so the ingest announces it on the publisher's behalf: set
+`INGEST_OPT_IN=abr` on [`qumo rtmp`]({{< relref "rtmp#opting-streams-into-hls-and-abr" >}}),
+`qumo rtsp-push` or `qumo rtsp`. With auth on, the publisher presents the
+opt-in's token as a second `?jwt=` (OBS: Stream Key
+`cam?jwt=BROADCAST&jwt=OPTIN`), and the ingest checks it against the key set,
+so an unpaid tenant's stream plays without renditions.
+
 It dials the relay as an ordinary client: it subscribes to the source like any
 viewer and publishes the ABR broadcast like any publisher. The relay itself
 never decodes media.

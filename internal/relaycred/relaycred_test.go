@@ -147,6 +147,35 @@ func TestKeep_RecoversBeforeTheLapse(t *testing.T) {
 	})
 }
 
+// A ticket (Hold: no end, no grant in force yet) is presented at once, and
+// one not granted is presented again every retryInterval for as long as the
+// session lasts, until the relay grants it: a key set that comes to hold an
+// opt-in.
+func TestKeep_HoldRetriesUntilGranted(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		ctx, cancel := context.WithCancel(t.Context())
+		relay := &fakeRelay{refusing: errRefused, maxAge: time.Hour}
+		start := time.Now()
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			keep(ctx, relay.present, nil, sign, time.Time{})
+		}()
+
+		time.Sleep(25 * time.Second)
+		relay.refuse(nil)
+		time.Sleep(retryInterval)
+		synctest.Wait()
+		cancel()
+		<-done
+
+		assert.Equal(t, []time.Time{start, start.Add(10 * time.Second), start.Add(20 * time.Second), start.Add(30 * time.Second)},
+			relay.presented, "at once, then every retryInterval")
+		require.Len(t, relay.granted, 1)
+		assert.True(t, relay.granted[0].closed, "withdrawn with the session")
+	})
+}
+
 // Sign's lapse is the token's lifetime from before it was signed.
 func TestSign(t *testing.T) {
 	key, err := token.GenerateKey("/acme/")

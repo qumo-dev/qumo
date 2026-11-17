@@ -84,6 +84,10 @@ token of its own:
 qumo auth token -key signing-key.jwk -root /.hls/acme/room/42/ -publish /cam
 ```
 
+A stream pushed over RTMP or RTSP is opted in by the ingest on its publisher's
+behalf, with `INGEST_OPT_IN=hls` and the same token as a second `?jwt=` on the
+stream key: see [rtmp → Opting streams into HLS and ABR]({{< relref "rtmp#opting-streams-into-hls-and-abr" >}}).
+
 ## Viewers
 
 By default the egress serves every opted-in broadcast to anyone. With

@@ -55,6 +55,7 @@ $ RELAY_URL=moqt://relay:4433 RELAY_SIGNING_KEY=ingest-key.jwk RELAY_PUBLISH=/li
 | Variable | Default | Description |
 |---|---|---|
 | `RTSP_SERVE_ADDR` | `:4433`; none with `RELAY_URL` | MoQT listen address for subscribers to dial directly. |
+| `INGEST_OPT_IN` | (unset) | The egresses (`hls`, `abr`) the broadcast is opted into, comma-separated, for as long as the pull runs: `/.abr/live/camera` beside `/live/camera`. Through a relay with `RELAY_SIGNING_KEY`, the command presents a ticket for each beside its credential, which the relay grants when the key holds the opt-in. |
 | `RELAY_URL` | (unset) | The relay to publish through, dialed as a client (`https://…` or `moqt://…`); it may carry a credential as `?jwt=`. |
 | `RELAY_SIGNING_KEY`, `RELAY_PUBLISH` | (unset) | Set together: a signing key (`qumo auth keygen`) the server signs a fresh relay credential with on every dial and renews on the session, granting publishing beneath the directory `RELAY_PUBLISH`. A broadcast path outside it stops the command at startup. |
 | `RELAY_CA_FILE` / `RELAY_TLS_INSECURE` | (unset) / `false` | Trust this PEM as the relay's root, or skip verification for a self-signed dev relay. |

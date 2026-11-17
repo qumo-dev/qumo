@@ -35,6 +35,7 @@ func TestNewUpstream(t *testing.T) {
 	}{
 		"a URL alone":                 {cfg: Config{URL: "https://relay:4433/?jwt=abc"}},
 		"a signing key":               {cfg: Config{URL: "moqt://relay:4433", SigningKeyFile: keyFile, Publish: "room"}},
+		"a tenant's key with opt-ins": {cfg: Config{URL: "moqt://relay:4433", SigningKeyFile: roomKeyFile, Publish: "room", OptIns: []token.OptIn{token.OptInHLS, token.OptInABR}}},
 		"an unparsable URL":           {cfg: Config{URL: "https://relay:port"}, wantErr: "RELAY_URL"},
 		"a key without a path":        {cfg: Config{URL: "https://relay", SigningKeyFile: keyFile}, wantErr: "set together"},
 		"a path without a key":        {cfg: Config{URL: "https://relay", Publish: "room"}, wantErr: "set together"},
@@ -55,6 +56,14 @@ func TestNewUpstream(t *testing.T) {
 			assert.NotNil(t, u)
 		})
 	}
+}
+
+func TestOptInGrant(t *testing.T) {
+	g := optInGrant(token.OptInABR, "/acme/room/")
+	assert.Equal(t, "/.abr/acme/room/", g.Root)
+	assert.True(t, g.Allows(token.ActionPublish, "/.abr/acme/room/cam"))
+	assert.False(t, g.Allows(token.ActionPublish, "/acme/room/cam"), "the broadcast is the connection credential's")
+	assert.False(t, g.Allows(token.ActionPublish, "/.hls/acme/room/cam"), "another opt-in")
 }
 
 func TestUpstream_Target(t *testing.T) {

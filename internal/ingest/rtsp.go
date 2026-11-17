@@ -14,6 +14,7 @@ import (
 
 	"github.com/qumo-dev/gomoqt/moqt"
 	"github.com/qumo-dev/qumo/internal/rtsp"
+	"github.com/qumo-dev/qumo/token"
 )
 
 // RTSPConfig holds configuration for an [RTSPServer].
@@ -25,10 +26,14 @@ type RTSPConfig struct {
 	TrackMux *moqt.TrackMux
 
 	// Authorize, when set, decides whether each ANNOUNCE may publish, from
-	// the ?jwt= its URL carries; a refused one is answered 401. The
-	// connection is cut when the permission lapses. Nil accepts every
-	// ANNOUNCE.
+	// the ?jwt= its URL carries, or any of several; a refused one is
+	// answered 401. The connection is cut when the permission lapses. Nil
+	// accepts every ANNOUNCE.
 	Authorize PublishAuthorizer
+
+	// OptIns are the egresses each stream is opted into, as
+	// [RTMPConfig.OptIns] are.
+	OptIns []token.OptIn
 }
 
 // RTSPServer accepts RTSP push connections and bridges each stream to
@@ -187,8 +192,14 @@ func (s *RTSPServer) handleConn(ctx context.Context, conn *rtsp.Conn) {
 			if path == "" {
 				path = "/live/stream"
 			}
+			if err := checkPushPath(path); err != nil {
+				slog.Warn("RTSP publish refused", "remote", conn.RemoteAddr(), "broadcast_path", path, "error", err)
+				resp.StatusCode = rtsp.StatusBadRequest
+				break
+			}
+			credentials := req.URL.Query()["jwt"]
 			if s.config.Authorize != nil {
-				lapses, err := s.config.Authorize(req.URL.Query().Get("jwt"), path)
+				lapses, err := authorizeAny(s.config.Authorize, credentials, path)
 				if err != nil {
 					slog.Warn("RTSP publish refused",
 						"remote", conn.RemoteAddr(),
@@ -223,7 +234,9 @@ func (s *RTSPServer) handleConn(ctx context.Context, conn *rtsp.Conn) {
 			if err != nil {
 				slog.Error("failed to create ingest session", "error", err)
 				resp.StatusCode = rtsp.StatusInternalServerError
+				break
 			}
+			optIn(sess, s.config.Authorize, credentials, s.config.OptIns)
 
 		case rtsp.MethodSetup:
 			if sdp == nil || sess == nil {

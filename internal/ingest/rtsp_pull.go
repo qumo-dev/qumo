@@ -17,6 +17,7 @@ import (
 	"github.com/qumo-dev/qumo/internal/quicconfig"
 	"github.com/qumo-dev/qumo/internal/rtsp"
 	"github.com/qumo-dev/qumo/internal/upstream"
+	"github.com/qumo-dev/qumo/token"
 )
 
 // RunRTSPPull connects to an RTSP source (e.g. an IP camera), pulls the stream
@@ -30,6 +31,7 @@ import (
 //	args[0]           RTSP source URL (rtsp://[user:pass@]host/path)
 //	args[1] (opt)     broadcast path (default /live/camera)
 //	RTSP_SERVE_ADDR   MoQT listen address for subscribers to dial directly (default :4433 without RELAY_URL, none with it)
+//	INGEST_OPT_IN     the egresses (hls, abr) the broadcast is opted into, comma-separated (default none)
 //	RELAY_URL, RELAY_SIGNING_KEY, RELAY_PUBLISH, RELAY_CA_FILE, RELAY_TLS_INSECURE
 //	                  the relay to publish through (upstream.FromEnv lists them)
 //	CERT_FILE         TLS certificate (default certs/server.crt)
@@ -53,6 +55,9 @@ func RunRTSPPull(args []string) error {
 	if err != nil {
 		return err
 	}
+	if err := checkPushPath(moqt.BroadcastPath(path)); err != nil {
+		return fmt.Errorf("rtsp: %w", err)
+	}
 	if beneath := out.up.PublishBeneath(); beneath != "" && !strings.HasPrefix(path, beneath) {
 		return fmt.Errorf("rtsp: %s: %w (%s)", path, errOutsidePublish, beneath)
 	}
@@ -69,6 +74,7 @@ func RunRTSPPull(args []string) error {
 		AllowedOrigins: out.allowedOrigins,
 		QUIC:           quicConfig,
 		Upstream:       out.up,
+		OptIns:         out.optIns,
 	})
 	if err != nil {
 		return err
@@ -92,6 +98,9 @@ type PullConfig struct {
 	QUIC *quic.Config
 	// Upstream, when set, publishes the broadcast through a relay as well.
 	Upstream *upstream.Upstream
+	// OptIns are the egresses the broadcast is opted into for as long as the
+	// pull runs (see [Session.OptIn]).
+	OptIns []token.OptIn
 }
 
 // PullHandle is a running RTSP pull ingest. Close stops the pull + MoQT server;
@@ -157,6 +166,9 @@ func PullAndServe(parentCtx context.Context, cfg PullConfig) (*PullHandle, error
 	if err != nil {
 		cancel()
 		return nil, fmt.Errorf("rtsp pull session: %w", err)
+	}
+	for _, o := range cfg.OptIns {
+		sess.OptIn(o, time.Time{})
 	}
 
 	var moqSrv *moqt.Server
