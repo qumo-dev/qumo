@@ -19,7 +19,10 @@ the broadcast, keeping the track name (`internal/optin`, the same handler as
 the HLS opt-in). `qumo abr` reads the catalog through it and follows the
 redirect only to the broadcast the opt-in names: an opt-in that redirects
 elsewhere, or answers itself, is refused, so no one can have another
-publisher's broadcast transcoded under their own name. Withdrawing the opt-in
+publisher's broadcast transcoded under their own name. Paths are compared
+exactly, as the relay grants and routes them: an opt-in spelled with a
+trailing or doubled slash, or a `.` or `..` segment, is refused rather than
+read as the cleaned path it might name. Withdrawing the opt-in
 withdraws the ABR broadcast; the broadcast itself plays on.
 
 ### Paying for the opt-in
