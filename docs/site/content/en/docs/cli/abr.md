@@ -19,7 +19,10 @@ the broadcast, keeping the track name (`internal/optin`, the same handler as
 the HLS opt-in). `qumo abr` reads the catalog through it and follows the
 redirect only to the broadcast the opt-in names: an opt-in that redirects
 elsewhere, or answers itself, is refused, so no one can have another
-publisher's broadcast transcoded under their own name. Withdrawing the opt-in
+publisher's broadcast transcoded under their own name. Paths are compared
+exactly, as the relay grants and routes them: an opt-in spelled with a
+trailing or doubled slash, or a `.` or `..` segment, is refused rather than
+read as the cleaned path it might name. Withdrawing the opt-in
 withdraws the ABR broadcast; the broadcast itself plays on.
 
 ### Paying for the opt-in
@@ -95,7 +98,10 @@ catalog lists:
 - **One alternate group.** Every video track has `altGroup: 1` in the MSF
   catalog, with its `width`, `height`, `bitrate`, codec and decoder
   configuration (`initRef`), so a player knows they are alternatives of one
-  picture and what each costs.
+  picture and what each costs. The source's size is the one its catalog
+  states, or, when that states none (or a zero), the size decoded from its
+  video. An Annex B source's size is decoded only at its first keyframe, so its
+  entry has no size until then.
 - **Aligned groups.** Every rendition numbers its groups as the source does,
   and group N of each track starts at the same frame, with a keyframe. A
   player can leave one track after group N and join another at group N+1

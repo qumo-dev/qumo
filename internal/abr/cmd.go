@@ -230,7 +230,11 @@ func (t *Transcoder) Serve(ctx context.Context, sess *moqt.Session, mux *moqt.Tr
 	defer wg.Wait()
 	for ann := range ar.Announcements(ctx) {
 		optIn := ann.BroadcastPath()
-		src := moqt.BroadcastPath(optin.Broadcast(string(optIn), token.ABRDirectory))
+		src, ok := optedIn(optIn)
+		if !ok {
+			slog.Warn("abr: refusing opt-in: not spelled as its broadcast's opt-in", "opt_in", optIn, "broadcast", src)
+			continue
+		}
 		if src == "/" || strings.HasSuffix(string(src), t.Suffix) {
 			// No broadcast, or an ABR broadcast: it is not transcoded again.
 			slog.Info("abr: ignoring opt-in", "opt_in", optIn)
@@ -246,6 +250,17 @@ func (t *Transcoder) Serve(ctx context.Context, sess *moqt.Session, mux *moqt.Tr
 		})
 	}
 	return context.Cause(ctx)
+}
+
+// optedIn returns the broadcast the opt-in optIn names, and false when optIn
+// is not that broadcast's opt-in exactly as optin.Path spells it. A relay
+// tells broadcasts apart, and grants them, by their exact paths, and the
+// transcoder may read every one: /.abr/acme/../victim/cam is granted beneath
+// /.abr/acme/, yet would name /victim/cam, and a doubled or trailing slash
+// names a broadcast other than the cleaned one the transcoder would read.
+func optedIn(optIn moqt.BroadcastPath) (moqt.BroadcastPath, bool) {
+	src := moqt.BroadcastPath(optin.Broadcast(string(optIn), token.ABRDirectory))
+	return src, src == "/" || optin.Path(token.ABRDirectory, src) == optIn
 }
 
 // transcode runs the pipeline for src, opted in as optIn, until ctx ends,

@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/qumo-dev/gomoqt/moqt"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -29,6 +30,35 @@ func TestCheckSigningKey(t *testing.T) {
 	require.NoError(t, err)
 	assert.ErrorContains(t, checkSigningKey(tenant), "whole namespace",
 		"a tenant's key cannot reach the opt-ins beneath /.abr/")
+}
+
+// An opt-in names its broadcast only when spelled exactly as that
+// broadcast's opt-in: a relay grants and routes exact paths, so one that
+// cleans to another broadcast (a ".." climbing out of the publisher's own
+// directory) is refused rather than read with the transcoder's grant.
+func TestOptedIn(t *testing.T) {
+	tests := map[string]struct {
+		optIn  moqt.BroadcastPath
+		want   moqt.BroadcastPath
+		wantOK bool
+	}{
+		"a broadcast":                   {optIn: "/.abr/live/cam1", want: "/live/cam1", wantOK: true},
+		"a single segment":              {optIn: "/.abr/cam", want: "/cam", wantOK: true},
+		"the bare directory":            {optIn: "/.abr", want: "/", wantOK: true},
+		"the directory, trailing slash": {optIn: "/.abr/", want: "/", wantOK: true},
+		"a trailing slash":              {optIn: "/.abr/live/cam1/", want: "/live/cam1", wantOK: false},
+		"a doubled slash":               {optIn: "/.abr/live//cam1", want: "/live/cam1", wantOK: false},
+		"a dot segment":                 {optIn: "/.abr/live/./cam1", want: "/live/cam1", wantOK: false},
+		"climbing into another's":       {optIn: "/.abr/acme/../victim/cam", want: "/victim/cam", wantOK: false},
+		"climbing out of the directory": {optIn: "/.abr/../victim/cam", want: "/victim/cam", wantOK: false},
+	}
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			got, ok := optedIn(tt.optIn)
+			assert.Equal(t, tt.want, got)
+			assert.Equal(t, tt.wantOK, ok)
+		})
+	}
 }
 
 func TestRelayDialerTarget(t *testing.T) {

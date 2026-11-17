@@ -96,12 +96,25 @@ func (o *outputBroadcast) addTrack(t msf.Track, init []byte, info moqt.PublishIn
 
 // setBitrate states the bitrate of the track named name in the catalog.
 func (o *outputBroadcast) setBitrate(name string, bitrate int64) error {
+	return o.update(name, func(t *msf.Track) { t.Bitrate = new(bitrate) })
+}
+
+// setSize states the size and label of the track named name in the catalog,
+// once it is known after the track was added.
+func (o *outputBroadcast) setSize(name string, width, height int64, label string) error {
+	return o.update(name, func(t *msf.Track) {
+		t.Width, t.Height, t.Label = new(width), new(height), label
+	})
+}
+
+// update changes the catalog entry of the track named name with change.
+func (o *outputBroadcast) update(name string, change func(*msf.Track)) error {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	catalog := o.b.Catalog()
 	for i := range catalog.Tracks {
 		if catalog.Tracks[i].Name == name {
-			catalog.Tracks[i].Bitrate = new(bitrate)
+			change(&catalog.Tracks[i])
 			return o.b.SetCatalog(catalog)
 		}
 	}
