@@ -333,7 +333,7 @@ func BenchmarkRelayChain_Series(b *testing.B) {
 			}
 			for i := 1; i < depth; i++ {
 				i := i
-				go relays[i].ConnectPeers(ctx) //nolint:errcheck
+				go relays[i].ConnectPeers(ctx)
 			}
 			reportChainStats(b, cfg, measureSeries(b, pool, relays, cfg), depth)
 		})
@@ -359,7 +359,7 @@ func BenchmarkRelayChain_Fanout(b *testing.B) {
 			}
 			for i := range fanout {
 				i := i
-				go leaves[i].ConnectPeers(ctx) //nolint:errcheck
+				go leaves[i].ConnectPeers(ctx)
 			}
 			reportChainStats(b, cfg, measureFanout(b, pool, origin, leaves, cfg), fanout)
 		})

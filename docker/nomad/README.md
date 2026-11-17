@@ -19,10 +19,9 @@ fixed `PEERS = "hub-0:4433,hub-1:4433"` matching the hubs group's
 `count`. Hubs get no `PEERS`, so within one cluster only edge→hub
 connections form.
 
-There is no dynamic peer discovery (peer routing uses static
-`PEERS`; see internal/relay/server.go `ConnectPeers`),
-so this sim only demonstrates a fixed topology, not runtime discovery
-of scaled-up/down hubs.
+This sim uses fixed `PEERS` addresses (see internal/relay/peer_resolve.go
+`ConnectPeers`), so it only demonstrates a fixed topology, not runtime
+discovery of scaled-up/down hubs.
 
 > This is a manual simulation. There are **no automated integration tests** wired
 > to it by design.

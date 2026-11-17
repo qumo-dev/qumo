@@ -11,19 +11,19 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestSetupTLS tests TLS configuration setup (basic validation only)
-func TestSetupTLSInvalidFiles(t *testing.T) {
-	_, err := setupTLS("/nonexistent/cert.pem", "/nonexistent/key.pem")
-	if err == nil {
-		t.Error("Expected error for nonexistent certificate files, got nil")
+func Test_loadPublicCertificate(t *testing.T) {
+	tests := map[string]struct {
+		cert, key string
+	}{
+		"files that aren't there": {cert: "/nonexistent/cert.pem", key: "/nonexistent/key.pem"},
+		"no files":                {},
 	}
-}
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			_, err := loadPublicCertificate(tt.cert, tt.key)
 
-// TestSetupTLSEmptyPaths tests error handling for empty paths
-func TestSetupTLSEmptyPaths(t *testing.T) {
-	_, err := setupTLS("", "")
-	if err == nil {
-		t.Error("Expected error for empty certificate paths, got nil")
+			assert.ErrorContains(t, err, "failed to load TLS certificates")
+		})
 	}
 }
 
