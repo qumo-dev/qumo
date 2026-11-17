@@ -4,8 +4,9 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/hex"
+	"os"
+	"path/filepath"
 	"testing"
-	"time"
 
 	"github.com/qumo-dev/gomoqt/moqt"
 	"github.com/qumo-dev/gomoqt/msf"
@@ -170,26 +171,26 @@ func TestRenditionsWriteFrame(t *testing.T) {
 	})
 }
 
+// When a later group cannot start, the encoders already started are closed:
+// their ffmpeg is told its input ended and is waited for, not left running.
+// The ffmpeg is the test binary (TestMain), which writes a marker once its
+// input ends; ctx is never cancelled, so nothing else would end it.
 func TestStartEncodersClosesStartedOnFailure(t *testing.T) {
-	record, _ := testSource(t, 320, 240, 1, 1)
+	dir := t.TempDir()
+	t.Setenv(fakeFFmpegDir, dir)
+	self, err := os.Executable()
+	require.NoError(t, err)
 	r := newTestRenditions(t)
-	src := sourceConfig{Codec: "avc1.42c00d", Width: 320, Height: 240, Description: record}
-	outs := []output{r.outputs[0]}
+	src := sourceConfig{Codec: "avc1.42c01e", Width: 640, Height: 360, Description: avcRecord360p}
+
 	// The first group starts an ffmpeg; the second has no outputs, so it
-	// cannot, and the first must be stopped and waited for.
-	done := make(chan error, 1)
-	go func() {
-		encoders, err := startEncoders(t.Context(), EncoderConfig{FFmpeg: "ffmpeg", Codec: "libx264", Preset: "ultrafast"},
-			src, outs, [][]int{{0}, {}}, r)
-		assert.Nil(t, encoders)
-		done <- err
-	}()
-	select {
-	case err := <-done:
-		assert.Error(t, err)
-	case <-time.After(30 * time.Second):
-		t.Fatal("startEncoders did not return: the started ffmpeg was not stopped")
-	}
+	// cannot start.
+	encoders, err := startEncoders(context.Background(), EncoderConfig{FFmpeg: self, Codec: "libx264"},
+		src, r.outputs[:1], [][]int{{0}, {}}, r)
+
+	assert.Error(t, err)
+	assert.Nil(t, encoders)
+	assert.FileExists(t, filepath.Join(dir, fakeFFmpegMarker), "the started ffmpeg was closed and waited for")
 }
 
 func TestStartEncodersMissingFFmpeg(t *testing.T) {
