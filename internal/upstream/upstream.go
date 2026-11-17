@@ -153,11 +153,9 @@ func newUpstream(cfg Config) (*Upstream, error) {
 		if _, err := token.Sign(key, publishGrant(publish), token.MaxLifetime); err != nil {
 			return nil, fmt.Errorf("RELAY_PUBLISH: %w", err)
 		}
-		for _, o := range cfg.OptIns {
-			if _, err := token.Sign(key, optInGrant(o, publish), token.MaxLifetime); err != nil {
-				return nil, fmt.Errorf("RELAY_PUBLISH, opt-in %s: %w", o, err)
-			}
-		}
+		// Its opt-in grants need no check of their own: Sign signs for
+		// every opt-in of a directory it signs for, and leaves which ones
+		// the key holds to the relay.
 		u.key, u.publish = &key, publish
 	}
 	return u, nil

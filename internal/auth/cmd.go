@@ -105,10 +105,6 @@ func runKeygen(args []string, out, info io.Writer, in io.Reader) error {
 	if err != nil {
 		return err
 	}
-	// MarshalKeySet checked them: what the key set holds is what is shown.
-	if keys, err := token.ParseKeySet(set); err == nil {
-		pub = keys[pub.ID]
-	}
 	// The key and where it lies, before any file does: the key's prefix is
 	// the one setting a re-issue won't give back, and a bare prefix makes
 	// the key the tenant of everything.
