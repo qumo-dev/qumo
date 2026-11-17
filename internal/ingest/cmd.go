@@ -268,6 +268,10 @@ func publishAuthorizerFromEnv(ctx context.Context, name, beneath string) (Publis
 // server: its path lies outside RELAY_PUBLISH.
 var errOutsidePublish = errors.New("the path lies outside RELAY_PUBLISH, beneath which the relay takes this server's broadcasts")
 
+// errOptInNamesNone refuses an opt-in path with a "." or ".." segment, which
+// names no broadcast (optin.Broadcast).
+var errOptInNamesNone = errors.New("an opt-in path with a . or .. segment names no broadcast")
+
 // errNoCredential refuses a push that presented no credential while auth is
 // on.
 var errNoCredential = errors.New("no credential: present a token that may publish the broadcast as ?jwt=")
@@ -286,6 +290,11 @@ func publishAuthorizer(v *auth.Verifier, beneath string) PublishAuthorizer {
 	return func(credential string, path moqt.BroadcastPath) (time.Time, error) {
 		broadcast := path
 		if b, ok := optInOf(path); ok {
+			if b == "" {
+				// Cleaned, it could name a broadcast outside the
+				// directory the relay grants its exact path in.
+				return time.Time{}, fmt.Errorf("%s: %w", path, errOptInNamesNone)
+			}
 			broadcast = b
 		}
 		if beneath != "" && !strings.HasPrefix(string(broadcast), beneath) {

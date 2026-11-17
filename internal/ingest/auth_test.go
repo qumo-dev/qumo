@@ -49,6 +49,8 @@ func TestCheckPushPath(t *testing.T) {
 		"/.abr/live/cam": true,
 		"/.hls/live/cam": true,
 		"/.hlsx/cam":     false,
+		// Beneath the directory, though it names no broadcast.
+		"/.abr/live/../cam": true,
 	} {
 		err := checkPushPath(path)
 		if opt {
@@ -155,6 +157,9 @@ func TestPublishAuthorizer(t *testing.T) {
 		},
 		"auth off, beneath RELAY_PUBLISH": {beneath: "/live/", path: "/live/cam"},
 		"auth off, outside RELAY_PUBLISH": {beneath: "/live/", path: "/other/cam", wantErr: errOutsidePublish},
+		// Cleaned, /.abr/other/../live/cam would pass RELAY_PUBLISH as
+		// /live/cam, while the relay grants and routes it beneath /.abr/other/.
+		"auth off, an opt-in with a .. segment": {beneath: "/live/", path: "/.abr/other/../live/cam", wantErr: errOptInNamesNone},
 		"outside RELAY_PUBLISH, before the credential": {
 			verifier: v, beneath: "/other/", credential: sign(key, publishLive), path: "/live/cam", wantErr: errOutsidePublish,
 		},
