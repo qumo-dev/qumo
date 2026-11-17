@@ -79,7 +79,7 @@ func TestRelayChain_Stress(t *testing.T) {
 			for i := 1; i < depth; i++ {
 				relays[i].Config.Peers = []Peer{{Address: relays[i-1].MOQServer.Addr}}
 				i := i
-				go relays[i].ConnectPeers(ctx) //nolint:errcheck
+				go relays[i].ConnectPeers(ctx)
 			}
 
 			sent, lats, heapGrowth := stressRun(t, ctx, pool, relays, gap, stressDuration)
@@ -264,7 +264,7 @@ func TestRelayChain_FanoutStress(t *testing.T) {
 			}
 			for i := range k {
 				i := i
-				go leaves[i].ConnectPeers(ctx) //nolint:errcheck
+				go leaves[i].ConnectPeers(ctx)
 			}
 
 			sent, recvPerLeaf, lats, heapGrowth := stressFanoutRun(t, ctx, pool, origin, leaves, gap, stressDuration)
