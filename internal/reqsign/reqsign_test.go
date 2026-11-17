@@ -9,7 +9,6 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -171,34 +170,6 @@ func TestNew(t *testing.T) {
 			}
 			require.NoError(t, err)
 			assert.NotNil(t, signer)
-		})
-	}
-}
-
-// Load reads the pair as PEER_CERT_FILE and PEER_KEY_FILE name it.
-func TestLoad(t *testing.T) {
-	certFile, keyFile := reqsigntest.WritePair(t, reqsigntest.Pair(t))
-	tests := map[string]struct {
-		cert, key string
-		wantErr   bool
-	}{
-		"both files":      {cert: certFile, key: keyFile},
-		"no key file":     {cert: certFile, key: filepath.Join(t.TempDir(), "missing.key"), wantErr: true},
-		"the key as cert": {cert: keyFile, key: keyFile, wantErr: true},
-	}
-	for name, tt := range tests {
-		t.Run(name, func(t *testing.T) {
-			signer, err := reqsign.Load(tt.cert, tt.key)
-
-			if tt.wantErr {
-				assert.Error(t, err)
-				return
-			}
-			require.NoError(t, err)
-			req := httptest.NewRequest(http.MethodGet, "/v1/relays/trust", nil)
-			require.NoError(t, signer.Sign(req, nil))
-			_, err = reqsigntest.Verify(req, nil)
-			assert.NoError(t, err)
 		})
 	}
 }

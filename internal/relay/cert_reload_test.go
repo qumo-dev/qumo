@@ -1,7 +1,6 @@
 package relay
 
 import (
-	"context"
 	"crypto/tls"
 	"crypto/x509"
 	"io"
@@ -11,7 +10,6 @@ import (
 	"os"
 	"slices"
 	"testing"
-	"testing/synctest"
 	"time"
 
 	"github.com/qumo-dev/gomoqt/moqt"
@@ -302,36 +300,6 @@ func TestCertReloader_handshakes(t *testing.T) {
 	newPeerConn, err := dialEcho(t, newPeerAddr, ownDialer)
 	require.NoError(t, err, "after it, this relay dials a peer from the new CA")
 	assert.Equal(t, newPeer.Certificate[0], newPeerConn.ConnectionState().PeerCertificates[0].Raw)
-}
-
-// run reloads once a certReloadInterval, and stops with its context.
-func TestCertReloader_run(t *testing.T) {
-	f := newReloadFixture(t)
-	synctest.Test(t, func(t *testing.T) {
-		ctx, cancel := context.WithCancel(t.Context())
-		done := make(chan struct{})
-		go func() {
-			defer close(done)
-			f.r.run(ctx)
-		}()
-		public := issue(t, f.publicCA, publicLeaf())
-		writePair(t, ".", "public", public)
-
-		time.Sleep(certReloadInterval - time.Second)
-		synctest.Wait()
-		got, err := f.r.certificate(nil)
-		require.NoError(t, err)
-		assert.Equal(t, f.public.Certificate[0], got.Certificate[0], "not read before the interval")
-
-		time.Sleep(time.Second)
-		synctest.Wait()
-		got, err = f.r.certificate(nil)
-		require.NoError(t, err)
-		assert.Equal(t, public.Certificate[0], got.Certificate[0], "read once the interval is up")
-
-		cancel()
-		<-done
-	})
 }
 
 // A reloader for a relay with no peer identity, or no CA, reads the files it

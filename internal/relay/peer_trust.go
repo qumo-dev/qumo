@@ -68,7 +68,9 @@ func (c sessionClass) String() string {
 // PeerTrust is a relay's peer trust: the CA it trusts, and its own peer
 // identity when it has one. ServerTLS and DialerTLS derive the listener's and
 // the dialer's TLS configurations from it, and OwnCertificate is what
-// Server.PeerCertificate takes.
+// Server.PeerCertificate takes. The relay command swaps in a new PeerTrust
+// when its files are renewed, and builds its configurations with serverTLS
+// and dialerTLS, which ask for the current one at each handshake.
 type PeerTrust struct {
 	// ca is the CA; nil without one.
 	ca *x509.CertPool
@@ -183,6 +185,9 @@ func usageName(usage x509.ExtKeyUsage) string {
 // Without a peer identity the relay keeps answering PeeringName with its
 // public certificate, which the dialer refuses: a relay never pretends to be
 // a peer it isn't.
+//
+// The configuration holds t for good: it does not follow certificate
+// reloads. The relay command uses serverTLS with its reloader instead.
 func (t *PeerTrust) ServerTLS(public *tls.Config) *tls.Config {
 	return serverTLS(public, func() *PeerTrust { return t })
 }
@@ -224,6 +229,9 @@ func serverTLS(public *tls.Config, current func() *PeerTrust) *tls.Config {
 // DialerTLS returns the configuration for dialing peers: the peer certificate
 // as the client certificate, PeeringName as the server name, and the CA as
 // the only root. It needs a peer identity.
+//
+// The configuration holds t for good: it does not follow certificate
+// reloads. The relay command uses dialerTLS with its reloader instead.
 func (t *PeerTrust) DialerTLS() *tls.Config {
 	return dialerTLS(func() *PeerTrust { return t })
 }

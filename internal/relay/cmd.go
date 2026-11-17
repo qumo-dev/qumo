@@ -25,6 +25,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/qumo-dev/gomoqt/moqt"
 	"github.com/qumo-dev/qumo/internal/auth"
+	"github.com/qumo-dev/qumo/internal/certreload"
 	"github.com/qumo-dev/qumo/internal/cors"
 	"github.com/qumo-dev/qumo/internal/envconfig"
 	"github.com/qumo-dev/qumo/internal/gctune"
@@ -408,7 +409,7 @@ func Run(args []string) error {
 	// Start peer connections in background
 	go relayServer.ConnectPeers(ctx)
 	// Ends with ctx; it only swaps what new handshakes are given.
-	go certs.run(ctx)
+	go certreload.Run(ctx, certs.reload)
 
 	// Delegate to testable helper that runs servers until ctx is cancelled
 	if err := serveComponents(ctx, relayServer, httpServers, 10*time.Second); err != nil {

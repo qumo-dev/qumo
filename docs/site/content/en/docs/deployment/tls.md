@@ -118,21 +118,35 @@ needs no restart and no signal.
   together, only when they check out as at startup: the certificate is one the
   CA issued, carries the peering name, and is valid now. Anything else (a
   half-written file, a key that doesn't match, a certificate from a CA not in
-  `CA_FILE`) is logged as an error and the certificates in use are kept; the
-  next read tries again. Write the key and the certificate close together, or
-  rename them into place.
+  `CA_FILE`, one that has expired) is logged as an error and the certificates
+  in use are kept; the next read tries again. The error is logged once, and
+  again only if it changes, not at every read; a later read that takes a
+  renewal, or finds the files back to what is in use, clears it.
+- **Replace the files atomically.** Write each new file beside the old and
+  rename it into place. A read between two writes in place sees a new
+  certificate beside the old key, refuses the pair and logs an error, and the
+  next read after both are written takes it.
 - **Rotating the relay CA.** Put the new CA beside the old one in every
   relay's `CA_FILE` first, wait for the relays to read it, then issue peer
   certificates from the new CA, and drop the old CA from `CA_FILE` once no
   relay presents a certificate from it. A peer certificate from a CA the relay
   doesn't yet trust is refused, and the old one kept.
-- **Requests to the control plane** are signed with the renewed peer
-  certificate from then on.
+- **Requests to the control plane** — the relay's key-set and usage
+  requests — are signed with the renewed peer certificate from the next
+  request on. [`qumo dns`]({{< relref "../cli/dns" >}}) re-reads its
+  `PEER_CERT_FILE` / `PEER_KEY_FILE` the same way, about once a minute, and
+  signs its feed reads with a renewed pair from then on.
 
 The relay logs each certificate it takes, with its serial and expiry, and
-counts reads in `qumo_relay_cert_reloads_total{cert,result}`;
-`qumo_relay_cert_not_after_seconds{cert}` is when the certificate in use
-expires, for an alert ([Observability]({{< relref "../observability" >}})).
+counts reads in `qumo_relay_cert_reloads_total{cert,result}` (`qumo dns`:
+`qumo_dns_cert_reloads_total{cert,result}`).
+`qumo_relay_cert_not_after_seconds{cert}` (`qumo dns`:
+`qumo_dns_cert_not_after_seconds{cert}`) is when the certificate in use
+expires. **Alert on that gauge** — for example, when it is less than a few days
+away — rather than on single reload errors: a renewal written in place can
+log one harmless error, and a certificate that is never renewed shows only as
+an expiry that keeps getting closer
+([Observability]({{< relref "../observability" >}})).
 
 ## Clients verify the relay by default
 

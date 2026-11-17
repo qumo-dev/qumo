@@ -3,9 +3,16 @@ package relay
 import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
+
+	"github.com/qumo-dev/qumo/internal/certreload"
 )
 
 var (
+	// certMetrics are qumo_relay_cert_reloads_total{cert,result} and
+	// qumo_relay_cert_not_after_seconds{cert}, by certificate: public
+	// (CERT_FILE) or peer (PEER_CERT_FILE and CA_FILE) (cert_reload.go).
+	certMetrics = certreload.NewMetrics(prometheus.DefaultRegisterer, "relay")
+
 	// metricSessionsActive tracks the number of currently active MoQT sessions
 	// being served by Relay(). Replaces the active_connections field that was
 	// previously tracked inside statusHandler.
@@ -45,26 +52,6 @@ var (
 		Name:      "sessions_refused_total",
 		Help:      "Client sessions refused at connect for the relay's own reasons, by reason (full: at its ceiling, 10% above a watermark).",
 	}, []string{"reason"})
-
-	// metricCertReloads counts the certificate files the relay read anew
-	// and took (result ok) or refused, keeping what it had (error), by
-	// certificate: public (CERT_FILE) or peer (PEER_CERT_FILE and CA_FILE)
-	// (cert_reload.go). Files that hold what is in use count nothing.
-	metricCertReloads = promauto.NewCounterVec(prometheus.CounterOpts{
-		Namespace: "qumo",
-		Subsystem: "relay",
-		Name:      "cert_reloads_total",
-		Help:      "Certificate files read anew, by certificate (public, peer) and result: ok (taken) or error (refused; the certificate in use is kept).",
-	}, []string{"cert", "result"})
-
-	// metricCertNotAfter is when the certificate in use expires, by
-	// certificate: public or peer (unset without a peer identity).
-	metricCertNotAfter = promauto.NewGaugeVec(prometheus.GaugeOpts{
-		Namespace: "qumo",
-		Subsystem: "relay",
-		Name:      "cert_not_after_seconds",
-		Help:      "When the certificate in use expires, in unix seconds, by certificate (public, peer).",
-	}, []string{"cert"})
 
 	// metricSessionsTotal counts the sessions served, by transport
 	// (webtransport, websocket or quic) and class: client (admitted by its

@@ -69,18 +69,6 @@ type identity struct {
 	key         crypto.Signer
 }
 
-// Load reads the peer certificate and key (PEER_CERT_FILE, PEER_KEY_FILE).
-// The key must be ECDSA, which is what the control plane verifies. The files
-// are read once: a certificate renewed on disk is used after a restart, or
-// once the caller hands it to Rotate (the relay does).
-func Load(certFile, keyFile string) (*Signer, error) {
-	pair, err := tls.LoadX509KeyPair(certFile, keyFile)
-	if err != nil {
-		return nil, fmt.Errorf("load the peer certificate: %w", err)
-	}
-	return New(pair)
-}
-
 // New returns a Signer for pair, whose first certificate is the relay's own.
 // Only that certificate is sent: the control plane chains it to the relay
 // CA directly, so it must be one the CA issued itself, not through an
@@ -97,8 +85,10 @@ func New(pair tls.Certificate) (*Signer, error) {
 }
 
 // Rotate makes s sign with pair from the next request on, as New would
-// have: a relay whose peer certificate is renewed on disk signs with the
-// one it peers with. When pair can't sign, s keeps what it had.
+// have. The relay and qumo dns read PEER_CERT_FILE and PEER_KEY_FILE again
+// every minute (internal/certreload) and hand a renewed pair here, so that
+// they sign with the certificate the relay peers with. When pair can't
+// sign, s keeps what it had.
 func (s *Signer) Rotate(pair tls.Certificate) error {
 	id, err := newIdentity(pair)
 	if err != nil {

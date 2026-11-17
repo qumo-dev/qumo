@@ -25,9 +25,13 @@ type Server struct {
 	MOQServer *moqt.Server
 	// MOQDialer is used for outbound peer connections. The caller must set
 	// TLSConfig with NextProtos: []string{moqt.NextProtoMOQ} only, so that
-	// ALPN negotiation does not accidentally select "h3"; the relay command
-	// sets (*PeerTrust).DialerTLS, which also names PeeringName. The relay
-	// dials with a copy whose CheckRedirect follows no redirect.
+	// ALPN negotiation does not accidentally select "h3". The relay command
+	// sets one that also names PeeringName and asks its certificate
+	// reloader (cert_reload.go) for the peer certificate and CA at each
+	// handshake, so that renewed ones take effect without a restart.
+	// (*PeerTrust).DialerTLS gives the same configuration for one fixed
+	// PeerTrust, which does not follow reloads. The relay dials with a copy
+	// whose CheckRedirect follows no redirect.
 	MOQDialer *moqt.Dialer
 	// PeerCertificate returns this relay's own peer certificate (DER), the
 	// one it holds at the time, or nil without a peer identity; nil itself

@@ -16,6 +16,7 @@ package geodns
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -37,6 +38,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"golang.org/x/sync/errgroup"
 
+	"github.com/qumo-dev/qumo/internal/certreload"
 	"github.com/qumo-dev/qumo/internal/envconfig"
 	"github.com/qumo-dev/qumo/internal/reqsign"
 )
@@ -75,6 +77,12 @@ type config struct {
 	geoURL       string
 	geoDB        string
 	geoInterval  time.Duration
+
+	// peerCert and peerKey name the files feedSigner's pair is read from
+	// (PEER_CERT_FILE, PEER_KEY_FILE), and feedPair is the pair it started
+	// with; set with feedSigner.
+	peerCert, peerKey string
+	feedPair          *tls.Certificate
 }
 
 // Run starts the DNS server. Configuration is read from environment
@@ -85,7 +93,7 @@ type config struct {
 //	QUMO_DNS_NAMESERVERS    - the zone's name servers, comma-separated host names, as delegated (required)
 //	QUMO_DNS_FEED_URL       - where the regions and their addresses are read (required; the feed in docs/site/content/en/docs/cli/dns.md)
 //	QUMO_DNS_FEED_TOKEN     - bearer token sent to the feed (default: none)
-//	PEER_CERT_FILE, PEER_KEY_FILE - the node relay's peer certificate and key, to sign each feed request with (both or neither; default: none, unsigned)
+//	PEER_CERT_FILE, PEER_KEY_FILE - the node relay's peer certificate and key, to sign each feed request with, re-read every minute (both or neither; default: none, unsigned)
 //	QUMO_DNS_FEED_INTERVAL  - how often the feed is read (default: "15s")
 //	QUMO_DNS_STATE_DIR      - a directory for the last good feed and a downloaded database (default: none, nothing is kept)
 //	QUMO_DNS_GEOIP_DB       - a city database (.mmdb) to place clients with (default: <state dir>/city.mmdb with a URL, else none)
@@ -186,10 +194,12 @@ func configFromEnv() (config, error) {
 	if certFile, keyFile := os.Getenv("PEER_CERT_FILE"), os.Getenv("PEER_KEY_FILE"); certFile != "" || keyFile != "" {
 		if certFile == "" || keyFile == "" {
 			errs = append(errs, errors.New("PEER_CERT_FILE and PEER_KEY_FILE must be set together"))
-		} else if signer, err := reqsign.Load(certFile, keyFile); err != nil {
+		} else if pair, err := tls.LoadX509KeyPair(certFile, keyFile); err != nil {
+			errs = append(errs, fmt.Errorf("PEER_CERT_FILE, PEER_KEY_FILE: load the peer certificate: %w", err))
+		} else if signer, err := reqsign.New(pair); err != nil {
 			errs = append(errs, fmt.Errorf("PEER_CERT_FILE, PEER_KEY_FILE: %w", err))
 		} else {
-			cfg.feedSigner = signer
+			cfg.feedSigner, cfg.peerCert, cfg.peerKey, cfg.feedPair = signer, certFile, keyFile, &pair
 		}
 	}
 	if len(errs) > 0 {
@@ -214,6 +224,9 @@ type service struct {
 	feed    *feedClient
 	geo     *locator
 	metrics *metrics
+	// feedCerts re-reads the peer certificate the feed requests are signed
+	// with; nil when they are not signed.
+	feedCerts *feedCertReloader
 	// lastBody is the feed body last served, to tell a change from none.
 	lastBody []byte
 }
@@ -234,6 +247,15 @@ func newService(cfg config, reg prometheus.Registerer) (*service, error) {
 	}
 	m := newMetrics(reg)
 	geo := &locator{}
+	var feedCerts *feedCertReloader
+	if cfg.feedSigner != nil {
+		feedCerts = &feedCertReloader{
+			certFile: cfg.peerCert, keyFile: cfg.peerKey,
+			signer: cfg.feedSigner,
+			inUse:  cfg.feedPair,
+			log:    certreload.NewCert(slog.Default(), certreload.NewMetrics(reg, "dns"), "peer", cfg.feedPair),
+		}
+	}
 	return &service{
 		cfg:     cfg,
 		state:   state,
@@ -251,6 +273,7 @@ func newService(cfg config, reg prometheus.Registerer) (*service, error) {
 			geo:         geo,
 			metrics:     m,
 		},
+		feedCerts: feedCerts,
 	}, nil
 }
 
@@ -292,6 +315,12 @@ func run(ctx context.Context, cfg config) error {
 	if cfg.geoURL != "" {
 		g.Go(func() error {
 			s.geoLoop(ctx)
+			return nil
+		})
+	}
+	if s.feedCerts != nil {
+		g.Go(func() error {
+			certreload.Run(ctx, s.feedCerts.reload)
 			return nil
 		})
 	}
@@ -489,4 +518,35 @@ func (s *service) geoLoop(ctx context.Context) {
 		case <-ticker.C:
 		}
 	}
+}
+
+// feedCertReloader re-reads the peer certificate and key the feed requests
+// are signed with (PEER_CERT_FILE, PEER_KEY_FILE), every certreload.Interval
+// as the relay beside it does, and has the signer sign with a renewed pair
+// from the next request on. A pair that can't be read, or can't sign, is
+// logged and the one in use kept.
+type feedCertReloader struct {
+	certFile, keyFile string
+	signer            *reqsign.Signer
+	inUse             *tls.Certificate // the pair the signer signs with
+	log               *certreload.Cert
+}
+
+// reload reads the files once, and hands the signer a pair that changed.
+func (r *feedCertReloader) reload() {
+	pair, err := tls.LoadX509KeyPair(r.certFile, r.keyFile)
+	if err != nil {
+		r.log.Failed("PEER_CERT_FILE, PEER_KEY_FILE", err)
+		return
+	}
+	if certreload.SameChain(&pair, r.inUse) {
+		r.log.Unchanged()
+		return
+	}
+	if err := r.signer.Rotate(pair); err != nil {
+		r.log.Failed("PEER_CERT_FILE, PEER_KEY_FILE", err)
+		return
+	}
+	r.inUse = &pair
+	r.log.Taken(&pair)
 }
