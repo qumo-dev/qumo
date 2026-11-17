@@ -10,55 +10,34 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// An opt-in's broadcast is its path with the prefix stripped, cleaned of
+// doubled and trailing slashes; one with a "." or ".." segment names none, as
+// cleaning it could climb out of the directory the relay granted it in.
 func Test_broadcastPathFromAnnounce(t *testing.T) {
-	tests := []struct {
-		name     string
-		annPath  string
-		prefix   string
-		expected string
+	tests := map[string]struct {
+		annPath, prefix string
+		want            string
+		wantOK          bool
 	}{
-		{
-			name:     "standard .hls prefix with trailing slash",
-			annPath:  "/.hls/live/cam1",
-			prefix:   "/.hls/",
-			expected: "/live/cam1",
-		},
-		{
-			name:     "standard .hls prefix without trailing slash",
-			annPath:  "/.hls/live/cam1",
-			prefix:   "/.hls",
-			expected: "/live/cam1",
-		},
-		{
-			name:     "single segment path",
-			annPath:  "/.hls/cam",
-			prefix:   "/.hls/",
-			expected: "/cam",
-		},
-		{
-			name:     "hls/live under .hls prefix",
-			annPath:  "/.hls/hls/live",
-			prefix:   "/.hls/",
-			expected: "/hls/live",
-		},
-		{
-			name:     "custom prefix",
-			annPath:  "/custom/stream/room1",
-			prefix:   "/custom/stream/",
-			expected: "/room1",
-		},
-		{
-			name:     "bare prefix",
-			annPath:  "/.hls",
-			prefix:   "/.hls/",
-			expected: "/",
-		},
+		"standard .hls prefix with trailing slash":    {annPath: "/.hls/live/cam1", prefix: "/.hls/", want: "/live/cam1", wantOK: true},
+		"standard .hls prefix without trailing slash": {annPath: "/.hls/live/cam1", prefix: "/.hls", want: "/live/cam1", wantOK: true},
+		"single segment path":                         {annPath: "/.hls/cam", prefix: "/.hls/", want: "/cam", wantOK: true},
+		"hls/live under .hls prefix":                  {annPath: "/.hls/hls/live", prefix: "/.hls/", want: "/hls/live", wantOK: true},
+		"custom prefix":                               {annPath: "/custom/stream/room1", prefix: "/custom/stream/", want: "/room1", wantOK: true},
+		"bare prefix":                                 {annPath: "/.hls", prefix: "/.hls/", want: "/", wantOK: true},
+		"a trailing slash":                            {annPath: "/.hls/live/cam1/", prefix: "/.hls/", want: "/live/cam1", wantOK: true},
+		"a doubled slash":                             {annPath: "/.hls/live//cam1", prefix: "/.hls/", want: "/live/cam1", wantOK: true},
+		"a name with dots":                            {annPath: "/.hls/live/cam1..hd", prefix: "/.hls/", want: "/live/cam1..hd", wantOK: true},
+		"a . segment":                                 {annPath: "/.hls/live/./cam1", prefix: "/.hls/", wantOK: false},
+		"climbing into another's directory":           {annPath: "/.hls/acme/../victim/cam", prefix: "/.hls/", wantOK: false},
+		"climbing out of the prefix":                  {annPath: "/.hls/../victim/cam", prefix: "/.hls/", wantOK: false},
+		"a trailing ..":                               {annPath: "/.hls/acme/..", prefix: "/.hls/", wantOK: false},
 	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := broadcastPathFromAnnounce(tt.annPath, tt.prefix)
-			assert.Equal(t, tt.expected, got)
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			got, ok := broadcastPathFromAnnounce(tt.annPath, tt.prefix)
+			assert.Equal(t, tt.wantOK, ok)
+			assert.Equal(t, tt.want, got)
 		})
 	}
 }

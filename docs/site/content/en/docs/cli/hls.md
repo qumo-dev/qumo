@@ -74,6 +74,11 @@ token of its own:
   bearer publishes `/acme/room/42/cam`: the egress subscribes with its own
   grant. Issue an opt-in only for a broadcast the app means to serve over
   HTTP.
+- **No `.` or `..` segments.** The relay grants paths as written, so
+  `/.hls/acme/../victim/cam` is covered by an opt-in rooted at `/.hls/acme/`
+  even though it would clean to `/victim/cam`. The egress ignores any opt-in
+  path with a `.` or `..` segment. A doubled or trailing slash is still
+  cleaned away.
 
 ```bash
 # an opt-in for /acme/room/42/cam, signed by the app's key confined to /acme/
