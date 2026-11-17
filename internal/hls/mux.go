@@ -20,19 +20,42 @@ import (
 //	"/.hls/live/cam1" -> "/live/cam1"
 //	"/.hls/cam"       -> "/cam"
 //	"/.hls"           -> "/"
-func broadcastPathFromAnnounce(annPath, prefix string) string {
+//
+// It reports false for a path with a "." or ".." segment. The relay grants
+// and routes exact paths, so /.hls/acme/../victim/cam is announced under a
+// grant for /.hls/acme/, yet cleans to /victim/cam, which the egress can read
+// and would serve.
+func broadcastPathFromAnnounce(annPath, prefix string) (string, bool) {
 	cleanPrefix := strings.TrimSuffix(prefix, "/")
 	p := strings.TrimPrefix(annPath, cleanPrefix)
 	if !strings.HasPrefix(p, "/") {
 		p = "/" + p
 	}
-	return path.Clean(p)
+	if hasDotSegment(p) {
+		return "", false
+	}
+	return path.Clean(p), true
 }
 
 // sameBroadcast reports whether a and b name one broadcast, however spelled:
-// the egress cleans the paths it derives, a publisher may not.
+// the egress cleans the paths it derives, a publisher may not. Paths with a
+// "." or ".." segment name none: cleaning one can climb into another
+// directory than the one the relay routes it in.
 func sameBroadcast(a, b moqt.BroadcastPath) bool {
+	if hasDotSegment(string(a)) || hasDotSegment(string(b)) {
+		return false
+	}
 	return path.Clean(string(a)) == path.Clean(string(b))
+}
+
+// hasDotSegment reports whether p has a "." or ".." segment.
+func hasDotSegment(p string) bool {
+	for seg := range strings.SplitSeq(p, "/") {
+		if seg == "." || seg == ".." {
+			return true
+		}
+	}
+	return false
 }
 
 // trackInfo holds metadata describing a media track in an HLS master playlist.
