@@ -176,18 +176,7 @@ func (c feedConfig) target() (string, time.Time, error) {
 	if c.signingKey == nil {
 		return c.relayURL, time.Time{}, nil
 	}
-	credential, lapses, err := relaycred.Sign(*c.signingKey, c.grant())
-	if err != nil {
-		return "", time.Time{}, err
-	}
-	u, err := url.Parse(c.relayURL)
-	if err != nil {
-		return "", time.Time{}, errors.New("RELAY_URL: invalid URL")
-	}
-	query := u.Query()
-	query.Set("jwt", credential)
-	u.RawQuery = query.Encode()
-	return u.String(), lapses, nil
+	return relaycred.Target(c.relayURL, *c.signingKey, c.grant())
 }
 
 // relayTLSConfig builds the client TLS config for dialing the relay. The egress
