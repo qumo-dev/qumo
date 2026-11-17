@@ -48,9 +48,9 @@ func TestOptedIn(t *testing.T) {
 		"the directory, trailing slash": {optIn: "/.abr/", want: "/", wantOK: true},
 		"a trailing slash":              {optIn: "/.abr/live/cam1/", want: "/live/cam1", wantOK: false},
 		"a doubled slash":               {optIn: "/.abr/live//cam1", want: "/live/cam1", wantOK: false},
-		"a dot segment":                 {optIn: "/.abr/live/./cam1", want: "/live/cam1", wantOK: false},
-		"climbing into another's":       {optIn: "/.abr/acme/../victim/cam", want: "/victim/cam", wantOK: false},
-		"climbing out of the directory": {optIn: "/.abr/../victim/cam", want: "/victim/cam", wantOK: false},
+		"a dot segment":                 {optIn: "/.abr/live/./cam1", want: "", wantOK: false},
+		"climbing into another's":       {optIn: "/.abr/acme/../victim/cam", want: "", wantOK: false},
+		"climbing out of the directory": {optIn: "/.abr/../victim/cam", want: "", wantOK: false},
 	}
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {

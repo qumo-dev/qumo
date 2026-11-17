@@ -32,15 +32,36 @@ func Path(dir string, broadcast moqt.BroadcastPath) moqt.BroadcastPath {
 }
 
 // Broadcast returns the broadcast an opt-in announced as optIn, beneath dir,
-// asks an egress to serve: optIn with dir stripped.
+// asks an egress to serve: optIn with dir stripped, cleaned of doubled and
+// trailing slashes.
 //
 //	Broadcast("/.hls/live/cam1", "/.hls/") is "/live/cam1"
 //	Broadcast("/.hls/cam", "/.hls/")       is "/cam"
 //	Broadcast("/.hls", "/.hls/")           is "/"
-func Broadcast(optIn, dir string) string {
+//
+// It reports false for an opt-in with a "." or ".." segment. A relay grants
+// and routes exact paths, so /.hls/acme/../victim/cam is announced under a
+// grant for /.hls/acme/, yet cleans to /victim/cam, which an egress can read
+// and would serve.
+func Broadcast(optIn, dir string) (string, bool) {
 	p := strings.TrimPrefix(optIn, strings.TrimSuffix(dir, "/"))
 	if !strings.HasPrefix(p, "/") {
 		p = "/" + p
 	}
-	return path.Clean(p)
+	if HasDotSegment(p) {
+		return "", false
+	}
+	return path.Clean(p), true
+}
+
+// HasDotSegment reports whether p, a broadcast path, has a "." or ".."
+// segment, which cleaning it would resolve into another path than the one a
+// relay routes.
+func HasDotSegment(p string) bool {
+	for seg := range strings.SplitSeq(p, "/") {
+		if seg == "." || seg == ".." {
+			return true
+		}
+	}
+	return false
 }
