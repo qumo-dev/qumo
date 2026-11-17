@@ -77,13 +77,7 @@ type credential interface {
 // nothing. A relay that verifies no credentials (NOT_SUPPORTED) lets the
 // session's grant last for good, and Keep stops.
 func Keep(sess *moqt.Session, key token.SigningKey, g token.Grant, lapses time.Time) {
-	keep(sess.Context(), slog.Default(), renewGrant, func(ctx context.Context, tok []byte) (credential, error) {
-		c, err := sess.Auth(ctx, tok)
-		if err != nil {
-			return nil, err
-		}
-		return c, nil
-	}, func() {
+	keep(sess.Context(), slog.Default(), renewGrant, presentOn(sess), func() {
 		// not actionable: the session is ending either way.
 		_ = sess.CloseWithError(moqt.UnauthorizedSessionErrorCode, "relay credential lapsed")
 	}, func() (string, time.Time, error) { return Sign(key, g) }, lapses)
@@ -100,13 +94,20 @@ func Keep(sess *moqt.Session, key token.SigningKey, g token.Grant, lapses time.T
 func Hold(sess *moqt.Session, key token.SigningKey, g token.Grant) {
 	// No grant in force yet (a zero lapses): the first ticket is presented
 	// at once.
-	keep(sess.Context(), slog.Default(), renewTicket, func(ctx context.Context, tok []byte) (credential, error) {
+	keep(sess.Context(), slog.Default(), renewTicket, presentOn(sess), nil, func() (string, time.Time, error) { return Sign(key, g) }, time.Time{})
+}
+
+// presentOn presents a credential on sess's Auth Stream. It returns a nil
+// credential with an error: a nil *moqt.Credential returned as is would be a
+// credential interface that is not nil.
+func presentOn(sess *moqt.Session) func(context.Context, []byte) (credential, error) {
+	return func(ctx context.Context, tok []byte) (credential, error) {
 		c, err := sess.Auth(ctx, tok)
 		if err != nil {
 			return nil, err
 		}
 		return c, nil
-	}, nil, func() (string, time.Time, error) { return Sign(key, g) }, time.Time{})
+	}
 }
 
 // renewal is what keep keeps in force, which sets what it does with a
