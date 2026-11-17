@@ -83,3 +83,23 @@ func TestOutputBroadcastSetBitrate(t *testing.T) {
 
 	assert.Error(t, o.setBitrate("nope", 1))
 }
+
+// A size learned after the track was added (an Annex B source's) is stated
+// in the catalog, keeping what else the entry states.
+func TestOutputBroadcastSetSize(t *testing.T) {
+	o, err := newOutputBroadcast()
+	require.NoError(t, err)
+	defer o.close()
+	require.NoError(t, o.addTrack(msf.Track{Name: "video", Packaging: msf.PackagingLOC, Role: msf.RoleVideo, IsLive: new(true), Codec: "avc1.42c01e"}, nil, defaultVideoInfo, newTrack()))
+
+	require.NoError(t, o.setSize("video", 640, 360, "360p (source)"))
+	got := catalogTrack(t, o, "video")
+	require.NotNil(t, got.Width)
+	require.NotNil(t, got.Height)
+	assert.EqualValues(t, 640, *got.Width)
+	assert.EqualValues(t, 360, *got.Height)
+	assert.Equal(t, "360p (source)", got.Label)
+	assert.Equal(t, "avc1.42c01e", got.Codec)
+
+	assert.Error(t, o.setSize("nope", 1, 1, ""))
+}

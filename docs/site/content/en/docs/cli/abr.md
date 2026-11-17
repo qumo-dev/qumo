@@ -85,7 +85,10 @@ catalog lists:
 - **One alternate group.** Every video track has `altGroup: 1` in the MSF
   catalog, with its `width`, `height`, `bitrate`, codec and decoder
   configuration (`initRef`), so a player knows they are alternatives of one
-  picture and what each costs.
+  picture and what each costs. The source's size is the one its catalog
+  states, or, when that states none (or a zero), the size decoded from its
+  video. An Annex B source's size is decoded only at its first keyframe, so its
+  entry has no size until then.
 - **Aligned groups.** Every rendition numbers its groups as the source does,
   and group N of each track starts at the same frame, with a keyframe. A
   player can leave one track after group N and join another at group N+1

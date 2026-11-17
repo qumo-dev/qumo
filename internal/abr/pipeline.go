@@ -190,6 +190,37 @@ func outputTrack(t msf.Track) msf.Track {
 	return t
 }
 
+// sourceSize returns the size of the source video track t, whose decoded
+// configuration is sc (nil until known): the catalog's when it states a
+// positive width and height, else sc's, and false when neither is known. A
+// size of zero names no picture, so a catalog stating one states none.
+func sourceSize(t msf.Track, sc *sourceConfig) (width, height int, ok bool) {
+	if t.Width != nil && t.Height != nil && *t.Width > 0 && *t.Height > 0 {
+		return int(*t.Width), int(*t.Height), true
+	}
+	if sc != nil && sc.Width > 0 && sc.Height > 0 {
+		return sc.Width, sc.Height, true
+	}
+	return 0, 0, false
+}
+
+// sourceRendition returns the catalog entry of the source video track t as
+// the top rendition, sized by sourceSize, and labelled by its height when t
+// has no label. Without a known size it states none, rather than the
+// catalog's unusable one.
+func sourceRendition(t msf.Track, sc *sourceConfig) msf.Track {
+	src := outputTrack(t)
+	src.AltGroup = new(int64(videoAltGroup))
+	src.Width, src.Height = nil, nil
+	if width, height, ok := sourceSize(t, sc); ok {
+		src.Width, src.Height = new(int64(width)), new(int64(height))
+		if src.Label == "" {
+			src.Label = fmt.Sprintf("%dp (source)", height)
+		}
+	}
+	return src
+}
+
 // forward republishes a source track as it is, group for group.
 func (p *pipeline) forward(ctx context.Context, t msf.Track, init []byte) error {
 	def := defaultAudioInfo
@@ -269,14 +300,7 @@ func (p *pipeline) transcode(ctx context.Context, t msf.Track, init []byte, form
 	info := p.publishInfo(ctx, t.Name, defaultVideoInfo)
 
 	// The source itself is the top rendition.
-	src := outputTrack(t)
-	src.AltGroup = new(int64(videoAltGroup))
-	if in.config != nil && (src.Width == nil || src.Height == nil) {
-		src.Width, src.Height = new(int64(in.config.Width)), new(int64(in.config.Height))
-	}
-	if src.Label == "" && src.Height != nil {
-		src.Label = fmt.Sprintf("%dp (source)", *src.Height)
-	}
+	src := sourceRendition(t, in.config)
 	srcOut := newTrack()
 	defer srcOut.close()
 	if err := p.out.addTrack(src, init, info, srcOut); err != nil {
@@ -292,10 +316,16 @@ func (p *pipeline) transcode(ctx context.Context, t msf.Track, init []byte, form
 		}
 	}()
 	startEncoding := func(sc sourceConfig) bool {
-		width, height := sc.Width, sc.Height
-		if t.Width != nil && t.Height != nil && *t.Width > 0 && *t.Height > 0 {
-			width, height = int(*t.Width), int(*t.Height)
+		if src.Height == nil {
+			// Published before its size was known (an Annex B source whose
+			// catalog states none): state the decoded one now.
+			if sized := sourceRendition(t, &sc); sized.Height != nil {
+				if err := p.out.setSize(src.Name, *sized.Width, *sized.Height, sized.Label); err != nil {
+					slog.Warn("abr: state source size", "error", err)
+				}
+			}
 		}
+		width, height, _ := sourceSize(t, &sc)
 		slog.Info("abr: encoding renditions", "broadcast", p.src, "source", format, "width", width, "height", height)
 		e, err := p.startEncoding(ctx, sc, width, height, info)
 		if err != nil {
