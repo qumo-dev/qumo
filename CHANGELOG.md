@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [v0.21.261118] - 2026-11-18
+
 ### Security
 
 - **`qumo hls` refuses an opt-in path with a `.` or `..` segment (`internal/hls`).** The relay grants `/.hls/acme/../victim/cam` to a `/.hls/acme/` opt-in, and the egress cleaned it to `/victim/cam` and served that, so one tenant could put another's broadcast on HLS. Redirect targets with such segments no longer match either (`sameBroadcast`). Doubled and trailing slashes are still cleaned away.
