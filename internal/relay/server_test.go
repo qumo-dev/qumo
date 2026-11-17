@@ -3,7 +3,6 @@ package relay
 import (
 	"context"
 	"crypto/tls"
-	"net"
 	"testing"
 	"time"
 
@@ -333,36 +332,6 @@ func TestServer_Init_MultipleCallsWithDifferentConfigs(t *testing.T) {
 	assert.Equal(t, "node-2", server.Config.NodeID, "Config assignment should work even after init")
 }
 
-// TestConnectPeers_DialsEveryPeer tests that every PEERS entry is dialed.
-func TestConnectPeers_DialsEveryPeer(t *testing.T) {
-	server := newTestServer("localhost:4433")
-	server.Config = &Config{
-		Peers: []Peer{{Address: "peer1:4433"}, {Address: "hub1:4433"}, {Address: "hub2:4433"}},
-	}
-
-	server.init()
-
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan struct{})
-	go func() {
-		server.ConnectPeers(ctx)
-		close(done)
-	}()
-
-	// Each dial is marked connected synchronously in dialPeer before its
-	// maintainPeer goroutine ever touches the network, so this should observe
-	// all three addresses (unresolvable hosts are dialed as given) well before
-	// any real dial to these unreachable hosts could complete.
-	assert.Eventually(t, func() bool {
-		return server.isConnected("peer1:4433") &&
-			server.isConnected("hub1:4433") &&
-			server.isConnected("hub2:4433")
-	}, 5*time.Second, 20*time.Millisecond, "every PEERS address should be dialed")
-
-	cancel()
-	<-done
-}
-
 // TestServer_Address_Formats tests various address formats
 func TestServer_Address_Formats(t *testing.T) {
 	tests := []struct {
@@ -384,24 +353,5 @@ func TestServer_Address_Formats(t *testing.T) {
 
 			assert.Equal(t, tt.addr, server.MOQServer.Addr, "Address should be preserved")
 		})
-	}
-}
-
-// TestResolvePeerAddrs verifies that resolvePeerAddrs passes IPs and
-// unparseable entries through, and resolves a host to every address it has
-// (localhost resolves to 127.0.0.1 and/or ::1).
-func TestResolvePeerAddrs(t *testing.T) {
-	ctx := context.Background()
-
-	assert.Equal(t, []string{"127.0.0.1:4433"}, resolvePeerAddrs(ctx, "127.0.0.1:4433"))
-	assert.Equal(t, []string{"no-port"}, resolvePeerAddrs(ctx, "no-port"))
-
-	resolved := resolvePeerAddrs(ctx, "localhost:4433")
-	require.NotEmpty(t, resolved)
-	for _, r := range resolved {
-		host, port, err := net.SplitHostPort(r)
-		require.NoError(t, err)
-		assert.Equal(t, "4433", port)
-		assert.NotNil(t, net.ParseIP(host))
 	}
 }

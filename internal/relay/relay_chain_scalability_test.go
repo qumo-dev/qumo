@@ -70,7 +70,7 @@ func fanoutSweepRun(tb testing.TB, cert tls.Certificate, pool *x509.CertPool, qu
 	}
 	for i := range K {
 		i := i
-		go leaves[i].ConnectPeers(ctx) //nolint:errcheck
+		go leaves[i].ConnectPeers(ctx)
 	}
 
 	// Publish continuously (group-per-frame).
@@ -333,7 +333,7 @@ func TestRelayChain_SlowSubscriber(t *testing.T) {
 	origin := spinRelay(t, "origin", chainFreeAddr(t), cert, pool, quicCfg)
 	leafFast := spinRelay(t, "leaf-fast", chainFreeAddr(t), cert, pool, quicCfg)
 	leafFast.Config.Peers = []Peer{{Address: origin.MOQServer.Addr}}
-	go leafFast.ConnectPeers(ctx) //nolint:errcheck
+	go leafFast.ConnectPeers(ctx)
 
 	// Publish a burst of 200 frames.
 	const N = 200
@@ -395,7 +395,7 @@ func TestRelayChain_NotifyOnlyDelivery(t *testing.T) {
 	origin := spinRelay(t, "origin", chainFreeAddr(t), cert, pool, quicCfg)
 	leaf := spinRelay(t, "leaf", chainFreeAddr(t), cert, pool, quicCfg)
 	leaf.Config.Peers = []Peer{{Address: origin.MOQServer.Addr}}
-	go leaf.ConnectPeers(ctx) //nolint:errcheck
+	go leaf.ConnectPeers(ctx)
 
 	// Publisher: emit N groups, one frame each, spaced by GAP. The gap is the
 	// crux — between groups a caught-up subscriber is parked with NO pending
@@ -500,7 +500,7 @@ func TestRelayChain_Soak(t *testing.T) {
 	origin := spinRelay(t, "origin", chainFreeAddr(t), cert, pool, quicCfg)
 	leaf := spinRelay(t, "leaf", chainFreeAddr(t), cert, pool, quicCfg)
 	leaf.Config.Peers = []Peer{{Address: origin.MOQServer.Addr}}
-	go leaf.ConnectPeers(ctx) //nolint:errcheck
+	go leaf.ConnectPeers(ctx)
 
 	runCtx, runCancel := context.WithTimeout(ctx, dur)
 	defer runCancel()
@@ -647,7 +647,7 @@ func TestRelayChain_ReconnectStorm(t *testing.T) {
 	origin := spinRelay(t, "origin", chainFreeAddr(t), cert, pool, quicCfg)
 	leaf := spinRelay(t, "leaf", chainFreeAddr(t), cert, pool, quicCfg)
 	leaf.Config.Peers = []Peer{{Address: origin.MOQServer.Addr}}
-	go leaf.ConnectPeers(ctx) //nolint:errcheck
+	go leaf.ConnectPeers(ctx)
 
 	// Continuous publisher for the whole test (group-per-frame, ~500fps).
 	pubMux := moqt.NewTrackMux(moqt.NewHopID())
