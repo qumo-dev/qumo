@@ -1,12 +1,12 @@
 ---
 title: Nomad
-description: Deploying qumo relays on Nomad using the static PEERS topology.
+description: Deploying qumo relays on Nomad with PEERS.
 weight: 3
 ---
 
-qumo has no runtime peer-discovery service — relays connect to a fixed,
-comma-separated list of addresses configured via `PEERS`
-(see [Configuration → Static peers]({{< relref "../configuration" >}}#static-peers)).
+Relays connect to the comma-separated addresses configured via `PEERS`
+(see [Configuration → Peers]({{< relref "../configuration" >}}#peers)); qumo
+finds peers through DNS alone, with no discovery service of its own.
 Running on Nomad is no different: point each relay's `PEERS` at a stable address for the peer(s) it should connect to.
 
 ## How it works
@@ -32,7 +32,7 @@ Running on Nomad is no different: point each relay's `PEERS` at a stable address
 
 | Variable | Default | Description |
 |---|---|---|
-| `PEERS` | (empty) | Comma-separated relays to dial, e.g. an edge's hub(s); each host is resolved to all its addresses. Needs the three settings below. |
+| `PEERS` | (empty) | Comma-separated relays to dial, e.g. an edge's hub(s); each host is resolved to all its addresses, again every 30 s; an entry without a port is an SRV name. Needs the three settings below. |
 | `CA_FILE` | (empty) | The relay CA's certificate (PEM), a path relative to the task's working directory. |
 | `PEER_CERT_FILE` / `PEER_KEY_FILE` | (empty) | This relay's own peer certificate and key, issued by that CA. One per relay: render them per allocation, never one pair for the whole job. |
 
@@ -71,8 +71,12 @@ The hub task sets the same three peer settings with its own files, and no
 `PEERS`.
 
 For a production Nomad deployment with Consul installed, a Consul DNS name
-(`<service>.service.consul`) is usually the simpler stable address to put in
-`PEERS` instead of a fixed per-index alias.
+is usually the simpler stable address to put in `PEERS` instead of a fixed
+per-index alias: `<service>.service.consul:4433` for the service's addresses
+at a fixed port, or `<service>.service.consul` without a port, which Consul
+answers as an SRV name with each instance's port. The relay resolves it
+again every 30 s, so hubs that register or deregister are dialed or dropped
+without restarting the edges.
 
 ## Verify
 
