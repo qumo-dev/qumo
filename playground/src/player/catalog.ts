@@ -36,7 +36,6 @@ export interface Rendition {
 	readonly label: string;
 	/** The track's bitrate in bits per second, when the catalog states it. */
 	readonly bitrate: number | undefined;
-	readonly width: number | undefined;
 	readonly height: number | undefined;
 	readonly config: VideoDecoderConfig;
 }
@@ -75,7 +74,6 @@ function rendition(t: DecodableTrack): Rendition {
 		track: t.name,
 		label: t.height ? `${t.height}p` : (t.label ?? t.name),
 		bitrate: t.bitrate,
-		width: t.width,
 		height: t.height,
 		config: videoConfig(t),
 	};
@@ -94,37 +92,24 @@ function videoConfig(t: CatalogTrack & { codec: string }): VideoDecoderConfig {
 	};
 }
 
-/** Decoder configurations carried by one catalog payload. */
-export interface DecoderConfigs {
-	video?: VideoDecoderConfig;
-	audio?: AudioDecoderConfig;
-}
-
-/** Reads the video and audio decoder configurations out of an MSF catalog payload. */
-export function decoderConfigs(payload: Uint8Array): DecoderConfigs {
-	const catalog = parseCatalog(payload);
-	const configs: DecoderConfigs = {};
-
-	const video = catalog.tracks?.find((t) => t.role === "video");
-	if (video?.codec) {
-		configs.video = videoConfig({ ...video, codec: video.codec });
-	}
-
-	const audio = catalog.tracks?.find((t) => t.role === "audio");
-	if (audio?.codec) {
-		// initData is the AudioSpecificConfig. Raw AAC frames (no ADTS, as
-		// RTSP/RTMP ingest emits) need it as `description` for WebCodecs
-		// AudioDecoder to parse them.
-		const description = decodeInitData(audio.initData);
-		configs.audio = {
-			codec: audio.codec,
-			sampleRate: audio.samplerate ?? 48000,
-			numberOfChannels: parseInt(audio.channelConfig ?? "2", 10),
-			...(description ? { description } : {}),
-		};
-	}
-
-	return configs;
+/**
+ * Reads the audio decoder configuration of the first audio track out of an
+ * MSF catalog payload, or undefined when it has none. Video is configured per
+ * rendition (videoRenditions).
+ */
+export function audioConfig(payload: Uint8Array): AudioDecoderConfig | undefined {
+	const audio = parseCatalog(payload).tracks?.find((t) => t.role === "audio");
+	if (!audio?.codec) return undefined;
+	// initData is the AudioSpecificConfig. Raw AAC frames (no ADTS, as
+	// RTSP/RTMP ingest emits) need it as `description` for WebCodecs
+	// AudioDecoder to parse them.
+	const description = decodeInitData(audio.initData);
+	return {
+		codec: audio.codec,
+		sampleRate: audio.samplerate ?? 48000,
+		numberOfChannels: parseInt(audio.channelConfig ?? "2", 10),
+		...(description ? { description } : {}),
+	};
 }
 
 function decodeInitData(initData: string | undefined): ArrayBuffer | undefined {
