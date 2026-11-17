@@ -44,21 +44,22 @@ export interface AbrStats {
 export interface ControllerOptions {
 	/** A monotonic clock in milliseconds. Defaults to `performance.now()`. */
 	now?: () => number;
-	/** Lag past which the controller steps down, in ms. */
-	downLag?: number;
-	/** Lag a stretch must stay under to count as calm, in ms. */
-	calmLag?: number;
-	/** How long after a switch no decision is made, in ms. */
-	settle?: number;
-	/** The first calm stretch before a step up, in ms. */
-	upAfter?: number;
-	/** The longest calm stretch a step up is put off for, in ms. */
-	maxUpAfter?: number;
-	/** A step down this soon after a step up takes the step up back, in ms. */
-	failWindow?: number;
-	/** The share of a measured rate a rendition may use. */
-	headroom?: number;
 }
+
+// Lag past which the controller steps down, in ms.
+const DOWN_LAG_MS = 500;
+// Lag a stretch must stay under to count as calm, in ms.
+const CALM_LAG_MS = 150;
+// How long after a switch no decision is made, in ms.
+const SETTLE_MS = 3_000;
+// The first calm stretch before a step up, and the longest a step up is put
+// off for, in ms.
+const UP_AFTER_MS = 4_000;
+const MAX_UP_AFTER_MS = 60_000;
+// A step down this soon after a step up takes the step up back, in ms.
+const FAIL_WINDOW_MS = 10_000;
+// The share of a measured rate a rendition may use.
+const HEADROOM = 0.8;
 
 // The window lag and the receive rate are measured over, in ms.
 const WINDOW_MS = 10_000;
@@ -80,13 +81,6 @@ interface Arrival {
 
 export class AbrController {
 	readonly #now: () => number;
-	readonly #downLag: number;
-	readonly #calmLag: number;
-	readonly #settle: number;
-	readonly #baseUpAfter: number;
-	readonly #maxUpAfter: number;
-	readonly #failWindow: number;
-	readonly #headroom: number;
 
 	#choices: readonly Choice[];
 	#arrivals: Arrival[] = [];
@@ -104,14 +98,7 @@ export class AbrController {
 	constructor(choices: readonly Choice[], options: ControllerOptions = {}) {
 		this.#choices = choices;
 		this.#now = options.now ?? (() => performance.now());
-		this.#downLag = options.downLag ?? 500;
-		this.#calmLag = options.calmLag ?? 150;
-		this.#settle = options.settle ?? 3_000;
-		this.#baseUpAfter = options.upAfter ?? 4_000;
-		this.#maxUpAfter = options.maxUpAfter ?? 60_000;
-		this.#failWindow = options.failWindow ?? 10_000;
-		this.#headroom = options.headroom ?? 0.8;
-		this.#upAfter = this.#baseUpAfter;
+		this.#upAfter = UP_AFTER_MS;
 		this.#switchedAt = this.#now();
 		this.#calmSince = this.#switchedAt;
 	}
@@ -134,7 +121,7 @@ export class AbrController {
 		while (this.#arrivals.length > 0 && this.#arrivals[0].at < at - WINDOW_MS) {
 			this.#arrivals.shift();
 		}
-		if (this.lag() >= this.#calmLag) {
+		if (this.lag() >= CALM_LAG_MS) {
 			this.#calmSince = at;
 			this.#lateSince ??= at;
 		} else {
@@ -157,10 +144,10 @@ export class AbrController {
 	switched(from: number, to: number, manual = false): void {
 		const now = this.#now();
 		if (
-			!manual && to > from && this.#upAt !== undefined && now - this.#upAt < this.#failWindow
+			!manual && to > from && this.#upAt !== undefined && now - this.#upAt < FAIL_WINDOW_MS
 		) {
 			// The step up did not hold: try the next one later.
-			this.#upAfter = Math.min(this.#upAfter * 2, this.#maxUpAfter);
+			this.#upAfter = Math.min(this.#upAfter * 2, MAX_UP_AFTER_MS);
 		}
 		this.#upAt = !manual && to < from ? now : undefined;
 		this.#switchedAt = now;
@@ -217,11 +204,11 @@ export class AbrController {
 	 */
 	decide(current: number): Decision | undefined {
 		const now = this.#now();
-		if (now - this.#switchedAt < this.#settle) return undefined;
+		if (now - this.#switchedAt < SETTLE_MS) return undefined;
 		const lowest = this.#choices.length - 1;
 
 		const lag = this.lag();
-		if ((lag > this.#downLag || this.#lost) && current < lowest) {
+		if ((lag > DOWN_LAG_MS || this.#lost) && current < lowest) {
 			const why = this.#lost
 				? "a group was lost"
 				: `frames arrive ${Math.round(lag)} ms late`;
@@ -229,20 +216,20 @@ export class AbrController {
 			// Behind, frames arrive as fast as the link carries them: the
 			// rate since they fell behind is the link's, where one over a
 			// window reaching back before that would credit it with more.
-			const fits = this.#best(this.receiveRate(this.#lateSince) * this.#headroom);
+			const fits = this.#best(this.receiveRate(this.#lateSince) * HEADROOM);
 			return { to: Math.max(current + 1, fits), reason: why };
 		}
 		this.#lost = false;
 
-		if (this.#upAt !== undefined && now - this.#upAt >= this.#failWindow) {
+		if (this.#upAt !== undefined && now - this.#upAt >= FAIL_WINDOW_MS) {
 			// The last step up held: the next may come as soon as the first.
-			this.#upAfter = this.#baseUpAfter;
+			this.#upAfter = UP_AFTER_MS;
 			this.#upAt = undefined;
 		}
 		if (current > 0 && now - this.#calmSince >= this.#upAfter) {
 			const next = this.#choices[current - 1].bitrate;
 			const burst = this.stats().burstRate;
-			if (next !== undefined && burst !== undefined && burst * this.#headroom < next) {
+			if (next !== undefined && burst !== undefined && burst * HEADROOM < next) {
 				return undefined; // the link measured too slow for it
 			}
 			return {

@@ -3,7 +3,7 @@ import { createLogger, MediaTags } from "@okdaichi/media-log";
 import { type AudioBufferStats, AudioOutput } from "./audio/output.ts";
 import { AbrController, type AbrStats } from "./abr/controller.ts";
 import { SwitchingTrack } from "./abr/switching_track.ts";
-import { decoderConfigs, readCatalogs, type Rendition, videoRenditions } from "./catalog.ts";
+import { audioConfig, readCatalogs, type Rendition, videoRenditions } from "./catalog.ts";
 import {
 	type GroupObserver,
 	type GroupOutcome,
@@ -305,12 +305,12 @@ export class Viewer {
 		// A catalog is sent again whenever anything in it changes. Configuring
 		// a decoder makes it start over, so one whose configuration is
 		// unchanged is left alone.
-		const configs = decoderConfigs(catalog);
-		const audioKey = configs.audio && configKey(configs.audio);
-		if (configs.audio && audioKey !== run.configs.audio) {
+		const audio = audioConfig(catalog);
+		const audioKey = audio && configKey(audio);
+		if (audio && audioKey !== run.configs.audio) {
 			run.configs.audio = audioKey;
-			run.audio.configure(configs.audio);
-			audioLog.info("audio decoder configured", { codec: configs.audio.codec });
+			run.audio.configure(audio);
+			audioLog.info("audio decoder configured", { codec: audio.codec });
 		}
 	}
 
