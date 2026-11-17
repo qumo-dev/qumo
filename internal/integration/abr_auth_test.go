@@ -98,9 +98,11 @@ func runPaidOptIn(t *testing.T, optIns []token.OptIn, paid bool) {
 	pub := dialOver(t, nativeURL(addr)+"/?jwt="+sign(tenant, token.Grant{Root: "/live/", Publish: []string{"/paid"}}), nil, pubMux)
 	require.Eventually(t, routed(srv, src), 5*time.Second, 25*time.Millisecond)
 
-	// The transcoder, with the credential qumo abr signs for itself.
+	// The transcoder, with the credential qumo abr signs for itself. Native
+	// QUIC as well: a WebTransport session the relay closes at shutdown can
+	// wait on its streams for good (webtransport-go), holding the cleanup.
 	abrMux := moqt.NewTrackMux(0)
-	abrSess := dialOver(t, "https://"+addr+"/?jwt="+sign(operator, abr.RelayGrant()), nil, abrMux)
+	abrSess := dialOver(t, nativeURL(addr)+"/?jwt="+sign(operator, abr.RelayGrant()), nil, abrMux)
 	tc := &abr.Transcoder{Suffix: ".abr", Config: abr.Config{
 		Ladder:  []abr.Rung{{Height: 360, Bitrate: 800_000}},
 		Encoder: abr.EncoderConfig{FFmpeg: "ffmpeg", Codec: "libx264"},
