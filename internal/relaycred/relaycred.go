@@ -77,7 +77,7 @@ type credential interface {
 // nothing. A relay that verifies no credentials (NOT_SUPPORTED) lets the
 // session's grant last for good, and Keep stops.
 func Keep(sess *moqt.Session, key token.SigningKey, g token.Grant, lapses time.Time) {
-	keep(sess.Context(), func(ctx context.Context, tok []byte) (credential, error) {
+	keep(sess.Context(), slog.Default(), renewGrant, func(ctx context.Context, tok []byte) (credential, error) {
 		c, err := sess.Auth(ctx, tok)
 		if err != nil {
 			return nil, err
@@ -98,7 +98,9 @@ func Keep(sess *moqt.Session, key token.SigningKey, g token.Grant, lapses time.T
 // opt-in) takes the ticket then. A relay that verifies no credentials
 // (NOT_SUPPORTED) needs no ticket, and Hold stops.
 func Hold(sess *moqt.Session, key token.SigningKey, g token.Grant) {
-	keep(sess.Context(), func(ctx context.Context, tok []byte) (credential, error) {
+	// No grant in force yet (a zero lapses): the first ticket is presented
+	// at once.
+	keep(sess.Context(), slog.Default(), renewTicket, func(ctx context.Context, tok []byte) (credential, error) {
 		c, err := sess.Auth(ctx, tok)
 		if err != nil {
 			return nil, err
@@ -107,11 +109,26 @@ func Hold(sess *moqt.Session, key token.SigningKey, g token.Grant) {
 	}, nil, func() (string, time.Time, error) { return Sign(key, g) }, time.Time{})
 }
 
-// keep is Keep, presenting with present and closing the session with end.
-// With a nil end it is Hold: the first credential is presented at once (a
-// zero lapses), and one not granted is retried for as long as the session
-// lasts.
-func keep(ctx context.Context, present func(context.Context, []byte) (credential, error), end func(),
+// renewal is what keep keeps in force, which sets what it does with a
+// credential not granted.
+type renewal int
+
+const (
+	// renewGrant renews the grant a session connected with (Keep): a
+	// credential not granted is retried, warning each time, until the
+	// grant in force would lapse first; then keep ends.
+	renewGrant renewal = iota
+	// renewTicket renews a ticket added to a session's grant (Hold): a
+	// credential not granted is retried for as long as the session lasts,
+	// warning once, and noting when one is granted again.
+	renewTicket
+)
+
+// keep is Keep and Hold, as r says: it presents credentials signed with sign
+// through present, logging to log, until ctx ends. The first is presented two
+// thirds of the way to lapses. end, when not nil, is called when keep ends
+// because the grant lapses (renewGrant only); a nil end does nothing then.
+func keep(ctx context.Context, log *slog.Logger, r renewal, present func(context.Context, []byte) (credential, error), end func(),
 	sign func() (string, time.Time, error), lapses time.Time) {
 	var held credential
 	defer func() {
@@ -133,14 +150,14 @@ func keep(ctx context.Context, present func(context.Context, []byte) (credential
 				return
 			}
 			if notSupported(err) {
-				slog.Info("relay credential not renewed: the relay verifies none, and the session's grant does not lapse")
+				log.Info("relay credential not renewed: the relay verifies none, and the session's grant does not lapse")
 				return
 			}
-			if end == nil {
+			if r == renewTicket {
 				// A ticket refused stays refused until the relay's key set
 				// changes: say so once, not every retry.
 				if !failing {
-					slog.Warn("relay ticket not granted, retrying", "error", err)
+					log.Warn("relay ticket not granted, retrying", "error", err)
 				}
 				failing = true
 				wait = retryInterval
@@ -149,16 +166,18 @@ func keep(ctx context.Context, present func(context.Context, []byte) (credential
 			// A retry signs, then may wait presentTimeout for an answer: the
 			// session must not outlive its grant meanwhile.
 			if time.Until(lapses) <= retryInterval+presentTimeout {
-				slog.Error("relay credential lapsing: closing the session to dial again", "error", err)
-				end()
+				log.Error("relay credential lapsing: closing the session to dial again", "error", err)
+				if end != nil {
+					end()
+				}
 				return
 			}
-			slog.Warn("relay credential not renewed, retrying", "error", err, "lapses_in", time.Until(lapses).Round(time.Second))
+			log.Warn("relay credential not renewed, retrying", "error", err, "lapses_in", time.Until(lapses).Round(time.Second))
 			wait = retryInterval
 			continue
 		}
 		if failing {
-			slog.Info("relay ticket granted", "root", next.Grant().Root)
+			log.Info("relay ticket granted", "root", next.Grant().Root)
 			failing = false
 		}
 		if held != nil {
