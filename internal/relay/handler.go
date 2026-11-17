@@ -794,7 +794,9 @@ func (d *trackDistributor) egress(tw *moqt.TrackWriter, fromStart bool) {
 						EndGroup:   seq,
 						ErrorCode:  moqt.SubscribeErrorCodeTimeout,
 					})
-				case groupSent:
+				case groupSent, groupStopped:
+					// A stopped group was the subscriber's own choice: it is
+					// not reported back to it as dropped.
 					drops.sent(seq)
 					drops.flush()
 				}
@@ -876,6 +878,11 @@ const (
 	// deliveryStopped means the subscribe stream closed, the subscriber left,
 	// or the track ended; egress must return.
 	deliveryStopped
+	// groupStopped means the subscriber stopped the group's stream part-way
+	// (STOP_SENDING), as a player gives up a group it no longer wants: a late
+	// one, or one of a rendition it is leaving. Only that group is abandoned;
+	// egress continues with the next.
+	groupStopped
 )
 
 // deliverGroup writes one group (cache) to the subscriber's track writer and
@@ -974,6 +981,14 @@ func (d *trackDistributor) deliverGroup(ctx context.Context, tw *moqt.TrackWrite
 			// though the group is being abandoned. The failing frame is excluded.
 			d.egressCounter.Add(float64(egressTotal))
 			d.sampler.addEgress(egressTotal)
+			if ctx.Err() == nil {
+				// The subscription is still open, so it was this group's
+				// stream that failed: the subscriber stopped it. A session
+				// that died instead fails the next group's open, which ends
+				// egress then.
+				gw.CancelWrite(moqt.InternalGroupErrorCode)
+				return groupStopped
+			}
 			return deliveryStopped
 		}
 		d.stages.egressFrame(tWrite)

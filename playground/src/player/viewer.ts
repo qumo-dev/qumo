@@ -1,7 +1,9 @@
 import { background, withCancel } from "@okdaichi/golikejs/context";
 import { createLogger, MediaTags } from "@okdaichi/media-log";
 import { type AudioBufferStats, AudioOutput } from "./audio/output.ts";
-import { decoderConfigs, readCatalogs } from "./catalog.ts";
+import { AbrController, type AbrStats } from "./abr/controller.ts";
+import { SwitchingTrack } from "./abr/switching_track.ts";
+import { audioConfig, readCatalogs, type Rendition, videoRenditions } from "./catalog.ts";
 import {
 	type GroupObserver,
 	type GroupOutcome,
@@ -17,6 +19,20 @@ import { VideoOutput } from "./video/output.ts";
 const log = createLogger("subscribe");
 const videoLog = createLogger(MediaTags.decoder);
 const audioLog = createLogger(MediaTags.audio);
+const abrLog = createLogger("abr");
+
+// How often the ABR controller is asked whether to switch, in ms.
+const ABR_DECIDE_MS = 500;
+
+/** The state of adaptive bitrate playback, for display. */
+export interface AbrState extends AbrStats {
+	/** The broadcast's video renditions, tallest first. */
+	readonly renditions: readonly Pick<Rendition, "track" | "label" | "bitrate">[];
+	/** The rendition being played. */
+	readonly playing: string | undefined;
+	/** Whether the controller chooses the rendition, rather than the viewer's owner. */
+	readonly auto: boolean;
+}
 
 /** Told what happens to each track's groups and frames during playback. */
 export interface PlaybackObserver {
@@ -58,6 +74,8 @@ export interface ViewerInit {
 	observer?: PlaybackObserver;
 	/** The video decoder was (re)configured from a catalog. */
 	onVideoConfig?(config: VideoDecoderConfig): void;
+	/** The adaptive bitrate state, several times a second while playing. */
+	onAbr?(state: AbrState): void;
 	/** A video chunk of `byteLength` bytes was handed to the decoder. */
 	onVideoChunk?(byteLength: number): void;
 	/** Playback stopped because the broadcast could not be played. */
@@ -80,6 +98,10 @@ export class Viewer {
 	#cancel: (() => void) | undefined;
 	// Whether the observer has been told of a start it has not been told the end of.
 	#reportedStart = false;
+	// The rendition chosen by the owner; undefined lets the controller choose.
+	#manual: string | undefined;
+	// The current run's video track and renditions, while it plays one.
+	#abr: { track: SwitchingTrack; renditions: () => readonly Rendition[] } | undefined;
 
 	constructor(init: ViewerInit) {
 		this.#init = init;
@@ -99,6 +121,17 @@ export class Viewer {
 
 	get decodeQueueSize(): number {
 		return this.#video.decodeQueueSize;
+	}
+
+	/**
+	 * Plays the video rendition `track` from now on, or lets the controller
+	 * choose when undefined. Kept across start and stop.
+	 */
+	setRendition(track: string | undefined): void {
+		this.#manual = track;
+		const abr = this.#abr;
+		if (abr === undefined || track === undefined) return;
+		void abr.track.switchTo(track, handover(abr.renditions(), abr.track.playing, track));
 	}
 
 	/**
@@ -132,6 +165,7 @@ export class Viewer {
 	stop(): void {
 		this.#cancel?.();
 		this.#cancel = undefined;
+		this.#abr = undefined;
 		if (this.#reportedStart) {
 			this.#reportedStart = false;
 			this.#init.observer?.playbackStopped?.();
@@ -209,6 +243,8 @@ export class Viewer {
 			audio,
 			configs: {},
 			keyframe: { needed: true },
+			renditions: [],
+			controller: new AbrController([]),
 		};
 
 		void this.#playCatalog(playback);
@@ -251,37 +287,107 @@ export class Viewer {
 	}
 
 	#configure(run: Playback, catalog: Uint8Array): void {
-		// A catalog is sent again whenever anything in it changes. Configuring
-		// a decoder makes it start over, a video decoder from a keyframe it
-		// will not see until the next group, so one whose configuration is
-		// unchanged is left alone.
-		const configs = decoderConfigs(catalog);
-		const videoKey = configs.video && configKey(configs.video);
-		if (configs.video && videoKey !== run.configs.video) {
-			run.configs.video = videoKey;
-			this.#video.configure(configs.video);
-			run.keyframe.needed = true;
-			log.info("video decoder configured", { codec: configs.video.codec });
-			this.#init.onVideoConfig?.(configs.video);
-			log.info("catalog received", { videoCodec: configs.video.codec });
-			run.configured.open();
+		// The video decoder is configured for each rendition as its first
+		// group is decoded (see #playVideo); here the renditions are noted.
+		const renditions = videoRenditions(catalog);
+		if (renditions.length > 0) {
+			const first = run.renditions.length === 0;
+			run.renditions = renditions;
+			run.controller.choices = renditions;
+			if (first) {
+				log.info("catalog received", {
+					videoCodec: renditions[0].config.codec,
+					renditions: renditions.map((r) => r.label).join(","),
+				});
+				run.configured.open();
+			}
 		}
-		const audioKey = configs.audio && configKey(configs.audio);
-		if (configs.audio && audioKey !== run.configs.audio) {
+		// A catalog is sent again whenever anything in it changes. Configuring
+		// a decoder makes it start over, so one whose configuration is
+		// unchanged is left alone.
+		const audio = audioConfig(catalog);
+		const audioKey = audio && configKey(audio);
+		if (audio && audioKey !== run.configs.audio) {
 			run.configs.audio = audioKey;
-			run.audio.configure(configs.audio);
-			audioLog.info("audio decoder configured", { codec: configs.audio.codec });
+			run.audio.configure(audio);
+			audioLog.info("audio decoder configured", { codec: audio.codec });
 		}
 	}
 
 	async #playVideo(run: Playback): Promise<void> {
-		const [track, err] = await run.source.subscribe(run.broadcast, "video");
+		// Which track to subscribe to is the catalog's to say.
+		await Promise.race([run.configured.promise, run.done]);
+		if (!run.playing()) return;
+		const { controller } = run;
+		const manual = this.#manual;
+		const first = run.renditions.find((r) => r.track === manual)?.track ??
+			run.renditions[controller.initial()].track;
+
+		const [track, err] = await SwitchingTrack.open(run.source, run.broadcast, first, run.done);
 		if (track === undefined) {
 			if (!run.playing()) return;
 			videoLog.warn("subscribe failed", { err });
 			this.#fail(run, err);
 			return;
 		}
+		if (!run.playing()) {
+			track.close();
+			return;
+		}
+		this.#abr = { track, renditions: () => run.renditions };
+		const index = (name: string | undefined) =>
+			run.renditions.findIndex((r) => r.track === name);
+		let playing: string | undefined;
+		track.onswitch = (rendition) => {
+			if (playing !== undefined) {
+				controller.switched(index(playing), index(rendition), this.#manual !== undefined);
+				abrLog.info("switched", { from: playing, to: rendition });
+			}
+			playing = rendition;
+		};
+
+		const report = () => {
+			this.#init.onAbr?.({
+				...controller.stats(),
+				renditions: run.renditions.map(({ track, label, bitrate }) => ({
+					track,
+					label,
+					bitrate,
+				})),
+				playing: track.playing,
+				auto: this.#manual === undefined,
+			});
+		};
+		const decide = setInterval(() => {
+			if (!run.playing()) return;
+			report();
+			// Decide only from a rendition that is playing, not mid-switch,
+			// and only while the controller chooses.
+			if (this.#manual !== undefined || track.playing !== track.rendition) return;
+			const current = index(track.playing);
+			if (current === -1) return;
+			const decision = controller.decide(current);
+			if (decision === undefined) return;
+			const to = run.renditions[decision.to].track;
+			abrLog.info("switching", { from: track.playing, to, reason: decision.reason });
+			void track.switchTo(to, handover(run.renditions, track.playing, to));
+		}, ABR_DECIDE_MS);
+		void run.done.then(() => clearInterval(decide));
+
+		// Only the rendition being played informs the controller: frames of
+		// one being left say nothing of the one being joined.
+		const abrObserver: GroupObserver = {
+			groupArrived() {},
+			frameArrived(group, timestamp, bytes) {
+				if (track.renditionOf(group) === track.playing) {
+					controller.frameArrived(timestamp, bytes);
+				}
+			},
+			groupEnded(group, outcome) {
+				if (outcome !== "skipped" && outcome !== "aborted") return;
+				if (track.renditionOf(group) === track.playing) controller.groupLost();
+			},
+		};
 
 		const video = this.#video;
 		const { onVideoChunk } = this.#init;
@@ -289,6 +395,9 @@ export class Viewer {
 			// Feed the decoder no faster than it decodes, so a burst is held
 			// back here rather than piling up as decoded frames.
 			await video.ready();
+			// Each group opens on a keyframe, from which the decoder can start
+			// on the rendition the group came from.
+			if (frame.index === 0) this.#configureVideo(run, track.renditionOf(frame.group));
 			// A decoder configured in the middle of a group cannot take the
 			// rest of it: it starts again at the next group's keyframe.
 			if (run.keyframe.needed) {
@@ -298,13 +407,29 @@ export class Viewer {
 			onVideoChunk?.(frame.data.byteLength);
 			video.decode(
 				new EncodedVideoChunk({
-					// Each group opens on a keyframe.
 					type: frame.index === 0 ? "key" : "delta",
 					timestamp: frame.timestamp,
 					data: frame.data,
 				}),
 			);
+		}, abrObserver);
+	}
+
+	// Configures the video decoder for the rendition named `track`, unless it
+	// is configured for it already.
+	#configureVideo(run: Playback, track: string | undefined): void {
+		const rendition = run.renditions.find((r) => r.track === track);
+		if (rendition === undefined) return;
+		const key = configKey(rendition.config);
+		if (key === run.configs.video) return;
+		run.configs.video = key;
+		this.#video.configure(rendition.config);
+		run.keyframe.needed = true;
+		videoLog.info("video decoder configured", {
+			codec: rendition.config.codec,
+			rendition: rendition.label,
 		});
+		this.#init.onVideoConfig?.(rendition.config);
 	}
 
 	// Audio is optional: a broadcast without an audio track plays video only.
@@ -355,6 +480,7 @@ export class Viewer {
 		label: "video" | "audio",
 		logger: ReturnType<typeof createLogger>,
 		deliver: (frame: TrackFrame) => void | Promise<void>,
+		extra?: GroupObserver,
 	): Promise<void> {
 		// Arrivals drive the track's playback clock, so they are observed
 		// here, before the reader decides what to skip, whether or not anyone
@@ -362,12 +488,19 @@ export class Viewer {
 		const sync = run.clocks[label];
 		const watcher = run.observer && groupObserver(run.observer, label);
 		const observer: GroupObserver = {
-			groupArrived: (group) => watcher?.groupArrived(group),
+			groupArrived(group) {
+				watcher?.groupArrived(group);
+				extra?.groupArrived(group);
+			},
 			frameArrived(group, timestamp, bytes) {
 				sync.observe(timestamp, performance.now());
 				watcher?.frameArrived(group, timestamp, bytes);
+				extra?.frameArrived(group, timestamp, bytes);
 			},
-			groupEnded: (group, outcome) => watcher?.groupEnded(group, outcome),
+			groupEnded(group, outcome) {
+				watcher?.groupEnded(group, outcome);
+				extra?.groupEnded(group, outcome);
+			},
 		};
 		// How far past its due time a frame would be if it were delivered now.
 		const lateness = (timestamp: number) => {
@@ -439,6 +572,21 @@ interface Playback extends Run {
 	readonly configs: { video?: string; audio?: string };
 	/** Whether the video decoder has to be given a keyframe next. */
 	readonly keyframe: { needed: boolean };
+	/** The broadcast's video renditions, tallest first, as the newest catalog lists them. */
+	renditions: readonly Rendition[];
+	readonly controller: AbrController;
+}
+
+// How to leave rendition `from` for `to`: seamlessly when stepping up, as the
+// link has room for both a while; at once when stepping down, as it has not.
+function handover(
+	renditions: readonly Rendition[],
+	from: string | undefined,
+	to: string,
+): "seamless" | "immediate" {
+	const height = (track: string | undefined) =>
+		renditions.find((r) => r.track === track)?.height ?? 0;
+	return height(to) > height(from) ? "seamless" : "immediate";
 }
 
 // A string that is the same for two decoder configurations exactly when they
