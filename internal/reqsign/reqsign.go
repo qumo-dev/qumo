@@ -59,14 +59,20 @@ const requestContext = "qumo-relay-request"
 // Signer signs nothing, so a client without a peer identity calls Sign all
 // the same.
 type Signer struct {
+	id  atomic.Pointer[identity] // what it signs with; Rotate replaces it
+	now func() time.Time
+}
+
+// identity is a certificate and its key, as a Signer signs with them.
+type identity struct {
 	certificate string // base64 of the certificate's PEM, as sent
 	key         crypto.Signer
-	now         func() time.Time
 }
 
 // Load reads the peer certificate and key (PEER_CERT_FILE, PEER_KEY_FILE).
 // The key must be ECDSA, which is what the control plane verifies. The files
-// are read once: a certificate renewed on disk is used after a restart.
+// are read once: a certificate renewed on disk is used after a restart, or
+// once the caller hands it to Rotate (the relay does).
 func Load(certFile, keyFile string) (*Signer, error) {
 	pair, err := tls.LoadX509KeyPair(certFile, keyFile)
 	if err != nil {
@@ -81,6 +87,28 @@ func Load(certFile, keyFile string) (*Signer, error) {
 // intermediate (the relay CA in deploy/nodes issues its peer certificates
 // directly).
 func New(pair tls.Certificate) (*Signer, error) {
+	id, err := newIdentity(pair)
+	if err != nil {
+		return nil, err
+	}
+	s := &Signer{now: time.Now}
+	s.id.Store(id)
+	return s, nil
+}
+
+// Rotate makes s sign with pair from the next request on, as New would
+// have: a relay whose peer certificate is renewed on disk signs with the
+// one it peers with. When pair can't sign, s keeps what it had.
+func (s *Signer) Rotate(pair tls.Certificate) error {
+	id, err := newIdentity(pair)
+	if err != nil {
+		return err
+	}
+	s.id.Store(id)
+	return nil
+}
+
+func newIdentity(pair tls.Certificate) (*identity, error) {
 	if len(pair.Certificate) == 0 {
 		return nil, errors.New("no certificate")
 	}
@@ -89,11 +117,7 @@ func New(pair tls.Certificate) (*Signer, error) {
 		return nil, fmt.Errorf("the peer key is %T, not ECDSA: the control plane verifies ECDSA signatures only", pair.PrivateKey)
 	}
 	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: pair.Certificate[0]})
-	return &Signer{
-		certificate: base64.StdEncoding.EncodeToString(certPEM),
-		key:         key,
-		now:         time.Now,
-	}, nil
+	return &identity{certificate: base64.StdEncoding.EncodeToString(certPEM), key: key}, nil
 }
 
 // Sign adds the signature headers to req, whose body is body (nil for
@@ -103,13 +127,14 @@ func (s *Signer) Sign(req *http.Request, body []byte) error {
 	if s == nil {
 		return nil
 	}
+	id := s.id.Load()
 	timestamp := strconv.FormatInt(s.now().Unix(), 10)
 	digest := sha256.Sum256(signed(req.Method, req.URL.RequestURI(), timestamp, body))
-	sig, err := s.key.Sign(rand.Reader, digest[:], crypto.SHA256)
+	sig, err := id.key.Sign(rand.Reader, digest[:], crypto.SHA256)
 	if err != nil {
 		return fmt.Errorf("sign the request: %w", err)
 	}
-	req.Header.Set(HeaderCertificate, s.certificate)
+	req.Header.Set(HeaderCertificate, id.certificate)
 	req.Header.Set(HeaderTimestamp, timestamp)
 	req.Header.Set(HeaderSignature, base64.StdEncoding.EncodeToString(sig))
 	return nil

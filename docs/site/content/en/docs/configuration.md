@@ -22,7 +22,7 @@ qumo relay
 | Variable | Default | Description |
 |---|---|---|
 | `RELAY_ADDR` | `:4433` | Bind address (QUIC/MoQT). Dual-stack — binds both IPv4 and IPv6, so `localhost` works on hosts where it resolves to `::1` (e.g. Windows). Also serves HTTP health/metrics on the same port. |
-| `CERT_FILE` / `KEY_FILE` | `certs/server.crt` / `certs/server.key` | TLS certificate and key. Required — the relay exits at startup if it can't load them. |
+| `CERT_FILE` / `KEY_FILE` | `certs/server.crt` / `certs/server.key` | TLS certificate and key. Required — the relay exits at startup if it can't load them. Re-read about once a minute while it runs: a renewed pair is presented from the next handshake on, with no restart ([Certificate renewal]({{< relref "deployment/tls" >}}#certificate-renewal)). |
 
 The node's **topology role** is a CLI flag, not an env var. It is an
 operator-facing label logged at startup for visibility only — it does not
@@ -75,6 +75,8 @@ The four valid settings:
 - `CA_FILE` alone: a session with a peer certificate from the CA is a peer (the HLS egress can connect that way), but this relay has no peer identity: it dials no peer and no relay can dial it;
 - `CA_FILE` and a peer identity: this relay accepts peers but dials none;
 - all three with `PEERS`: full peering.
+
+These files are re-read about once a minute too, like `CERT_FILE` ([Certificate renewal]({{< relref "deployment/tls" >}}#certificate-renewal)).
 
 The relay refuses to start with only one of the two peer files, a peer identity without `CA_FILE`, `PEERS` without all three, or a peer certificate the CA didn't issue, that lacks the peering name, or that isn't valid. A browser is never asked for a certificate.
 

@@ -244,3 +244,45 @@ func TestNoRedirectClient(t *testing.T) {
 	assert.Equal(t, http.StatusTemporaryRedirect, resp.StatusCode)
 	assert.False(t, followed.Load())
 }
+
+// Rotate makes the signer sign with the new pair, its certificate sent and
+// its key's signature verifying; a pair it can't sign with leaves it as it
+// was.
+func TestSigner_Rotate(t *testing.T) {
+	_, ed, err := ed25519.GenerateKey(rand.Reader)
+	require.NoError(t, err)
+	unsignable := reqsigntest.Pair(t)
+	unsignable.PrivateKey = ed
+	tests := map[string]struct {
+		pair     tls.Certificate
+		wantErr  string
+		wantSent func(old, next tls.Certificate) tls.Certificate
+	}{
+		"a renewed pair":         {pair: reqsigntest.Pair(t), wantSent: func(_, next tls.Certificate) tls.Certificate { return next }},
+		"a key that isn't ECDSA": {pair: unsignable, wantErr: "not ECDSA", wantSent: func(old, _ tls.Certificate) tls.Certificate { return old }},
+	}
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			old := reqsigntest.Pair(t)
+			signer, err := reqsign.New(old)
+			require.NoError(t, err)
+
+			err = signer.Rotate(tt.pair)
+
+			if tt.wantErr != "" {
+				assert.ErrorContains(t, err, tt.wantErr)
+			} else {
+				require.NoError(t, err)
+			}
+			req := httptest.NewRequest(http.MethodGet, "/v1/relays/trust", nil)
+			require.NoError(t, signer.Sign(req, nil))
+			_, err = reqsigntest.Verify(req, nil)
+			assert.NoError(t, err, "the signature verifies with the certificate sent")
+			signed, err := reqsign.New(tt.wantSent(old, tt.pair))
+			require.NoError(t, err)
+			want := httptest.NewRequest(http.MethodGet, "/v1/relays/trust", nil)
+			require.NoError(t, signed.Sign(want, nil))
+			assert.Equal(t, want.Header.Get(reqsign.HeaderCertificate), req.Header.Get(reqsign.HeaderCertificate), "the certificate sent")
+		})
+	}
+}

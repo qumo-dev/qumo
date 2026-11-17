@@ -87,10 +87,10 @@ operator's; the relay only reads the files.
 - **One certificate per relay.** A relay recognizes itself by its own
   certificate. Two relays given the same one each take the other for
   themselves, drop the session without an error, and never peer.
-- **Renewal needs a restart.** The relay reads its peer certificate once, at
-  startup. Renew it on disk and restart the relay before the old one expires;
-  a relay still running on an expired certificate can neither dial nor be
-  dialed.
+- **Renewal needs no restart.** The relay re-reads its peer certificate and
+  `CA_FILE` about once a minute ([Certificate renewal](#certificate-renewal)).
+  Renew them before the old certificate expires: a relay still holding an
+  expired one can neither dial nor be dialed.
 - **A chain is fine.** When an intermediate CA issues the certificate, put
   the intermediate after the leaf in `PEER_CERT_FILE` and the root in
   `CA_FILE`.
@@ -99,6 +99,40 @@ operator's; the relay only reads the files.
 
 See
 [Configuration → Peer trust]({{< relref "../configuration" >}}#peer-trust-optional).
+
+## Certificate renewal
+
+The relay re-reads `CERT_FILE` / `KEY_FILE`, `PEER_CERT_FILE` /
+`PEER_KEY_FILE` and `CA_FILE` about once a minute, and compares what they hold
+with what it is using. Whatever renews them — cert-manager, a Vault or step-ca
+agent writing files, a cron job — needs only to write the new files; the relay
+needs no restart and no signal.
+
+- **New handshakes only.** A renewed certificate is presented from the next
+  TLS handshake on, to browsers, native-QUIC clients and peers alike, and a
+  renewed `CA_FILE` verifies the next peer that dials or is dialed. Sessions
+  already established are untouched: they keep the connection, and the
+  certificate, they were set up with.
+- **Taken whole, or not at all.** A public certificate is taken only once it
+  parses and matches its key. A peer certificate and `CA_FILE` are taken
+  together, only when they check out as at startup: the certificate is one the
+  CA issued, carries the peering name, and is valid now. Anything else (a
+  half-written file, a key that doesn't match, a certificate from a CA not in
+  `CA_FILE`) is logged as an error and the certificates in use are kept; the
+  next read tries again. Write the key and the certificate close together, or
+  rename them into place.
+- **Rotating the relay CA.** Put the new CA beside the old one in every
+  relay's `CA_FILE` first, wait for the relays to read it, then issue peer
+  certificates from the new CA, and drop the old CA from `CA_FILE` once no
+  relay presents a certificate from it. A peer certificate from a CA the relay
+  doesn't yet trust is refused, and the old one kept.
+- **Requests to the control plane** are signed with the renewed peer
+  certificate from then on.
+
+The relay logs each certificate it takes, with its serial and expiry, and
+counts reads in `qumo_relay_cert_reloads_total{cert,result}`;
+`qumo_relay_cert_not_after_seconds{cert}` is when the certificate in use
+expires, for an alert ([Observability]({{< relref "../observability" >}})).
 
 ## Clients verify the relay by default
 
