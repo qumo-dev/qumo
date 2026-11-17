@@ -64,10 +64,16 @@ func sanitizeLog(s string) string {
 //	                               size, path MTU discovery, keep-alive, idle
 //	                               timeouts and receive windows
 //	                               (quicConfigFromEnv lists them)
-//	PEERS                        - comma-separated relays to dial (host:port);
-//	                               each host is resolved to all its addresses
-//	                               (e.g. "role-hub.qumo-relay.service.consul:4433").
+//	PEERS                        - comma-separated relays to dial: ip:port,
+//	                               host:port (each of the host's addresses),
+//	                               or an SRV name without a port (each
+//	                               target at its port). Names are resolved
+//	                               again every PEERS_RESOLVE_INTERVAL; peers
+//	                               that join are dialed, peers that leave
+//	                               dropped (peer_resolve.go).
 //	                               Needs CA_FILE and the peer identity.
+//	PEERS_RESOLVE_INTERVAL       - how often PEERS names are resolved again
+//	                               (default and 0: 30s, jittered by ±10%)
 //	CORS_ALLOWED_ORIGINS     - comma-separated WebTransport origins allowed to
 //	                           connect (default: same-origin only; "*" allows any;
 //	                           "same-host" allows any port on the request's host).
@@ -143,6 +149,13 @@ func Run(args []string) error {
 	var peers []Peer
 	for _, p := range splitAddrList(os.Getenv("PEERS")) {
 		peers = append(peers, Peer{Address: p})
+	}
+	if _, err := parsePeerEntries(peers); err != nil {
+		return fmt.Errorf("invalid PEERS: %w", err)
+	}
+	peerResolveInterval, _, err := envconfig.Duration("PEERS_RESOLVE_INTERVAL")
+	if err != nil {
+		return err
 	}
 
 	// Peer trust (peer_trust.go): a CA and this relay's own peer identity,
@@ -226,6 +239,7 @@ func Run(args []string) error {
 		MaxClientSessions: maxClientSessions,
 		MaxEgressKbps:     maxEgressKbps,
 	}
+	relayCfg.PeerResolveInterval = peerResolveInterval
 
 	// Setup signal handling for graceful shutdown
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

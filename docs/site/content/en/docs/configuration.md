@@ -38,21 +38,41 @@ qumo relay --role hub    # or "edge"; omit for a standalone / flat relay
 |---|---|---|
 | `RELAY_NAME` | `relay-<hostname>` | Human-readable node identifier. |
 
-## Static peers
+## Peers
 
 | Variable | Default | Description |
 |---|---|---|
-| `PEERS` | (empty) | Comma-separated relays to dial, as `host:4433`. Each host is resolved to all its addresses and every address is dialed, so a DNS name for a group of relays (`role-hub.qumo-relay.service.consul:4433`) connects to each; a relay that reaches itself that way drops that session. The node relays their announcements. Needs `CA_FILE` and a peer identity (below). |
+| `PEERS` | (empty) | Comma-separated relays to dial: `ip:port`, `host:port`, or an SRV name without a port (below). The node relays their announcements. Needs `CA_FILE` and a peer identity (below). |
+| `PEERS_RESOLVE_INTERVAL` | `30s` | How often the names in `PEERS` are resolved again, jittered by ±10%. |
 
-There is no runtime peer-discovery service — the list is static, resolved and
-dialed once at startup and re-dialed with backoff on disconnect. A relay
-that starts later must dial the earlier ones; they learn of it only when
-they restart. Every resolved address is dialed and retried for as long as
-the relay runs, so name peers by addresses they listen on: `localhost`
-resolves to `::1` as well, and a relay bound to `127.0.0.1` leaves that
-dial warning forever. A peer that stops cleanly (SIGINT, GOAWAY) is
-re-dialed at once; one that vanishes without closing is noticed after the
-QUIC idle timeout, 60 s. See
+A `PEERS` entry takes one of three forms:
+
+- **`ip:port`** is dialed as it is.
+- **`host:port`**: the host is resolved to all its addresses (A and AAAA) and
+  every address is dialed at the port, so a DNS name for a group of relays
+  (`hubs.example.com:4433`, a Kubernetes headless service, a Docker network
+  alias) connects to each of them.
+- **A name without a port** is an SRV name, looked up as written
+  (`_moqt._udp.hubs.example.com`, or a service name a DNS server answers SRV
+  for directly). Every target is resolved and dialed at its record's port.
+  Priority and weight choose among targets, and a relay peers with all of
+  them, so both are ignored.
+
+Names are resolved again every `PEERS_RESOLVE_INTERVAL`, as gRPC's and
+Envoy's DNS resolvers do: an address that joins a name's answer is dialed,
+and one that leaves it is dropped, its session closed without error. A
+lookup that fails, or that answers no address, keeps the name's last answer
+and is logged, so a DNS outage drops no peer; a name that has never resolved
+is retried sooner, with backoff from 1 s up to the interval. A relay that
+finds its own address in an answer drops that session once and doesn't dial
+the address again while it stays in the answer.
+
+An address is retried with backoff for as long as it is in the answer (a
+literal one, for as long as the relay runs), so name peers by addresses they
+listen on: `localhost` resolves to `::1` as well, and a relay bound to
+`127.0.0.1` leaves that dial warning forever. A peer that stops cleanly
+(SIGINT, GOAWAY) is re-dialed at once; one that vanishes without closing is
+noticed after the QUIC idle timeout, 60 s. See
 [Deployment → Peer topology]({{< relref "deployment/peer-topology" >}}) for
 how they fit together, and [Deployment → Nomad]({{< relref "deployment/nomad" >}})
 for a worked example of giving relays stable addresses on Nomad.

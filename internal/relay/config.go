@@ -2,6 +2,7 @@ package relay
 
 import (
 	"strings"
+	"time"
 )
 
 // splitAddrList splits PEERS, a comma-separated list of host:port entries,
@@ -39,12 +40,18 @@ type Config struct {
 	// falls back to DefaultFramePool (DefaultNewFrameCapacity).
 	FrameCapacity int
 
-	// Peers is the list of relays to dial. Each host is resolved to all its
-	// addresses, and each address is dialed, so a DNS name with several
-	// records (e.g. role-hub.qumo-relay.service.consul:4433) connects to
-	// every relay behind it. The relay discovers their announcements via
+	// Peers is the list of relays to dial (peer_resolve.go). An entry with a
+	// host name is resolved to all its addresses, again every
+	// PeerResolveInterval, and each address is dialed, so a DNS name with
+	// several records (e.g. relay-hubs.example.com:4433) connects to every
+	// relay behind it, and to the ones that join it later. An entry without
+	// a port is an SRV name. The relay discovers their announcements via
 	// ANNOUNCE_PLEASE and registers them on the local TrackMux.
 	Peers []Peer
+
+	// PeerResolveInterval is how often the names in Peers are resolved
+	// again. Zero or less is defaultPeerResolveInterval.
+	PeerResolveInterval time.Duration
 
 	// WebSocket makes HandleWebTransport also take WebSocket upgrades and
 	// serve them as MoQ sessions over QMux, for clients whose WebTransport
@@ -76,6 +83,8 @@ type Config struct {
 // Peer represents a remote relay to connect to for announce discovery.
 type Peer struct {
 	// Address is the remote relay's host:port, such as "relay-tokyo:4433",
-	// dialed over native QUIC (moqt://).
+	// dialed over native QUIC (moqt://), or an SRV name without a port, such
+	// as "_moqt._udp.relays.example.com", whose records give the hosts and
+	// ports.
 	Address string
 }
