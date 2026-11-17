@@ -10,11 +10,18 @@ import (
 	"time"
 
 	"github.com/qumo-dev/gomoqt/moqt"
+
+	"github.com/qumo-dev/qumo/internal/optin"
 )
 
 // sameBroadcast reports whether a and b name one broadcast, however spelled:
-// the egress cleans the paths it derives, a publisher may not.
+// the egress cleans the paths it derives, a publisher may not. Paths with a
+// "." or ".." segment name none: cleaning one can climb into another
+// directory than the one the relay routes it in.
 func sameBroadcast(a, b moqt.BroadcastPath) bool {
+	if optin.HasDotSegment(string(a)) || optin.HasDotSegment(string(b)) {
+		return false
+	}
 	return path.Clean(string(a)) == path.Clean(string(b))
 }
 

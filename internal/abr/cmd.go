@@ -259,8 +259,9 @@ func (t *Transcoder) Serve(ctx context.Context, sess *moqt.Session, mux *moqt.Tr
 // /.abr/acme/, yet would name /victim/cam, and a doubled or trailing slash
 // names a broadcast other than the cleaned one the transcoder would read.
 func optedIn(optIn moqt.BroadcastPath) (moqt.BroadcastPath, bool) {
-	src := moqt.BroadcastPath(optin.Broadcast(string(optIn), token.ABRDirectory))
-	return src, src == "/" || optin.Path(token.ABRDirectory, src) == optIn
+	b, ok := optin.Broadcast(string(optIn), token.ABRDirectory)
+	src := moqt.BroadcastPath(b)
+	return src, ok && (src == "/" || optin.Path(token.ABRDirectory, src) == optIn)
 }
 
 // transcode runs the pipeline for src, opted in as optIn, until ctx ends,

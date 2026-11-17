@@ -364,7 +364,11 @@ func (g *broadcastGate) acquire(ctx context.Context, broadcast string) (func(), 
 // them into ledger tracks until the announcement ends.
 func handleAnnouncement(ctx context.Context, session *moqt.Session, ann *moqt.Announcement, store store.Store, mux *streamMux, gate *broadcastGate, window uint64, cfg feedConfig) {
 	annPath := string(ann.BroadcastPath())
-	realBroadcast := optin.Broadcast(annPath, announcePrefix)
+	realBroadcast, ok := optin.Broadcast(annPath, announcePrefix)
+	if !ok {
+		slog.Warn("hls: refusing opt-in with a . or .. segment", "announce", annPath)
+		return
+	}
 	slog.Info("hls: received announcement", "announce", annPath, "broadcast", realBroadcast)
 
 	annCtx, cancelAnn := context.WithCancel(ctx)
