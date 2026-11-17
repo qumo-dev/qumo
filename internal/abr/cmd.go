@@ -60,7 +60,9 @@ const retryInterval = 2 * time.Second
 //	QUIC_*             - QUIC transport settings of the session to the relay
 //	                     (quicconfig.FromEnv lists them)
 //
-// The source video must be H.264 (avc1) without B-frames.
+// The source video must be H.264 (avc1: AVCC with its configuration in the
+// catalog, or Annex B with its parameter sets in the stream) or VP9, without
+// B-frames. Renditions are H.264.
 func Run(_ []string) error {
 	ladder, err := ParseLadder(envconfig.String("ABR_LADDER", DefaultLadder))
 	if err != nil {

@@ -139,9 +139,10 @@ func (p *pipeline) followCatalog(ctx context.Context, g *errgroup.Group, tr *moq
 			if err != nil {
 				slog.Warn("abr: source track has unusable init data; forwarding it without", "broadcast", p.src, "track", t.Name, "error", err)
 			}
-			if t.Role == msf.RoleVideo && !p.transcoding && isAVC(t.Codec) && init != nil {
+			format, transcodable := formatOf(t, init)
+			if t.Role == msf.RoleVideo && !p.transcoding && transcodable {
 				p.transcoding = true
-				g.Go(func() error { return p.transcode(ctx, t, init) })
+				g.Go(func() error { return p.transcode(ctx, t, init, format) })
 			} else {
 				g.Go(func() error { return p.forward(ctx, t, init) })
 			}
@@ -250,24 +251,24 @@ func (p *pipeline) readTrack(ctx context.Context, name string,
 }
 
 // transcode forwards the source video track and encodes it into the
-// renditions of the ladder shorter than it.
-func (p *pipeline) transcode(ctx context.Context, t msf.Track, init []byte) error {
-	cfg, err := ingest.ParseAVCConfig(append([]byte{0x17, 0, 0, 0, 0}, init...))
+// renditions of the ladder shorter than it. The encoders start once the
+// source's configuration is known: at once, or for an Annex B source at its
+// first keyframe.
+func (p *pipeline) transcode(ctx context.Context, t msf.Track, init []byte, format sourceFormat) error {
+	in, err := newSource(t, init, format)
 	if err != nil {
-		return fmt.Errorf("abr: source decoder configuration: %w", err)
-	}
-	width, height := cfg.Width, cfg.Height
-	if t.Width != nil && t.Height != nil && *t.Width > 0 && *t.Height > 0 {
-		width, height = int(*t.Width), int(*t.Height)
+		return err
 	}
 	info := p.publishInfo(ctx, t.Name, defaultVideoInfo)
 
 	// The source itself is the top rendition.
 	src := outputTrack(t)
 	src.AltGroup = new(int64(videoAltGroup))
-	src.Width, src.Height = new(int64(width)), new(int64(height))
-	if src.Label == "" {
-		src.Label = fmt.Sprintf("%dp (source)", height)
+	if in.config != nil && (src.Width == nil || src.Height == nil) {
+		src.Width, src.Height = new(int64(in.config.Width)), new(int64(in.config.Height))
+	}
+	if src.Label == "" && src.Height != nil {
+		src.Label = fmt.Sprintf("%dp (source)", *src.Height)
 	}
 	srcOut := newTrack()
 	defer srcOut.close()
@@ -275,6 +276,92 @@ func (p *pipeline) transcode(ctx context.Context, t msf.Track, init []byte) erro
 		return err
 	}
 
+	ctx, cancel := context.WithCancelCause(ctx)
+	defer cancel(nil)
+	var enc *encoding
+	defer func() {
+		if enc != nil {
+			enc.closeTracks()
+		}
+	}()
+	startEncoding := func(sc sourceConfig) bool {
+		width, height := sc.Width, sc.Height
+		if t.Width != nil && t.Height != nil && *t.Width > 0 && *t.Height > 0 {
+			width, height = int(*t.Width), int(*t.Height)
+		}
+		slog.Info("abr: encoding renditions", "broadcast", p.src, "source", format, "width", width, "height", height)
+		e, err := p.startEncoding(ctx, sc, width, height, info)
+		if err != nil {
+			cancel(err)
+			return false
+		}
+		enc = e
+		return true
+	}
+	if in.config != nil && !startEncoding(*in.config) {
+		return context.Cause(ctx)
+	}
+
+	rate := newBitrateMeter()
+	dropping := false
+	err = p.readTrack(ctx, t.Name, srcOut.openGroup, func(seq moqt.GroupSequence, i int, f *moqt.Frame) {
+		srcOut.writeFrame(f)
+		ts, data, err := cmaf.DecodeLOC(f.Body())
+		if err != nil {
+			slog.Warn("abr: source frame is not LOC", "broadcast", p.src, "error", err)
+			return
+		}
+		if bps, ok := rate.add(ts, len(data), i == 0); ok {
+			if err := p.out.setBitrate(src.Name, bps); err != nil {
+				slog.Warn("abr: state source bitrate", "error", err)
+			}
+		}
+		data, ok := in.frame(data, i == 0)
+		if !ok {
+			return // not decodable yet, before the first keyframe of an Annex B source
+		}
+		if enc == nil && !startEncoding(*in.config) {
+			return
+		}
+		if len(enc.encoders) == 0 || (dropping && i != 0) {
+			return
+		}
+		select {
+		case enc.queue <- sourceFrame{frameInfo: frameInfo{Group: seq, First: i == 0, Timestamp: ts, WireTimestamp: f.Timestamp}, Data: data}:
+			dropping = false
+		default:
+			if !dropping {
+				slog.Warn("abr: encoder is behind; dropping source frames up to the next group", "broadcast", p.src)
+			}
+			dropping = true
+		}
+	}, srcOut.endGroup)
+	if cause := context.Cause(ctx); cause != nil && !errors.Is(cause, context.Canceled) {
+		err = cause // the encoders did not start
+	}
+	if enc != nil {
+		if ferr := enc.finish(); ferr != nil && err == nil && ctx.Err() == nil {
+			err = ferr
+		}
+	}
+	return err
+}
+
+// encoding is the renditions of a source being encoded, and the encoders and
+// queue that encode them.
+type encoding struct {
+	r        *renditions
+	encoders []*encoder
+	// queue feeds the encoders, so a slow encoder never holds up the source
+	// track's own forwarding; fed reports how feeding them ended.
+	queue chan sourceFrame
+	fed   chan error
+}
+
+// startEncoding starts encoding the renditions of the ladder shorter than a
+// source of width×height, configured as sc, publishing them with the
+// source's publisher properties info.
+func (p *pipeline) startEncoding(ctx context.Context, sc sourceConfig, width, height int, info moqt.PublishInfo) (*encoding, error) {
 	var outputs []output
 	for _, r := range below(p.cfg.Ladder, height) {
 		w, h := r.Size(width, height)
@@ -286,7 +373,6 @@ func (p *pipeline) transcode(ctx context.Context, t msf.Track, init []byte) erro
 	r := &renditions{out: p.out, outputs: outputs, info: info, tracks: make([]*track, len(outputs)), configured: make([]bool, len(outputs))}
 	for i := range r.tracks {
 		r.tracks[i] = newTrack()
-		defer r.tracks[i].close()
 	}
 
 	// One ffmpeg decodes the source once for every rendition. Windows cannot
@@ -304,55 +390,32 @@ func (p *pipeline) transcode(ctx context.Context, t msf.Track, init []byte) erro
 		}
 		groups = append(groups, all)
 	}
-	sc := sourceConfig{Codec: t.Codec, Width: cfg.Width, Height: cfg.Height, Description: init}
 	encoders, err := startEncoders(ctx, p.cfg.Encoder, sc, outputs, groups, r)
 	if err != nil {
-		return err
+		for _, t := range r.tracks {
+			t.close()
+		}
+		return nil, err
 	}
-
-	// The encoders are fed from a queue, so a slow encoder never holds up the
-	// source track's own forwarding.
-	queue := make(chan sourceFrame, encodeQueue)
-	fed := make(chan error, 1)
+	e := &encoding{r: r, encoders: encoders, queue: make(chan sourceFrame, encodeQueue), fed: make(chan error, 1)}
 	go func() {
-		fed <- feed(queue, encoders)
+		e.fed <- feed(e.queue, encoders)
 	}()
+	return e, nil
+}
 
-	rate := newBitrateMeter()
-	dropping := false
-	err = p.readTrack(ctx, t.Name, srcOut.openGroup, func(seq moqt.GroupSequence, i int, f *moqt.Frame) {
-		srcOut.writeFrame(f)
-		ts, data, err := cmaf.DecodeLOC(f.Body())
-		if err != nil {
-			slog.Warn("abr: source frame is not LOC", "broadcast", p.src, "error", err)
-			return
-		}
-		if bps, ok := rate.add(ts, len(data), i == 0); ok {
-			if err := p.out.setBitrate(src.Name, bps); err != nil {
-				slog.Warn("abr: state source bitrate", "error", err)
-			}
-		}
-		if len(encoders) == 0 {
-			return
-		}
-		if dropping && i != 0 {
-			return
-		}
-		select {
-		case queue <- sourceFrame{frameInfo: frameInfo{Group: seq, First: i == 0, Timestamp: ts, WireTimestamp: f.Timestamp}, Data: data}:
-			dropping = false
-		default:
-			if !dropping {
-				slog.Warn("abr: encoder is behind; dropping source frames up to the next group", "broadcast", p.src)
-			}
-			dropping = true
-		}
-	}, srcOut.endGroup)
-	close(queue)
-	if ferr := <-fed; ferr != nil && err == nil && ctx.Err() == nil {
-		err = ferr
+// finish closes the queue, waits for the encoders to drain and exit, and
+// returns how feeding them ended.
+func (e *encoding) finish() error {
+	close(e.queue)
+	return <-e.fed
+}
+
+// closeTracks ends the renditions' tracks for their subscribers.
+func (e *encoding) closeTracks() {
+	for _, t := range e.r.tracks {
+		t.close()
 	}
-	return err
 }
 
 // startEncoders starts an encoder for each group of output indexes. If one

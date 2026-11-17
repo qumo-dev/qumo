@@ -315,6 +315,17 @@
 	min-width: 16ch;
 }
 
+/* A checkbox reads beside its label, not above it. */
+.encoder-controls label.abr-control {
+	flex-direction: row;
+	align-items: center;
+	gap: 6px;
+}
+
+.abr-control input[type="checkbox"] {
+	accent-color: var(--accent);
+}
+
 .bitrate-value {
 	font-size: 0.75rem;
 	color: var(--text-muted);

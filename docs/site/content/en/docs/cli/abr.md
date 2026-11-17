@@ -92,10 +92,22 @@ held up by the encoder.
 
 ## Requirements
 
-- The source video must be H.264 (`avc1`) **without B-frames**: LOC carries
-  presentation timestamps only, so frames must arrive in presentation order.
-  OBS and ffmpeg in their low-latency settings (`-bf 0`, `-tune zerolatency`)
-  qualify.
+- The source video must be one of:
+  - H.264 (`avc1`) with its decoder configuration in the catalog and
+    length-prefixed frames, as RTMP and RTSP ingest publish it;
+  - H.264 (`avc1`) in Annex B, its parameter sets in the stream before each
+    keyframe, as a browser's WebCodecs encoder in `annexb` format sends it:
+    the configuration is read from the first keyframe, and the frames are
+    rewritten with lengths for ffmpeg;
+  - VP9 with a full codec string (`vp09.PP.LL.DD`) and its picture size in
+    the catalog, as a browser's hardware encoder often sends it.
+
+  Renditions are H.264 whatever the source. Another codec is forwarded
+  without renditions.
+- The source must have **no B-frames**: LOC carries presentation timestamps
+  only, so frames must arrive in presentation order. OBS and ffmpeg in their
+  low-latency settings (`-bf 0`, `-tune zerolatency`) and browser encoders in
+  `realtime` mode qualify.
 - `ABR_CODEC` must be an H.264 encoder, so browsers decode every rendition
   with the same decoder.
 
