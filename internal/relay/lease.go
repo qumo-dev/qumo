@@ -75,8 +75,9 @@ type lease struct {
 }
 
 // startLease starts the lease of a session admitted by req, to be revalidated
-// every cadence, reporting the opt-in time optIns counts (nil for none). It returns nil for a zero cadence, which never revalidates;
-// otherwise the caller stops it when the session ends first.
+// every cadence, reporting the opt-in time optIns counts (nil for none). It
+// returns nil for a zero cadence, which never revalidates; otherwise the
+// caller stops it when the session ends first.
 func startLease(ctx context.Context, sess leasedSession, authorize authorizeFunc, req auth.Request, cadence time.Duration, optIns *optInClock) *lease {
 	if cadence <= 0 {
 		return nil

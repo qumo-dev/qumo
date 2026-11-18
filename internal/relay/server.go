@@ -813,7 +813,7 @@ func (s *Server) serveSession(sess *moqt.Session) {
 	// reported; nil counts none.
 	var optIns *optInClock
 	if checked {
-		optIns = newOptInClock(time.Now)
+		optIns = newOptInClock()
 		a.served.Store(true)
 		// Registered first so that it runs last: after the close below,
 		// with the session's final byte totals and close cause. Counted in
