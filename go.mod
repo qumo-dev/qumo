@@ -3,17 +3,17 @@ module github.com/qumo-dev/qumo
 go 1.27.4
 
 require (
-	github.com/Eyevinn/mp4ff v0.62.0
+	github.com/Eyevinn/mp4ff v0.62.1
 	github.com/maxmind/mmdbwriter v1.2.0
 	github.com/miekg/dns v1.1.73
-	github.com/okdaichi/qumo-ledger v0.4.1-0.20261017011115-d3ee9824a3ec
+	github.com/okdaichi/qumo-ledger v0.5.1
 	github.com/oschwald/maxminddb-golang/v2 v2.9.0
 	github.com/prometheus/client_golang v1.25.0
 	github.com/prometheus/client_model v0.6.3
 	github.com/quic-go/quic-go v0.65.0
-	github.com/qumo-dev/gomoqt v0.28.3
+	github.com/qumo-dev/gomoqt v0.28.4
 	github.com/stretchr/testify v1.12.1
-	golang.org/x/sync v0.24.0
+	golang.org/x/sync v0.25.0
 )
 
 require (
@@ -23,7 +23,7 @@ require (
 	github.com/dunglas/httpsfv v1.1.2 // indirect
 	github.com/jackc/pgpassfile v1.0.0 // indirect
 	github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761 // indirect
-	github.com/jackc/pgx/v5 v5.11.0 // indirect
+	github.com/jackc/pgx/v5 v5.13.0 // indirect
 	github.com/jackc/puddle/v2 v2.2.3 // indirect
 	github.com/kylelemons/godebug v1.1.0 // indirect
 	github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 // indirect
@@ -36,7 +36,7 @@ require (
 	go4.org/netipx v0.0.0-20231129151722-fdeea329fbba // indirect
 	golang.org/x/crypto v0.58.0 // indirect
 	golang.org/x/net v0.62.0 // indirect
-	golang.org/x/sys v0.49.0 // indirect
+	golang.org/x/sys v0.50.0 // indirect
 	golang.org/x/text v0.43.0 // indirect
 	google.golang.org/protobuf v1.36.12 // indirect
 )
