@@ -306,7 +306,7 @@ func (u *urlKeySource) touchCache(now time.Time) {
 }
 
 func newURLKeySource(rawURL, bearer string, signer *reqsign.Signer) (*urlKeySource, error) {
-	if err := checkURL(rawURL); err != nil {
+	if err := reqsign.CheckURL(rawURL); err != nil {
 		return nil, err
 	}
 	return &urlKeySource{url: rawURL, token: bearer, signer: signer, client: reqsign.NoRedirectClient(keysFetchTimeout)}, nil

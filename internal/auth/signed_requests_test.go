@@ -86,8 +86,8 @@ func TestVerifier_SignsItsRequests(t *testing.T) {
 
 	require.NoError(t, v.source.refresh(t.Context(), &store, time.Now()))
 	v.usage.open("s1", testUsageSession)
-	assert.Error(t, v.usage.flush(t.Context()))
-	require.NoError(t, v.usage.flush(t.Context()))
+	assert.Error(t, v.usage.meter.Flush(t.Context()))
+	require.NoError(t, v.usage.meter.Flush(t.Context()))
 
 	require.Len(t, keyReqs.all(), 1)
 	assertSigned(t, keyReqs.all()[0], "relay-token")
