@@ -6,7 +6,7 @@ require (
 	github.com/Eyevinn/mp4ff v0.62.1
 	github.com/maxmind/mmdbwriter v1.2.0
 	github.com/miekg/dns v1.1.73
-	github.com/okdaichi/qumo-ledger v0.4.1-0.20261017011115-d3ee9824a3ec
+	github.com/okdaichi/qumo-ledger v0.5.1
 	github.com/oschwald/maxminddb-golang/v2 v2.9.0
 	github.com/prometheus/client_golang v1.25.0
 	github.com/prometheus/client_model v0.6.3
@@ -23,7 +23,7 @@ require (
 	github.com/dunglas/httpsfv v1.1.2 // indirect
 	github.com/jackc/pgpassfile v1.0.0 // indirect
 	github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761 // indirect
-	github.com/jackc/pgx/v5 v5.11.0 // indirect
+	github.com/jackc/pgx/v5 v5.13.0 // indirect
 	github.com/jackc/puddle/v2 v2.2.3 // indirect
 	github.com/kylelemons/godebug v1.1.0 // indirect
 	github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 // indirect
