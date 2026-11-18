@@ -13,6 +13,11 @@
 // opted into each egress (OptInSeconds), so that a control plane can bill an
 // option such as ABR by the time it was used.
 //
+// An RTMP or RTSP ingest sends the same records for each stream pushed to
+// it, under the key of the publisher's token: SessionOpen, Usage and
+// SessionClose with the media it took in (IngestMediaBytes) and its opt-in
+// time.
+//
 // Byte counts are cumulative and from the relay's point of view (what it
 // received is ingress), so a receiver can take a resent record without
 // counting it twice. A relay that restarts begins a new Run, whose viewer
@@ -50,9 +55,13 @@ const (
 	EgressBytes = "gateway.egress_bytes"
 )
 
-// OptInSeconds names the metric of how long a publishing session kept
-// broadcasts opted into the egress named optIn ("hls", "abr"), in whole
-// seconds, added up over its broadcasts: two broadcasts opted into ABR for
+// IngestMediaBytes is the media an RTMP or RTSP ingest took in from a
+// publisher: the payload of every frame, without the protocol around it.
+const IngestMediaBytes = "ingest.media_bytes"
+
+// OptInSeconds names the metric of how long a publishing session, on a relay
+// or an ingest, kept broadcasts opted into the egress named optIn ("hls",
+// "abr"), in whole seconds, added up over its broadcasts: two broadcasts opted into ABR for
 // a minute each are 120. A session that opted none in carries none.
 //
 //	OptInSeconds("abr") is "gateway.opt_in_seconds.abr"

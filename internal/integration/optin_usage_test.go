@@ -5,6 +5,8 @@ package integration
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -18,6 +20,9 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/qumo-dev/qumo/internal/auth"
+	"github.com/qumo-dev/qumo/internal/ffpub"
+	"github.com/qumo-dev/qumo/internal/ingest"
+	"github.com/qumo-dev/qumo/internal/meter"
 	"github.com/qumo-dev/qumo/internal/optin"
 	"github.com/qumo-dev/qumo/internal/relay"
 	"github.com/qumo-dev/qumo/token"
@@ -131,5 +136,90 @@ func TestRelay_ReportsOptInSeconds(t *testing.T) {
 	secs := closed.Metrics[usage.OptInSeconds("abr")]
 	assert.GreaterOrEqual(t, secs, int64(2))
 	assert.LessOrEqual(t, secs, int64(5), "the time the opt-in lasted, not longer")
+	assert.NoError(t, closed.Validate())
+}
+
+// TestIngest_ReportsUsage pushes a stream over RTMP with two tokens, for the
+// broadcast and for its ABR opt-in, to an ingest that checks them against a
+// key set and reports usage. The stream's close record is under the tenant's
+// key and carries the media the ingest took in and how long the opt-in
+// lasted, so a control plane bills a stream pushed over RTMP as it bills one
+// published over MoQ.
+func TestIngest_ReportsUsage(t *testing.T) {
+	if !ffpub.Available() {
+		t.Skip("ffmpeg not on PATH")
+	}
+	tenant, err := token.GenerateKey("/live/")
+	require.NoError(t, err)
+	tenantPub := tenant.Public()
+	tenantPub.OptIns = []token.OptIn{token.OptInABR}
+	verifier := verifierFor(t, tenantPub)
+	sign := func(g token.Grant) string {
+		tok, err := token.Sign(tenant, g, time.Minute)
+		require.NoError(t, err)
+		return tok
+	}
+	sink := &usageSink{}
+	usageSrv := httptest.NewServer(sink)
+	t.Cleanup(usageSrv.Close)
+	m, err := meter.New(meter.Config{Name: "rtmp", URL: usageSrv.URL})
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	mux := moqt.NewTrackMux(0)
+	rtmpLn, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	rtmpAddr := rtmpLn.Addr().String()
+	require.NoError(t, rtmpLn.Close())
+	go func() {
+		_ = ingest.NewRTMPServer(ingest.RTMPConfig{
+			Addr: rtmpAddr, TrackMux: mux, Authorize: verifyingAuthorizer(verifier),
+			OptIns: []token.OptIn{token.OptInABR}, Meter: m,
+		}).ListenAndServe(ctx)
+	}()
+	require.Eventually(t, func() bool {
+		c, err := net.DialTimeout("tcp", rtmpAddr, 200*time.Millisecond)
+		if err == nil {
+			_ = c.Close()
+		}
+		return err == nil
+	}, 5*time.Second, 50*time.Millisecond)
+
+	streamKey := fmt.Sprintf("metered?jwt=%s&jwt=%s",
+		sign(token.Grant{Root: "/live/", Publish: []string{"/metered"}}),
+		sign(token.Grant{Root: "/.abr/live/", Publish: []string{"/metered"}}))
+	pub := ffpub.New(ffpub.Config{
+		URL: fmt.Sprintf("rtmp://%s/live/%s", rtmpAddr, streamKey),
+		GOP: 30, Width: 320, Height: 240, Framerate: 30,
+	})
+	pubCtx, stopPub := context.WithCancel(ctx)
+	require.NoError(t, pub.Start(pubCtx))
+	optInPath := optin.Path(token.ABRDirectory, "/live/metered")
+	require.Eventually(t, func() bool {
+		ann, _ := mux.TrackHandler(optInPath)
+		return ann != nil
+	}, 10*time.Second, 50*time.Millisecond, "the ingest did not opt the stream in")
+
+	// Opted in for a little over two seconds, then the publisher stops.
+	time.Sleep(2200 * time.Millisecond)
+	stopPub()
+	_ = pub.Wait()
+	var closed *usage.Record
+	require.Eventually(t, func() bool {
+		require.NoError(t, m.Flush(ctx))
+		for _, rec := range sink.all() {
+			if rec.Type == usage.SessionClose {
+				closed = &rec
+			}
+		}
+		return closed != nil
+	}, 10*time.Second, 100*time.Millisecond, "no session_close for the stream")
+
+	assert.Equal(t, tenant.ID, closed.KID, "the tenant's key, from its token")
+	assert.Positive(t, closed.Metrics[usage.IngestMediaBytes], "the media the ingest took in")
+	secs := closed.Metrics[usage.OptInSeconds("abr")]
+	assert.GreaterOrEqual(t, secs, int64(2))
+	assert.LessOrEqual(t, secs, int64(6))
 	assert.NoError(t, closed.Validate())
 }

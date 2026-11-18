@@ -25,6 +25,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"sync/atomic"
 	"time"
 
 	"github.com/qumo-dev/gomoqt/moqt"
@@ -48,6 +49,10 @@ type Session struct {
 	// ctx ends when the session closes, and with it every opt-in.
 	ctx    context.Context
 	cancel context.CancelFunc
+	// mediaBytes counts the media pushed: the payload of every frame.
+	mediaBytes atomic.Uint64
+	// optIns counts how long the session's opt-ins last.
+	optIns *optin.Clock
 }
 
 // NewSession creates a new ingest session that announces path on trackMux.
@@ -79,6 +84,7 @@ func NewSession(trackMux *moqt.TrackMux, path moqt.BroadcastPath) (*Session, err
 		endAnn:   endAnn,
 		ctx:      ctx,
 		cancel:   cancel,
+		optIns:   optin.NewClock(time.Now),
 	}, nil
 }
 
@@ -100,7 +106,15 @@ func (s *Session) OptIn(o token.OptIn, lapses time.Time) {
 		slog.Info("ingest opt-in withdrawn", "broadcast_path", s.path, "opt_in", o)
 	})
 	s.trackMux.Announce(ann, optin.Handler(s.path))
+	s.optIns.Track(ann)
 	slog.Info("ingest opted in", "broadcast_path", s.path, "opt_in", o, "opt_in_path", path)
+}
+
+// Usage returns what the session has taken in so far: the bytes of media
+// pushed into it, and how long it has kept its broadcast opted into each
+// egress (nil for none).
+func (s *Session) Usage() (mediaBytes uint64, optIns map[token.OptIn]time.Duration) {
+	return s.mediaBytes.Load(), s.optIns.Totals()
 }
 
 // RegisterVideo registers (or replaces) the video track in the MSF catalog
@@ -125,6 +139,7 @@ func (s *Session) RegisterAudio(cfg *AACConfig) error {
 //
 // timestampUS is the presentation timestamp in microseconds.
 func (s *Session) PushVideo(timestampUS int64, data []byte, isKeyframe bool) {
+	s.mediaBytes.Add(uint64(len(data)))
 	f := moqt.NewFrame(mediaFrameSize(timestampUS, len(data)))
 	writeMediaFrame(f, timestampUS, data)
 	s.handler.video.push(f, isKeyframe, timestampUS)
@@ -135,6 +150,7 @@ func (s *Session) PushVideo(timestampUS int64, data []byte, isKeyframe bool) {
 //
 // timestampUS is the presentation timestamp in microseconds.
 func (s *Session) PushAudio(timestampUS int64, data []byte) {
+	s.mediaBytes.Add(uint64(len(data)))
 	f := moqt.NewFrame(mediaFrameSize(timestampUS, len(data)))
 	writeMediaFrame(f, timestampUS, data)
 	s.handler.audio.push(f)
@@ -156,6 +172,7 @@ func (s *Session) PushAudioFrames(timestampsUS []int64, frames [][]byte) {
 	}
 	built := make([]*moqt.Frame, len(frames))
 	for i, data := range frames {
+		s.mediaBytes.Add(uint64(len(data)))
 		pts := timestampsUS[i]
 		f := moqt.NewFrame(mediaFrameSize(pts, len(data)))
 		writeMediaFrame(f, pts, data)

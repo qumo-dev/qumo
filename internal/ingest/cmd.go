@@ -19,6 +19,7 @@ import (
 	"github.com/qumo-dev/qumo/internal/auth"
 	"github.com/qumo-dev/qumo/internal/cors"
 	"github.com/qumo-dev/qumo/internal/envconfig"
+	"github.com/qumo-dev/qumo/internal/meter"
 	"github.com/qumo-dev/qumo/internal/optin"
 	"github.com/qumo-dev/qumo/internal/quicconfig"
 	"github.com/qumo-dev/qumo/internal/upstream"
@@ -41,7 +42,8 @@ const (
 //	RTMP_SERVE_ADDR      - MoQT listen address for subscribers to dial directly (default: ":4433" without RELAY_URL, none with it)
 //	QUMO_AUTH_KEYS       - the key set a publisher's credential (?jwt= on the stream key) is verified against, as the relay reads it (default: none, every publish is accepted)
 //	QUMO_AUTH_KEYS_CACHE - a file a downloaded key set is kept in between runs
-//	QUMO_RELAY_TOKEN     - bearer token sent to a key-set URL
+//	QUMO_RELAY_TOKEN     - bearer token sent to a key-set URL and to QUMO_USAGE_URL
+//	QUMO_USAGE_URL       - where each stream's usage is reported, under the key of the publisher's token: the media it took in and its opt-in time (package usage); needs QUMO_AUTH_KEYS (default: none, no reports)
 //	INGEST_OPT_IN        - the egresses (hls, abr) a stream is opted into on its publisher's behalf, comma-separated: with auth on, those a second ?jwt= on the stream key may publish the opt-in of (/.abr/live/cam for /live/cam); with it off, every stream's (default: none)
 //	RELAY_URL, RELAY_SIGNING_KEY, RELAY_PUBLISH, RELAY_CA_FILE, RELAY_TLS_INSECURE
 //	                     - the relay to publish through (upstream.FromEnv lists them)
@@ -51,8 +53,8 @@ const (
 //	QUIC_*               - QUIC transport settings (quicconfig.FromEnv lists them)
 func RunRTMP(_ []string) error {
 	return runPush("rtmp", "RTMP_INGEST_ADDR", defaultRTMPIngestAddr, "RTMP_SERVE_ADDR",
-		func(addr string, mux *moqt.TrackMux, authorize PublishAuthorizer, optIns []token.OptIn) pushServer {
-			return NewRTMPServer(RTMPConfig{Addr: addr, TrackMux: mux, Authorize: authorize, OptIns: optIns})
+		func(c pushConfig) pushServer {
+			return NewRTMPServer(RTMPConfig{Addr: c.addr, TrackMux: c.mux, Authorize: c.authorize, OptIns: c.optIns, Meter: c.meter})
 		})
 }
 
@@ -65,8 +67,8 @@ func RunRTMP(_ []string) error {
 // on the URL it pushes to.
 func RunRTSP(_ []string) error {
 	return runPush("rtsp", "RTSP_INGEST_ADDR", defaultRTSPIngestAddr, "RTSP_SERVE_ADDR",
-		func(addr string, mux *moqt.TrackMux, authorize PublishAuthorizer, optIns []token.OptIn) pushServer {
-			return NewRTSPServer(RTSPConfig{Addr: addr, TrackMux: mux, Authorize: authorize, OptIns: optIns})
+		func(c pushConfig) pushServer {
+			return NewRTSPServer(RTSPConfig{Addr: c.addr, TrackMux: c.mux, Authorize: c.authorize, OptIns: c.optIns, Meter: c.meter})
 		})
 }
 
@@ -81,10 +83,18 @@ var (
 	_ pushServer = (*RTSPServer)(nil)
 )
 
+// pushConfig is what runPush gives the push server it makes.
+type pushConfig struct {
+	addr      string
+	mux       *moqt.TrackMux
+	authorize PublishAuthorizer
+	optIns    []token.OptIn
+	meter     *meter.Reporter // nil: no usage reports
+}
+
 // runPush runs the push ingest server newServer makes, named name, until
 // SIGINT or SIGTERM, with its broadcasts published as originFromEnv says.
-func runPush(name, ingestEnv, defaultIngestAddr, serveEnv string,
-	newServer func(addr string, mux *moqt.TrackMux, authorize PublishAuthorizer, optIns []token.OptIn) pushServer) error {
+func runPush(name, ingestEnv, defaultIngestAddr, serveEnv string, newServer func(pushConfig) pushServer) error {
 	ingestAddr := envconfig.String(ingestEnv, defaultIngestAddr)
 	quicConfig, err := quicconfig.FromEnv(nil)
 	if err != nil {
@@ -103,12 +113,35 @@ func runPush(name, ingestEnv, defaultIngestAddr, serveEnv string,
 	if err != nil {
 		return err
 	}
+	m, err := meterFromEnv(name)
+	if err != nil {
+		return err
+	}
+	// The meter sends what is left once more when meterCtx ends, after the
+	// server has shut down and every stream has recorded its close.
+	meterCtx, stopMeter := context.WithCancel(context.Background())
+	meterDone := make(chan struct{})
+	go func() {
+		defer close(meterDone)
+		if m != nil {
+			m.Run(meterCtx)
+		}
+	}()
+	defer func() {
+		stopMeter()
+		<-meterDone
+	}()
 	trackMux := moqt.NewTrackMux(0)
-	srv := newServer(ingestAddr, trackMux, authorize, out.optIns)
+	srv := newServer(pushConfig{addr: ingestAddr, mux: trackMux, authorize: authorize, optIns: out.optIns, meter: m})
 
 	log.Println("	Ingest  :", ingestAddr)
 	out.logBanner()
 	log.Println("	Auth    :", authName)
+	usageURL := "none"
+	if m != nil {
+		usageURL = upstream.RelayName(os.Getenv("QUMO_USAGE_URL"))
+	}
+	log.Println("	Usage   :", usageURL)
 
 	go func() {
 		if err := srv.ListenAndServe(ctx); err != nil && ctx.Err() == nil {
@@ -265,6 +298,25 @@ func publishAuthorizerFromEnv(ctx context.Context, name, beneath string) (Publis
 	return publishAuthorizer(v, beneath), v.Source(), nil
 }
 
+// meterFromEnv returns the meter that reports the usage of the ingest
+// command name's streams to QUMO_USAGE_URL, or nil when it is unset. Usage
+// is reported under the key of each publisher's token, so it needs a key set
+// (QUMO_AUTH_KEYS).
+func meterFromEnv(name string) (*meter.Reporter, error) {
+	usageURL := os.Getenv("QUMO_USAGE_URL")
+	if usageURL == "" {
+		return nil, nil
+	}
+	if os.Getenv("QUMO_AUTH_KEYS") == "" {
+		return nil, fmt.Errorf("%s: QUMO_USAGE_URL needs QUMO_AUTH_KEYS: a stream's usage is reported under the key of its publisher's token", name)
+	}
+	m, err := meter.New(meter.Config{Name: name, URL: usageURL, Token: os.Getenv("QUMO_RELAY_TOKEN")})
+	if err != nil {
+		return nil, fmt.Errorf("%s: QUMO_USAGE_URL: %w", name, err)
+	}
+	return m, nil
+}
+
 // errOutsidePublish refuses a push the relay would not take from the ingest
 // server: its path lies outside RELAY_PUBLISH.
 var errOutsidePublish = errors.New("the path lies outside RELAY_PUBLISH, beneath which the relay takes this server's broadcasts")
@@ -288,33 +340,33 @@ func publishAuthorizer(v *auth.Verifier, beneath string) PublishAuthorizer {
 	if v == nil && beneath == "" {
 		return nil
 	}
-	return func(credential string, path moqt.BroadcastPath) (time.Time, error) {
+	return func(credential string, path moqt.BroadcastPath) (Permission, error) {
 		broadcast := path
 		if o, ok := optin.Of(path); ok {
 			b, named := optin.Broadcast(string(path), o.Directory())
 			if !named {
 				// Cleaned, it could name a broadcast outside the
 				// directory the relay grants its exact path in.
-				return time.Time{}, fmt.Errorf("%s: %w", path, errOptInNamesNone)
+				return Permission{}, fmt.Errorf("%s: %w", path, errOptInNamesNone)
 			}
 			broadcast = moqt.BroadcastPath(b)
 		}
 		if beneath != "" && !strings.HasPrefix(string(broadcast), beneath) {
-			return time.Time{}, fmt.Errorf("%s: %w (%s)", path, errOutsidePublish, beneath)
+			return Permission{}, fmt.Errorf("%s: %w (%s)", path, errOutsidePublish, beneath)
 		}
 		if v == nil {
-			return time.Time{}, nil
+			return Permission{}, nil
 		}
 		if credential == "" {
-			return time.Time{}, errNoCredential
+			return Permission{}, errNoCredential
 		}
 		g, err := v.Check(credential, token.ActionPublish, path)
 		if err != nil {
-			return time.Time{}, err
+			return Permission{}, err
 		}
 		if !g.Allows(token.ActionPublish, path) {
-			return time.Time{}, fmt.Errorf("the credential may not publish %s", path)
+			return Permission{}, fmt.Errorf("the credential may not publish %s", path)
 		}
-		return g.Expires(), nil
+		return Permission{Lapses: g.Expires(), KeyID: g.KeyID()}, nil
 	}
 }
