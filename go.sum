@@ -19,8 +19,8 @@ github.com/jackc/pgpassfile v1.0.0 h1:/6Hmqy13Ss2zCq62VdNG8tM1wchn8zjSGOBJ6icpsI
 github.com/jackc/pgpassfile v1.0.0/go.mod h1:CEx0iS5ambNFdcRtxPj5JhEz+xB6uRky5eyVu/W2HEg=
 github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761 h1:iCEnooe7UlwOQYpKFhBabPMi4aNAfoODPEFNiAnClxo=
 github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761/go.mod h1:5TJZWKEWniPve33vlWYSoGYefn3gLQRzjfDlhSJ9ZKM=
-github.com/jackc/pgx/v5 v5.11.0 h1:IzBBtyK9AHqf98cctWFifYSci2hgQR/cd56wB4p+ogg=
-github.com/jackc/pgx/v5 v5.11.0/go.mod h1:mal1tBGAFfLHvZzaYh77YS/eC6IX9OWbRV1QIIM0Jn4=
+github.com/jackc/pgx/v5 v5.13.0 h1:Hl08k64maU0nrRyVUEbwCnK6/gT0EhMrtAqBHz9/gA4=
+github.com/jackc/pgx/v5 v5.13.0/go.mod h1:u2Fi6no03HCSBYE+ZVdLxbwdu3xyi2vU+K/YNJioSds=
 github.com/jackc/puddle/v2 v2.2.3 h1:f8HoREISb3l5eO9coPgK7U3hKLhWGokOFVcThl5jrao=
 github.com/jackc/puddle/v2 v2.2.3/go.mod h1:vriiEXHvEE654aYKXXjOvZM39qJ0q+azkZFrfEOc3H4=
 github.com/klauspost/compress v1.20.1 h1:T7kKElXUMXrUJ2E9QhQhxFtcK5rPyLdsGZvdbLMPdiQ=
@@ -35,8 +35,8 @@ github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 h1:C3w9PqII01/Oq
 github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822/go.mod h1:+n7T8mK8HuQTcFwEeznm/DIxMOiR9yIdICNftLE1DvQ=
 github.com/okdaichi/qmux-go v0.3.0 h1:uiG3XRiabglaTklBUDmX+dnlBkEXre0EEaxTAmEVm8U=
 github.com/okdaichi/qmux-go v0.3.0/go.mod h1:sOt2VCexJZ+midUNi3SR0K/0QQwDtJxwRI87YaF3wR4=
-github.com/okdaichi/qumo-ledger v0.4.1-0.20261017011115-d3ee9824a3ec h1:Mi4CwRU+s7cGtSIJbEIDKvw0UsglBlxraceRN/6uBKY=
-github.com/okdaichi/qumo-ledger v0.4.1-0.20261017011115-d3ee9824a3ec/go.mod h1:M/9U5aa17uCMb8pPV3luiAcAWkUsYC3/4su1T1nNsdc=
+github.com/okdaichi/qumo-ledger v0.5.1 h1:Ng14zxxpAZiXDyajv1itpxnSqJbdYNej8T6DQOmbjEQ=
+github.com/okdaichi/qumo-ledger v0.5.1/go.mod h1:aJIvOkiMUbdkZEkH+H52psmoAdq+vONnCnBFejLaGKY=
 github.com/okdaichi/webtransport-go v0.13.0-okdaichi.5 h1:4PzYskqKgL4190GQNQEC4vOUyTsikK70AcsA/gznks8=
 github.com/okdaichi/webtransport-go v0.13.0-okdaichi.5/go.mod h1:N+t+83yZ6hx1N/Dd4nyBBWyyXyq9IjM9bfbuRwMN/vM=
 github.com/oschwald/maxminddb-golang/v2 v2.9.0 h1:YpIl3WoA9oIuNvqNaO/aD1N/7Ci2wOqoKH5GWo53H5Y=
