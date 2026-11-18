@@ -46,3 +46,8 @@ func TestRecord_Validate(t *testing.T) {
 		})
 	}
 }
+
+func TestOptInSeconds(t *testing.T) {
+	assert.Equal(t, "gateway.opt_in_seconds.abr", OptInSeconds("abr"))
+	assert.Equal(t, "gateway.opt_in_seconds.hls", OptInSeconds("hls"))
+}

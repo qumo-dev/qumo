@@ -255,7 +255,8 @@ With `QUMO_USAGE_URL` set, the relay POSTs a JSON array of records to it every 1
  {"type": "usage", "session_id": "…", "kid": "…",
   "metrics": {"gateway.ingress_bytes": 10162, "gateway.egress_bytes": 9223}, "ts": "…"},
  {"type": "session_close", "session_id": "…", "kid": "…",
-  "metrics": {"gateway.ingress_bytes": 10438, "gateway.egress_bytes": 9165}, "reason": "closed", "ts": "…"},
+  "metrics": {"gateway.ingress_bytes": 10438, "gateway.egress_bytes": 9165,
+              "gateway.opt_in_seconds.abr": 312}, "reason": "closed", "ts": "…"},
  {"type": "viewers", "run": "…", "kid": "…",
   "metrics": {"gateway.ingress_bytes": 120, "gateway.egress_bytes": 880412}, "ts": "…"}]
 ```
@@ -263,6 +264,8 @@ With `QUMO_USAGE_URL` set, the relay POSTs a JSON array of records to it every 1
 Byte counts are cumulative and from the relay's point of view (what it received is ingress), so a receiver can take a resent record without counting it twice.
 
 **Sessions that publish a broadcast are reported one by one,** as the first three records: an open, usage every 30 s, and a close. A session publishes when its token has a `publish` pattern, or from when it is granted a ticket that has one: its open comes then, and what it moved as a viewer up to its last 30 s check stays in its key's viewer total, the rest counting as its usage.
+
+**A publishing session's records also carry its opt-in time:** how long it kept broadcasts opted into each egress, `gateway.opt_in_seconds.abr` for [`qumo abr`](../cli/abr/) and `gateway.opt_in_seconds.hls` for [`qumo hls`](../cli/hls/), in whole seconds, added up over its broadcasts (two broadcasts opted into ABR for a minute each are 120). It is the time each announcement of the session beneath `/.abr/` or `/.hls/` lasted on this relay, from when the relay received it until it ended, the session closed or a revoked ticket ended it, so a control plane can bill an opt-in by the time it was used. Only an opt-in the session's grant covers reaches the relay, so an opt-in a key doesn't hold is never counted. An egress the session opted nothing into has no metric. A broadcast opted in through [RTMP or RTSP ingest](../cli/rtmp/#opting-streams-into-hls-and-abr) counts on the ingest's session, not the publisher's.
 
 **Every other session is a viewer, and viewers are reported together.** Viewers outnumber publishers by orders of magnitude, and a record per viewer would make the receiver's load grow with the audience. Their bytes are added up per key into one running total since the relay started, sent as a `viewers` record naming the key and the relay's `run`. The `run` is new each time the relay starts, so a restart begins new totals rather than lowering old ones. There is no open or close for viewers, and a total is sent only when it has changed.
 

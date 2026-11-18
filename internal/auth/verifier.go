@@ -146,7 +146,7 @@ func (v *Verifier) Authorize(_ context.Context, req Request) (*Grant, error) {
 			// A refused session is ending; one that couldn't be checked
 			// lives on, and the relay asks again.
 			_, refused := errors.AsType[RefusedError](err)
-			v.usage.revalidated(req.ID, req.Bytes, !refused)
+			v.usage.revalidated(req.ID, req.Bytes, req.OptIns, !refused)
 		}
 	}
 	return g, err
@@ -157,7 +157,7 @@ func (v *Verifier) Authorize(_ context.Context, req Request) (*Grant, error) {
 // counted once a ticket binds it to a key (Bind).
 func (v *Verifier) anonymous(req Request) *Grant {
 	if v.usage != nil && req.Event == EventRevalidate {
-		v.usage.revalidated(req.ID, req.Bytes, true)
+		v.usage.revalidated(req.ID, req.Bytes, req.OptIns, true)
 	}
 	return &Grant{revalidate: revalidateEvery, anonymous: true}
 }
@@ -302,11 +302,11 @@ func publishesBroadcast(g token.Grant) bool {
 	return len(g.Publish) > 0
 }
 
-// End reports a session's end with its final byte totals.
+// End reports a session's end with its final byte totals and opt-in time.
 func (v *Verifier) End(_ context.Context, req Request) error {
 	if v.usage == nil {
 		return nil
 	}
-	v.usage.close(req.ID, req.Bytes, req.Reason)
+	v.usage.close(req.ID, req.Bytes, req.OptIns, req.Reason)
 	return nil
 }
