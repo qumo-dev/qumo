@@ -139,6 +139,21 @@ func runPaidOptIn(t *testing.T, optIns []token.OptIn, paid bool) {
 		"the transcoder, on its own credential, did not publish the ABR broadcast")
 }
 
+// verifyingAuthorizer checks each push against verifier's key set as the
+// relay does, as qumo rtmp's own authorizer with QUMO_AUTH_KEYS does.
+func verifyingAuthorizer(verifier *auth.Verifier) ingest.PublishAuthorizer {
+	return func(credential string, path moqt.BroadcastPath) (ingest.Permission, error) {
+		g, err := verifier.Check(credential, token.ActionPublish, path)
+		if err != nil {
+			return ingest.Permission{}, err
+		}
+		if !g.Allows(token.ActionPublish, path) {
+			return ingest.Permission{}, fmt.Errorf("may not publish %s", path)
+		}
+		return ingest.Permission{Lapses: g.Expires(), KeyID: g.KeyID()}, nil
+	}
+}
+
 // TestABR_IngestOptsIn runs the opt-in through RTMP ingest, which opts a
 // stream in on its publisher's behalf (INGEST_OPT_IN): the publisher puts a
 // second token, for the opt-in, on its stream key, and the ingest announces
@@ -193,16 +208,7 @@ func runIngestOptIn(t *testing.T, optIns []token.OptIn, paid bool) {
 
 	// The ingest: it checks each publish against the key set as the relay
 	// does, and publishes through the relay with the operator's key.
-	authorize := func(credential string, path moqt.BroadcastPath) (time.Time, error) {
-		g, err := verifier.Check(credential, token.ActionPublish, path)
-		if err != nil {
-			return time.Time{}, err
-		}
-		if !g.Allows(token.ActionPublish, path) {
-			return time.Time{}, fmt.Errorf("may not publish %s", path)
-		}
-		return g.Expires(), nil
-	}
+	authorize := verifyingAuthorizer(verifier)
 	ingestMux := moqt.NewTrackMux(0)
 	rtmpLn, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)

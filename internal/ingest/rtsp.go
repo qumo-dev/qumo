@@ -13,8 +13,10 @@ import (
 	"time"
 
 	"github.com/qumo-dev/gomoqt/moqt"
+	"github.com/qumo-dev/qumo/internal/meter"
 	"github.com/qumo-dev/qumo/internal/rtsp"
 	"github.com/qumo-dev/qumo/token"
+	"github.com/qumo-dev/qumo/usage"
 )
 
 // RTSPConfig holds configuration for an [RTSPServer].
@@ -34,6 +36,10 @@ type RTSPConfig struct {
 	// OptIns are the egresses each stream is opted into, as
 	// [RTMPConfig.OptIns] are.
 	OptIns []token.OptIn
+
+	// Meter, when set, reports each stream's usage under the key that
+	// granted it, as [RTMPConfig.Meter] does.
+	Meter *meter.Reporter
 }
 
 // RTSPServer accepts RTSP push connections and bridges each stream to
@@ -130,10 +136,13 @@ func (s *RTSPServer) handleConn(ctx context.Context, conn *rtsp.Conn) {
 		sess   *Session
 		tracks = make(map[uint8]*rtspTrack) // channel -> track
 		sdp    *rtsp.SDP
+		// endUsage ends the usage report of sess.
+		endUsage = func(string) {}
 	)
 
 	defer func() {
 		if sess != nil {
+			endUsage(usage.ReasonClosed)
 			sess.Close()
 		}
 	}()
@@ -198,8 +207,9 @@ func (s *RTSPServer) handleConn(ctx context.Context, conn *rtsp.Conn) {
 				break
 			}
 			credentials := req.URL.Query()["jwt"]
+			var granted Permission
 			if s.config.Authorize != nil {
-				lapses, err := authorizeAny(s.config.Authorize, credentials, path)
+				granted, err = authorizeAny(s.config.Authorize, credentials, path)
 				if err != nil {
 					slog.Warn("RTSP publish refused",
 						"remote", conn.RemoteAddr(),
@@ -213,8 +223,8 @@ func (s *RTSPServer) handleConn(ctx context.Context, conn *rtsp.Conn) {
 					cut.Stop()
 					cut = nil
 				}
-				if !lapses.IsZero() {
-					cut = time.AfterFunc(time.Until(lapses), func() {
+				if !granted.Lapses.IsZero() {
+					cut = time.AfterFunc(time.Until(granted.Lapses), func() {
 						slog.Info("RTSP ingest cut: the publisher's credential lapsed",
 							"remote", conn.RemoteAddr(),
 							"broadcast_path", path,
@@ -228,15 +238,18 @@ func (s *RTSPServer) handleConn(ctx context.Context, conn *rtsp.Conn) {
 			// one leaves the connection as it was.
 			sdp = rtsp.ParseSDP(string(body))
 			if sess != nil {
+				endUsage(usage.ReasonClosed)
 				sess.Close()
 			}
 			sess, err = NewSession(s.config.TrackMux, path)
 			if err != nil {
 				slog.Error("failed to create ingest session", "error", err)
 				resp.StatusCode = rtsp.StatusInternalServerError
+				endUsage = func(string) {}
 				break
 			}
 			optIn(sess, s.config.Authorize, credentials, s.config.OptIns)
+			endUsage = meterStream(s.config.Meter, granted.KeyID, sess)
 
 		case rtsp.MethodSetup:
 			if sdp == nil || sess == nil {

@@ -6,11 +6,12 @@ import (
 	"log/slog"
 	"net"
 	"sync"
-	"time"
 
 	"github.com/qumo-dev/gomoqt/moqt"
+	"github.com/qumo-dev/qumo/internal/meter"
 	"github.com/qumo-dev/qumo/internal/rtmp"
 	"github.com/qumo-dev/qumo/token"
+	"github.com/qumo-dev/qumo/usage"
 )
 
 // RTMPConfig holds configuration for an [RTMPServer].
@@ -32,6 +33,13 @@ type RTMPConfig struct {
 	// is asked for the opt-in's path, such as /.abr/live/cam): a publisher
 	// presents a second ?jwt= for it. Nil opts none in.
 	OptIns []token.OptIn
+
+	// Meter, when set, reports each stream's usage under the key of the
+	// credential Authorize granted it with (Permission.KeyID): an open,
+	// the media it took in and its opt-in time every 30 s, and a close
+	// (usage.IngestMediaBytes, usage.OptInSeconds). A stream no key granted,
+	// with auth off, is not reported.
+	Meter *meter.Reporter
 }
 
 // RTMPServer accepts RTMP publish connections and bridges each stream to
@@ -153,7 +161,7 @@ func (s *RTMPServer) handleConn(ctx context.Context, conn *rtmp.Conn) {
 	var (
 		path        moqt.BroadcastPath
 		credentials []string
-		lapses      time.Time
+		granted     Permission
 	)
 	mr, err := conn.AcceptStreamFunc(func(app, streamKey string) error {
 		path, credentials = rtmpTarget(app, streamKey)
@@ -164,7 +172,7 @@ func (s *RTMPServer) handleConn(ctx context.Context, conn *rtmp.Conn) {
 			return nil
 		}
 		var err error
-		lapses, err = authorizeAny(s.config.Authorize, credentials, path)
+		granted, err = authorizeAny(s.config.Authorize, credentials, path)
 		return err
 	})
 	if err != nil {
@@ -178,7 +186,7 @@ func (s *RTMPServer) handleConn(ctx context.Context, conn *rtmp.Conn) {
 	}
 	defer mr.Close()
 
-	ctx, cancel := untilLapse(ctx, lapses)
+	ctx, cancel := untilLapse(ctx, granted.Lapses)
 	defer cancel()
 	// A read blocked on the connection doesn't see ctx end; closing the
 	// connection ends it.
@@ -198,6 +206,7 @@ func (s *RTMPServer) handleConn(ctx context.Context, conn *rtmp.Conn) {
 	}
 	defer sess.Close()
 	optIn(sess, s.config.Authorize, credentials, s.config.OptIns)
+	defer meterStream(s.config.Meter, granted.KeyID, sess)(usage.ReasonClosed)
 
 	slog.Info("RTMP ingest started",
 		"remote", conn.RemoteAddr(),

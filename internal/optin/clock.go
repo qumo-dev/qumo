@@ -1,4 +1,4 @@
-package relay
+package optin
 
 import (
 	"sync"
@@ -6,21 +6,17 @@ import (
 
 	"github.com/qumo-dev/gomoqt/moqt"
 
-	"github.com/qumo-dev/qumo/internal/optin"
 	"github.com/qumo-dev/qumo/token"
 )
 
-// optInClock adds up how long a session keeps broadcasts opted into each
-// egress: how long each announcement of its beneath an opt-in directory
-// (/.abr/live/cam) lasts, summed over its announcements, so two broadcasts
-// opted into ABR for a minute each are two minutes. The session's usage
-// reports carry it (auth.Request.OptIns), for a control plane to bill an
-// opt-in by the time it was used. A nil clock counts nothing.
-//
-// It counts what the relay received from the session: an announcement the
-// session's grant does not cover never reaches it, so an opt-in the
-// session's key does not hold is never counted.
-type optInClock struct {
+// A Clock adds up how long a publisher keeps broadcasts opted into each
+// egress: how long each of its announcements beneath an opt-in directory
+// (/.abr/live/cam) lasts, summed over them, so two broadcasts opted into ABR
+// for a minute each are two minutes. A server's usage reports carry it
+// (usage.OptInSeconds), for a control plane to bill an opt-in by the time it
+// was used. A nil Clock counts nothing. Its methods are safe for concurrent
+// use.
+type Clock struct {
 	now func() time.Time
 
 	mu      sync.Mutex
@@ -35,19 +31,20 @@ type optInTally struct {
 	since time.Time
 }
 
-func newOptInClock(now func() time.Time) *optInClock {
-	return &optInClock{now: now, tallies: map[token.OptIn]*optInTally{}}
+// NewClock returns a Clock reading the time from now (time.Now).
+func NewClock(now func() time.Time) *Clock {
+	return &Clock{now: now, tallies: map[token.OptIn]*optInTally{}}
 }
 
-// track counts ann, an announcement the session made, until it ends, when it
+// Track counts ann, an announcement the publisher made, until it ends, when it
 // opts a broadcast into an egress; any other is not counted, nor one that
 // ended already (moqt runs AfterFunc for it later, on another goroutine,
 // which would count the time until then).
-func (c *optInClock) track(ann *moqt.Announcement) {
+func (c *Clock) Track(ann *moqt.Announcement) {
 	if c == nil || !ann.IsActive() {
 		return
 	}
-	o, ok := optin.Of(ann.BroadcastPath())
+	o, ok := Of(ann.BroadcastPath())
 	if !ok {
 		return
 	}
@@ -57,7 +54,7 @@ func (c *optInClock) track(ann *moqt.Announcement) {
 
 // change adds delta to o's live announcements, counting the time they were
 // live until now.
-func (c *optInClock) change(o token.OptIn, delta int) {
+func (c *Clock) change(o token.OptIn, delta int) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	now := c.now()
@@ -71,9 +68,9 @@ func (c *optInClock) change(o token.OptIn, delta int) {
 	t.since = now
 }
 
-// totals returns how long the session has kept broadcasts opted into each
+// Totals returns how long the publisher has kept broadcasts opted into each
 // egress so far, live announcements counted up to now, or nil for none.
-func (c *optInClock) totals() map[token.OptIn]time.Duration {
+func (c *Clock) Totals() map[token.OptIn]time.Duration {
 	if c == nil {
 		return nil
 	}

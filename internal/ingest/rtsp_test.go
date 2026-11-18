@@ -241,11 +241,11 @@ func TestRTSPServer_Authorize(t *testing.T) {
 // second ?jwt= on its URL that may publish the opt-in, asked for every
 // credential in order.
 func TestRTSPServer_OptIns(t *testing.T) {
-	authorize := &fakePublishAuthorizer{answer: func(ask publishAsk) (time.Time, error) {
+	authorize := &fakePublishAuthorizer{answer: func(ask publishAsk) (Permission, error) {
 		if ask.path == "/.abr/live/cam" && ask.credential != "abr" {
-			return time.Time{}, errors.New("no grant")
+			return Permission{}, errors.New("no grant")
 		}
-		return time.Time{}, nil
+		return Permission{}, nil
 	}}
 	server, addr := startRTSPServer(t, authorize.authorize, token.OptInABR)
 	rc := dialRTSP(t, addr)

@@ -13,6 +13,7 @@ import (
 	"github.com/qumo-dev/gomoqt/moqt"
 	"github.com/qumo-dev/gomoqt/transport"
 	"github.com/qumo-dev/qumo/internal/auth"
+	"github.com/qumo-dev/qumo/internal/optin"
 	"github.com/qumo-dev/qumo/usage"
 )
 
@@ -61,7 +62,7 @@ type lease struct {
 	req       auth.Request
 	// optIns is the session's opt-in time, sent with each revalidate; nil
 	// for none.
-	optIns *optInClock
+	optIns *optin.Clock
 
 	mu    sync.Mutex
 	timer *time.Timer
@@ -77,7 +78,7 @@ type lease struct {
 // startLease starts the lease of a session admitted by req, to be revalidated
 // every cadence, reporting the opt-in time optIns counts (nil for none). It returns nil for a zero cadence, which never revalidates;
 // otherwise the caller stops it when the session ends first.
-func startLease(ctx context.Context, sess leasedSession, authorize authorizeFunc, req auth.Request, cadence time.Duration, optIns *optInClock) *lease {
+func startLease(ctx context.Context, sess leasedSession, authorize authorizeFunc, req auth.Request, cadence time.Duration, optIns *optin.Clock) *lease {
 	if cadence <= 0 {
 		return nil
 	}
@@ -171,7 +172,7 @@ func (l *lease) revalidate() (*auth.Grant, error) {
 	req := l.req
 	req.Event = auth.EventRevalidate
 	req.Bytes = sessionBytes(l.sess.Stats())
-	req.OptIns = l.optIns.totals()
+	req.OptIns = l.optIns.Totals()
 	g, err := l.authorize(l.ctx, req)
 	metricAuthRequests.WithLabelValues(auth.EventRevalidate, authOutcome(g, err)).Inc()
 	return g, err

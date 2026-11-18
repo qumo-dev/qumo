@@ -1,4 +1,4 @@
-package relay
+package optin
 
 import (
 	"context"
@@ -25,26 +25,26 @@ func announce(t *testing.T, path moqt.BroadcastPath) (*moqt.Announcement, func()
 	return ann, end
 }
 
-func TestOptInClock(t *testing.T) {
+func TestClock(t *testing.T) {
 	clock := &fakeClock{t: time.Unix(1_700_000_000, 0)}
-	c := newOptInClock(clock.now)
-	assert.Nil(t, c.totals(), "nothing opted in yet")
+	c := NewClock(clock.now)
+	assert.Nil(t, c.Totals(), "nothing opted in yet")
 
 	cam1, endCam1 := announce(t, "/.abr/live/cam1")
 	cam2, endCam2 := announce(t, "/.abr/live/cam2")
 	hls, _ := announce(t, "/.hls/live/cam1")
 	plain, _ := announce(t, "/live/cam1")
-	c.track(cam1)
-	c.track(plain)
+	c.Track(cam1)
+	c.Track(plain)
 	clock.add(10 * time.Second)
-	c.track(cam2)
-	c.track(hls)
+	c.Track(cam2)
+	c.Track(hls)
 	clock.add(5 * time.Second)
 
 	assert.Equal(t, map[token.OptIn]time.Duration{
 		token.OptInABR: 20 * time.Second, // cam1 15 s, cam2 5 s
 		token.OptInHLS: 5 * time.Second,
-	}, c.totals(), "live announcements count up to now; a broadcast's own announcement is not an opt-in")
+	}, c.Totals(), "live announcements count up to now; a broadcast's own announcement is not an opt-in")
 
 	endCam1()
 	clock.add(10 * time.Second)
@@ -54,24 +54,24 @@ func TestOptInClock(t *testing.T) {
 	assert.Equal(t, map[token.OptIn]time.Duration{
 		token.OptInABR: 30 * time.Second, // cam1 0–15 s, cam2 10–25 s
 		token.OptInHLS: time.Hour + 15*time.Second,
-	}, c.totals(), "an ended announcement stops counting")
+	}, c.Totals(), "an ended announcement stops counting")
 }
 
-func TestOptInClock_EndedAnnouncement(t *testing.T) {
+func TestClock_EndedAnnouncement(t *testing.T) {
 	clock := &fakeClock{t: time.Unix(1_700_000_000, 0)}
-	c := newOptInClock(clock.now)
+	c := NewClock(clock.now)
 	ann, end := announce(t, "/.abr/live/cam1")
 	end()
 
-	c.track(ann)
+	c.Track(ann)
 	clock.add(time.Minute)
 
-	assert.Nil(t, c.totals(), "an announcement that ended before it was tracked counts nothing")
+	assert.Nil(t, c.Totals(), "an announcement that ended before it was tracked counts nothing")
 }
 
-func TestOptInClock_Nil(t *testing.T) {
-	var c *optInClock
+func TestClock_Nil(t *testing.T) {
+	var c *Clock
 	ann, _ := announce(t, "/.abr/live/cam1")
-	c.track(ann)
-	assert.Nil(t, c.totals(), "an unchecked session counts nothing")
+	c.Track(ann)
+	assert.Nil(t, c.Totals(), "a nil Clock counts nothing")
 }

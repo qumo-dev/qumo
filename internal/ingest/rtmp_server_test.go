@@ -23,6 +23,13 @@ func startRTMPServer(t *testing.T, authorize PublishAuthorizer, optIns ...token.
 	t.Helper()
 	mux := moqt.NewTrackMux(0)
 	server := NewRTMPServer(RTMPConfig{Addr: "127.0.0.1:0", TrackMux: mux, Authorize: authorize, OptIns: optIns})
+	return mux, serveRTMP(t, server)
+}
+
+// serveRTMP serves server until test cleanup, and returns its address once
+// it is listening.
+func serveRTMP(t *testing.T, server *RTMPServer) net.Addr {
+	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	errCh := make(chan error, 1)
 	go func() { errCh <- server.ListenAndServe(ctx) }()
@@ -36,7 +43,7 @@ func startRTMPServer(t *testing.T, authorize PublishAuthorizer, optIns ...token.
 		addr = server.Addr()
 		return addr != nil
 	}, 2*time.Second, 10*time.Millisecond, "RTMP server never started listening")
-	return mux, addr
+	return addr
 }
 
 // publishRTMP opens a publish of app/streamKey on the server at addr. The
@@ -121,11 +128,11 @@ func TestRTMPServer_OptIns(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			var authorize PublishAuthorizer
 			if tt.authorize {
-				fake := &fakePublishAuthorizer{answer: func(ask publishAsk) (time.Time, error) {
+				fake := &fakePublishAuthorizer{answer: func(ask publishAsk) (Permission, error) {
 					if grants[ask] {
-						return time.Time{}, nil
+						return Permission{}, nil
 					}
-					return time.Time{}, errNoGrant
+					return Permission{}, errNoGrant
 				}}
 				authorize = fake.authorize
 			}

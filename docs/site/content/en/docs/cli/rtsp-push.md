@@ -89,6 +89,17 @@ listener checks no subscriber, so with auth on, viewers go through the relay.
 $ RELAY_URL=moqt://relay:4433 RELAY_SIGNING_KEY=ingest-key.jwk RELAY_PUBLISH=/live/ qumo rtsp-push
 ```
 
+## Usage
+
+With `QUMO_USAGE_URL` (and `QUMO_AUTH_KEYS`), the server reports each pushed
+stream as a relay reports a publishing session ([usage reports]({{< relref "../configuration#usage-reports" >}})),
+under the key of the token that granted the push: a `session_open`, a `usage`
+record every 30 s and a `session_close`, carrying the media it took in
+(`ingest.media_bytes`, the payload of every frame) and how long it kept its
+broadcast opted into each egress (`gateway.opt_in_seconds.abr`,
+`gateway.opt_in_seconds.hls`). The relay sees the server's own session, under
+the server's key, so the stream is billed here, to its publisher.
+
 ## Configuration
 
 | Variable | Default | Description |
@@ -96,7 +107,8 @@ $ RELAY_URL=moqt://relay:4433 RELAY_SIGNING_KEY=ingest-key.jwk RELAY_PUBLISH=/li
 | `RTSP_INGEST_ADDR` | `:8554` | RTSP listen address. |
 | `RTSP_SERVE_ADDR` | `:4433`; none with `RELAY_URL` | MoQT listen address for subscribers to dial directly. |
 | `QUMO_AUTH_KEYS` | (unset) | The key set a publisher's credential is verified against, as the relay reads it (a file or URL). Unset accepts every publish. |
-| `QUMO_AUTH_KEYS_CACHE` / `QUMO_RELAY_TOKEN` | (unset) | A file a downloaded key set is kept in, and the bearer token sent to a key-set URL. |
+| `QUMO_AUTH_KEYS_CACHE` / `QUMO_RELAY_TOKEN` | (unset) | A file a downloaded key set is kept in, and the bearer token sent to a key-set URL and to `QUMO_USAGE_URL`. |
+| `QUMO_USAGE_URL` | (unset) | Where each stream's usage is reported, under the key of the publisher's token ([usage](#usage)). Needs `QUMO_AUTH_KEYS`. |
 | `INGEST_OPT_IN` | (unset) | The egresses (`hls`, `abr`) a stream is opted into on its publisher's behalf, comma-separated: with auth on, those a second `?jwt=` may publish the opt-in of. |
 | `RELAY_URL` | (unset) | The relay to publish through, dialed as a client (`https://…` or `moqt://…`); it may carry a credential as `?jwt=`. |
 | `RELAY_SIGNING_KEY`, `RELAY_PUBLISH` | (unset) | Set together: a signing key (`qumo auth keygen`) the server signs a fresh relay credential with on every dial and renews on the session, granting publishing beneath the directory `RELAY_PUBLISH`. A push outside it is refused. |

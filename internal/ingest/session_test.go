@@ -57,3 +57,23 @@ func TestSession_OptIn(t *testing.T) {
 	assert.Eventually(t, func() bool { return !published(mux, "/.hls/live/cam") }, 3*time.Second, 20*time.Millisecond,
 		"withdrawn with the session")
 }
+
+// TestSession_Usage verifies a session counts the media pushed into it, the
+// payload of every frame, and how long its opt-ins last.
+func TestSession_Usage(t *testing.T) {
+	sess, err := NewSession(moqt.NewTrackMux(0), "/live/cam")
+	require.NoError(t, err)
+	defer sess.Close()
+
+	sess.PushVideo(0, make([]byte, 1000), true)
+	sess.PushAudio(0, make([]byte, 100))
+	sess.PushAudioFrames([]int64{0, 21}, [][]byte{make([]byte, 10), make([]byte, 20)})
+	media, optIns := sess.Usage()
+	assert.Equal(t, uint64(1130), media)
+	assert.Nil(t, optIns, "opted into nothing")
+
+	sess.OptIn(token.OptInABR, time.Time{})
+	time.Sleep(20 * time.Millisecond)
+	_, optIns = sess.Usage()
+	assert.Greater(t, optIns[token.OptInABR], time.Duration(0), "an opt-in counts while it lasts")
+}
