@@ -7,6 +7,7 @@ import (
 	"github.com/qumo-dev/gomoqt/moqt"
 
 	"github.com/qumo-dev/qumo/token"
+	"github.com/qumo-dev/qumo/usage"
 )
 
 // A Clock adds up how long a publisher keeps broadcasts opted into each
@@ -66,6 +67,17 @@ func (c *Clock) change(o token.OptIn, delta int) {
 	t.done += time.Duration(t.live) * now.Sub(t.since)
 	t.live += delta
 	t.since = now
+}
+
+// AddSeconds adds each egress's time in optIns to m, as Totals returns it,
+// in whole seconds under usage.OptInSeconds. An egress with less than a
+// second is left out, so a session that opted nothing in carries no metric.
+func AddSeconds(m map[string]int64, optIns map[token.OptIn]time.Duration) {
+	for o, d := range optIns {
+		if secs := int64(d / time.Second); secs > 0 {
+			m[usage.OptInSeconds(string(o))] = secs
+		}
+	}
 }
 
 // Totals returns how long the publisher has kept broadcasts opted into each

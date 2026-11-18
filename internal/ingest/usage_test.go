@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/qumo-dev/gomoqt/moqt"
@@ -55,15 +56,19 @@ func newTestMeter(t *testing.T) (*meter.Reporter, *usageSink) {
 // open, and a close carrying the media it took in and its opt-in time.
 func TestMeterStream(t *testing.T) {
 	m, sink := newTestMeter(t)
-	sess, err := NewSession(moqt.NewTrackMux(0), "/live/cam")
-	require.NoError(t, err)
-	defer sess.Close()
+	// The stream runs in a bubble, so its opt-in lasts exactly as long as
+	// the sleep; the meter sends over the network outside it.
+	synctest.Test(t, func(t *testing.T) {
+		sess, err := NewSession(moqt.NewTrackMux(0), "/live/cam")
+		require.NoError(t, err)
+		defer sess.Close()
 
-	end := meterStream(m, "k1", sess)
-	sess.PushVideo(0, make([]byte, 500), true)
-	sess.OptIn(token.OptInABR, time.Time{})
-	time.Sleep(1100 * time.Millisecond)
-	end(usage.ReasonClosed)
+		end := meterStream(m, "k1", sess)
+		sess.PushVideo(0, make([]byte, 500), true)
+		sess.OptIn(token.OptInABR, time.Time{})
+		time.Sleep(1500 * time.Millisecond)
+		end(usage.ReasonClosed)
+	})
 	require.NoError(t, m.Flush(t.Context()))
 
 	records := sink.all()
@@ -113,11 +118,20 @@ func TestRTMPServer_Meter(t *testing.T) {
 
 	publishRTMP(t, addr, "live", "refused?jwt=nope")
 	publishRTMP(t, addr, "live", "cam?jwt=tok")
-	require.Eventually(t, func() bool { return published(mux, "/live/cam") }, 3*time.Second, 10*time.Millisecond)
-	require.NoError(t, m.Flush(t.Context()))
+	// The stream is announced before its usage report opens, so wait for
+	// the open itself.
+	var records []usage.Record
+	require.Eventually(t, func() bool {
+		if err := m.Flush(t.Context()); err != nil {
+			return false
+		}
+		records = append(records, sink.all()[len(records):]...)
+		return len(records) > 0
+	}, 3*time.Second, 10*time.Millisecond)
 
-	records := sink.all()
-	require.Len(t, records, 1, "an open for the stream granted; none for the refused one")
 	assert.Equal(t, usage.SessionOpen, records[0].Type)
-	assert.Equal(t, "tenant-key", records[0].KID)
+	for _, rec := range records {
+		assert.Equal(t, "tenant-key", rec.KID, "only the stream granted is reported, under the key that granted it")
+		assert.Equal(t, records[0].SessionID, rec.SessionID)
+	}
 }

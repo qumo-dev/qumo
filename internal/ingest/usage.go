@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/qumo-dev/qumo/internal/meter"
+	"github.com/qumo-dev/qumo/internal/optin"
 	"github.com/qumo-dev/qumo/usage"
 )
 
@@ -51,10 +52,6 @@ func meterStream(m *meter.Reporter, kid string, sess *Session) (end func(reason 
 func streamMetrics(sess *Session) map[string]int64 {
 	mediaBytes, optIns := sess.Usage()
 	m := map[string]int64{usage.IngestMediaBytes: int64(min(mediaBytes, math.MaxInt64))}
-	for o, d := range optIns {
-		if secs := int64(d / time.Second); secs > 0 {
-			m[usage.OptInSeconds(string(o))] = secs
-		}
-	}
+	optin.AddSeconds(m, optIns)
 	return m
 }
