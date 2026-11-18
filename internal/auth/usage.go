@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/qumo-dev/qumo/internal/meter"
+	"github.com/qumo-dev/qumo/internal/optin"
 	"github.com/qumo-dev/qumo/internal/reqsign"
 	"github.com/qumo-dev/qumo/token"
 	"github.com/qumo-dev/qumo/usage"
@@ -170,11 +171,7 @@ func usageMetrics(b Bytes) map[string]int64 {
 // long it kept broadcasts opted into each egress, in whole seconds.
 func publisherMetrics(b Bytes, optIns map[token.OptIn]time.Duration) map[string]int64 {
 	m := usageMetrics(b)
-	for o, d := range optIns {
-		if secs := int64(d / time.Second); secs > 0 {
-			m[usage.OptInSeconds(string(o))] = secs
-		}
-	}
+	optin.AddSeconds(m, optIns)
 	return m
 }
 

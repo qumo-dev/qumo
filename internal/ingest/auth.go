@@ -17,12 +17,22 @@ import (
 
 // PublishAuthorizer decides whether a pushed stream may publish the broadcast
 // at path with credential, a ?jwt= the publisher presented ("" for none),
-// and returns when that permission lapses: the stream is cut then. The zero
-// time never lapses. An error refuses the stream.
+// and returns the permission it grants. An error refuses the stream.
 //
 // A stream's opt-ins (see [optIn]) are asked for as well, with path the
 // opt-in's, such as /.abr/live/cam for /live/cam.
-type PublishAuthorizer func(credential string, path moqt.BroadcastPath) (lapses time.Time, err error)
+type PublishAuthorizer func(credential string, path moqt.BroadcastPath) (Permission, error)
+
+// A Permission is what a PublishAuthorizer grants a push.
+type Permission struct {
+	// Lapses is when the permission lapses: the stream is cut then. The zero
+	// time never lapses.
+	Lapses time.Time
+	// KeyID is the kid of the key that signed the credential granting it,
+	// whose usage the push is (see [RTMPConfig.Meter]), or "" when none was
+	// checked.
+	KeyID string
+}
 
 // splitCredential splits a name such as "cam?jwt=A&jwt=B" into the name and
 // the credentials its query carries as jwt, in order, none for none.
@@ -65,21 +75,21 @@ func checkPushPath(path moqt.BroadcastPath) error {
 // credentials, in order, and returns the first permission granted. Without
 // credentials it asks for a publish that presented none. When none is
 // granted it returns the first refusal.
-func authorizeAny(authorize PublishAuthorizer, credentials []string, path moqt.BroadcastPath) (time.Time, error) {
+func authorizeAny(authorize PublishAuthorizer, credentials []string, path moqt.BroadcastPath) (Permission, error) {
 	if len(credentials) == 0 {
 		return authorize("", path)
 	}
 	var first error
 	for _, credential := range credentials {
-		lapses, err := authorize(credential, path)
+		p, err := authorize(credential, path)
 		if err == nil {
-			return lapses, nil
+			return p, nil
 		}
 		if first == nil {
 			first = err
 		}
 	}
-	return time.Time{}, first
+	return Permission{}, first
 }
 
 // optIn opts sess's broadcast into each of optIns, the egresses the server
@@ -91,15 +101,15 @@ func authorizeAny(authorize PublishAuthorizer, credentials []string, path moqt.B
 func optIn(sess *Session, authorize PublishAuthorizer, credentials []string, optIns []token.OptIn) {
 	for _, o := range optIns {
 		path := optin.Path(o.Directory(), sess.path)
-		var lapses time.Time
+		var granted Permission
 		if authorize != nil {
 			var err error
-			if lapses, err = authorizeAny(authorize, credentials, path); err != nil {
+			if granted, err = authorizeAny(authorize, credentials, path); err != nil {
 				slog.Info("ingest opt-in refused", "broadcast_path", sess.path, "opt_in", o, "error", err)
 				continue
 			}
 		}
-		sess.OptIn(o, lapses)
+		sess.OptIn(o, granted.Lapses)
 	}
 }
 

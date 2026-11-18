@@ -14,6 +14,7 @@ import (
 	"github.com/qumo-dev/gomoqt/moqt"
 	"github.com/qumo-dev/qumo/internal/auth"
 	"github.com/qumo-dev/qumo/internal/cors"
+	"github.com/qumo-dev/qumo/internal/optin"
 )
 
 type Server struct {
@@ -811,9 +812,9 @@ func (s *Server) serveSession(sess *moqt.Session) {
 	var l *lease
 	// optIns counts the opt-in time of a checked session, whose usage is
 	// reported; nil counts none.
-	var optIns *optInClock
+	var optIns *optin.Clock
 	if checked {
-		optIns = newOptInClock()
+		optIns = optin.NewClock()
 		a.served.Store(true)
 		// Registered first so that it runs last: after the close below,
 		// with the session's final byte totals and close cause. Counted in
@@ -878,7 +879,7 @@ func (s *Server) serveSession(sess *moqt.Session) {
 			return
 		}
 
-		optIns.track(ann)
+		optIns.Track(ann)
 
 		slog.Debug("relay: received announcement",
 			"node", s.Config.NodeID,
