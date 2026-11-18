@@ -11,6 +11,8 @@ import (
 	"strings"
 
 	"github.com/qumo-dev/gomoqt/moqt"
+
+	"github.com/qumo-dev/qumo/token"
 )
 
 // Handler serves the opt-in of broadcast, announced as broadcast's path
@@ -23,6 +25,18 @@ func Handler(broadcast moqt.BroadcastPath) moqt.TrackHandler {
 			tw.CloseWithError(moqt.SubscribeErrorCodeNotFound)
 		}
 	})
+}
+
+// Of returns the egress p opts a broadcast into, when p lies beneath an
+// opt-in directory: token.OptInABR for /.abr/live/cam1. It reports false for
+// a path beneath none.
+func Of(p moqt.BroadcastPath) (token.OptIn, bool) {
+	for _, o := range token.OptIns() {
+		if strings.HasPrefix(string(p), o.Directory()) {
+			return o, true
+		}
+	}
+	return "", false
 }
 
 // Path returns the opt-in of broadcast beneath dir, an opt-in directory:

@@ -8,6 +8,7 @@ import (
 
 	"github.com/qumo-dev/qumo/internal/meter"
 	"github.com/qumo-dev/qumo/internal/reqsign"
+	"github.com/qumo-dev/qumo/token"
 	"github.com/qumo-dev/qumo/usage"
 )
 
@@ -103,10 +104,10 @@ func (r *usageReporter) publishing(id string) {
 	r.meter.Open(id, s.kid)
 }
 
-// revalidated records a session's cumulative bytes at a revalidate and, when
-// live is set, that the session is still live. A session it doesn't know is
-// left unknown.
-func (r *usageReporter) revalidated(id string, b Bytes, live bool) {
+// revalidated records a session's cumulative bytes and opt-in time at a
+// revalidate and, when live is set, that the session is still live. A
+// session it doesn't know is left unknown.
+func (r *usageReporter) revalidated(id string, b Bytes, optIns map[token.OptIn]time.Duration, live bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	s, ok := r.sessions[id]
@@ -119,15 +120,15 @@ func (r *usageReporter) revalidated(id string, b Bytes, live bool) {
 	switch {
 	case !s.publishes:
 		s = r.countViewer(s, b)
-	case b.Sent > s.counted.Sent || b.Received > s.counted.Received:
-		r.meter.Report(id, usageMetrics(b.since(s.counted)))
+	case b.Sent > s.counted.Sent || b.Received > s.counted.Received || len(optIns) > 0:
+		r.meter.Report(id, publisherMetrics(b.since(s.counted), optIns))
 	}
 	r.sessions[id] = s
 }
 
 // close records a session's end with its final totals and forgets it. It
 // reports false for a session it doesn't know.
-func (r *usageReporter) close(id string, b Bytes, reason string) bool {
+func (r *usageReporter) close(id string, b Bytes, optIns map[token.OptIn]time.Duration, reason string) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.closed[id] = r.now()
@@ -140,7 +141,7 @@ func (r *usageReporter) close(id string, b Bytes, reason string) bool {
 		r.countViewer(s, b)
 		return true
 	}
-	r.meter.Close(id, usageMetrics(b.since(s.counted)), reason)
+	r.meter.Close(id, publisherMetrics(b.since(s.counted), optIns), reason)
 	return true
 }
 
@@ -164,6 +165,18 @@ func (r *usageReporter) countViewer(s usageSession, b Bytes) usageSession {
 
 func usageMetrics(b Bytes) map[string]int64 {
 	return map[string]int64{usage.IngressBytes: clampInt64(b.Received), usage.EgressBytes: clampInt64(b.Sent)}
+}
+
+// publisherMetrics is a publishing session's metrics: its bytes, and how
+// long it kept broadcasts opted into each egress, in whole seconds.
+func publisherMetrics(b Bytes, optIns map[token.OptIn]time.Duration) map[string]int64 {
+	m := usageMetrics(b)
+	for o, d := range optIns {
+		if secs := int64(d / time.Second); secs > 0 {
+			m[usage.OptInSeconds(string(o))] = secs
+		}
+	}
+	return m
 }
 
 func clampInt64(v uint64) int64 {
