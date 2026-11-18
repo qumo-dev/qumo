@@ -117,11 +117,10 @@ func (r *usageReporter) revalidated(id string, b Bytes, optIns map[token.OptIn]t
 	if live {
 		s.seen = r.now()
 	}
-	switch {
-	case !s.publishes:
+	if !s.publishes {
 		s = r.countViewer(s, b)
-	case b.Sent > s.counted.Sent || b.Received > s.counted.Received || len(optIns) > 0:
-		r.meter.Report(id, publisherMetrics(b.since(s.counted), optIns))
+	} else if m := publisherMetrics(b.since(s.counted), optIns); carriesUsage(m) {
+		r.meter.Report(id, m)
 	}
 	r.sessions[id] = s
 }
@@ -177,6 +176,17 @@ func publisherMetrics(b Bytes, optIns map[token.OptIn]time.Duration) map[string]
 		}
 	}
 	return m
+}
+
+// carriesUsage reports whether m holds any usage: a session that moved
+// nothing and kept nothing opted in for a whole second has none to report.
+func carriesUsage(m map[string]int64) bool {
+	for _, v := range m {
+		if v > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 func clampInt64(v uint64) int64 {

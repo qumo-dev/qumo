@@ -21,8 +21,6 @@ import (
 // session's grant does not cover never reaches it, so an opt-in the
 // session's key does not hold is never counted.
 type optInClock struct {
-	now func() time.Time
-
 	mu      sync.Mutex
 	tallies map[token.OptIn]*optInTally
 }
@@ -35,8 +33,8 @@ type optInTally struct {
 	since time.Time
 }
 
-func newOptInClock(now func() time.Time) *optInClock {
-	return &optInClock{now: now, tallies: map[token.OptIn]*optInTally{}}
+func newOptInClock() *optInClock {
+	return &optInClock{tallies: map[token.OptIn]*optInTally{}}
 }
 
 // track counts ann, an announcement the session made, until it ends, when it
@@ -60,7 +58,7 @@ func (c *optInClock) track(ann *moqt.Announcement) {
 func (c *optInClock) change(o token.OptIn, delta int) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	now := c.now()
+	now := time.Now()
 	t := c.tallies[o]
 	if t == nil {
 		t = &optInTally{}
@@ -82,7 +80,7 @@ func (c *optInClock) totals() map[token.OptIn]time.Duration {
 	if len(c.tallies) == 0 {
 		return nil
 	}
-	now := c.now()
+	now := time.Now()
 	out := make(map[token.OptIn]time.Duration, len(c.tallies))
 	for o, t := range c.tallies {
 		out[o] = t.done + time.Duration(t.live)*now.Sub(t.since)
