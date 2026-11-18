@@ -43,6 +43,11 @@ is refused within half a minute, and one on air ends at the next 30 s check of
 live sessions. HLS is held the same way (`"hls"`), and a key whose entry lists
 no `optIns` holds none.
 
+A relay with `QUMO_USAGE_URL` reports how long each opt-in lasted, in the
+publishing session's usage records under the tenant's key
+(`gateway.opt_in_seconds.abr`, see [usage reports]({{< relref "../configuration#usage-reports" >}})),
+so the control plane can bill ABR by the time it was used.
+
 The tenant's app signs the opt-in's token with the same key as the
 broadcast's: `/.abr/acme/live/cam1` beside `/acme/live/cam1`, presented on the
 publisher's session as a ticket, since a session's credentials all come from

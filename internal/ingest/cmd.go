@@ -290,8 +290,8 @@ func publishAuthorizer(v *auth.Verifier, beneath string) PublishAuthorizer {
 	}
 	return func(credential string, path moqt.BroadcastPath) (time.Time, error) {
 		broadcast := path
-		if dir, ok := optInDirectory(path); ok {
-			b, named := optin.Broadcast(string(path), dir)
+		if o, ok := optin.Of(path); ok {
+			b, named := optin.Broadcast(string(path), o.Directory())
 			if !named {
 				// Cleaned, it could name a broadcast outside the
 				// directory the relay grants its exact path in.

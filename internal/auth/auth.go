@@ -13,6 +13,9 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"time"
+
+	"github.com/qumo-dev/qumo/token"
 )
 
 // maxBody bounds how much of a reply's body is drained.
@@ -73,6 +76,10 @@ type Request struct {
 	// Bytes is the session's cumulative byte totals, set on revalidate and
 	// end.
 	Bytes Bytes
+	// OptIns is how long the session has kept broadcasts opted into each
+	// egress, added up over its broadcasts, set on revalidate and end
+	// (usage.OptInSeconds). An egress it opted nothing into is absent.
+	OptIns map[token.OptIn]time.Duration
 	// Reason is why the session ended, set on end.
 	Reason string
 }

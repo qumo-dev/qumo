@@ -22,7 +22,7 @@ import (
 var leaseRequest = auth.Request{ID: "00ff", Event: auth.EventConnect, Path: "/acme", Query: "jwt=h.p.s"}
 
 func TestStartLease_NothingToDo(t *testing.T) {
-	assert.Nil(t, startLease(context.Background(), &fakeLeasedSession{}, (&fakeAuth{}).authorize, leaseRequest, 0))
+	assert.Nil(t, startLease(context.Background(), &fakeLeasedSession{}, (&fakeAuth{}).authorize, leaseRequest, 0, nil))
 }
 
 // TestLease_RevalidateEnds verifies a refused revalidate ends
@@ -41,7 +41,7 @@ func TestLease_RevalidateEnds(t *testing.T) {
 				server := &fakeAuth{err: tt.err}
 				sess := &fakeLeasedSession{}
 				sess.setStats(1500, 300)
-				l := startLease(t.Context(), sess, server.authorize, leaseRequest, 30*time.Second)
+				l := startLease(t.Context(), sess, server.authorize, leaseRequest, 30*time.Second, nil)
 				defer l.stop()
 
 				time.Sleep(30*time.Second - time.Nanosecond)
@@ -67,7 +67,7 @@ func TestLease_RevalidateTakesCadence(t *testing.T) {
 		// The reply's grant differs from connect's; only the cadence matters.
 		server := &fakeAuth{grant: testGrant(t, "other/**", "", time.Minute)}
 		sess := &fakeLeasedSession{}
-		l := startLease(t.Context(), sess, server.authorize, leaseRequest, 30*time.Second)
+		l := startLease(t.Context(), sess, server.authorize, leaseRequest, 30*time.Second, nil)
 		defer l.stop()
 
 		time.Sleep(150 * time.Second)
@@ -89,7 +89,7 @@ func TestLease_RevalidateUnavailable(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
 				sess := &fakeLeasedSession{}
-				l := startLease(t.Context(), sess, server.authorize, leaseRequest, 30*time.Second)
+				l := startLease(t.Context(), sess, server.authorize, leaseRequest, 30*time.Second, nil)
 				defer l.stop()
 
 				time.Sleep(time.Hour)
@@ -103,7 +103,7 @@ func TestLease_RevalidateUnavailable(t *testing.T) {
 	t.Run("retries back off", func(t *testing.T) {
 		synctest.Test(t, func(t *testing.T) {
 			server := &fakeAuth{err: errors.New("503")}
-			l := startLease(t.Context(), &fakeLeasedSession{}, server.authorize, leaseRequest, 30*time.Second)
+			l := startLease(t.Context(), &fakeLeasedSession{}, server.authorize, leaseRequest, 30*time.Second, nil)
 			defer l.stop()
 
 			// Retries follow the first attempt at 30 s with jittered delays of
@@ -123,7 +123,7 @@ func TestLease_Stop(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		server := &fakeAuth{}
 		sess := &fakeLeasedSession{}
-		l := startLease(t.Context(), sess, server.authorize, leaseRequest, 30*time.Second)
+		l := startLease(t.Context(), sess, server.authorize, leaseRequest, 30*time.Second, nil)
 
 		time.Sleep(10 * time.Second)
 		l.stop()
@@ -162,7 +162,7 @@ func TestLease_RevalidateReportsBytes(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		server := &fakeAuth{grant: testGrant(t, "", "**", 30*time.Second)}
 		sess := &fakeLeasedSession{}
-		l := startLease(t.Context(), sess, server.authorize, leaseRequest, 30*time.Second)
+		l := startLease(t.Context(), sess, server.authorize, leaseRequest, 30*time.Second, nil)
 		defer l.stop()
 
 		sess.setStats(100, 10)
@@ -219,7 +219,7 @@ func TestLease_RevalidateWithoutCadenceStops(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		server := &fakeAuth{grant: testGrant(t, "", "**", 0)}
 		sess := &fakeLeasedSession{}
-		l := startLease(t.Context(), sess, server.authorize, leaseRequest, 30*time.Second)
+		l := startLease(t.Context(), sess, server.authorize, leaseRequest, 30*time.Second, nil)
 		defer l.stop()
 
 		time.Sleep(time.Hour)
