@@ -11,7 +11,7 @@ require (
 	github.com/prometheus/client_golang v1.25.0
 	github.com/prometheus/client_model v0.6.3
 	github.com/quic-go/quic-go v0.65.0
-	github.com/qumo-dev/gomoqt v0.28.3
+	github.com/qumo-dev/gomoqt v0.28.4
 	github.com/stretchr/testify v1.12.1
 	golang.org/x/sync v0.25.0
 )
@@ -36,7 +36,7 @@ require (
 	go4.org/netipx v0.0.0-20231129151722-fdeea329fbba // indirect
 	golang.org/x/crypto v0.58.0 // indirect
 	golang.org/x/net v0.62.0 // indirect
-	golang.org/x/sys v0.49.0 // indirect
+	golang.org/x/sys v0.50.0 // indirect
 	golang.org/x/text v0.43.0 // indirect
 	google.golang.org/protobuf v1.36.12 // indirect
 )
