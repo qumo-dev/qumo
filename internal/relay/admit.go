@@ -700,9 +700,9 @@ func (s *Server) admitClient(ctx context.Context, req auth.Request) (g *auth.Gra
 
 // reportEnd sends the end event of a checked session admitted by req, with
 // its final byte totals, its opt-in time (optIns, nil for none) and why it
-// ended. ctx is the session's: done by now,
-// so the report keeps its values but not its cancellation. A failed report is
-// recorded and otherwise ignored; End bounds its own wait.
+// ended. ctx is the session's: done by now, so the report keeps its values
+// but not its cancellation. A failed report is recorded and otherwise
+// ignored; End bounds its own wait.
 func (s *Server) reportEnd(ctx context.Context, req auth.Request, stats moqt.SessionStats, optIns *optin.Clock, reason string) {
 	if s.End == nil {
 		return

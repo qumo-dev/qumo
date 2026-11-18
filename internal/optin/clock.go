@@ -18,8 +18,6 @@ import (
 // was used. A nil Clock counts nothing. Its methods are safe for concurrent
 // use.
 type Clock struct {
-	now func() time.Time
-
 	mu      sync.Mutex
 	tallies map[token.OptIn]*optInTally
 }
@@ -32,9 +30,9 @@ type optInTally struct {
 	since time.Time
 }
 
-// NewClock returns a Clock reading the time from now (time.Now).
-func NewClock(now func() time.Time) *Clock {
-	return &Clock{now: now, tallies: map[token.OptIn]*optInTally{}}
+// NewClock returns a Clock with nothing counted.
+func NewClock() *Clock {
+	return &Clock{tallies: map[token.OptIn]*optInTally{}}
 }
 
 // Track counts ann, an announcement the publisher made, until it ends, when it
@@ -58,7 +56,7 @@ func (c *Clock) Track(ann *moqt.Announcement) {
 func (c *Clock) change(o token.OptIn, delta int) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	now := c.now()
+	now := time.Now()
 	t := c.tallies[o]
 	if t == nil {
 		t = &optInTally{}
@@ -91,7 +89,7 @@ func (c *Clock) Totals() map[token.OptIn]time.Duration {
 	if len(c.tallies) == 0 {
 		return nil
 	}
-	now := c.now()
+	now := time.Now()
 	out := make(map[token.OptIn]time.Duration, len(c.tallies))
 	for o, t := range c.tallies {
 		out[o] = t.done + time.Duration(t.live)*now.Sub(t.since)

@@ -54,9 +54,11 @@ func TestOf(t *testing.T) {
 		"/live/.abr/cam1": {},
 	}
 	for p, tt := range tests {
-		got, ok := Of(p)
-		assert.Equal(t, tt.wantOK, ok, p)
-		assert.Equal(t, tt.want, got, p)
+		t.Run(string(p), func(t *testing.T) {
+			got, ok := Of(p)
+			assert.Equal(t, tt.wantOK, ok)
+			assert.Equal(t, tt.want, got)
+		})
 	}
 }
 

@@ -84,7 +84,7 @@ func NewSession(trackMux *moqt.TrackMux, path moqt.BroadcastPath) (*Session, err
 		endAnn:   endAnn,
 		ctx:      ctx,
 		cancel:   cancel,
-		optIns:   optin.NewClock(time.Now),
+		optIns:   optin.NewClock(),
 	}, nil
 }
 

@@ -158,17 +158,23 @@ func TestUsageReporter_OptInSeconds(t *testing.T) {
 	assert.NotContains(t, first[usage.Viewers].Metrics, usage.OptInSeconds("abr"), "a viewer opts nothing in")
 
 	r.open("p2", usageSession{kid: "k1", publishes: true})
-	r.revalidated("p2", Bytes{}, abr(2*time.Second), true)
+	r.revalidated("p2", Bytes{}, abr(400*time.Millisecond), true)
 	require.NoError(t, r.meter.Flush(context.Background()))
 	require.Len(t, sink.received(), 2)
-	assert.Equal(t, int64(2), byType(sink.received()[1])[usage.Usage].Metrics[usage.OptInSeconds("abr")],
+	assert.NotContains(t, byType(sink.received()[1]), usage.Usage,
+		"no bytes and under a second opted in is nothing to report")
+
+	r.revalidated("p2", Bytes{}, abr(2*time.Second), true)
+	require.NoError(t, r.meter.Flush(context.Background()))
+	require.Len(t, sink.received(), 3)
+	assert.Equal(t, int64(2), byType(sink.received()[2])[usage.Usage].Metrics[usage.OptInSeconds("abr")],
 		"opt-in time without bytes is reported")
 
 	assert.True(t, r.close("p1", Bytes{Received: 120}, map[token.OptIn]time.Duration{
 		token.OptInABR: 3 * time.Second, token.OptInHLS: 500 * time.Millisecond,
 	}, usage.ReasonClosed))
 	require.NoError(t, r.meter.Flush(context.Background()))
-	closed := byType(sink.received()[2])[usage.SessionClose]
+	closed := byType(sink.received()[3])[usage.SessionClose]
 	assert.Equal(t, map[string]int64{
 		usage.IngressBytes: 120, usage.EgressBytes: 0, usage.OptInSeconds("abr"): 3,
 	}, closed.Metrics, "under a second of HLS is left out")
