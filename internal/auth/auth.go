@@ -12,9 +12,7 @@ package auth
 import (
 	"errors"
 	"fmt"
-	"net"
 	"net/http"
-	"net/url"
 )
 
 // maxBody bounds how much of a reply's body is drained.
@@ -58,26 +56,6 @@ func RefusalStatus(err error) int {
 		return refused.Status
 	}
 	return http.StatusServiceUnavailable
-}
-
-// checkURL accepts an https URL, or http only on a loopback host: the bearer
-// token the relay sends to it must not cross a network in the clear.
-func checkURL(rawURL string) error {
-	u, err := url.Parse(rawURL)
-	if err != nil {
-		return err
-	}
-	switch u.Scheme {
-	case "https":
-	case "http":
-		host := u.Hostname()
-		if ip := net.ParseIP(host); host != "localhost" && (ip == nil || !ip.IsLoopback()) {
-			return fmt.Errorf("http is allowed only for a loopback host, got %q", host)
-		}
-	default:
-		return fmt.Errorf("want an https URL, got scheme %q", u.Scheme)
-	}
-	return nil
 }
 
 // Request is one session event: what the relay asks its Authorize about at

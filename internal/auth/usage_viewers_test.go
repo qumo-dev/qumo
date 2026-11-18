@@ -28,7 +28,7 @@ func TestUsageReporter_ViewersAreTotalled(t *testing.T) {
 	r.revalidated("v1", Bytes{Sent: 100, Received: 10}, true)
 	r.revalidated("v2", Bytes{Sent: 200, Received: 20}, true)
 	r.revalidated("other", Bytes{Sent: 7}, true)
-	require.NoError(t, r.flush(context.Background()))
+	require.NoError(t, r.meter.Flush(context.Background()))
 
 	first := sink.received()[0]
 	require.Len(t, first, 2, "one record per key, not per viewer")
@@ -44,7 +44,7 @@ func TestUsageReporter_ViewersAreTotalled(t *testing.T) {
 	assert.Equal(t, int64(7), byKID["k2"].Metrics["gateway.egress_bytes"])
 
 	t.Run("an unchanged total isn't sent again", func(t *testing.T) {
-		require.NoError(t, r.flush(context.Background()))
+		require.NoError(t, r.meter.Flush(context.Background()))
 		assert.Len(t, sink.received(), 1)
 	})
 
@@ -54,7 +54,7 @@ func TestUsageReporter_ViewersAreTotalled(t *testing.T) {
 		assert.True(t, r.close("v2", Bytes{Sent: 260, Received: 25}, "closed")) // +60, +5
 		r.revalidated("v2", Bytes{Sent: 999}, true)                             // after its close: ignored
 		assert.True(t, r.close("v3", Bytes{}, "closed"))                        // moved nothing
-		require.NoError(t, r.flush(context.Background()))
+		require.NoError(t, r.meter.Flush(context.Background()))
 
 		batches := sink.received()
 		require.Len(t, batches, 2)
@@ -69,9 +69,9 @@ func TestUsageReporter_ViewerTotalSurvivesAFailedSend(t *testing.T) {
 	r.open("v1", viewerSession("k1"))
 	r.revalidated("v1", Bytes{Sent: 100}, true)
 
-	assert.Error(t, r.flush(context.Background()))
+	assert.Error(t, r.meter.Flush(context.Background()))
 	r.revalidated("v1", Bytes{Sent: 160}, true)
-	require.NoError(t, r.flush(context.Background()))
+	require.NoError(t, r.meter.Flush(context.Background()))
 
 	batches := sink.received()
 	require.Len(t, batches, 2)
@@ -85,7 +85,7 @@ func TestUsageReporter_PublishersStayPerSession(t *testing.T) {
 	r.open("p1", usageSession{kid: "k1", publishes: true})
 	r.open("p2", usageSession{kid: "k1", publishes: true})
 	r.revalidated("p1", Bytes{Received: 50}, true)
-	require.NoError(t, r.flush(context.Background()))
+	require.NoError(t, r.meter.Flush(context.Background()))
 
 	var got []string
 	for _, rec := range sink.received()[0] {
@@ -108,7 +108,7 @@ func TestUsageReporter_Publishing(t *testing.T) {
 	r.publishing("p1")
 	r.publishing("unknown")
 	r.revalidated("v1", Bytes{Received: 40}, true)
-	require.NoError(t, r.flush(context.Background()))
+	require.NoError(t, r.meter.Flush(context.Background()))
 
 	var got []string
 	for _, rec := range sink.received()[0] {

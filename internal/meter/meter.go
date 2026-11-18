@@ -22,9 +22,7 @@ import (
 	"io"
 	"log/slog"
 	"maps"
-	"net"
 	"net/http"
-	"net/url"
 	"sync"
 	"time"
 
@@ -78,7 +76,6 @@ type Reporter struct {
 	client *http.Client
 	// refusals logs the receiver's 401s, the first of a run only.
 	refusals reqsign.Refusals
-	now      func() time.Time
 	// runID names this run of the server in its totals: a restarted server
 	// starts new totals rather than lowering old ones.
 	runID string
@@ -93,7 +90,7 @@ type Reporter struct {
 
 // New returns a Reporter sending to cfg.URL. Run sends its records.
 func New(cfg Config) (*Reporter, error) {
-	if err := checkURL(cfg.URL); err != nil {
+	if err := reqsign.CheckURL(cfg.URL); err != nil {
 		return nil, err
 	}
 	return &Reporter{
@@ -102,31 +99,11 @@ func New(cfg Config) (*Reporter, error) {
 		token:  cfg.Token,
 		signer: cfg.Signer,
 		client: reqsign.NoRedirectClient(sendTimeout),
-		now:    time.Now,
 		runID:  rand.Text(),
 		live:   map[string]bool{},
 		latest: map[string]usage.Record{},
 		totals: map[string]*total{},
 	}, nil
-}
-
-// checkURL accepts https, and http to a loopback host only.
-func checkURL(rawURL string) error {
-	u, err := url.Parse(rawURL)
-	if err != nil {
-		return err
-	}
-	switch u.Scheme {
-	case "https":
-	case "http":
-		host := u.Hostname()
-		if ip := net.ParseIP(host); host != "localhost" && (ip == nil || !ip.IsLoopback()) {
-			return fmt.Errorf("http is allowed only for a loopback host, got %q", host)
-		}
-	default:
-		return fmt.Errorf("want an https URL, got scheme %q", u.Scheme)
-	}
-	return nil
 }
 
 // RunID returns the run named in r's totals.
@@ -198,7 +175,7 @@ func (r *Reporter) record(typ usage.Type, id, kid string) usage.Record {
 
 // timestamp is a record's ts: now, to the second.
 func (r *Reporter) timestamp() time.Time {
-	return r.now().UTC().Truncate(time.Second)
+	return time.Now().UTC().Truncate(time.Second)
 }
 
 // appendEvent queues an open or close, dropping the oldest past the cap.

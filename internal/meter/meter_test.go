@@ -76,18 +76,12 @@ func bytesMetrics(in, out int64) map[string]int64 {
 	return map[string]int64{usage.IngressBytes: in, usage.EgressBytes: out}
 }
 
+// New takes a URL as reqsign.CheckURL does, which is tested there.
 func TestNew(t *testing.T) {
-	for rawURL, wantErr := range map[string]bool{
-		"https://usage.example/v1":  false,
-		"http://127.0.0.1:9000/v1":  false,
-		"http://localhost/v1":       false,
-		"http://usage.example/v1":   true,
-		"ftp://usage.example/v1":    true,
-		"https://usage.example/%zz": true,
-	} {
-		_, err := New(Config{URL: rawURL})
-		assert.Equal(t, wantErr, err != nil, rawURL)
-	}
+	_, err := New(Config{URL: "https://usage.example/v1"})
+	assert.NoError(t, err)
+	_, err = New(Config{URL: "http://usage.example/v1"})
+	assert.Error(t, err, "a usage URL in the clear off loopback")
 }
 
 // A session's records go out in order: opens, usage, totals, closes, each

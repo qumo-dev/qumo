@@ -193,9 +193,6 @@ func (r *usageReporter) run(ctx context.Context) {
 	wg.Wait()
 }
 
-// flush sends every pending record now.
-func (r *usageReporter) flush(ctx context.Context) error { return r.meter.Flush(ctx) }
-
 // forgetStale drops sessions whose end never came: those not heard of for
 // sessionGrace.
 func (r *usageReporter) forgetStale() {

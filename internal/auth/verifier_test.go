@@ -374,7 +374,7 @@ func TestVerifier_ReportsUsage(t *testing.T) {
 	end := sessionReq(EventEnd, jwt)
 	end.Bytes, end.Reason = Bytes{Sent: 30, Received: 40}, "closed"
 	require.NoError(t, v.End(context.Background(), end))
-	require.NoError(t, v.usage.flush(context.Background()))
+	require.NoError(t, v.usage.meter.Flush(context.Background()))
 
 	batches := sink.received()
 	require.Len(t, batches, 1)
@@ -407,7 +407,7 @@ func TestUsageReporter(t *testing.T) {
 		r.open("s1", testUsageSession)
 		r.revalidated("s1", Bytes{Sent: 1, Received: 10}, true)
 		r.revalidated("s1", Bytes{Sent: 2, Received: 20}, true)
-		require.NoError(t, r.flush(context.Background()))
+		require.NoError(t, r.meter.Flush(context.Background()))
 		batches := sink.received()
 		require.Len(t, batches, 1)
 		require.Len(t, batches[0], 2)
@@ -420,9 +420,9 @@ func TestUsageReporter(t *testing.T) {
 		r := newTestUsage(t, sink)
 		r.open("s1", testUsageSession)
 		r.revalidated("s1", Bytes{Received: 10}, true)
-		assert.Error(t, r.flush(context.Background()))
+		assert.Error(t, r.meter.Flush(context.Background()))
 		r.revalidated("s1", Bytes{Received: 20}, true)
-		require.NoError(t, r.flush(context.Background()))
+		require.NoError(t, r.meter.Flush(context.Background()))
 		retry := sink.received()[1]
 		require.Len(t, retry, 2)
 		assert.Equal(t, usage.SessionOpen, retry[0].Type, "the open is resent")
@@ -437,7 +437,7 @@ func TestUsageReporter(t *testing.T) {
 		r := newTestUsage(t, sink)
 		assert.False(t, r.close("nope", Bytes{Sent: 1}, ""))
 		r.revalidated("nope", Bytes{Sent: 1}, true)
-		require.NoError(t, r.flush(context.Background()))
+		require.NoError(t, r.meter.Flush(context.Background()))
 		assert.Empty(t, sink.received(), "nothing pending, nothing sent")
 	})
 
@@ -549,7 +549,7 @@ func TestVerifier_RevalidateAfterEnd(t *testing.T) {
 	late.Bytes = Bytes{Sent: 9}
 	_, err = v.Authorize(context.Background(), late)
 	require.NoError(t, err)
-	require.NoError(t, v.usage.flush(context.Background()))
+	require.NoError(t, v.usage.meter.Flush(context.Background()))
 
 	var types []usage.Type
 	for _, rec := range sink.received()[0] {
@@ -822,13 +822,13 @@ func TestVerifier_Ticket_PublishingPromotesAViewer(t *testing.T) {
 	require.NoError(t, err)
 	_, err = v.Ticket(speak, k.ID, false)
 	require.NoError(t, err)
-	require.NoError(t, v.usage.flush(context.Background()))
+	require.NoError(t, v.usage.meter.Flush(context.Background()))
 	before := sink.received()
 	v.Publishing(rv.ID)
 	end := sessionReq(EventEnd, viewer)
 	end.Bytes, end.Reason = Bytes{Sent: 170, Received: 15}, "closed"
 	require.NoError(t, v.End(context.Background(), end))
-	require.NoError(t, v.usage.flush(context.Background()))
+	require.NoError(t, v.usage.meter.Flush(context.Background()))
 
 	require.Len(t, before, 1)
 	require.Len(t, before[0], 1, "a viewer, and a ticket only verified, open no session")
@@ -918,7 +918,7 @@ func TestVerifier_AnonymousUsage(t *testing.T) {
 	req.Bytes = Bytes{Received: 40}
 	_, err = v.Authorize(ctx, req)
 	require.NoError(t, err)
-	require.NoError(t, v.usage.flush(ctx))
+	require.NoError(t, v.usage.meter.Flush(ctx))
 
 	var got []string
 	for _, rec := range sink.received()[0] {
@@ -977,7 +977,7 @@ func TestUsageReporter_OpenAfterClose(t *testing.T) {
 	r.publishing("s1")
 
 	assert.Empty(t, r.sessions, "an open after the close is ignored")
-	require.NoError(t, r.flush(context.Background()))
+	require.NoError(t, r.meter.Flush(context.Background()))
 	assert.Empty(t, sink.received(), "no open is sent")
 
 	now = now.Add(sessionGrace + time.Second)
