@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [v0.22.261118] - 2026-11-18
+
 > **Breaking for the HLS opt-in on a relay with auth on.** A key no longer signs for its prefix's mirror beneath `/.hls/` on its own: it signs for the mirror beneath an opt-in directory only when its entry in the key set lists the opt-in (`"optIns": ["hls"]`). Add the member to each key whose publishers opt into `qumo hls` (or re-issue the key set with `qumo auth keygen -opt-ins hls`); until then the relay refuses their opt-in tokens, saying the root lies outside "the opt-ins it holds []". A relay with auth off is unaffected.
 
 ### Added
