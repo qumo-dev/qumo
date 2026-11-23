@@ -120,7 +120,7 @@ func (r *usageReporter) revalidated(id string, b Bytes, live bool) {
 	case !s.publishes:
 		s = r.countViewer(s, b)
 	case b.Sent > s.counted.Sent || b.Received > s.counted.Received:
-		r.meter.Report(id, s.kid, usageMetrics(b.since(s.counted)))
+		r.meter.Report(id, usageMetrics(b.since(s.counted)))
 	}
 	r.sessions[id] = s
 }
@@ -140,7 +140,7 @@ func (r *usageReporter) close(id string, b Bytes, reason string) bool {
 		r.countViewer(s, b)
 		return true
 	}
-	r.meter.Close(id, s.kid, usageMetrics(b.since(s.counted)), reason)
+	r.meter.Close(id, usageMetrics(b.since(s.counted)), reason)
 	return true
 }
 

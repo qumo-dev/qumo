@@ -36,10 +36,10 @@ func TestUsageReporter_ViewersAreTotalled(t *testing.T) {
 	for _, rec := range first {
 		byKID[rec.KID] = rec
 		assert.Equal(t, usage.Viewers, rec.Type)
-		assert.Equal(t, r.meter.RunID(), rec.Run)
 		assert.Empty(t, rec.SessionID)
 		assert.NoError(t, rec.Validate())
 	}
+	assert.Equal(t, byKID["k1"].Run, byKID["k2"].Run, "every key's viewers carry the same run")
 	assert.Equal(t, map[string]int64{"gateway.egress_bytes": 300, "gateway.ingress_bytes": 30}, byKID["k1"].Metrics)
 	assert.Equal(t, int64(7), byKID["k2"].Metrics["gateway.egress_bytes"])
 

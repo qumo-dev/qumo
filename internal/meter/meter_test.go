@@ -91,10 +91,10 @@ func TestReporter_Records(t *testing.T) {
 	r := newTestReporter(t, sink)
 	r.Open("s1", "k1")
 	r.Open("s2", "k1")
-	r.Report("s1", "k1", bytesMetrics(10, 1))
-	r.Report("s1", "k1", bytesMetrics(20, 2))
+	r.Report("s1", bytesMetrics(10, 1))
+	r.Report("s1", bytesMetrics(20, 2))
 	r.Total("k2", bytesMetrics(0, 7))
-	r.Close("s2", "k1", bytesMetrics(5, 5), usage.ReasonClosed)
+	r.Close("s2", bytesMetrics(5, 5), usage.ReasonClosed)
 
 	require.NoError(t, r.Flush(context.Background()))
 
@@ -105,7 +105,7 @@ func TestReporter_Records(t *testing.T) {
 		assert.NoError(t, rec.Validate())
 	}
 	assert.Equal(t, bytesMetrics(20, 2), batches[0][2].Metrics, "usage is coalesced to the latest report")
-	assert.Equal(t, r.RunID(), batches[0][3].Run)
+	assert.Equal(t, r.runID, batches[0][3].Run)
 	assert.Equal(t, usage.ReasonClosed, batches[0][4].Reason)
 	assert.Equal(t, "Bearer t", sink.gotAuth)
 }
@@ -114,8 +114,8 @@ func TestReporter_CloseSupersedesUsage(t *testing.T) {
 	sink := &fakeSink{}
 	r := newTestReporter(t, sink)
 	r.Open("s1", "k1")
-	r.Report("s1", "k1", bytesMetrics(10, 1))
-	r.Close("s1", "k1", bytesMetrics(30, 3), usage.ReasonClosed)
+	r.Report("s1", bytesMetrics(10, 1))
+	r.Close("s1", bytesMetrics(30, 3), usage.ReasonClosed)
 
 	require.NoError(t, r.Flush(context.Background()))
 
@@ -127,15 +127,15 @@ func TestReporter_CloseSupersedesUsage(t *testing.T) {
 func TestReporter_NotOpen(t *testing.T) {
 	sink := &fakeSink{}
 	r := newTestReporter(t, sink)
-	r.Report("nope", "k1", bytesMetrics(1, 1))
-	r.Close("nope", "k1", bytesMetrics(1, 1), usage.ReasonClosed)
+	r.Report("nope", bytesMetrics(1, 1))
+	r.Close("nope", bytesMetrics(1, 1), usage.ReasonClosed)
 	r.Open("s1", "k1")
-	r.Close("s1", "k1", bytesMetrics(1, 1), usage.ReasonClosed)
-	r.Close("s1", "k1", bytesMetrics(2, 2), usage.ReasonClosed)
-	r.Report("s1", "k1", bytesMetrics(3, 3))
+	r.Close("s1", bytesMetrics(1, 1), usage.ReasonClosed)
+	r.Close("s1", bytesMetrics(2, 2), usage.ReasonClosed)
+	r.Report("s1", bytesMetrics(3, 3))
 	r.Open("s2", "k1")
 	r.Forget("s2")
-	r.Report("s2", "k1", bytesMetrics(3, 3))
+	r.Report("s2", bytesMetrics(3, 3))
 
 	require.NoError(t, r.Flush(context.Background()))
 
@@ -146,9 +146,9 @@ func TestReporter_FailedSendIsRetriedWithNewerUsage(t *testing.T) {
 	sink := &fakeSink{statuses: []int{http.StatusBadGateway, http.StatusOK}}
 	r := newTestReporter(t, sink)
 	r.Open("s1", "k1")
-	r.Report("s1", "k1", bytesMetrics(10, 0))
+	r.Report("s1", bytesMetrics(10, 0))
 	assert.Error(t, r.Flush(context.Background()))
-	r.Report("s1", "k1", bytesMetrics(20, 0))
+	r.Report("s1", bytesMetrics(20, 0))
 
 	require.NoError(t, r.Flush(context.Background()))
 
@@ -163,7 +163,7 @@ func TestReporter_ForgottenUsageIsNotResent(t *testing.T) {
 	r := newTestReporter(t, sink)
 	r.Open("s1", "k1")
 	require.NoError(t, r.Flush(context.Background()))
-	r.Report("s1", "k1", bytesMetrics(10, 0))
+	r.Report("s1", bytesMetrics(10, 0))
 	r.Forget("s1")
 
 	assert.Error(t, r.Flush(context.Background()))
@@ -258,7 +258,7 @@ func TestReporter_Totals(t *testing.T) {
 
 func TestReporter_EachRunHasItsOwnTotals(t *testing.T) {
 	a, b := newTestReporter(t, &fakeSink{}), newTestReporter(t, &fakeSink{})
-	assert.NotEqual(t, a.RunID(), b.RunID(), "a restarted server starts new totals rather than lowering old ones")
+	assert.NotEqual(t, a.runID, b.runID, "a restarted server starts new totals rather than lowering old ones")
 }
 
 // Run sends every flushInterval, and once more when ctx ends.
@@ -284,7 +284,7 @@ func TestReporter_Run(t *testing.T) {
 
 		r.Open("s1", "k1")
 		time.Sleep(flushInterval + time.Second)
-		r.Close("s1", "k1", bytesMetrics(1, 1), usage.ReasonClosed)
+		r.Close("s1", bytesMetrics(1, 1), usage.ReasonClosed)
 		time.Sleep(time.Second)
 		cancel()
 		<-done

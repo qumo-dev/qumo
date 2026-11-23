@@ -81,7 +81,7 @@ type Reporter struct {
 	runID string
 
 	mu      sync.Mutex
-	live    map[string]bool         // sessions opened, and not closed or forgotten
+	live    map[string]string       // open session id -> kid, until closed or forgotten
 	events  []usage.Record          // opens and closes, in order
 	latest  map[string]usage.Record // latest cumulative report per session
 	totals  map[string]*total       // by kid
@@ -100,29 +100,27 @@ func New(cfg Config) (*Reporter, error) {
 		signer: cfg.Signer,
 		client: reqsign.NoRedirectClient(sendTimeout),
 		runID:  rand.Text(),
-		live:   map[string]bool{},
+		live:   map[string]string{},
 		latest: map[string]usage.Record{},
 		totals: map[string]*total{},
 	}, nil
 }
 
-// RunID returns the run named in r's totals.
-func (r *Reporter) RunID() string { return r.runID }
-
 // Open records that session id began under key kid: a session_open.
 func (r *Reporter) Open(id, kid string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.live[id] = true
+	r.live[id] = kid
 	r.appendEvent(r.record(usage.SessionOpen, id, kid))
 }
 
 // Report records the cumulative metrics of session id so far: a usage
 // record, replacing any not yet sent. A session not open is ignored.
-func (r *Reporter) Report(id, kid string, metrics map[string]int64) {
+func (r *Reporter) Report(id string, metrics map[string]int64) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if !r.live[id] {
+	kid, ok := r.live[id]
+	if !ok {
 		return
 	}
 	rec := r.record(usage.Usage, id, kid)
@@ -133,10 +131,11 @@ func (r *Reporter) Report(id, kid string, metrics map[string]int64) {
 // Close records the end of session id with its final totals and the reason
 // it ended: a session_close, which supersedes its pending usage. A session
 // not open is ignored.
-func (r *Reporter) Close(id, kid string, metrics map[string]int64, reason string) {
+func (r *Reporter) Close(id string, metrics map[string]int64, reason string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if !r.live[id] {
+	kid, ok := r.live[id]
+	if !ok {
 		return
 	}
 	delete(r.live, id)
@@ -332,7 +331,7 @@ func (r *Reporter) requeue(unsent []usage.Record) {
 		if _, newer := r.latest[rec.SessionID]; newer {
 			continue
 		}
-		if r.live[rec.SessionID] {
+		if _, live := r.live[rec.SessionID]; live {
 			r.latest[rec.SessionID] = rec
 		}
 	}
