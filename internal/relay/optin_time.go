@@ -33,10 +33,6 @@ type optInTally struct {
 	since time.Time
 }
 
-func newOptInClock() *optInClock {
-	return &optInClock{tallies: map[token.OptIn]*optInTally{}}
-}
-
 // track counts ann, an announcement the session made, until it ends, when it
 // opts a broadcast into an egress; any other is not counted, nor one that
 // ended already (moqt runs AfterFunc for it later, on another goroutine,
@@ -59,6 +55,9 @@ func (c *optInClock) change(o token.OptIn, delta int) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	now := time.Now()
+	if c.tallies == nil {
+		c.tallies = map[token.OptIn]*optInTally{}
+	}
 	t := c.tallies[o]
 	if t == nil {
 		t = &optInTally{}

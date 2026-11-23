@@ -22,7 +22,7 @@ func announce(t *testing.T, path moqt.BroadcastPath) (*moqt.Announcement, func()
 
 func TestOptInClock(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		c := newOptInClock()
+		var c optInClock
 		assert.Nil(t, c.totals(), "nothing opted in yet")
 
 		cam1, endCam1 := announce(t, "/.abr/live/cam1")
@@ -55,7 +55,7 @@ func TestOptInClock(t *testing.T) {
 
 func TestOptInClock_EndedAnnouncement(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		c := newOptInClock()
+		var c optInClock
 		ann, end := announce(t, "/.abr/live/cam1")
 		end()
 
