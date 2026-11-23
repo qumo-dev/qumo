@@ -39,8 +39,8 @@ github.com/okdaichi/qumo-ledger v0.5.1 h1:Ng14zxxpAZiXDyajv1itpxnSqJbdYNej8T6DQO
 github.com/okdaichi/qumo-ledger v0.5.1/go.mod h1:aJIvOkiMUbdkZEkH+H52psmoAdq+vONnCnBFejLaGKY=
 github.com/okdaichi/webtransport-go v0.13.0-okdaichi.5 h1:4PzYskqKgL4190GQNQEC4vOUyTsikK70AcsA/gznks8=
 github.com/okdaichi/webtransport-go v0.13.0-okdaichi.5/go.mod h1:N+t+83yZ6hx1N/Dd4nyBBWyyXyq9IjM9bfbuRwMN/vM=
-github.com/oschwald/maxminddb-golang/v2 v2.9.0 h1:YpIl3WoA9oIuNvqNaO/aD1N/7Ci2wOqoKH5GWo53H5Y=
-github.com/oschwald/maxminddb-golang/v2 v2.9.0/go.mod h1:3TxexMBcR0ss3SbyYvnqfsDzDjN4o1KCg/nTsaMAivU=
+github.com/oschwald/maxminddb-golang/v2 v2.9.1 h1:7o5EFBYe8S7+3ppDmYNaoEn1x/GZ4P9P25vxS9vBGpM=
+github.com/oschwald/maxminddb-golang/v2 v2.9.1/go.mod h1:2hxnjBWl4k944SMuyOImUAWfOnrFGXDK99Bz8o5BDpo=
 github.com/pmezard/go-difflib v1.0.0/go.mod h1:iKH77koFhYxTK1pcRnkKkqfTogsbg7gZNVY4sRDYZ/4=
 github.com/prometheus/client_golang v1.25.0 h1:cDtW1TcFsMi1RJc8khwCKB4VhzwV04aKqbYtNOXuiK0=
 github.com/prometheus/client_golang v1.25.0/go.mod h1:j2X/4/kaQHLPnmyEU8zjmkndo1T317VpCIQEml8LTKk=
