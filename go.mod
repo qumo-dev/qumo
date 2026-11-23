@@ -3,7 +3,7 @@ module github.com/qumo-dev/qumo
 go 1.27.4
 
 require (
-	github.com/Eyevinn/mp4ff v0.62.1
+	github.com/Eyevinn/mp4ff v0.63.0
 	github.com/maxmind/mmdbwriter v1.2.0
 	github.com/miekg/dns v1.1.73
 	github.com/okdaichi/qumo-ledger v0.5.1
