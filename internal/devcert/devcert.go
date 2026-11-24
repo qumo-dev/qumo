@@ -19,13 +19,13 @@ import (
 	"fmt"
 	"math/big"
 	"time"
+
+	"github.com/qumo-dev/qumo/internal/tlsclient"
 )
 
-// PeeringName is the DNS name a relay's peer certificate carries. It equals
-// relay.PeeringName, which TestPeeringNameMatchesRelay holds it to: this
-// package stays free of the relay's dependencies so that the magefile can
-// use it.
-const PeeringName = "peer.qumo.internal"
+// PeeringName is the DNS name a relay's peer certificate carries, matching
+// tlsclient.PeeringName (and relay.PeeringName).
+const PeeringName = tlsclient.PeeringName
 
 // backdate covers clock differences between the machine that issues a
 // certificate and the one that checks it.

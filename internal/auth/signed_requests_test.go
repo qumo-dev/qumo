@@ -53,48 +53,26 @@ func assertSigned(t *testing.T, got signedRequest, bearer string) {
 	assert.Equal(t, "Bearer "+bearer, got.bearer, "the token is still sent beside the signature")
 }
 
-// With a signer, the key-set download and every usage send, a resend after a
-// failure included, are signed and still carry the token.
+// With a signer, every key-set download is signed and still carries the token.
 func TestVerifier_SignsItsRequests(t *testing.T) {
-	var keyReqs, usageReqs signedRequests
+	var keyReqs signedRequests
 	k := genKey(t, "acme/app")
 	keys := keySetJSON(t, []token.SigningKey{k})
-	usageStatus := []int{http.StatusServiceUnavailable, http.StatusOK}
-	var usageMu sync.Mutex
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/keys":
-			keyReqs.record(r)
-			if _, err := w.Write(keys); err != nil {
-				t.Errorf("write the key set: %v", err)
-			}
-		case "/usage":
-			usageReqs.record(r)
-			usageMu.Lock()
-			status := usageStatus[0]
-			if len(usageStatus) > 1 {
-				usageStatus = usageStatus[1:]
-			}
-			usageMu.Unlock()
-			w.WriteHeader(status)
+		keyReqs.record(r)
+		if _, err := w.Write(keys); err != nil {
+			t.Errorf("write the key set: %v", err)
 		}
 	}))
 	defer srv.Close()
-	v, err := NewVerifier(VerifierConfig{Keys: srv.URL + "/keys", UsageURL: srv.URL + "/usage", Token: "relay-token", Signer: reqsigntest.Signer(t)})
+	v, err := NewVerifier(VerifierConfig{Keys: srv.URL + "/keys", Token: "relay-token", Signer: reqsigntest.Signer(t)})
 	require.NoError(t, err)
 	var store keyStore
 
 	require.NoError(t, v.source.refresh(t.Context(), &store, time.Now()))
-	v.usage.open("s1", testUsageSession)
-	assert.Error(t, v.usage.meter.Flush(t.Context()))
-	require.NoError(t, v.usage.meter.Flush(t.Context()))
 
 	require.Len(t, keyReqs.all(), 1)
 	assertSigned(t, keyReqs.all()[0], "relay-token")
-	require.Len(t, usageReqs.all(), 2)
-	for _, got := range usageReqs.all() {
-		assertSigned(t, got, "relay-token")
-	}
 }
 
 // Without one, nothing is signed: the token alone, as before.

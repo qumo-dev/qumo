@@ -18,7 +18,6 @@ import (
 
 	"github.com/qumo-dev/gomoqt/moqt"
 	"github.com/qumo-dev/gomoqt/msf"
-	"github.com/qumo-dev/qumo/internal/ffpub"
 	"github.com/stretchr/testify/require"
 )
 
@@ -41,7 +40,7 @@ import (
 //     access unit is one frame with a unique PTS (TestRTSPPlayback_FrameIntegrity)
 //     is the proxy for that.
 func TestRTSPPlayback_Decodes(t *testing.T) {
-	if !ffpub.Available() {
+	if !ffpubAvailable() {
 		t.Skip("ffmpeg not on PATH")
 	}
 	mux := moqt.NewTrackMux(0)
@@ -50,7 +49,7 @@ func TestRTSPPlayback_Decodes(t *testing.T) {
 	const path = "/live/decode"
 	pubCtx, cancelPub := context.WithCancel(context.Background())
 	defer cancelPub()
-	pub := ffpub.New(ffpub.Config{
+	pub := newFFPub(ffpubConfig{
 		URL:   fmt.Sprintf("rtsp://%s%s", rtspAddr, path),
 		Audio: true,
 		GOP:   30, Width: 320, Height: 240, Framerate: 30,

@@ -16,7 +16,8 @@ import (
 	"time"
 
 	"github.com/qumo-dev/qumo/internal/devcert"
-	"github.com/qumo-dev/qumo/internal/relay"
+	"github.com/qumo-dev/qumo/internal/relaycred"
+	"github.com/qumo-dev/qumo/internal/tlsclient"
 	"github.com/qumo-dev/qumo/token"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -105,7 +106,7 @@ func selfSignedCertPEM(tb testing.TB) []byte {
 func TestFeedConfig_Validate(t *testing.T) {
 	ca, err := devcert.NewCA("relay-ca", time.Hour)
 	require.NoError(t, err)
-	peerCert, peerKey := writeLeaf(t, ca, devcert.Leaf{CommonName: "egress-1", DNSNames: []string{relay.PeeringName}, Validity: time.Hour})
+	peerCert, peerKey := writeLeaf(t, ca, devcert.Leaf{CommonName: "egress-1", DNSNames: []string{tlsclient.PeeringName}, Validity: time.Hour})
 	unnamedCert, unnamedKey := writeLeaf(t, ca, devcert.Leaf{CommonName: "egress-2", Validity: time.Hour})
 	key, err := token.GenerateKey("hls")
 	require.NoError(t, err)
@@ -197,19 +198,10 @@ func TestFeedConfig_Target(t *testing.T) {
 	whole, err := token.GenerateKey("")
 	require.NoError(t, err)
 
-	t.Run("without a signing key the URL is dialed as it is", func(t *testing.T) {
-		cfg := feedConfig{relayURL: "https://relay:4433/?jwt=h.p.s"}
-
-		got, _, err := cfg.target()
-
-		require.NoError(t, err)
-		assert.Equal(t, cfg.relayURL, got)
-	})
-
 	t.Run("a signing key replaces the credential with a subscribe-only one", func(t *testing.T) {
 		cfg := feedConfig{relayURL: "https://relay:4433/?jwt=h.p.s&x=1", signingKey: &whole}
 
-		got, _, err := cfg.target()
+		got, _, err := relaycred.Target(cfg.relayURL, *cfg.signingKey, cfg.grant())
 
 		require.NoError(t, err)
 		u, err := url.Parse(got)
@@ -227,9 +219,9 @@ func TestFeedConfig_Target(t *testing.T) {
 	t.Run("each connect signs a new one", func(t *testing.T) {
 		cfg := feedConfig{relayURL: "https://relay:4433", signingKey: &whole}
 
-		first, _, err := cfg.target()
+		first, _, err := relaycred.Target(cfg.relayURL, *cfg.signingKey, cfg.grant())
 		require.NoError(t, err)
-		second, _, err := cfg.target()
+		second, _, err := relaycred.Target(cfg.relayURL, *cfg.signingKey, cfg.grant())
 		require.NoError(t, err)
 
 		assert.NotEqual(t, first, second)

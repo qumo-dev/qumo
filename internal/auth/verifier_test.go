@@ -22,7 +22,6 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/qumo-dev/qumo/token"
-	"github.com/qumo-dev/qumo/usage"
 )
 
 func genKey(t *testing.T, prefix string) token.SigningKey {
@@ -261,12 +260,11 @@ func TestNewVerifier(t *testing.T) {
 		"file that isn't a key set": {cfg: VerifierConfig{Keys: badFile}, wantErr: "QUMO_AUTH_KEYS"},
 		"cache with a file":         {cfg: VerifierConfig{Keys: keysFile, KeysCache: "c.json"}, wantErr: "QUMO_AUTH_KEYS_CACHE"},
 		"url with a cache":          {cfg: VerifierConfig{Keys: "https://keys.example.com/set", KeysCache: filepath.Join(t.TempDir(), "c.json")}},
-		"url":                       {cfg: VerifierConfig{Keys: "https://keys.example.com/set", UsageURL: "https://usage.example.com", Token: "t"}},
+		"url":                       {cfg: VerifierConfig{Keys: "https://keys.example.com/set", Token: "t"}},
 		"loopback http":             {cfg: VerifierConfig{Keys: "http://127.0.0.1:8080/keys"}},
 		"unset":                     {cfg: VerifierConfig{}, wantErr: "QUMO_AUTH_KEYS: not set"},
 		"remote http":               {cfg: VerifierConfig{Keys: "http://keys.example.com"}, wantErr: "loopback"},
 		"other scheme":              {cfg: VerifierConfig{Keys: "ftp://keys.example.com/set"}, wantErr: "want an https URL or a file path"},
-		"usage over http":           {cfg: VerifierConfig{Keys: keysFile, UsageURL: "http://usage.example.com"}, wantErr: "QUMO_USAGE_URL"},
 	}
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
@@ -354,127 +352,6 @@ func TestFileKeySource(t *testing.T) {
 	assert.Contains(t, set.keys, b.ID, "a missing file keeps the last set")
 }
 
-// TestVerifier_ReportsUsage drives the Verifier as the relay does and checks
-// the records that reach the usage URL.
-func TestVerifier_ReportsUsage(t *testing.T) {
-	k := genKey(t, "acme/app")
-	sink := &fakeUsageSink{}
-	srv := httptest.NewServer(sink)
-	defer srv.Close()
-	v, err := NewVerifier(VerifierConfig{Keys: writeKeySet(t, k), UsageURL: srv.URL, Token: "t"})
-	require.NoError(t, err)
-	jwt := sign(t, k, pathGrant("acme/app/live", "acme/app"))
-
-	_, err = v.Authorize(context.Background(), sessionReq(EventConnect, jwt))
-	require.NoError(t, err)
-	rv := sessionReq(EventRevalidate, jwt)
-	rv.Bytes = Bytes{Sent: 10, Received: 20}
-	_, err = v.Authorize(context.Background(), rv)
-	require.NoError(t, err)
-	end := sessionReq(EventEnd, jwt)
-	end.Bytes, end.Reason = Bytes{Sent: 30, Received: 40}, "closed"
-	require.NoError(t, v.End(context.Background(), end))
-	require.NoError(t, v.usage.meter.Flush(context.Background()))
-
-	batches := sink.received()
-	require.Len(t, batches, 1)
-	var types []usage.Type
-	for _, r := range batches[0] {
-		types = append(types, r.Type)
-		assert.Equal(t, k.ID, r.KID)
-	}
-	assert.Equal(t, []usage.Type{usage.SessionOpen, usage.SessionClose}, types, "the close supersedes the pending usage")
-	assert.Equal(t, map[string]int64{"gateway.ingress_bytes": 40, "gateway.egress_bytes": 30}, batches[0][1].Metrics,
-		"what the relay received is ingress, what it sent egress")
-	assert.Equal(t, "Bearer t", sink.gotAuth)
-}
-
-func newTestUsage(t *testing.T, sink *fakeUsageSink) *usageReporter {
-	t.Helper()
-	srv := httptest.NewServer(sink)
-	t.Cleanup(srv.Close)
-	r, err := newUsageReporter(srv.URL, "t", nil)
-	require.NoError(t, err)
-	return r
-}
-
-var testUsageSession = usageSession{kid: "k1", publishes: true}
-
-func TestUsageReporter(t *testing.T) {
-	t.Run("usage is coalesced to the latest report", func(t *testing.T) {
-		sink := &fakeUsageSink{}
-		r := newTestUsage(t, sink)
-		r.open("s1", testUsageSession)
-		r.revalidated("s1", Bytes{Sent: 1, Received: 10}, nil, true)
-		r.revalidated("s1", Bytes{Sent: 2, Received: 20}, nil, true)
-		require.NoError(t, r.meter.Flush(context.Background()))
-		batches := sink.received()
-		require.Len(t, batches, 1)
-		require.Len(t, batches[0], 2)
-		assert.Equal(t, usage.SessionOpen, batches[0][0].Type)
-		assert.Equal(t, int64(20), batches[0][1].Metrics["gateway.ingress_bytes"])
-	})
-
-	t.Run("a failed send is retried with newer usage", func(t *testing.T) {
-		sink := &fakeUsageSink{statuses: []int{http.StatusBadGateway, http.StatusOK}}
-		r := newTestUsage(t, sink)
-		r.open("s1", testUsageSession)
-		r.revalidated("s1", Bytes{Received: 10}, nil, true)
-		assert.Error(t, r.meter.Flush(context.Background()))
-		r.revalidated("s1", Bytes{Received: 20}, nil, true)
-		require.NoError(t, r.meter.Flush(context.Background()))
-		retry := sink.received()[1]
-		require.Len(t, retry, 2)
-		assert.Equal(t, usage.SessionOpen, retry[0].Type, "the open is resent")
-		assert.Equal(t, int64(20), retry[1].Metrics["gateway.ingress_bytes"], "the newer report wins")
-	})
-
-	// Batching, retries and what each answer from the receiver does are
-	// package meter's, tested there.
-
-	t.Run("an unknown session's end and usage are ignored", func(t *testing.T) {
-		sink := &fakeUsageSink{}
-		r := newTestUsage(t, sink)
-		assert.False(t, r.close("nope", Bytes{Sent: 1}, nil, ""))
-		r.revalidated("nope", Bytes{Sent: 1}, nil, true)
-		require.NoError(t, r.meter.Flush(context.Background()))
-		assert.Empty(t, sink.received(), "nothing pending, nothing sent")
-	})
-
-	t.Run("a session whose end never came is forgotten once no longer revalidated", func(t *testing.T) {
-		now := time.Now()
-		r := newTestUsage(t, &fakeUsageSink{})
-		r.now = func() time.Time { return now }
-		r.open("gone", testUsageSession)
-		r.open("refused", testUsageSession)
-		r.open("live", testUsageSession)
-
-		now = now.Add(sessionGrace + time.Second)
-		r.revalidated("refused", Bytes{Sent: 1}, nil, false)
-		r.revalidated("live", Bytes{}, nil, true)
-		r.forgetStale()
-
-		assert.False(t, r.close("gone", Bytes{}, nil, ""), "not revalidated within the grace")
-		assert.False(t, r.close("refused", Bytes{}, nil, ""), "a refused revalidate doesn't keep it")
-		assert.True(t, r.close("live", Bytes{}, nil, ""), "revalidated: still remembered")
-	})
-}
-
-func TestUsageRecordWire(t *testing.T) {
-	ts := time.Date(2026, 10, 5, 0, 0, 0, 0, time.UTC)
-	session, err := json.Marshal(usage.Record{Type: usage.Usage, SessionID: "s1", KID: "k1",
-		Metrics: map[string]int64{usage.IngressBytes: 1}, TS: ts})
-	require.NoError(t, err)
-	viewers, err := json.Marshal(usage.Record{Type: usage.Viewers, Run: "r1", KID: "k1",
-		Metrics: map[string]int64{usage.EgressBytes: 2}, TS: ts})
-	require.NoError(t, err)
-
-	assert.JSONEq(t, `{"type":"usage","session_id":"s1","kid":"k1",`+
-		`"metrics":{"gateway.ingress_bytes":1},"ts":"2026-10-05T00:00:00Z"}`, string(session), "no reason or run when empty")
-	assert.JSONEq(t, `{"type":"viewers","run":"r1","kid":"k1",`+
-		`"metrics":{"gateway.egress_bytes":2},"ts":"2026-10-05T00:00:00Z"}`, string(viewers), "no session_id")
-}
-
 func TestNextRefresh(t *testing.T) {
 	seen := map[time.Duration]bool{}
 	for range 200 {
@@ -526,37 +403,6 @@ func TestKeySourceFor(t *testing.T) {
 			}
 		})
 	}
-}
-
-// TestVerifier_RevalidateAfterEnd pins the review's zombie case: a revalidate
-// that finishes after the session's end was recorded must not bring the
-// session back, nor send usage after its close.
-func TestVerifier_RevalidateAfterEnd(t *testing.T) {
-	k := genKey(t, "acme/app")
-	sink := &fakeUsageSink{}
-	srv := httptest.NewServer(sink)
-	defer srv.Close()
-	v, err := NewVerifier(VerifierConfig{Keys: writeKeySet(t, k), UsageURL: srv.URL})
-	require.NoError(t, err)
-	jwt := sign(t, k, pathGrant("acme/app/live", ""))
-
-	_, err = v.Authorize(context.Background(), sessionReq(EventConnect, jwt))
-	require.NoError(t, err)
-	end := sessionReq(EventEnd, jwt)
-	end.Bytes = Bytes{Sent: 5}
-	require.NoError(t, v.End(context.Background(), end))
-	late := sessionReq(EventRevalidate, jwt)
-	late.Bytes = Bytes{Sent: 9}
-	_, err = v.Authorize(context.Background(), late)
-	require.NoError(t, err)
-	require.NoError(t, v.usage.meter.Flush(context.Background()))
-
-	var types []usage.Type
-	for _, rec := range sink.received()[0] {
-		types = append(types, rec.Type)
-	}
-	assert.Equal(t, []usage.Type{usage.SessionOpen, usage.SessionClose}, types)
-	assert.False(t, v.usage.close(late.ID, Bytes{}, nil, ""), "the session isn't known again")
 }
 
 // writeKeySet writes a key set file holding keys and returns its path.
@@ -670,11 +516,9 @@ func TestVerifier_PatternGrant(t *testing.T) {
 	assert.False(t, g.Allows(token.ActionSubscribe, "/acme/app/room/1234/comments"))
 }
 
-// TestVerifier_UsagePublishes pins which sessions are reported as
-// publishers, one by one, and which as viewers, in their key's total: a
-// session publishes when its grant has a publish pattern, and any other session,
-// whatever else it may do, such as post, is a viewer.
-func TestVerifier_UsagePublishes(t *testing.T) {
+// TestVerifier_PublishesBroadcast pins which grants have a publish pattern:
+// create, post, redact and subscribe alone do not.
+func TestVerifier_PublishesBroadcast(t *testing.T) {
 	k := genKey(t, "acme/app")
 	v := verifierWith(t, keySetJSON(t, []token.SigningKey{k}), time.Now())
 	tests := map[string]struct {
@@ -695,10 +539,10 @@ func TestVerifier_UsagePublishes(t *testing.T) {
 	}
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
-			_, s, err := v.decide(tt.jwt, nil, true, func(*Grant) bool { return false })
+			g, err := v.decide(tt.jwt, nil, true, func(*Grant) bool { return false })
 
 			require.NoError(t, err)
-			assert.Equal(t, tt.want, s.publishes)
+			assert.Equal(t, tt.want, publishesBroadcast(g.grant))
 		})
 	}
 }
@@ -797,57 +641,6 @@ func TestVerifier_Trusts(t *testing.T) {
 	assert.Error(t, err, "with no set loaded, it can't be judged")
 }
 
-// A viewer session granted a ticket to publish is reported by itself from
-// then on, with only what it moved since it was last counted as a viewer;
-// what it moved before stays in its key's viewer total. Verifying a ticket
-// changes nothing: the relay reports the grant (Publishing) once it holds.
-func TestVerifier_Ticket_PublishingPromotesAViewer(t *testing.T) {
-	k := genKey(t, "acme/app")
-	sink := &fakeUsageSink{}
-	srv := httptest.NewServer(sink)
-	defer srv.Close()
-	v, err := NewVerifier(VerifierConfig{Keys: writeKeySet(t, k), UsageURL: srv.URL})
-	require.NoError(t, err)
-	viewer := sign(t, k, token.Grant{})
-	speak := sign(t, k, pathGrant("acme/app/room/42/7", ""))
-	listen := sign(t, k, pathGrant("", "acme/app/room/42"))
-
-	_, err = v.Authorize(context.Background(), sessionReq(EventConnect, viewer))
-	require.NoError(t, err)
-	rv := sessionReq(EventRevalidate, viewer)
-	rv.Bytes = Bytes{Sent: 100, Received: 10}
-	_, err = v.Authorize(context.Background(), rv)
-	require.NoError(t, err)
-	_, err = v.Ticket(listen, k.ID, false)
-	require.NoError(t, err)
-	_, err = v.Ticket(speak, k.ID, false)
-	require.NoError(t, err)
-	require.NoError(t, v.usage.meter.Flush(context.Background()))
-	before := sink.received()
-	v.Publishing(rv.ID)
-	end := sessionReq(EventEnd, viewer)
-	end.Bytes, end.Reason = Bytes{Sent: 170, Received: 15}, "closed"
-	require.NoError(t, v.End(context.Background(), end))
-	require.NoError(t, v.usage.meter.Flush(context.Background()))
-
-	require.Len(t, before, 1)
-	require.Len(t, before[0], 1, "a viewer, and a ticket only verified, open no session")
-	assert.Equal(t, usage.Viewers, before[0][0].Type)
-	assert.Equal(t, map[string]int64{"gateway.egress_bytes": 100, "gateway.ingress_bytes": 10}, before[0][0].Metrics)
-	batches := sink.received()
-	require.Len(t, batches, 2, "the viewer total, unchanged, isn't sent again")
-	var types []usage.Type
-	for _, rec := range batches[1] {
-		types = append(types, rec.Type)
-		assert.Equal(t, rv.ID, rec.SessionID)
-		assert.Equal(t, k.ID, rec.KID)
-		assert.NoError(t, rec.Validate())
-	}
-	assert.Equal(t, []usage.Type{usage.SessionOpen, usage.SessionClose}, types)
-	assert.Equal(t, map[string]int64{"gateway.egress_bytes": 70, "gateway.ingress_bytes": 5}, batches[1][1].Metrics,
-		"what it moved since it was last counted as a viewer")
-}
-
 // A verified grant's MoQ grant is its token's, unchanged.
 func TestVerifier_GrantMoQ(t *testing.T) {
 	k := genKey(t, "acme/app")
@@ -899,35 +692,6 @@ func TestVerifier_Anonymous(t *testing.T) {
 	assert.Equal(t, http.StatusUnauthorized, statusOf(err))
 }
 
-// An anonymous session's usage is reported under the key its first ticket
-// bound it to, from then on: nothing before, and its bytes once bound.
-func TestVerifier_AnonymousUsage(t *testing.T) {
-	k := genKey(t, "acme/app")
-	sink := &fakeUsageSink{}
-	v := verifierWith(t, keySetJSON(t, []token.SigningKey{k}), time.Now())
-	v.usage = newTestUsage(t, sink)
-	ctx := context.Background()
-
-	_, err := v.Authorize(ctx, sessionReq(EventConnect, ""))
-	require.NoError(t, err)
-	assert.Empty(t, v.usage.sessions, "an anonymous session is not counted at connect")
-
-	v.Bind("s1", k.ID, false)
-	v.Publishing("s1")
-	req := sessionReq(EventRevalidate, "")
-	req.Bytes = Bytes{Received: 40}
-	_, err = v.Authorize(ctx, req)
-	require.NoError(t, err)
-	require.NoError(t, v.usage.meter.Flush(ctx))
-
-	var got []string
-	for _, rec := range sink.received()[0] {
-		assert.Equal(t, k.ID, rec.KID)
-		got = append(got, string(rec.Type))
-	}
-	assert.ElementsMatch(t, []string{"session_open", "usage"}, got)
-}
-
 // The first ticket of an anonymous session may be signed by any key in the
 // set, verified as a connect is: a key paused for publishing refuses one
 // that may publish, since the session has published nothing.
@@ -962,25 +726,4 @@ func TestVerifier_FirstTicket(t *testing.T) {
 			assert.Equal(t, tt.ticket, g.grant)
 		})
 	}
-}
-
-// A session bound to a key after it ended, by a ticket granted as it
-// closed, is not brought back into usage, until the relay forgets it.
-func TestUsageReporter_OpenAfterClose(t *testing.T) {
-	sink := &fakeUsageSink{}
-	r := newTestUsage(t, sink)
-	now := time.Now()
-	r.now = func() time.Time { return now }
-
-	r.close("s1", Bytes{}, nil, "closed")
-	r.open("s1", usageSession{kid: "k1", publishes: true})
-	r.publishing("s1")
-
-	assert.Empty(t, r.sessions, "an open after the close is ignored")
-	require.NoError(t, r.meter.Flush(context.Background()))
-	assert.Empty(t, sink.received(), "no open is sent")
-
-	now = now.Add(sessionGrace + time.Second)
-	r.forgetStale()
-	assert.Empty(t, r.closed, "a closed session is forgotten as a stale one is")
 }

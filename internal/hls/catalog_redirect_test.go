@@ -18,7 +18,6 @@ import (
 
 	"github.com/qumo-dev/qumo/internal/devcert"
 	"github.com/qumo-dev/qumo/internal/optin"
-	"github.com/qumo-dev/qumo/internal/relay"
 )
 
 // loopbackPublisher serves mux on a loopback native QUIC address and returns
@@ -54,7 +53,7 @@ func loopbackPublisher(tb testing.TB, ctx context.Context, mux *moqt.TrackMux) *
 	}()
 	tb.Cleanup(func() { _ = srv.Close() }) // not actionable: test teardown
 
-	dialer := &moqt.Dialer{TLSConfig: &tls.Config{InsecureSkipVerify: true}, CheckRedirect: relay.StopRedirect} //nolint:gosec // test-only self-signed cert
+	dialer := &moqt.Dialer{TLSConfig: &tls.Config{InsecureSkipVerify: true}, CheckRedirect: stopRedirect} //nolint:gosec // test-only self-signed cert
 	var sess *moqt.Session
 	require.Eventually(tb, func() bool {
 		s, err := dialer.Dial(ctx, "moqt://"+addr+"/", nil)

@@ -60,6 +60,42 @@ func Target(relayURL string, key token.SigningKey, g token.Grant) (string, time.
 	return u.String(), lapses, nil
 }
 
+// RelayName describes relayURL for a startup banner without its credential:
+// "none" for no relay.
+func RelayName(relayURL string) string {
+	if relayURL == "" {
+		return "none"
+	}
+	u, err := url.Parse(relayURL)
+	if err != nil {
+		return "invalid"
+	}
+	return u.Scheme + "://" + u.Host + u.Path
+}
+
+// Dial opens a session to relayURL using dialer and mux. When key is non-nil it
+// signs a fresh credential granting grant in place of any ?jwt= in relayURL
+// and starts [Keep] to renew it on the session before its grant lapses.
+func Dial(ctx context.Context, dialer *moqt.Dialer, relayURL string, mux *moqt.TrackMux, key *token.SigningKey, grant token.Grant) (*moqt.Session, error) {
+	target := relayURL
+	var lapses time.Time
+	if key != nil {
+		var err error
+		target, lapses, err = Target(relayURL, *key, grant)
+		if err != nil {
+			return nil, err
+		}
+	}
+	sess, err := dialer.Dial(ctx, target, mux)
+	if err != nil {
+		return nil, err
+	}
+	if key != nil {
+		go Keep(sess, *key, grant, lapses)
+	}
+	return sess, nil
+}
+
 // credential is a token presented on an Auth Stream, as keeping a grant in
 // force needs one: *moqt.Credential.
 type credential interface {

@@ -40,7 +40,7 @@ linters:
       # False positive: the smoke test's -ca cert path comes from a CLI flag
       # run by an operator/developer, not external user input.
       - linters: [gosec]
-        path: "internal/smoketest/"
+        path: "tools/smoketest/"
         text: "G304"
       # False positive: the shared client TLS helper reads a relay cert path that
       # every qumo client (--ca / RELAY_CA_FILE) supplies, not external input.
@@ -86,9 +86,9 @@ linters:
         path: "_test\\.go"
         text: "G204"
       # False positive: ffpub intentionally launches ffmpeg with args built from
-      # a validated, internally-sourced Config to drive interop tests — not external input.
+      # a validated, internally-sourced config to drive interop tests — not external input.
       - linters: [gosec]
-        path: "internal/ffpub/"
+        path: "internal/integration/ffpub\\.go"
         text: "G204"
       # Log values are passed through sanitizeLog (strips CR/LF) before logging.
       # gosec taint analysis does not recognise custom sanitisers, so this is a false positive.

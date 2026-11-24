@@ -21,7 +21,6 @@ import (
 
 	"github.com/qumo-dev/qumo/internal/abr"
 	"github.com/qumo-dev/qumo/internal/cmaf"
-	"github.com/qumo-dev/qumo/internal/ffpub"
 	"github.com/qumo-dev/qumo/internal/ingest"
 	"github.com/qumo-dev/qumo/internal/optin"
 	"github.com/qumo-dev/qumo/token"
@@ -34,7 +33,7 @@ import (
 // than it in one alternate group, and every video track numbers its groups as
 // the source does, each group starting at the same frame with a keyframe.
 func TestABR_RenditionsBesideSource(t *testing.T) {
-	if !ffpub.Available() {
+	if !ffpubAvailable() {
 		t.Skip("ffmpeg not on PATH")
 	}
 	const (
@@ -69,7 +68,7 @@ func TestABR_RenditionsBesideSource(t *testing.T) {
 	}, 5*time.Second, 50*time.Millisecond)
 	dialOver(t, url, nil, ingestMux)
 
-	pub := ffpub.New(ffpub.Config{
+	pub := newFFPub(ffpubConfig{
 		URL:   fmt.Sprintf("rtmp://%s%s", rtmpAddr, src),
 		Audio: true, GOP: 30, Width: 1280, Height: 720, Framerate: 30,
 	})

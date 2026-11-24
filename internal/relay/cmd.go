@@ -29,6 +29,7 @@ import (
 	"github.com/qumo-dev/qumo/internal/cors"
 	"github.com/qumo-dev/qumo/internal/envconfig"
 	"github.com/qumo-dev/qumo/internal/gctune"
+	"github.com/qumo-dev/qumo/internal/meter"
 	"github.com/qumo-dev/qumo/internal/quicconfig"
 	"github.com/qumo-dev/qumo/internal/watermark"
 )
@@ -188,13 +189,13 @@ func Run(args []string) error {
 	verifierCfg := auth.VerifierConfig{
 		Keys:      os.Getenv("QUMO_AUTH_KEYS"),
 		KeysCache: os.Getenv("QUMO_AUTH_KEYS_CACHE"),
-		UsageURL:  os.Getenv("QUMO_USAGE_URL"),
 		Token:     os.Getenv("QUMO_RELAY_TOKEN"),
 	}
+	usageURL := os.Getenv("QUMO_USAGE_URL")
 	// With a peer identity, the key-set and usage requests are signed with
 	// it (qumo-dev/qumo#601), beside the token: the control plane then knows
 	// which relay calls from a key only that relay holds.
-	signer, err := requestSigner(trust, verifierCfg.UsageURL != "" || auth.KeysDownloaded(verifierCfg.Keys))
+	signer, err := requestSigner(trust, usageURL != "" || auth.KeysDownloaded(verifierCfg.Keys))
 	if err != nil {
 		return err
 	}
@@ -211,8 +212,7 @@ func Run(args []string) error {
 	}, publicCert, trust, signer)
 	tlsConfig := serverTLS(certs.publicTLS(), certs.currentTrust)
 	authorize := admitUnchecked
-	var reportEnd func(context.Context, auth.Request) error // nil: auth off reports nothing
-	var tickets TicketVerifier                              // nil: auth off verifies no tickets
+	var tickets TicketVerifier // nil: auth off verifies no tickets
 	var verifier *auth.Verifier
 	if verifierCfg.Keys != "" {
 		v, err := auth.NewVerifier(verifierCfg)
@@ -221,13 +221,21 @@ func Run(args []string) error {
 		}
 		verifier = v
 		authorize = v.Authorize
-		reportEnd = v.End
 		tickets = v
 	} else {
 		slog.Warn("relay: auth is off: no key set (QUMO_AUTH_KEYS), so every session is admitted unchecked")
 	}
-	if verifierCfg.UsageURL != "" && verifier == nil {
-		return errors.New("QUMO_USAGE_URL needs QUMO_AUTH_KEYS: usage is reported for the sessions the relay verifies")
+	var usageMeter *meter.Reporter
+	if usageURL != "" {
+		if verifier == nil {
+			return errors.New("QUMO_USAGE_URL needs QUMO_AUTH_KEYS: usage is reported for the sessions the relay verifies")
+		}
+		usageMeter, err = meter.New(meter.Config{
+			Name: "relay", URL: usageURL, Token: verifierCfg.Token, Signer: signer,
+		})
+		if err != nil {
+			return fmt.Errorf("QUMO_USAGE_URL: %w", err)
+		}
 	}
 
 	relayCfg := Config{
@@ -288,8 +296,8 @@ func Run(args []string) error {
 		TrackMux:        trackMux,
 		AllowedOrigins:  cors.LoadAllowed(),
 		Authorize:       authorize,
-		End:             reportEnd,
 		Tickets:         tickets,
+		Meter:           usageMeter,
 		PeerCertificate: certs.ownCertificate,
 	}
 
@@ -389,15 +397,16 @@ func Run(args []string) error {
 	}
 	if verifier != nil {
 		log.Printf("\t%-8s: key set %s\n", "Auth", sanitizeLog(verifier.Source()))
-		if verifier.Reporting() {
-			log.Printf("\t%-8s: %s\n", "Usage", sanitizeLog(verifierCfg.UsageURL))
+		if usageMeter != nil {
+			log.Printf("\t%-8s: %s\n", "Usage", sanitizeLog(usageURL))
 		}
 	} else {
 		log.Printf("\t%-8s: off (no QUMO_AUTH_KEYS): every session is admitted unchecked\n", "Auth")
 	}
 
-	// The verifier refreshes its key set and sends usage until the relay has
-	// stopped taking sessions, then sends what usage is left once more.
+	// The verifier refreshes its key set until the relay stops; the usage
+	// meter sends usage until sessions finish reporting their end and then
+	// flushes once more.
 	verifierDone := make(chan struct{})
 	stopVerifier := func() {}
 	if verifier != nil {
@@ -409,7 +418,18 @@ func Run(args []string) error {
 		}()
 	}
 	defer stopVerifier()
-	// Deferred after stopVerifier, so it runs before it: sessions report
+	meterDone := make(chan struct{})
+	stopMeter := func() {}
+	if usageMeter != nil {
+		mctx, mcancel := context.WithCancel(context.WithoutCancel(ctx))
+		stopMeter = func() { mcancel(); <-meterDone }
+		go func() {
+			defer close(meterDone)
+			usageMeter.Run(mctx)
+		}()
+	}
+	defer stopMeter()
+	// Deferred after stopMeter, so it runs before it: sessions report
 	// their end after their connection closes, which can be after the
 	// servers have shut down, and the last usage send must include them.
 	defer relayServer.waitSessionEnds(endReportGrace)

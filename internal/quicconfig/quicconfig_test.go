@@ -8,15 +8,13 @@ import (
 	"github.com/quic-go/quic-go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-
-	"github.com/qumo-dev/qumo/internal/envconfig"
 )
 
 // clearEnv empties every QUIC_* setting for the test, so one left in the
 // developer's or the runner's environment cannot reach it.
 func clearEnv(tb testing.TB) {
 	tb.Helper()
-	for _, key := range envconfig.QUICKeys() {
+	for _, key := range Keys() {
 		tb.Setenv(key, "")
 	}
 }
@@ -405,4 +403,16 @@ func TestFromEnv_QUICGoVersion(t *testing.T) {
 	require.NoError(t, err)
 
 	assert.Contains(t, string(gomod), "github.com/quic-go/quic-go "+quicGoVersion+"\n")
+}
+
+func TestKeys(t *testing.T) {
+	keys := Keys()
+
+	assert.Len(t, keys, 9)
+	seen := map[string]bool{}
+	for _, key := range keys {
+		assert.Regexp(t, `^QUIC_[A-Z_]+$`, key)
+		assert.False(t, seen[key], "%s is listed twice", key)
+		seen[key] = true
+	}
 }

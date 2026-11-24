@@ -11,6 +11,7 @@ import (
 
 	"github.com/qumo-dev/gomoqt/moqt"
 	"github.com/qumo-dev/qumo/internal/reqsign"
+	"github.com/qumo-dev/qumo/internal/tlsclient"
 )
 
 // Relay peers authenticate each other with mutual TLS on native QUIC, under a
@@ -40,7 +41,7 @@ import (
 
 // PeeringName is the TLS server name a relay asks for when it dials a peer,
 // and the DNS name a peer certificate must carry. It can never resolve.
-const PeeringName = "peer.qumo.internal"
+const PeeringName = tlsclient.PeeringName
 
 // sessionClass is whom the relay takes a session for, which decides what it
 // asks of the session and what it lets it do. A native-QUIC session's TLS

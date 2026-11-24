@@ -9,7 +9,6 @@ import (
 	"net/url"
 	"path/filepath"
 	"slices"
-	"strings"
 	"sync"
 	"testing"
 	"testing/synctest"
@@ -1088,44 +1087,17 @@ func TestServer_ServeAuth_TicketUncheckable(t *testing.T) {
 	assert.Equal(t, moqt.InternalSessionErrorCode, authErr.Code)
 }
 
-// bindingTickets verifies with the Verifier and records, in order, each
-// session bound to a key ("bind <kid> <publishes>") and each made a
-// publisher ("publishing").
-type bindingTickets struct {
-	*auth.Verifier
-	mu     sync.Mutex
-	events []string
-}
-
-func (b *bindingTickets) Bind(id, keyID string, publishes bool) {
-	b.mu.Lock()
-	b.events = append(b.events, fmt.Sprintf("bind %s %t", keyID, publishes))
-	b.mu.Unlock()
-	b.Verifier.Bind(id, keyID, publishes)
-}
-
-func (b *bindingTickets) Publishing(id string) {
-	b.mu.Lock()
-	b.events = append(b.events, "publishing")
-	b.mu.Unlock()
-	b.Verifier.Publishing(id)
-}
-
-func (b *bindingTickets) seen() []string {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return slices.Clone(b.events)
-}
-
 // A session that connected with no credential is granted nothing for it, and
 // what its tickets grant: the first ticket binds it to its key, and a ticket
-// of any other trusted key is refused from then on.
+// of any other trusted key is refused from then on. Usage opens only once a
+// publishing ticket is granted.
 func TestServer_ServeAuth_Anonymous(t *testing.T) {
 	keys := newTicketTestKeys(t)
-	tickets := &bindingTickets{Verifier: keys.verifier}
+	sink := &fakeUsageSink{}
 	srv := newWebSocketTestServer(t, &fakeAuth{})
 	srv.Authorize = keys.verifier.Authorize
-	srv.Tickets = tickets
+	srv.Tickets = keys.verifier
+	srv.Meter = newTestMeter(t, sink)
 	sess := dialTest(t, srv, "")
 
 	own, err := authTest(t, sess, "")
@@ -1138,6 +1110,8 @@ func TestServer_ServeAuth_Anonymous(t *testing.T) {
 	require.NoError(t, err, "the first ticket may be of any trusted key")
 	assert.Equal(t, "/acme/room/42/", c.Grant().Root)
 	assert.Positive(t, c.Grant().MaxAge)
+	require.NoError(t, srv.Meter.Flush(t.Context()))
+	assert.Empty(t, sink.received(), "a viewer ticket opens no session")
 
 	_, err = authTest(t, sess, signTest(t, keys.session, listenRoom))
 	authErr, ok := errors.AsType[*moqt.AuthError](err)
@@ -1148,22 +1122,31 @@ func TestServer_ServeAuth_Anonymous(t *testing.T) {
 	require.NoError(t, err, "a later ticket of the bound key")
 	// The presenter has its answer before the relay records the grant.
 	assert.EventuallyWithT(t, func(c *assert.CollectT) {
-		assert.Equal(c, []string{"bind " + keys.other.ID + " false", "publishing"}, tickets.seen(),
-			"bound once, to the first ticket's key, then made a publisher")
+		assert.NoError(c, srv.Meter.Flush(t.Context()))
+		var opens []usage.Record
+		for _, batch := range sink.received() {
+			for _, rec := range batch {
+				if rec.Type == usage.SessionOpen {
+					opens = append(opens, rec)
+				}
+			}
+		}
+		require.Len(c, opens, 1, "opened once upon publishing ticket")
+		assert.Equal(c, keys.other.ID, opens[0].KID, "under the bound key")
 	}, time.Second, 5*time.Millisecond)
 }
 
-// Tickets granted at once on an anonymous session open its usage once, with
-// whether the first granted publishes, and make it a publisher only after
-// that, whichever is granted first. They are for different rooms, so that
+// Tickets granted at once on an anonymous session open its usage once,
+// whichever is granted first. They are for different rooms, so that
 // neither replaces the other.
 func TestServer_ServeAuth_AnonymousConcurrentTickets(t *testing.T) {
 	keys := newTicketTestKeys(t)
 	for range 10 {
-		tickets := &bindingTickets{Verifier: keys.verifier}
+		sink := &fakeUsageSink{}
 		srv := newWebSocketTestServer(t, &fakeAuth{})
 		srv.Authorize = keys.verifier.Authorize
-		srv.Tickets = tickets
+		srv.Tickets = keys.verifier
+		srv.Meter = newTestMeter(t, sink)
 		sess := dialTest(t, srv, "")
 		listen := signTest(t, keys.session, listenRoom)
 		speak := signTest(t, keys.session, token.Grant{Root: "/acme/room/43/", Publish: []string{"/7"}, Subscribe: []string{"/"}})
@@ -1178,21 +1161,29 @@ func TestServer_ServeAuth_AnonymousConcurrentTickets(t *testing.T) {
 		wg.Wait()
 
 		// The presenters have their answers before the relay records both
-		// grants: one bind, then a publishing unless the bind published.
-		var events []string
+		// grants: wait until the session is recorded as publishing, then flush
+		// and verify only one session_open was emitted under the bound key.
 		require.Eventually(t, func() bool {
-			events = tickets.seen()
-			return len(events) == 2 || (len(events) == 1 && strings.HasSuffix(events[0], " true"))
-		}, time.Second, 5*time.Millisecond, "events: %v", tickets.seen())
-		bind := "bind " + keys.session.ID
-		switch events[0] {
-		case bind + " true":
-			assert.Len(t, events, 1, "a session bound as a publisher is made one no second time")
-		case bind + " false":
-			assert.Equal(t, []string{bind + " false", "publishing"}, events)
-		default:
-			t.Fatalf("the first event is no bind: %v", events)
+			srv.usage.mu.Lock()
+			defer srv.usage.mu.Unlock()
+			for _, s := range srv.usage.sessions {
+				if s.publishes {
+					return true
+				}
+			}
+			return false
+		}, time.Second, 5*time.Millisecond, "session never marked publishing")
+		require.NoError(t, srv.Meter.Flush(t.Context()))
+		var opens []usage.Record
+		for _, batch := range sink.received() {
+			for _, rec := range batch {
+				if rec.Type == usage.SessionOpen {
+					opens = append(opens, rec)
+				}
+			}
 		}
+		require.Len(t, opens, 1, "a session is opened at most once")
+		assert.Equal(t, keys.session.ID, opens[0].KID)
 	}
 }
 

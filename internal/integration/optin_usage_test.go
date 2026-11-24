@@ -19,7 +19,6 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/qumo-dev/qumo/internal/auth"
-	"github.com/qumo-dev/qumo/internal/ffpub"
 	"github.com/qumo-dev/qumo/internal/ingest"
 	"github.com/qumo-dev/qumo/internal/meter"
 	"github.com/qumo-dev/qumo/internal/optin"
@@ -71,7 +70,7 @@ func TestRelay_ReportsOptInSeconds(t *testing.T) {
 	sink := &usageSink{}
 	usageSrv := httptest.NewServer(sink)
 	t.Cleanup(usageSrv.Close)
-	verifier, err := auth.NewVerifier(auth.VerifierConfig{Keys: keys, UsageURL: usageSrv.URL})
+	verifier, err := auth.NewVerifier(auth.VerifierConfig{Keys: keys})
 	require.NoError(t, err)
 	runCtx, stopRun := context.WithCancel(context.Background())
 	runDone := make(chan struct{})
@@ -81,13 +80,23 @@ func TestRelay_ReportsOptInSeconds(t *testing.T) {
 	}()
 	t.Cleanup(func() { stopRun(); <-runDone })
 
+	m, err := meter.New(meter.Config{Name: "relay", URL: usageSrv.URL})
+	require.NoError(t, err)
+	meterCtx, stopMeter := context.WithCancel(context.Background())
+	meterDone := make(chan struct{})
+	go func() {
+		defer close(meterDone)
+		m.Run(meterCtx)
+	}()
+	t.Cleanup(func() { stopMeter(); <-meterDone })
+
 	ended := make(chan auth.Request, 4)
 	addr, srv := startAuthRelay(t, verifier.Authorize, nil, func(s *relay.Server) {
 		s.Tickets = verifier
+		s.Meter = m
 		s.End = func(ctx context.Context, req auth.Request) error {
-			err := verifier.End(ctx, req)
 			ended <- req
-			return err
+			return nil
 		}
 	})
 	sign := func(g token.Grant) string {
@@ -121,9 +130,9 @@ func TestRelay_ReportsOptInSeconds(t *testing.T) {
 	assert.GreaterOrEqual(t, end.OptIns[token.OptInABR], 2*time.Second)
 	assert.NotContains(t, end.OptIns, token.OptInHLS, "nothing was opted into HLS")
 
-	// The verifier sends what is pending once more when it stops.
-	stopRun()
-	<-runDone
+	// The meter sends what is pending once more when it stops.
+	stopMeter()
+	<-meterDone
 	var closed *usage.Record
 	for _, rec := range sink.all() {
 		if rec.Type == usage.SessionClose && rec.SessionID == end.ID {
@@ -145,7 +154,7 @@ func TestRelay_ReportsOptInSeconds(t *testing.T) {
 // lasted, so a control plane bills a stream pushed over RTMP as it bills one
 // published over MoQ.
 func TestIngest_ReportsUsage(t *testing.T) {
-	if !ffpub.Available() {
+	if !ffpubAvailable() {
 		t.Skip("ffmpeg not on PATH")
 	}
 	tenant, err := token.GenerateKey("/live/")
@@ -190,7 +199,7 @@ func TestIngest_ReportsUsage(t *testing.T) {
 	streamKey := fmt.Sprintf("metered?jwt=%s&jwt=%s",
 		sign(token.Grant{Root: "/live/", Publish: []string{"/metered"}}),
 		sign(token.Grant{Root: "/.abr/live/", Publish: []string{"/metered"}}))
-	pub := ffpub.New(ffpub.Config{
+	pub := newFFPub(ffpubConfig{
 		URL: fmt.Sprintf("rtmp://%s/live/%s", rtmpAddr, streamKey),
 		GOP: 30, Width: 320, Height: 240, Framerate: 30,
 	})
