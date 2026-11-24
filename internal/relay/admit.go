@@ -15,6 +15,7 @@ import (
 
 	"github.com/qumo-dev/gomoqt/moqt"
 	"github.com/qumo-dev/qumo/internal/auth"
+	"github.com/qumo-dev/qumo/internal/optin"
 	"github.com/qumo-dev/qumo/token"
 	"github.com/qumo-dev/qumo/usage"
 )
@@ -702,13 +703,13 @@ func (s *Server) admitClient(ctx context.Context, req auth.Request) (g *auth.Gra
 // ended. ctx is the session's: done by now, so the report keeps its values
 // but not its cancellation. A failed report is recorded and otherwise
 // ignored; End bounds its own wait.
-func (s *Server) reportEnd(ctx context.Context, req auth.Request, stats moqt.SessionStats, optIns *optInClock, reason string) {
+func (s *Server) reportEnd(ctx context.Context, req auth.Request, stats moqt.SessionStats, optIns *optin.Clock, reason string) {
 	if s.End == nil {
 		return
 	}
 	req.Event = auth.EventEnd
 	req.Bytes = sessionBytes(stats)
-	req.OptIns = optIns.totals()
+	req.OptIns = optIns.Totals()
 	req.Reason = reason
 	if err := s.End(context.WithoutCancel(ctx), req); err != nil {
 		metricAuthRequests.WithLabelValues(auth.EventEnd, authError).Inc()

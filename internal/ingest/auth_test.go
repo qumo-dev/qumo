@@ -82,11 +82,11 @@ func TestAuthorizeAny(t *testing.T) {
 	}
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
-			fake := &fakePublishAuthorizer{answer: func(ask publishAsk) (time.Time, error) {
+			fake := &fakePublishAuthorizer{answer: func(ask publishAsk) (Permission, error) {
 				if err := tt.answers[ask.credential]; err != nil {
-					return time.Time{}, err
+					return Permission{}, err
 				}
-				return lapses, nil
+				return Permission{Lapses: lapses, KeyID: ask.credential}, nil
 			}}
 
 			got, err := authorizeAny(fake.authorize, tt.credentials, "/live/cam")
@@ -101,7 +101,8 @@ func TestAuthorizeAny(t *testing.T) {
 				return
 			}
 			require.NoError(t, err)
-			assert.Equal(t, lapses, got)
+			assert.Equal(t, Permission{Lapses: lapses, KeyID: tt.wantAsked[len(tt.wantAsked)-1]}, got,
+				"the permission of the credential that granted it")
 		})
 	}
 }
@@ -169,7 +170,8 @@ func TestPublishAuthorizer(t *testing.T) {
 			authorize := publishAuthorizer(tt.verifier, tt.beneath)
 			require.NotNil(t, authorize)
 
-			lapses, err := authorize(tt.credential, tt.path)
+			granted, err := authorize(tt.credential, tt.path)
+			lapses := granted.Lapses
 
 			switch {
 			case tt.wantErr != nil:
@@ -181,6 +183,7 @@ func TestPublishAuthorizer(t *testing.T) {
 			case tt.wantLapse:
 				require.NoError(t, err)
 				assert.WithinDuration(t, time.Now().Add(time.Minute), lapses, 5*time.Second, "cut when the credential expires")
+				assert.Equal(t, tt.verifier == v, granted.KeyID == key.ID, "the push is the usage of the key that signed it")
 			case tt.verifier == nil:
 				require.NoError(t, err)
 				assert.True(t, lapses.IsZero(), "auth off never cuts")
@@ -219,9 +222,10 @@ func TestPublishAuthorizer_OptIn(t *testing.T) {
 	}
 
 	t.Run("a key that holds the opt-in", func(t *testing.T) {
-		lapses, err := publishAuthorizer(paid, "/live/")(sign(paidKey), "/.abr/live/cam")
+		granted, err := publishAuthorizer(paid, "/live/")(sign(paidKey), "/.abr/live/cam")
 		require.NoError(t, err)
-		assert.WithinDuration(t, time.Now().Add(time.Minute), lapses, 5*time.Second)
+		assert.WithinDuration(t, time.Now().Add(time.Minute), granted.Lapses, 5*time.Second)
+		assert.Equal(t, paidKey.ID, granted.KeyID)
 	})
 	t.Run("a key that does not", func(t *testing.T) {
 		_, err := publishAuthorizer(unpaid, "/live/")(sign(unpaidKey), "/.abr/live/cam")
@@ -241,4 +245,50 @@ func TestPublishAuthorizer_OptIn(t *testing.T) {
 // there is no check at all.
 func TestPublishAuthorizer_Off(t *testing.T) {
 	assert.Nil(t, publishAuthorizer(nil, ""))
+}
+
+// TestOptIn_RequiresSameKey verifies opt-ins are granted only to a credential
+// signed by the same key that granted the stream when streamKeyID is known.
+func TestOptIn_RequiresSameKey(t *testing.T) {
+	errDenied := errors.New("denied")
+	byToken := map[string]Permission{
+		"same":    {KeyID: "k1"},
+		"foreign": {KeyID: "k2"},
+		"empty":   {},
+	}
+	authorize := func(cred string, _ moqt.BroadcastPath) (Permission, error) {
+		if p, ok := byToken[cred]; ok {
+			return p, nil
+		}
+		return Permission{}, errDenied
+	}
+
+	tests := map[string]struct {
+		credentials []string
+		streamKeyID string
+		wantOptedIn bool
+	}{
+		"same key":                         {credentials: []string{"same"}, streamKeyID: "k1", wantOptedIn: true},
+		"different key":                    {credentials: []string{"foreign"}, streamKeyID: "k1"},
+		"empty key when stream has key":    {credentials: []string{"empty"}, streamKeyID: "k1"},
+		"foreign then same key in order":   {credentials: []string{"foreign", "same"}, streamKeyID: "k1", wantOptedIn: true},
+		"unchecked stream key ignores kid": {credentials: []string{"foreign"}, streamKeyID: "", wantOptedIn: true},
+	}
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			mux := moqt.NewTrackMux(0)
+			sess, err := NewSession(mux, "/live/cam")
+			require.NoError(t, err)
+			defer sess.Close()
+
+			optIn(sess, authorize, tt.credentials, []token.OptIn{token.OptInABR}, tt.streamKeyID)
+
+			ann, _ := mux.TrackHandler("/.abr/live/cam")
+			if tt.wantOptedIn {
+				assert.NotNil(t, ann)
+			} else {
+				assert.Nil(t, ann)
+			}
+		})
+	}
 }
