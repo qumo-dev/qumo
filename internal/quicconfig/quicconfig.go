@@ -48,7 +48,7 @@ const (
 // does when the setting is read, and line breaks are taken out of a value.
 func EnvSet() []string {
 	var set []string
-	for _, key := range envconfig.QUICKeys() {
+	for _, key := range Keys() {
 		if v := strings.TrimSpace(os.Getenv(key)); v != "" {
 			set = append(set, key+"="+strings.NewReplacer("\r", "", "\n", "").Replace(v))
 		}
@@ -97,28 +97,28 @@ func FromEnv(base *quic.Config) (*quic.Config, error) {
 		cfg = base.Clone()
 	}
 
-	size, set, err := envconfig.Uint(envconfig.QUICInitialPacketSize)
+	size, set, err := envconfig.Uint(KeyInitialPacketSize)
 	if err != nil {
 		return nil, err
 	}
 	if set {
 		if size < minInitialPacketSize || size > maxInitialPacketSize {
 			return nil, fmt.Errorf("invalid %s %d: want %d to %d",
-				envconfig.QUICInitialPacketSize, size, minInitialPacketSize, maxInitialPacketSize)
+				KeyInitialPacketSize, size, minInitialPacketSize, maxInitialPacketSize)
 		}
 		cfg.InitialPacketSize = uint16(size)
 	}
 
-	pmtud, err := envconfig.Switch(envconfig.QUICPMTUD, !cfg.DisablePathMTUDiscovery)
+	pmtud, err := envconfig.Switch(KeyPMTUD, !cfg.DisablePathMTUDiscovery)
 	if err != nil {
 		return nil, err
 	}
 	cfg.DisablePathMTUDiscovery = !pmtud
 
-	if err := setTimeout(envconfig.QUICIdleTimeout, &cfg.MaxIdleTimeout); err != nil {
+	if err := setTimeout(KeyIdleTimeout, &cfg.MaxIdleTimeout); err != nil {
 		return nil, err
 	}
-	if err := setTimeout(envconfig.QUICHandshakeIdleTimeout, &cfg.HandshakeIdleTimeout); err != nil {
+	if err := setTimeout(KeyHandshakeIdleTimeout, &cfg.HandshakeIdleTimeout); err != nil {
 		return nil, err
 	}
 	idleTimeout := cfg.MaxIdleTimeout
@@ -130,14 +130,14 @@ func FromEnv(base *quic.Config) (*quic.Config, error) {
 	}
 
 	if err := setWindows(
-		envconfig.QUICStreamReceiveWindow, envconfig.QUICMaxStreamReceiveWindow,
+		KeyStreamReceiveWindow, KeyMaxStreamReceiveWindow,
 		&cfg.InitialStreamReceiveWindow, &cfg.MaxStreamReceiveWindow,
 		quicGoInitialStreamWindow, quicGoMaxStreamWindow,
 	); err != nil {
 		return nil, err
 	}
 	if err := setWindows(
-		envconfig.QUICConnectionReceiveWindow, envconfig.QUICMaxConnectionReceiveWindow,
+		KeyConnectionReceiveWindow, KeyMaxConnectionReceiveWindow,
 		&cfg.InitialConnectionReceiveWindow, &cfg.MaxConnectionReceiveWindow,
 		quicGoInitialConnectionWindow, quicGoMaxConnectionWindow,
 	); err != nil {
@@ -169,7 +169,7 @@ func setTimeout(key string, dst *time.Duration) error {
 // minDuration or more and at most half of idleTimeout: quic-go pings no less
 // often than that, whatever is asked.
 func keepAlive(def, idleTimeout time.Duration) (time.Duration, error) {
-	v, set, err := envconfig.Duration(envconfig.QUICKeepAlive)
+	v, set, err := envconfig.Duration(KeyKeepAlive)
 	if err != nil {
 		return 0, err
 	}
@@ -180,11 +180,11 @@ func keepAlive(def, idleTimeout time.Duration) (time.Duration, error) {
 		return 0, nil
 	}
 	if v < minDuration {
-		return 0, fmt.Errorf("invalid %s %s: want 0 for none, or %s or more", envconfig.QUICKeepAlive, v, minDuration)
+		return 0, fmt.Errorf("invalid %s %s: want 0 for none, or %s or more", KeyKeepAlive, v, minDuration)
 	}
 	if v > idleTimeout/2 {
 		return 0, fmt.Errorf("invalid %s %s: more than half the idle timeout %s (%s); a session would be pinged every %s whatever is set here",
-			envconfig.QUICKeepAlive, v, idleTimeout, envconfig.QUICIdleTimeout, idleTimeout/2)
+			KeyKeepAlive, v, idleTimeout, KeyIdleTimeout, idleTimeout/2)
 	}
 	return v, nil
 }

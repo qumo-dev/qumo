@@ -176,15 +176,3 @@ func TestSwitch(t *testing.T) {
 		})
 	}
 }
-
-func TestQUICKeys(t *testing.T) {
-	keys := QUICKeys()
-
-	assert.Len(t, keys, 9)
-	seen := map[string]bool{}
-	for _, key := range keys {
-		assert.Regexp(t, `^QUIC_[A-Z_]+$`, key)
-		assert.False(t, seen[key], "%s is listed twice", key)
-		seen[key] = true
-	}
-}

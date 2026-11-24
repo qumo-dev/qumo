@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/qumo-dev/qumo/internal/envconfig"
+	"github.com/qumo-dev/qumo/internal/quicconfig"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -91,7 +91,7 @@ func TestTargetQUICConfig(t *testing.T) {
 	}
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
-			for _, key := range envconfig.QUICKeys() {
+			for _, key := range quicconfig.Keys() {
 				t.Setenv(key, "")
 			}
 			for key, value := range tt.env {
