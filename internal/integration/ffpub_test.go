@@ -1,4 +1,4 @@
-package ffpub
+package integration
 
 import (
 	"context"
@@ -12,8 +12,8 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func baseCfg(url string) Config {
-	return Config{
+func baseFFPubCfg(url string) ffpubConfig {
+	return ffpubConfig{
 		URL:       url,
 		GOP:       30,
 		Width:     1280,
@@ -33,9 +33,9 @@ func containsAll(args []string, want ...string) bool {
 	return true
 }
 
-func TestPublisher_Args(t *testing.T) {
+func TestFFPub_Args(t *testing.T) {
 	t.Run("default (no B-frames, no audio)", func(t *testing.T) {
-		args, err := New(baseCfg("rtmp://example/live/test")).Args()
+		args, err := newFFPub(baseFFPubCfg("rtmp://example/live/test")).Args()
 		require.NoError(t, err)
 		assert.Contains(t, args, "-bf", "B-frames disabled via -bf 0")
 		assert.Contains(t, args, "0")
@@ -49,33 +49,33 @@ func TestPublisher_Args(t *testing.T) {
 	})
 
 	t.Run("B-frames enabled omits -bf", func(t *testing.T) {
-		cfg := baseCfg("rtmp://x/y")
+		cfg := baseFFPubCfg("rtmp://x/y")
 		cfg.BFrames = true
-		args, err := New(cfg).Args()
+		args, err := newFFPub(cfg).Args()
 		require.NoError(t, err)
 		assert.NotContains(t, args, "-bf", "no -bf flag when B-frames enabled")
 	})
 
 	t.Run("audio adds sine source and AAC encoder", func(t *testing.T) {
-		cfg := baseCfg("rtmp://x/y")
+		cfg := baseFFPubCfg("rtmp://x/y")
 		cfg.Audio = true
-		args, err := New(cfg).Args()
+		args, err := newFFPub(cfg).Args()
 		require.NoError(t, err)
 		assert.True(t, containsAll(args,
 			"sine=frequency=440:sample_rate=48000", "-c:a", "aac", "-b:a", "128k"))
 	})
 
 	t.Run("GOP and resolution/framerate reflected", func(t *testing.T) {
-		cfg := Config{URL: "rtmp://x/y", GOP: 60, Width: 1920, Height: 1080, Framerate: 25}
-		args, err := New(cfg).Args()
+		cfg := ffpubConfig{URL: "rtmp://x/y", GOP: 60, Width: 1920, Height: 1080, Framerate: 25}
+		args, err := newFFPub(cfg).Args()
 		require.NoError(t, err)
 		assert.True(t, containsAll(args, "testsrc2=size=1920x1080:rate=25", "-g", "60"))
 	})
 
 	t.Run("duration adds -t", func(t *testing.T) {
-		cfg := baseCfg("rtmp://x/y")
+		cfg := baseFFPubCfg("rtmp://x/y")
 		cfg.Duration = 2500 * time.Millisecond
-		args, err := New(cfg).Args()
+		args, err := newFFPub(cfg).Args()
 		require.NoError(t, err)
 		// Find -t and check its value.
 		i := indexOf(args, "-t")
@@ -84,8 +84,8 @@ func TestPublisher_Args(t *testing.T) {
 	})
 
 	t.Run("rtsp URL uses rtsp muxer + tcp transport", func(t *testing.T) {
-		cfg := baseCfg("rtsp://x:8554/y")
-		args, err := New(cfg).Args()
+		cfg := baseFFPubCfg("rtsp://x:8554/y")
+		args, err := newFFPub(cfg).Args()
 		require.NoError(t, err)
 		// RTSP must force TCP: qumo's RTSP ingest only accepts interleaved TCP.
 		i := indexOf(args, "-rtsp_transport")
@@ -96,8 +96,8 @@ func TestPublisher_Args(t *testing.T) {
 	})
 }
 
-func TestPublisher_Args_Validation(t *testing.T) {
-	tests := map[string]Config{
+func TestFFPub_Args_Validation(t *testing.T) {
+	tests := map[string]ffpubConfig{
 		"empty URL":      {GOP: 30, Width: 320, Height: 240, Framerate: 30},
 		"invalid scheme": {URL: "udp://x/y", GOP: 30, Width: 320, Height: 240, Framerate: 30},
 		"zero GOP":       {URL: "rtmp://x/y", Width: 320, Height: 240, Framerate: 30},
@@ -106,17 +106,17 @@ func TestPublisher_Args_Validation(t *testing.T) {
 	}
 	for name, cfg := range tests {
 		t.Run(name, func(t *testing.T) {
-			_, err := New(cfg).Args()
+			_, err := newFFPub(cfg).Args()
 			assert.Error(t, err)
 		})
 	}
 }
 
-// TestPublisher_StartStop exercises the real ffmpeg subprocess lifecycle:
+// TestFFPub_StartStop exercises the real ffmpeg subprocess lifecycle:
 // ffmpeg connects to a local TCP sink (RTMP URL), runs, and is killed cleanly
 // on context cancellation. Skips when ffmpeg is not on PATH.
-func TestPublisher_StartStop(t *testing.T) {
-	if !Available() {
+func TestFFPub_StartStop(t *testing.T) {
+	if !ffpubAvailable() {
 		t.Skip("ffmpeg not on PATH")
 	}
 
@@ -141,7 +141,7 @@ func TestPublisher_StartStop(t *testing.T) {
 	defer cancel()
 
 	url := "rtmp://" + ln.Addr().String() + "/live/test"
-	p := New(baseCfg(url))
+	p := newFFPub(baseFFPubCfg(url))
 
 	require.NoError(t, p.Start(ctx))
 	proc := p.Process()

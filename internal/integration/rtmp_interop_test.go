@@ -21,7 +21,6 @@ import (
 	"time"
 
 	"github.com/qumo-dev/gomoqt/moqt"
-	"github.com/qumo-dev/qumo/internal/ffpub"
 	"github.com/qumo-dev/qumo/internal/ingest"
 	"github.com/stretchr/testify/require"
 )
@@ -38,7 +37,7 @@ import (
 //
 //	go test -tags=integration ./internal/integration/...
 func TestRTMPInterop_Matrix(t *testing.T) {
-	if !ffpub.Available() {
+	if !ffpubAvailable() {
 		t.Skip("ffmpeg not on PATH")
 	}
 
@@ -53,27 +52,27 @@ func TestRTMPInterop_Matrix(t *testing.T) {
 	const ctsWindow = 1_000_000 // 1s; allows B-frame composition reordering
 	matrix := []struct {
 		name string
-		cfg  ffpub.Config
+		cfg  ffpubConfig
 		exp  Expectations
 	}{
 		{
 			name: "no_bframes_no_audio",
-			cfg:  ffpub.Config{GOP: 30, Width: 320, Height: 240, Framerate: 30},
+			cfg:  ffpubConfig{GOP: 30, Width: 320, Height: 240, Framerate: 30},
 			exp:  Expectations{WantVideo: true, VideoCodecPrefix: "avc1.", MinVideoFrames: 5, MinKeyframes: 1, RequireInitData: true, MaxCTSWindowUS: ctsWindow},
 		},
 		{
 			name: "bframes_audio",
-			cfg:  ffpub.Config{BFrames: true, Audio: true, GOP: 30, Width: 320, Height: 240, Framerate: 30},
+			cfg:  ffpubConfig{BFrames: true, Audio: true, GOP: 30, Width: 320, Height: 240, Framerate: 30},
 			exp:  Expectations{WantVideo: true, WantAudio: true, VideoCodecPrefix: "avc1.", AudioCodecPrefix: "mp4a.40.", MinVideoFrames: 5, MinAudioFrames: 2, MinKeyframes: 1, RequireInitData: true, MaxCTSWindowUS: ctsWindow},
 		},
 		{
 			name: "gop60_720p30",
-			cfg:  ffpub.Config{GOP: 60, Width: 1280, Height: 720, Framerate: 30},
+			cfg:  ffpubConfig{GOP: 60, Width: 1280, Height: 720, Framerate: 30},
 			exp:  Expectations{WantVideo: true, VideoCodecPrefix: "avc1.", MinVideoFrames: 5, MinKeyframes: 1, RequireInitData: true, MaxCTSWindowUS: ctsWindow},
 		},
 		{
 			name: "gop15_320x240_15fps",
-			cfg:  ffpub.Config{GOP: 15, Width: 320, Height: 240, Framerate: 15},
+			cfg:  ffpubConfig{GOP: 15, Width: 320, Height: 240, Framerate: 15},
 			exp:  Expectations{WantVideo: true, VideoCodecPrefix: "avc1.", MinVideoFrames: 5, MinKeyframes: 1, RequireInitData: true, MaxCTSWindowUS: ctsWindow},
 		},
 	}
@@ -85,7 +84,7 @@ func TestRTMPInterop_Matrix(t *testing.T) {
 			defer cancelPub()
 
 			// Start ffmpeg publishing to this subtest's broadcast path.
-			pub := ffpub.New(ffpub.Config{
+			pub := newFFPub(ffpubConfig{
 				URL:       fmt.Sprintf("rtmp://%s%s", rtmpAddr, path),
 				BFrames:   m.cfg.BFrames,
 				Audio:     m.cfg.Audio,

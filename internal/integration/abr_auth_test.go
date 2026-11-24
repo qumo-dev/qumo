@@ -19,7 +19,6 @@ import (
 
 	"github.com/qumo-dev/qumo/internal/abr"
 	"github.com/qumo-dev/qumo/internal/auth"
-	"github.com/qumo-dev/qumo/internal/ffpub"
 	"github.com/qumo-dev/qumo/internal/ingest"
 	"github.com/qumo-dev/qumo/internal/optin"
 	"github.com/qumo-dev/qumo/internal/relay"
@@ -163,7 +162,7 @@ func verifyingAuthorizer(verifier *auth.Verifier) ingest.PublishAuthorizer {
 // and the transcoder publishes the ABR broadcast. Unpaid, the opt-in token is
 // refused at the ingest, and the broadcast plays without renditions.
 func TestABR_IngestOptsIn(t *testing.T) {
-	if !ffpub.Available() {
+	if !ffpubAvailable() {
 		t.Skip("ffmpeg not on PATH")
 	}
 	tests := map[string]struct {
@@ -245,7 +244,7 @@ func runIngestOptIn(t *testing.T, optIns []token.OptIn, paid bool) {
 	streamKey := fmt.Sprintf("ingested?jwt=%s&jwt=%s",
 		sign(tenant, token.Grant{Root: "/live/", Publish: []string{"/ingested"}}),
 		sign(tenant, token.Grant{Root: "/.abr/live/", Publish: []string{"/ingested"}}))
-	pub := ffpub.New(ffpub.Config{
+	pub := newFFPub(ffpubConfig{
 		URL: fmt.Sprintf("rtmp://%s/live/%s", rtmpAddr, streamKey),
 		GOP: 30, Width: 640, Height: 480, Framerate: 30,
 	})

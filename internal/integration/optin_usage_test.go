@@ -19,7 +19,6 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/qumo-dev/qumo/internal/auth"
-	"github.com/qumo-dev/qumo/internal/ffpub"
 	"github.com/qumo-dev/qumo/internal/ingest"
 	"github.com/qumo-dev/qumo/internal/meter"
 	"github.com/qumo-dev/qumo/internal/optin"
@@ -155,7 +154,7 @@ func TestRelay_ReportsOptInSeconds(t *testing.T) {
 // lasted, so a control plane bills a stream pushed over RTMP as it bills one
 // published over MoQ.
 func TestIngest_ReportsUsage(t *testing.T) {
-	if !ffpub.Available() {
+	if !ffpubAvailable() {
 		t.Skip("ffmpeg not on PATH")
 	}
 	tenant, err := token.GenerateKey("/live/")
@@ -200,7 +199,7 @@ func TestIngest_ReportsUsage(t *testing.T) {
 	streamKey := fmt.Sprintf("metered?jwt=%s&jwt=%s",
 		sign(token.Grant{Root: "/live/", Publish: []string{"/metered"}}),
 		sign(token.Grant{Root: "/.abr/live/", Publish: []string{"/metered"}}))
-	pub := ffpub.New(ffpub.Config{
+	pub := newFFPub(ffpubConfig{
 		URL: fmt.Sprintf("rtmp://%s/live/%s", rtmpAddr, streamKey),
 		GOP: 30, Width: 320, Height: 240, Framerate: 30,
 	})

@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/qumo-dev/gomoqt/moqt"
-	"github.com/qumo-dev/qumo/internal/ffpub"
 )
 
 // TestRTSP_PTSMonotonic is the regression guard for #229.
@@ -31,7 +30,7 @@ import (
 // The vector disables B-frames (`-bf 0` + `-tune zerolatency`), so PTS == DTS
 // and the decode-ordered series must not regress.
 func TestRTSP_PTSMonotonic(t *testing.T) {
-	if !ffpub.Available() {
+	if !ffpubAvailable() {
 		t.Skip("ffmpeg not on PATH")
 	}
 
@@ -42,7 +41,7 @@ func TestRTSP_PTSMonotonic(t *testing.T) {
 	pubCtx, cancelPub := context.WithCancel(context.Background())
 	defer cancelPub()
 
-	pub := ffpub.New(ffpub.Config{
+	pub := newFFPub(ffpubConfig{
 		URL: fmt.Sprintf("rtsp://%s%s", rtspAddr, path),
 		GOP: 60, Width: 1280, Height: 720, Framerate: 30,
 	})
