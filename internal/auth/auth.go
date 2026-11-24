@@ -2,8 +2,7 @@
 //
 // The relay verifies a session's credential itself (Verifier): it checks the
 // token in the connect URL, signed with the token package, against a key set
-// it loads from a file or a URL, re-checks live sessions against it, and can
-// report each session's usage.
+// it loads from a file or a URL, and re-checks live sessions against it.
 //
 // "qumo auth" (Run) sets that up: keygen writes a signing key pair, and token
 // signs a credential by hand.

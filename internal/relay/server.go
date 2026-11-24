@@ -14,6 +14,7 @@ import (
 	"github.com/qumo-dev/gomoqt/moqt"
 	"github.com/qumo-dev/qumo/internal/auth"
 	"github.com/qumo-dev/qumo/internal/cors"
+	"github.com/qumo-dev/qumo/internal/meter"
 	"github.com/qumo-dev/qumo/internal/optin"
 )
 
@@ -72,6 +73,14 @@ type Server struct {
 	// (admit.go): the Verifier's Ticket. Nil refuses every ticket with
 	// NOT_SUPPORTED, as with auth off.
 	Tickets TicketVerifier
+
+	// Meter, when set, receives session usage records (QUMO_USAGE_URL). Nil
+	// reports no usage.
+	Meter *meter.Reporter
+
+	// usage tracks session byte totals and opt-in durations and reports them
+	// through Meter; nil when Meter is nil.
+	usage *usageReporter
 
 	// AuthDeadline is how long a session that connected with no credential
 	// may hold no grant that grants something before it is closed. Zero or
@@ -298,6 +307,10 @@ func (s *Server) init() {
 		}
 		s.load = newLoadMonitor(maxSessions, maxEgress)
 		go s.load.run(samplerCtx, s.sampler.egress)
+		if s.Meter != nil {
+			s.usage = newUsageReporter(s.Meter)
+			go s.usage.runForget(samplerCtx)
+		}
 
 		if s.TrackMux == nil {
 			s.TrackMux = moqt.NewTrackMux(0)
@@ -841,7 +854,7 @@ func (s *Server) serveSession(sess *moqt.Session) {
 	}()
 	defer sess.CloseWithError(moqt.NoError, moqt.NoError.String())
 	if checked {
-		if l = startLease(sess.Context(), sess, s.Authorize, a.req, a.grant.Revalidate(), optIns); l != nil {
+		if l = startLease(sess.Context(), sess, s.Authorize, a.req, a.grant.Revalidate(), optIns, s.usage); l != nil {
 			defer l.stop()
 		}
 		if a.grant.Anonymous() {

@@ -1,4 +1,4 @@
-package auth
+package relay
 
 import (
 	"context"
@@ -6,9 +6,9 @@ import (
 	"sync"
 	"time"
 
+	"github.com/qumo-dev/qumo/internal/auth"
 	"github.com/qumo-dev/qumo/internal/meter"
 	"github.com/qumo-dev/qumo/internal/optin"
-	"github.com/qumo-dev/qumo/internal/reqsign"
 	"github.com/qumo-dev/qumo/token"
 	"github.com/qumo-dev/qumo/usage"
 )
@@ -35,11 +35,11 @@ type usageSession struct {
 	// counted is how much of a viewer session's bytes its key's viewer total
 	// already holds. A viewer that became a publisher keeps it, and its
 	// usage records carry only what it moved beyond it.
-	counted Bytes
+	counted auth.Bytes
 }
 
-// usageReporter reports the relay's sessions to a usage URL
-// (QUMO_USAGE_URL), through a meter.Reporter.
+// usageReporter reports the relay's sessions through a meter.Reporter.
+// A nil usageReporter ignores every call.
 //
 // A session that may publish is reported by itself: an open when it is
 // admitted, its cumulative bytes at each revalidate, and a close with the
@@ -52,30 +52,32 @@ type usageReporter struct {
 
 	mu       sync.Mutex
 	sessions map[string]usageSession
-	viewers  map[string]Bytes // every viewer session's bytes this run, by kid
+	viewers  map[string]auth.Bytes // every viewer session's bytes this run, by kid
 	// closed is when each session that ended was closed, until it is
 	// forgotten as a stale one would be: an open that comes after its
 	// close, from a ticket granted as the session ended, is ignored.
 	closed map[string]time.Time
 }
 
-func newUsageReporter(rawURL, bearer string, signer *reqsign.Signer) (*usageReporter, error) {
-	m, err := meter.New(meter.Config{Name: "relay", URL: rawURL, Token: bearer, Signer: signer})
-	if err != nil {
-		return nil, err
+func newUsageReporter(m *meter.Reporter) *usageReporter {
+	if m == nil {
+		return nil
 	}
 	return &usageReporter{
 		meter:    m,
 		now:      time.Now,
 		sessions: map[string]usageSession{},
-		viewers:  map[string]Bytes{},
+		viewers:  map[string]auth.Bytes{},
 		closed:   map[string]time.Time{},
-	}, nil
+	}
 }
 
 // open records a session admitted at connect, or bound to a key by the first
 // ticket granted on it. One that was closed already is not brought back.
 func (r *usageReporter) open(id string, s usageSession) {
+	if r == nil {
+		return
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if _, ended := r.closed[id]; ended {
@@ -94,6 +96,9 @@ func (r *usageReporter) open(id string, s usageSession) {
 // its key's viewer total; what it moved since is reported as its usage. A
 // session it doesn't know, or that publishes already, is left as it is.
 func (r *usageReporter) publishing(id string) {
+	if r == nil {
+		return
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	s, ok := r.sessions[id]
@@ -108,7 +113,10 @@ func (r *usageReporter) publishing(id string) {
 // revalidated records a session's cumulative bytes and opt-in time at a
 // revalidate and, when live is set, that the session is still live. A
 // session it doesn't know is left unknown.
-func (r *usageReporter) revalidated(id string, b Bytes, optIns map[token.OptIn]time.Duration, live bool) {
+func (r *usageReporter) revalidated(id string, b auth.Bytes, optIns map[token.OptIn]time.Duration, live bool) {
+	if r == nil {
+		return
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	s, ok := r.sessions[id]
@@ -120,7 +128,7 @@ func (r *usageReporter) revalidated(id string, b Bytes, optIns map[token.OptIn]t
 	}
 	if !s.publishes {
 		s = r.countViewer(s, b)
-	} else if m := publisherMetrics(b.since(s.counted), optIns); carriesUsage(m) {
+	} else if m := publisherMetrics(bytesSince(b, s.counted), optIns); carriesUsage(m) {
 		r.meter.Report(id, m)
 	}
 	r.sessions[id] = s
@@ -128,7 +136,10 @@ func (r *usageReporter) revalidated(id string, b Bytes, optIns map[token.OptIn]t
 
 // close records a session's end with its final totals and forgets it. It
 // reports false for a session it doesn't know.
-func (r *usageReporter) close(id string, b Bytes, optIns map[token.OptIn]time.Duration, reason string) bool {
+func (r *usageReporter) close(id string, b auth.Bytes, optIns map[token.OptIn]time.Duration, reason string) bool {
+	if r == nil {
+		return false
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.closed[id] = r.now()
@@ -141,14 +152,14 @@ func (r *usageReporter) close(id string, b Bytes, optIns map[token.OptIn]time.Du
 		r.countViewer(s, b)
 		return true
 	}
-	r.meter.Close(id, publisherMetrics(b.since(s.counted), optIns), reason)
+	r.meter.Close(id, publisherMetrics(bytesSince(b, s.counted), optIns), reason)
 	return true
 }
 
 // countViewer adds what a viewer session moved since it was last counted to
 // its key's viewer total, and returns the session with that recorded. The
 // caller holds mu.
-func (r *usageReporter) countViewer(s usageSession, b Bytes) usageSession {
+func (r *usageReporter) countViewer(s usageSession, b auth.Bytes) usageSession {
 	t := r.viewers[s.kid]
 	if b.Sent > s.counted.Sent {
 		t.Sent += b.Sent - s.counted.Sent
@@ -163,13 +174,13 @@ func (r *usageReporter) countViewer(s usageSession, b Bytes) usageSession {
 	return s
 }
 
-func usageMetrics(b Bytes) map[string]int64 {
+func usageMetrics(b auth.Bytes) map[string]int64 {
 	return map[string]int64{usage.IngressBytes: clampInt64(b.Received), usage.EgressBytes: clampInt64(b.Sent)}
 }
 
 // publisherMetrics is a publishing session's metrics: its bytes, and how
 // long it kept broadcasts opted into each egress, in whole seconds.
-func publisherMetrics(b Bytes, optIns map[token.OptIn]time.Duration) map[string]int64 {
+func publisherMetrics(b auth.Bytes, optIns map[token.OptIn]time.Duration) map[string]int64 {
 	m := usageMetrics(b)
 	optin.AddSeconds(m, optIns)
 	return m
@@ -193,24 +204,18 @@ func clampInt64(v uint64) int64 {
 	return int64(v)
 }
 
-// run sends usage until ctx ends, then once more, forgetting sessions whose
-// end never came as it goes.
-func (r *usageReporter) run(ctx context.Context) {
-	var wg sync.WaitGroup
-	wg.Go(func() { r.meter.Run(ctx) })
-	wg.Go(func() {
-		ticker := time.NewTicker(forgetInterval)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-				r.forgetStale()
-			}
+// runForget forgets sessions whose end never came until ctx ends.
+func (r *usageReporter) runForget(ctx context.Context) {
+	ticker := time.NewTicker(forgetInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			r.forgetStale()
 		}
-	})
-	wg.Wait()
+	}
 }
 
 // forgetStale drops sessions whose end never came: those not heard of for
@@ -232,7 +237,7 @@ func (r *usageReporter) forgetStale() {
 	}
 }
 
-// since returns what b moved beyond base, each total at least zero.
-func (b Bytes) since(base Bytes) Bytes {
-	return Bytes{Sent: b.Sent - min(b.Sent, base.Sent), Received: b.Received - min(b.Received, base.Received)}
+// bytesSince returns what b moved beyond base, each total at least zero.
+func bytesSince(b, base auth.Bytes) auth.Bytes {
+	return auth.Bytes{Sent: b.Sent - min(b.Sent, base.Sent), Received: b.Received - min(b.Received, base.Received)}
 }

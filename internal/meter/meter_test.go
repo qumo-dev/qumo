@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -14,6 +15,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/qumo-dev/qumo/internal/reqsign/reqsigntest"
 	"github.com/qumo-dev/qumo/usage"
 )
 
@@ -297,3 +299,44 @@ func TestReporter_Run(t *testing.T) {
 type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) { return f(req) }
+
+// TestReporter_SignsRequests verifies that with a Signer configured, every
+// usage batch POST (including a retry after a failure) carries a valid
+// request signature alongside the bearer token.
+func TestReporter_SignsRequests(t *testing.T) {
+	type seenReq struct {
+		bearer string
+		err    error
+	}
+	var mu sync.Mutex
+	var reqs []seenReq
+	statuses := []int{http.StatusServiceUnavailable, http.StatusOK}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err == nil {
+			_, err = reqsigntest.Verify(r, body)
+		}
+		mu.Lock()
+		reqs = append(reqs, seenReq{bearer: r.Header.Get("Authorization"), err: err})
+		status := statuses[0]
+		if len(statuses) > 1 {
+			statuses = statuses[1:]
+		}
+		mu.Unlock()
+		w.WriteHeader(status)
+	}))
+	defer srv.Close()
+
+	r, err := New(Config{Name: "test", URL: srv.URL, Token: "relay-token", Signer: reqsigntest.Signer(t)})
+	require.NoError(t, err)
+	r.Open("s1", "k1")
+
+	assert.Error(t, r.Flush(t.Context()))
+	require.NoError(t, r.Flush(t.Context()))
+
+	require.Len(t, reqs, 2)
+	for _, got := range reqs {
+		assert.NoError(t, got.err, "the signature verifies over the body sent")
+		assert.Equal(t, "Bearer relay-token", got.bearer)
+	}
+}

@@ -662,6 +662,9 @@ func (s *Server) admit(ctx context.Context, req auth.Request) (*auth.Grant, erro
 	if outcome == authAdmitted && g.Anonymous() && !s.reservePending() {
 		g, err, outcome = nil, errTooManyPending, authBusy
 	}
+	if outcome == authAdmitted && !g.Anonymous() && g.KeyID() != "" {
+		s.usage.open(req.ID, usageSession{kid: g.KeyID(), publishes: len(g.Token().Publish) > 0})
+	}
 	metricAuthRequests.WithLabelValues(auth.EventConnect, outcome).Inc()
 	switch outcome {
 	case authBusy:
@@ -704,12 +707,15 @@ func (s *Server) admitClient(ctx context.Context, req auth.Request) (g *auth.Gra
 // but not its cancellation. A failed report is recorded and otherwise
 // ignored; End bounds its own wait.
 func (s *Server) reportEnd(ctx context.Context, req auth.Request, stats moqt.SessionStats, optIns *optin.Clock, reason string) {
+	bytes := sessionBytes(stats)
+	totals := optIns.Totals()
+	s.usage.close(req.ID, bytes, totals, reason)
 	if s.End == nil {
 		return
 	}
 	req.Event = auth.EventEnd
-	req.Bytes = sessionBytes(stats)
-	req.OptIns = optIns.Totals()
+	req.Bytes = bytes
+	req.OptIns = totals
 	req.Reason = reason
 	if err := s.End(context.WithoutCancel(ctx), req); err != nil {
 		metricAuthRequests.WithLabelValues(auth.EventEnd, authError).Inc()
@@ -769,16 +775,12 @@ func refusalReason(err error) string {
 // keyID, the key that signed the session's own credential or that an
 // anonymous session is bound to, and published when the session has been
 // granted what may publish; FirstTicket for the first ticket of an
-// anonymous session no key binds yet, which any trusted key may sign;
-// Trusts while its grant is in force; Bind once a ticket granted on an
-// anonymous session binds it to its key, with whether it publishes; and
-// Publishing once a session is granted one that may publish.
+// anonymous session no key binds yet, which any trusted key may sign; and
+// Trusts while its grant is in force.
 type TicketVerifier interface {
 	Ticket(credential, keyID string, published bool) (*auth.Grant, error)
 	FirstTicket(credential string) (*auth.Grant, error)
 	Trusts(g *auth.Grant) (bool, error)
-	Bind(id, keyID string, publishes bool)
-	Publishing(id string)
 }
 
 const (
@@ -1095,8 +1097,8 @@ func (s *Server) serveTicket(w *moqt.AuthWriter, r *moqt.AuthRequest) {
 		a.settleRefused()
 	case anonymous:
 		a.settleGranted(publishes,
-			func(publishes bool) { s.Tickets.Bind(a.req.ID, tg.KeyID(), publishes) },
-			func() { s.Tickets.Publishing(a.req.ID) })
+			func(publishes bool) { s.usage.open(a.req.ID, usageSession{kid: tg.KeyID(), publishes: publishes}) },
+			func() { s.usage.publishing(a.req.ID) })
 	}
 	if !current {
 		metricTickets.WithLabelValues(ticketRefused).Inc()
@@ -1106,7 +1108,7 @@ func (s *Server) serveTicket(w *moqt.AuthWriter, r *moqt.AuthRequest) {
 	}
 	metricTickets.WithLabelValues(ticketGranted).Inc()
 	if publishes && !anonymous {
-		s.Tickets.Publishing(a.req.ID)
+		s.usage.publishing(a.req.ID)
 	}
 
 	switch hold(ctx, lapses, func() bool {
