@@ -37,7 +37,9 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
+	"net/url"
 	"strconv"
 	"sync/atomic"
 	"time"
@@ -134,6 +136,27 @@ func (s *Signer) Sign(req *http.Request, body []byte) error {
 func signed(method, requestURI, timestamp string, body []byte) []byte {
 	sum := sha256.Sum256(body)
 	return []byte(requestContext + "\n" + method + "\n" + requestURI + "\n" + timestamp + "\n" + hex.EncodeToString(sum[:]))
+}
+
+// CheckURL accepts the URL of a control-plane endpoint (a key set, a usage
+// URL): https, or http only on a loopback host, so that the bearer token
+// and the signature sent to it do not cross a network in the clear.
+func CheckURL(rawURL string) error {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return err
+	}
+	switch u.Scheme {
+	case "https":
+	case "http":
+		host := u.Hostname()
+		if ip := net.ParseIP(host); host != "localhost" && (ip == nil || !ip.IsLoopback()) {
+			return fmt.Errorf("http is allowed only for a loopback host, got %q", host)
+		}
+	default:
+		return fmt.Errorf("want an https URL, got scheme %q", u.Scheme)
+	}
+	return nil
 }
 
 // NoRedirectClient returns an HTTP client that follows no redirect: a 3xx is

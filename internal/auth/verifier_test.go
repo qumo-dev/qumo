@@ -6,7 +6,6 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -375,7 +374,7 @@ func TestVerifier_ReportsUsage(t *testing.T) {
 	end := sessionReq(EventEnd, jwt)
 	end.Bytes, end.Reason = Bytes{Sent: 30, Received: 40}, "closed"
 	require.NoError(t, v.End(context.Background(), end))
-	require.NoError(t, v.usage.flush(context.Background()))
+	require.NoError(t, v.usage.meter.Flush(context.Background()))
 
 	batches := sink.received()
 	require.Len(t, batches, 1)
@@ -408,7 +407,7 @@ func TestUsageReporter(t *testing.T) {
 		r.open("s1", testUsageSession)
 		r.revalidated("s1", Bytes{Sent: 1, Received: 10}, true)
 		r.revalidated("s1", Bytes{Sent: 2, Received: 20}, true)
-		require.NoError(t, r.flush(context.Background()))
+		require.NoError(t, r.meter.Flush(context.Background()))
 		batches := sink.received()
 		require.Len(t, batches, 1)
 		require.Len(t, batches[0], 2)
@@ -421,77 +420,24 @@ func TestUsageReporter(t *testing.T) {
 		r := newTestUsage(t, sink)
 		r.open("s1", testUsageSession)
 		r.revalidated("s1", Bytes{Received: 10}, true)
-		assert.Error(t, r.flush(context.Background()))
+		assert.Error(t, r.meter.Flush(context.Background()))
 		r.revalidated("s1", Bytes{Received: 20}, true)
-		require.NoError(t, r.flush(context.Background()))
+		require.NoError(t, r.meter.Flush(context.Background()))
 		retry := sink.received()[1]
 		require.Len(t, retry, 2)
 		assert.Equal(t, usage.SessionOpen, retry[0].Type, "the open is resent")
 		assert.Equal(t, int64(20), retry[1].Metrics["gateway.ingress_bytes"], "the newer report wins")
 	})
 
-	for _, status := range []int{http.StatusBadRequest, http.StatusUnprocessableEntity} {
-		t.Run(fmt.Sprintf("a malformed batch (%d) is dropped", status), func(t *testing.T) {
-			sink := &fakeUsageSink{statuses: []int{status, http.StatusOK}}
-			r := newTestUsage(t, sink)
-			r.open("s1", testUsageSession)
-			require.NoError(t, r.flush(context.Background()))
-			require.NoError(t, r.flush(context.Background()))
-			assert.Len(t, sink.received(), 1)
-		})
-	}
-
-	// A rotated token (401, 403), a body over the receiver's limit (413), a
-	// timeout (408) or throttling (429) lose nothing: the records are kept.
-	for _, status := range []int{http.StatusUnauthorized, http.StatusForbidden, http.StatusRequestTimeout,
-		http.StatusRequestEntityTooLarge, http.StatusTooManyRequests, http.StatusBadGateway} {
-		t.Run(fmt.Sprintf("%d keeps the records", status), func(t *testing.T) {
-			sink := &fakeUsageSink{statuses: []int{status, http.StatusOK}}
-			r := newTestUsage(t, sink)
-			r.open("s1", testUsageSession)
-			assert.Error(t, r.flush(context.Background()))
-			require.NoError(t, r.flush(context.Background()))
-			batches := sink.received()
-			require.Len(t, batches, 2)
-			assert.Equal(t, batches[0], batches[1], "the same records again")
-		})
-	}
-
-	t.Run("a backlog goes out in batches", func(t *testing.T) {
-		sink := &fakeUsageSink{}
-		r := newTestUsage(t, sink)
-		for i := range 1200 {
-			r.open(fmt.Sprintf("s%d", i), testUsageSession)
-		}
-		require.NoError(t, r.flush(context.Background()))
-		var sizes []int
-		for _, b := range sink.received() {
-			sizes = append(sizes, len(b))
-		}
-		assert.Equal(t, []int{500, 500, 200}, sizes)
-	})
-
-	t.Run("a failure mid-backlog resends only what wasn't sent", func(t *testing.T) {
-		sink := &fakeUsageSink{statuses: []int{http.StatusOK, http.StatusServiceUnavailable, http.StatusOK}}
-		r := newTestUsage(t, sink)
-		for i := range 700 {
-			r.open(fmt.Sprintf("s%d", i), testUsageSession)
-		}
-		assert.Error(t, r.flush(context.Background()))
-		require.NoError(t, r.flush(context.Background()))
-		var sizes []int
-		for _, b := range sink.received() {
-			sizes = append(sizes, len(b))
-		}
-		assert.Equal(t, []int{500, 200, 200}, sizes, "the first 500 went through; the next 200 are resent once")
-	})
+	// Batching, retries and what each answer from the receiver does are
+	// package meter's, tested there.
 
 	t.Run("an unknown session's end and usage are ignored", func(t *testing.T) {
 		sink := &fakeUsageSink{}
 		r := newTestUsage(t, sink)
 		assert.False(t, r.close("nope", Bytes{Sent: 1}, ""))
 		r.revalidated("nope", Bytes{Sent: 1}, true)
-		require.NoError(t, r.flush(context.Background()))
+		require.NoError(t, r.meter.Flush(context.Background()))
 		assert.Empty(t, sink.received(), "nothing pending, nothing sent")
 	})
 
@@ -603,7 +549,7 @@ func TestVerifier_RevalidateAfterEnd(t *testing.T) {
 	late.Bytes = Bytes{Sent: 9}
 	_, err = v.Authorize(context.Background(), late)
 	require.NoError(t, err)
-	require.NoError(t, v.usage.flush(context.Background()))
+	require.NoError(t, v.usage.meter.Flush(context.Background()))
 
 	var types []usage.Type
 	for _, rec := range sink.received()[0] {
@@ -876,13 +822,13 @@ func TestVerifier_Ticket_PublishingPromotesAViewer(t *testing.T) {
 	require.NoError(t, err)
 	_, err = v.Ticket(speak, k.ID, false)
 	require.NoError(t, err)
-	require.NoError(t, v.usage.flush(context.Background()))
+	require.NoError(t, v.usage.meter.Flush(context.Background()))
 	before := sink.received()
 	v.Publishing(rv.ID)
 	end := sessionReq(EventEnd, viewer)
 	end.Bytes, end.Reason = Bytes{Sent: 170, Received: 15}, "closed"
 	require.NoError(t, v.End(context.Background(), end))
-	require.NoError(t, v.usage.flush(context.Background()))
+	require.NoError(t, v.usage.meter.Flush(context.Background()))
 
 	require.Len(t, before, 1)
 	require.Len(t, before[0], 1, "a viewer, and a ticket only verified, open no session")
@@ -972,7 +918,7 @@ func TestVerifier_AnonymousUsage(t *testing.T) {
 	req.Bytes = Bytes{Received: 40}
 	_, err = v.Authorize(ctx, req)
 	require.NoError(t, err)
-	require.NoError(t, v.usage.flush(ctx))
+	require.NoError(t, v.usage.meter.Flush(ctx))
 
 	var got []string
 	for _, rec := range sink.received()[0] {
@@ -1031,7 +977,8 @@ func TestUsageReporter_OpenAfterClose(t *testing.T) {
 	r.publishing("s1")
 
 	assert.Empty(t, r.sessions, "an open after the close is ignored")
-	assert.Empty(t, r.events)
+	require.NoError(t, r.meter.Flush(context.Background()))
+	assert.Empty(t, sink.received(), "no open is sent")
 
 	now = now.Add(sessionGrace + time.Second)
 	r.forgetStale()
