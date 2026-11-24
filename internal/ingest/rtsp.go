@@ -16,7 +16,6 @@ import (
 	"github.com/qumo-dev/qumo/internal/meter"
 	"github.com/qumo-dev/qumo/internal/rtsp"
 	"github.com/qumo-dev/qumo/token"
-	"github.com/qumo-dev/qumo/usage"
 )
 
 // RTSPConfig holds configuration for an [RTSPServer].
@@ -137,12 +136,12 @@ func (s *RTSPServer) handleConn(ctx context.Context, conn *rtsp.Conn) {
 		tracks = make(map[uint8]*rtspTrack) // channel -> track
 		sdp    *rtsp.SDP
 		// endUsage ends the usage report of sess.
-		endUsage = func(string) {}
+		endUsage = func() {}
 	)
 
 	defer func() {
 		if sess != nil {
-			endUsage(usage.ReasonClosed)
+			endUsage()
 			sess.Close()
 		}
 	}()
@@ -238,17 +237,17 @@ func (s *RTSPServer) handleConn(ctx context.Context, conn *rtsp.Conn) {
 			// one leaves the connection as it was.
 			sdp = rtsp.ParseSDP(string(body))
 			if sess != nil {
-				endUsage(usage.ReasonClosed)
+				endUsage()
 				sess.Close()
 			}
 			sess, err = NewSession(s.config.TrackMux, path)
 			if err != nil {
 				slog.Error("failed to create ingest session", "error", err)
 				resp.StatusCode = rtsp.StatusInternalServerError
-				endUsage = func(string) {}
+				endUsage = func() {}
 				break
 			}
-			optIn(sess, s.config.Authorize, credentials, s.config.OptIns)
+			optIn(sess, s.config.Authorize, credentials, s.config.OptIns, granted.KeyID)
 			endUsage = meterStream(s.config.Meter, granted.KeyID, sess)
 
 		case rtsp.MethodSetup:

@@ -15,8 +15,8 @@ import (
 // (/.abr/live/cam) lasts, summed over them, so two broadcasts opted into ABR
 // for a minute each are two minutes. A server's usage reports carry it
 // (usage.OptInSeconds), for a control plane to bill an opt-in by the time it
-// was used. A nil Clock counts nothing. Its methods are safe for concurrent
-// use.
+// was used. The zero value is ready to use, and a nil Clock counts nothing.
+// Its methods are safe for concurrent use.
 type Clock struct {
 	mu      sync.Mutex
 	tallies map[token.OptIn]*optInTally
@@ -28,11 +28,6 @@ type optInTally struct {
 	done  time.Duration
 	live  int
 	since time.Time
-}
-
-// NewClock returns a Clock.
-func NewClock() *Clock {
-	return &Clock{tallies: map[token.OptIn]*optInTally{}}
 }
 
 // Track counts ann, an announcement the publisher made, until it ends, when it

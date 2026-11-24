@@ -6,7 +6,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -168,23 +167,25 @@ func TestIngest_ReportsUsage(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	mux := moqt.NewTrackMux(0)
-	rtmpLn, err := net.Listen("tcp", "127.0.0.1:0")
-	require.NoError(t, err)
-	rtmpAddr := rtmpLn.Addr().String()
-	require.NoError(t, rtmpLn.Close())
-	go func() {
-		_ = ingest.NewRTMPServer(ingest.RTMPConfig{
-			Addr: rtmpAddr, TrackMux: mux, Authorize: verifyingAuthorizer(verifier),
-			OptIns: []token.OptIn{token.OptInABR}, Meter: m,
-		}).ListenAndServe(ctx)
-	}()
+	srv := ingest.NewRTMPServer(ingest.RTMPConfig{
+		Addr: "127.0.0.1:0", TrackMux: mux, Authorize: verifyingAuthorizer(verifier),
+		OptIns: []token.OptIn{token.OptInABR}, Meter: m,
+	})
+	errCh := make(chan error, 1)
+	go func() { errCh <- srv.ListenAndServe(ctx) }()
+	t.Cleanup(func() {
+		cancel()
+		_ = srv.Shutdown(context.Background())
+		<-errCh
+	})
+	var rtmpAddr string
 	require.Eventually(t, func() bool {
-		c, err := net.DialTimeout("tcp", rtmpAddr, 200*time.Millisecond)
-		if err == nil {
-			_ = c.Close()
+		if a := srv.Addr(); a != nil {
+			rtmpAddr = a.String()
+			return true
 		}
-		return err == nil
-	}, 5*time.Second, 50*time.Millisecond)
+		return false
+	}, 5*time.Second, 10*time.Millisecond, "RTMP server never started listening")
 
 	streamKey := fmt.Sprintf("metered?jwt=%s&jwt=%s",
 		sign(token.Grant{Root: "/live/", Publish: []string{"/metered"}}),

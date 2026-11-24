@@ -11,7 +11,6 @@ import (
 	"github.com/qumo-dev/qumo/internal/meter"
 	"github.com/qumo-dev/qumo/internal/rtmp"
 	"github.com/qumo-dev/qumo/token"
-	"github.com/qumo-dev/qumo/usage"
 )
 
 // RTMPConfig holds configuration for an [RTMPServer].
@@ -205,8 +204,8 @@ func (s *RTMPServer) handleConn(ctx context.Context, conn *rtmp.Conn) {
 		return
 	}
 	defer sess.Close()
-	optIn(sess, s.config.Authorize, credentials, s.config.OptIns)
-	defer meterStream(s.config.Meter, granted.KeyID, sess)(usage.ReasonClosed)
+	optIn(sess, s.config.Authorize, credentials, s.config.OptIns, granted.KeyID)
+	defer meterStream(s.config.Meter, granted.KeyID, sess)()
 
 	slog.Info("RTMP ingest started",
 		"remote", conn.RemoteAddr(),

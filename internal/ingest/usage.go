@@ -16,12 +16,12 @@ import (
 const usageInterval = 30 * time.Second
 
 // meterStream reports the usage of sess, a stream pushed under the key kid,
-// to m until the returned function is called with why it ended: an open now,
-// its cumulative usage every usageInterval, and a close with its final
-// totals. With no meter or no key (auth off) it reports nothing.
-func meterStream(m *meter.Reporter, kid string, sess *Session) (end func(reason string)) {
+// to m until the returned function is called: an open now, its cumulative
+// usage every usageInterval, and a close with its final totals
+// (usage.ReasonClosed). With no meter or no key (auth off) it reports nothing.
+func meterStream(m *meter.Reporter, kid string, sess *Session) (end func()) {
 	if m == nil || kid == "" {
-		return func(string) {}
+		return func() {}
 	}
 	id := rand.Text()
 	m.Open(id, kid)
@@ -36,14 +36,14 @@ func meterStream(m *meter.Reporter, kid string, sess *Session) (end func(reason 
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				m.Report(id, kid, streamMetrics(sess))
+				m.Report(id, streamMetrics(sess))
 			}
 		}
 	}()
-	return func(reason string) {
+	return func() {
 		cancel()
 		<-done
-		m.Close(id, kid, streamMetrics(sess), reason)
+		m.Close(id, streamMetrics(sess), usage.ReasonClosed)
 	}
 }
 

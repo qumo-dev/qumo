@@ -52,7 +52,7 @@ type Session struct {
 	// mediaBytes counts the media pushed: the payload of every frame.
 	mediaBytes atomic.Uint64
 	// optIns counts how long the session's opt-ins last.
-	optIns *optin.Clock
+	optIns optin.Clock
 }
 
 // NewSession creates a new ingest session that announces path on trackMux.
@@ -84,7 +84,6 @@ func NewSession(trackMux *moqt.TrackMux, path moqt.BroadcastPath) (*Session, err
 		endAnn:   endAnn,
 		ctx:      ctx,
 		cancel:   cancel,
-		optIns:   optin.NewClock(time.Now),
 	}, nil
 }
 

@@ -59,7 +59,8 @@ it offers (`hls`, `abr`, comma-separated; none by default).
 
 With auth off, every stream is opted into each of them. With auth on, a
 stream is opted into one only when a token it presents may publish the
-opt-in: a second `?jwt=` on the URL, signed for the opt-in's path
+opt-in and is signed by the same key that granted the broadcast: a second
+`?jwt=` on the URL, signed for the opt-in's path
 (`-root /.abr/live/ -publish /cam`). The relay's key set decides, as for an
 MoQ publisher: a tenant's key signs it only while its entry lists the opt-in
 (`"optIns": ["abr"]`, see [abr → Paying for the opt-in]({{< relref "abr#paying-for-the-opt-in" >}})).

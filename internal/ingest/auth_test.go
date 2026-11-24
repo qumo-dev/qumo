@@ -246,3 +246,49 @@ func TestPublishAuthorizer_OptIn(t *testing.T) {
 func TestPublishAuthorizer_Off(t *testing.T) {
 	assert.Nil(t, publishAuthorizer(nil, ""))
 }
+
+// TestOptIn_RequiresSameKey verifies opt-ins are granted only to a credential
+// signed by the same key that granted the stream when streamKeyID is known.
+func TestOptIn_RequiresSameKey(t *testing.T) {
+	errDenied := errors.New("denied")
+	byToken := map[string]Permission{
+		"same":    {KeyID: "k1"},
+		"foreign": {KeyID: "k2"},
+		"empty":   {},
+	}
+	authorize := func(cred string, _ moqt.BroadcastPath) (Permission, error) {
+		if p, ok := byToken[cred]; ok {
+			return p, nil
+		}
+		return Permission{}, errDenied
+	}
+
+	tests := map[string]struct {
+		credentials []string
+		streamKeyID string
+		wantOptedIn bool
+	}{
+		"same key":                         {credentials: []string{"same"}, streamKeyID: "k1", wantOptedIn: true},
+		"different key":                    {credentials: []string{"foreign"}, streamKeyID: "k1"},
+		"empty key when stream has key":    {credentials: []string{"empty"}, streamKeyID: "k1"},
+		"foreign then same key in order":   {credentials: []string{"foreign", "same"}, streamKeyID: "k1", wantOptedIn: true},
+		"unchecked stream key ignores kid": {credentials: []string{"foreign"}, streamKeyID: "", wantOptedIn: true},
+	}
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			mux := moqt.NewTrackMux(0)
+			sess, err := NewSession(mux, "/live/cam")
+			require.NoError(t, err)
+			defer sess.Close()
+
+			optIn(sess, authorize, tt.credentials, []token.OptIn{token.OptInABR}, tt.streamKeyID)
+
+			ann, _ := mux.TrackHandler("/.abr/live/cam")
+			if tt.wantOptedIn {
+				assert.NotNil(t, ann)
+			} else {
+				assert.Nil(t, ann)
+			}
+		})
+	}
+}

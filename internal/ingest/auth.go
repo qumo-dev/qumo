@@ -95,16 +95,31 @@ func authorizeAny(authorize PublishAuthorizer, credentials []string, path moqt.B
 // optIn opts sess's broadcast into each of optIns, the egresses the server
 // offers, that a publisher with credentials may publish the opt-in of:
 // authorize is asked for the opt-in's path, beneath the egress's directory,
-// and a nil authorize accepts every one. Each opt-in is withdrawn when its
-// permission lapses or sess closes; a refused one leaves the broadcast as it
-// is.
-func optIn(sess *Session, authorize PublishAuthorizer, credentials []string, optIns []token.OptIn) {
+// and a nil authorize accepts every one. When streamKeyID is non-empty, only an
+// opt-in credential signed by that same key is accepted, matching the relay's
+// ticket rule so opted-in time is billed to the publisher's key. Each opt-in
+// is withdrawn when its permission lapses or sess closes; a refused one leaves
+// the broadcast as it is.
+func optIn(sess *Session, authorize PublishAuthorizer, credentials []string, optIns []token.OptIn, streamKeyID string) {
+	check := authorize
+	if check != nil && streamKeyID != "" {
+		check = func(credential string, path moqt.BroadcastPath) (Permission, error) {
+			p, err := authorize(credential, path)
+			if err != nil {
+				return Permission{}, err
+			}
+			if p.KeyID != streamKeyID {
+				return Permission{}, fmt.Errorf("opt-in signed by key %q, not stream key %q", p.KeyID, streamKeyID)
+			}
+			return p, nil
+		}
+	}
 	for _, o := range optIns {
 		path := optin.Path(o.Directory(), sess.path)
 		var granted Permission
-		if authorize != nil {
+		if check != nil {
 			var err error
-			if granted, err = authorizeAny(authorize, credentials, path); err != nil {
+			if granted, err = authorizeAny(check, credentials, path); err != nil {
 				slog.Info("ingest opt-in refused", "broadcast_path", sess.path, "opt_in", o, "error", err)
 				continue
 			}

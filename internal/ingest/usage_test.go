@@ -67,7 +67,7 @@ func TestMeterStream(t *testing.T) {
 		sess.PushVideo(0, make([]byte, 500), true)
 		sess.OptIn(token.OptInABR, time.Time{})
 		time.Sleep(1500 * time.Millisecond)
-		end(usage.ReasonClosed)
+		end()
 	})
 	require.NoError(t, m.Flush(t.Context()))
 
@@ -95,8 +95,8 @@ func TestMeterStream_Unreported(t *testing.T) {
 	require.NoError(t, err)
 	defer sess.Close()
 
-	meterStream(nil, "k1", sess)(usage.ReasonClosed)
-	meterStream(m, "", sess)(usage.ReasonClosed)
+	meterStream(nil, "k1", sess)()
+	meterStream(m, "", sess)()
 	require.NoError(t, m.Flush(t.Context()))
 
 	assert.Empty(t, sink.all())
