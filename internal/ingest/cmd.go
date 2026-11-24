@@ -22,6 +22,7 @@ import (
 	"github.com/qumo-dev/qumo/internal/meter"
 	"github.com/qumo-dev/qumo/internal/optin"
 	"github.com/qumo-dev/qumo/internal/quicconfig"
+	"github.com/qumo-dev/qumo/internal/relaycred"
 	"github.com/qumo-dev/qumo/internal/upstream"
 	"github.com/qumo-dev/qumo/token"
 )
@@ -139,7 +140,7 @@ func runPush(name, ingestEnv, defaultIngestAddr, serveEnv string, newServer func
 	log.Println("	Auth    :", authName)
 	usageURL := "none"
 	if m != nil {
-		usageURL = upstream.RelayName(os.Getenv("QUMO_USAGE_URL"))
+		usageURL = relaycred.RelayName(os.Getenv("QUMO_USAGE_URL"))
 	}
 	log.Println("	Usage   :", usageURL)
 
@@ -208,7 +209,7 @@ func originFromEnv(name, serveEnv string, quicConfig *quic.Config) (*origin, err
 
 // logBanner prints where the broadcasts go, for the startup banner.
 func (o *origin) logBanner() {
-	log.Println("	Relay   :", upstream.RelayName(o.relayURL))
+	log.Println("	Relay   :", relaycred.RelayName(o.relayURL))
 	serve := o.serveAddr
 	if serve == "" {
 		serve = "none"

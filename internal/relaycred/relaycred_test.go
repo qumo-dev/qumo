@@ -240,3 +240,36 @@ func TestSign(t *testing.T) {
 	_, _, err = Sign(key, token.Grant{Root: "/other/", Publish: []string{"/"}})
 	assert.ErrorIs(t, err, token.ErrForbidden)
 }
+
+func TestTarget(t *testing.T) {
+	key, err := token.GenerateKey("/")
+	require.NoError(t, err)
+	grant := token.Grant{Root: "/room/", Publish: []string{"/"}}
+
+	got, lapses, err := Target("https://relay:4433/?jwt=stale&x=1", key, grant)
+	require.NoError(t, err)
+	assert.NotContains(t, got, "jwt=stale")
+	assert.Contains(t, got, "x=1")
+	assert.False(t, lapses.IsZero())
+
+	_, _, err = Target("https://relay:4433/%zz?jwt=secret", key, grant)
+	require.Error(t, err)
+	assert.NotContains(t, err.Error(), "secret")
+}
+
+func TestRelayName(t *testing.T) {
+	tests := map[string]struct {
+		url  string
+		want string
+	}{
+		"none":               {url: "", want: "none"},
+		"the credential hid": {url: "https://relay:4433/moq?jwt=secret", want: "https://relay:4433/moq"},
+		"an unparsable URL":  {url: "https://relay:port", want: "invalid"},
+		"native QUIC":        {url: "moqt://relay:4433", want: "moqt://relay:4433"},
+	}
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			assert.Equal(t, tt.want, RelayName(tt.url))
+		})
+	}
+}

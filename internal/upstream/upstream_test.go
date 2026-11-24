@@ -10,6 +10,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/qumo-dev/qumo/internal/relaycred"
 	"github.com/qumo-dev/qumo/token"
 )
 
@@ -67,24 +68,14 @@ func TestOptInGrant(t *testing.T) {
 }
 
 func TestUpstream_Target(t *testing.T) {
-	t.Run("the URL as given", func(t *testing.T) {
-		u, err := newUpstream(Config{URL: "https://relay:4433/?jwt=given"})
-		require.NoError(t, err)
-
-		target, _, err := u.target()
-
-		require.NoError(t, err)
-		assert.Equal(t, "https://relay:4433/?jwt=given", target)
-	})
-
 	t.Run("a fresh credential on every dial", func(t *testing.T) {
 		keyFile, key := writeSigningKey(t, "")
 		u, err := newUpstream(Config{URL: "moqt://relay:4433/?jwt=stale", SigningKeyFile: keyFile, Publish: "/room"})
 		require.NoError(t, err)
 
-		first, _, err := u.target()
+		first, _, err := relaycred.Target(u.url, *u.key, publishGrant(u.publish))
 		require.NoError(t, err)
-		second, _, err := u.target()
+		second, _, err := relaycred.Target(u.url, *u.key, publishGrant(u.publish))
 		require.NoError(t, err)
 
 		assert.NotEqual(t, first, second, "each dial signs its own credential")
@@ -96,21 +87,4 @@ func TestUpstream_Target(t *testing.T) {
 		assert.Equal(t, token.Grant{Root: "/room/", Publish: []string{"/"}}, claims.Grant,
 			"publishing every broadcast beneath RELAY_PUBLISH, its root")
 	})
-}
-
-func TestRelayName(t *testing.T) {
-	tests := map[string]struct {
-		url  string
-		want string
-	}{
-		"none":               {url: "", want: "none"},
-		"the credential hid": {url: "https://relay:4433/moq?jwt=secret", want: "https://relay:4433/moq"},
-		"an unparsable URL":  {url: "https://relay:port", want: "invalid"},
-		"native QUIC":        {url: "moqt://relay:4433", want: "moqt://relay:4433"},
-	}
-	for name, tt := range tests {
-		t.Run(name, func(t *testing.T) {
-			assert.Equal(t, tt.want, RelayName(tt.url))
-		})
-	}
 }

@@ -25,7 +25,6 @@ import (
 
 	"github.com/qumo-dev/qumo/internal/cmaf"
 	"github.com/qumo-dev/qumo/internal/optin"
-	"github.com/qumo-dev/qumo/internal/relay"
 	"github.com/qumo-dev/qumo/internal/relaycred"
 	"github.com/qumo-dev/qumo/internal/tlsclient"
 	"github.com/qumo-dev/qumo/token"
@@ -156,8 +155,8 @@ func checkPeerCertificate(certFile, keyFile string) error {
 	if err != nil {
 		return fmt.Errorf("RELAY_CERT_FILE: %w", err)
 	}
-	if !slices.Contains(leaf.DNSNames, relay.PeeringName) {
-		return fmt.Errorf("RELAY_CERT_FILE: the certificate doesn't carry the peering name %q among its DNS names, so the relay would ask the egress for a credential: use a peer certificate, or RELAY_SIGNING_KEY in its place", relay.PeeringName)
+	if !slices.Contains(leaf.DNSNames, tlsclient.PeeringName) {
+		return fmt.Errorf("RELAY_CERT_FILE: the certificate doesn't carry the peering name %q among its DNS names, so the relay would ask the egress for a credential: use a peer certificate, or RELAY_SIGNING_KEY in its place", tlsclient.PeeringName)
 	}
 	return nil
 }
@@ -168,15 +167,6 @@ func checkPeerCertificate(certFile, keyFile string) error {
 // refuses a key confined to less.
 func (c feedConfig) grant() token.Grant {
 	return token.Grant{Root: "/", Subscribe: []string{"/"}}
-}
-
-// target returns the URL to dial, with a freshly signed credential when the
-// egress signs its own, and when that credential's grant lapses.
-func (c feedConfig) target() (string, time.Time, error) {
-	if c.signingKey == nil {
-		return c.relayURL, time.Time{}, nil
-	}
-	return relaycred.Target(c.relayURL, *c.signingKey, c.grant())
 }
 
 // relayTLSConfig builds the client TLS config for dialing the relay. The egress
@@ -193,6 +183,11 @@ func relayTLSConfig(caFile string, insecure bool) (*tls.Config, error) {
 	return tc, nil
 }
 
+// stopRedirect is a moqt CheckRedirect that follows no redirect:
+// subscribeFollowing handles redirects itself so it can tell an opt-in answer
+// from a broadcast's.
+func stopRedirect(moqt.Redirect, []moqt.Redirect) error { return moqt.ErrStopRedirect }
+
 // dialRelay dials the relay session and registers credential renewal when
 // signingKey is set.
 func dialRelay(ctx context.Context, cfg feedConfig) (*moqt.Session, error) {
@@ -203,19 +198,12 @@ func dialRelay(ctx context.Context, cfg feedConfig) (*moqt.Session, error) {
 	if err := tlsclient.ApplyClientCert(tc, cfg.certFile, cfg.keyFile); err != nil {
 		return nil, fmt.Errorf("hls: relay client certificate: %w", err)
 	}
-	target, lapses, err := cfg.target()
-	if err != nil {
-		return nil, fmt.Errorf("hls: %w", err)
-	}
 	// The egress follows redirects itself (subscribeFollowing), so that it can
 	// tell the opt-in's answer from the broadcast's.
-	dialer := &moqt.Dialer{TLSConfig: tc, QUICConfig: cfg.quic, CheckRedirect: relay.StopRedirect}
-	session, err := dialer.Dial(ctx, target, moqt.NewTrackMux(0))
+	dialer := &moqt.Dialer{TLSConfig: tc, QUICConfig: cfg.quic, CheckRedirect: stopRedirect}
+	session, err := relaycred.Dial(ctx, dialer, cfg.relayURL, moqt.NewTrackMux(0), cfg.signingKey, cfg.grant())
 	if err != nil {
 		return nil, fmt.Errorf("hls: dial relay: %w", err)
-	}
-	if cfg.signingKey != nil {
-		go relaycred.Keep(session, *cfg.signingKey, cfg.grant(), lapses)
 	}
 	return session, nil
 }
@@ -638,7 +626,7 @@ const maxRedirectHops = 2
 var errNotRetryable = errors.New("hls: not retryable")
 
 // subscribeFollowing subscribes to name at path on session, whose
-// CheckRedirect stops at every redirect (relay.StopRedirect), and follows the
+// CheckRedirect stops at every redirect (stopRedirect), and follows the
 // redirects itself: up to maxRedirectHops, on this session, and only to a
 // track of the broadcast within. hops reports how many it followed, so a
 // caller can tell an answer of path's own from one of a redirect's target.

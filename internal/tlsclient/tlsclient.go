@@ -18,6 +18,10 @@ import (
 	"os"
 )
 
+// PeeringName is the TLS server name a relay asks for when it dials a peer,
+// and the DNS name a peer certificate must carry. It can never resolve.
+const PeeringName = "peer.qumo.internal"
+
 // Apply configures tc to trust the relay: verify against the PEM trust anchor in
 // caFile, or skip verification entirely when insecure (the explicit dev escape
 // hatch). insecure dominates a caFile, matching crypto/tls, where

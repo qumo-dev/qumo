@@ -188,12 +188,12 @@ func optInGrant(o token.OptIn, dir string) token.Grant {
 // the session before its grant lapses.
 func (u *Upstream) Run(ctx context.Context, mux *moqt.TrackMux) {
 	for {
-		sess, lapses, err := u.dial(ctx, mux)
+		dialer := &moqt.Dialer{TLSConfig: u.tls.Clone(), QUICConfig: u.quic}
+		sess, err := relaycred.Dial(ctx, dialer, u.url, mux, u.key, publishGrant(u.publish))
 		switch {
 		case err == nil:
 			slog.Info("publishing through the relay", "publisher", u.name)
 			if u.key != nil {
-				go relaycred.Keep(sess, *u.key, publishGrant(u.publish), lapses)
 				for _, o := range u.optIns {
 					go relaycred.Hold(sess, *u.key, optInGrant(o, u.publish))
 				}
@@ -215,40 +215,4 @@ func (u *Upstream) Run(ctx context.Context, mux *moqt.TrackMux) {
 		case <-time.After(retryInterval):
 		}
 	}
-}
-
-// dial opens one session to the relay, serving mux's broadcasts on it, and
-// returns when the grant of the credential it signed lapses (zero for none).
-func (u *Upstream) dial(ctx context.Context, mux *moqt.TrackMux) (*moqt.Session, time.Time, error) {
-	target, lapses, err := u.target()
-	if err != nil {
-		return nil, time.Time{}, err
-	}
-	sess, err := (&moqt.Dialer{TLSConfig: u.tls.Clone(), QUICConfig: u.quic}).Dial(ctx, target, mux)
-	if err != nil {
-		return nil, time.Time{}, fmt.Errorf("dial relay: %w", err)
-	}
-	return sess, lapses, nil
-}
-
-// target returns the URL to dial, with a freshly signed credential when the
-// upstream signs its own, and when that credential's grant lapses.
-func (u *Upstream) target() (string, time.Time, error) {
-	if u.key == nil {
-		return u.url, time.Time{}, nil
-	}
-	return relaycred.Target(u.url, *u.key, publishGrant(u.publish))
-}
-
-// RelayName describes relayURL for a startup banner without its credential:
-// "none" for no relay.
-func RelayName(relayURL string) string {
-	if relayURL == "" {
-		return "none"
-	}
-	u, err := url.Parse(relayURL)
-	if err != nil {
-		return "invalid"
-	}
-	return u.Scheme + "://" + u.Host + u.Path
 }

@@ -9,6 +9,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/qumo-dev/qumo/internal/relaycred"
 	"github.com/qumo-dev/qumo/token"
 )
 
@@ -62,20 +63,11 @@ func TestOptedIn(t *testing.T) {
 }
 
 func TestRelayDialerTarget(t *testing.T) {
-	t.Run("without a key, the URL as given", func(t *testing.T) {
-		d := relayDialer{url: "https://relay:4433/?jwt=fixed"}
-		target, lapses, err := d.target()
-		require.NoError(t, err)
-		assert.Equal(t, "https://relay:4433/?jwt=fixed", target)
-		assert.True(t, lapses.IsZero())
-	})
-
 	t.Run("with a key, a fresh credential in place of ?jwt=", func(t *testing.T) {
 		key, err := token.GenerateKey("/")
 		require.NoError(t, err)
-		d := relayDialer{url: "https://relay:4433/?jwt=stale&x=1", key: &key}
 		before := time.Now()
-		target, lapses, err := d.target()
+		target, lapses, err := relaycred.Target("https://relay:4433/?jwt=stale&x=1", key, RelayGrant())
 		require.NoError(t, err)
 
 		u, err := url.Parse(target)
@@ -88,14 +80,5 @@ func TestRelayDialerTarget(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, RelayGrant(), c.Grant)
 		assert.WithinDuration(t, before.Add(token.MaxLifetime), lapses, time.Minute)
-	})
-
-	t.Run("an invalid URL does not echo its credential", func(t *testing.T) {
-		key, err := token.GenerateKey("/")
-		require.NoError(t, err)
-		d := relayDialer{url: "https://relay:4433/%zz?jwt=secret", key: &key}
-		_, _, err = d.target()
-		require.Error(t, err)
-		assert.NotContains(t, err.Error(), "secret")
 	})
 }

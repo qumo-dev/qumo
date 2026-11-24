@@ -22,7 +22,6 @@ import (
 	"github.com/qumo-dev/qumo/internal/quicconfig"
 	"github.com/qumo-dev/qumo/internal/relaycred"
 	"github.com/qumo-dev/qumo/internal/tlsclient"
-	"github.com/qumo-dev/qumo/internal/upstream"
 	"github.com/qumo-dev/qumo/token"
 )
 
@@ -122,7 +121,7 @@ func Run(_ []string) error {
 		Suffix: suffix,
 		Config: cfg,
 	}
-	slog.Info("abr: starting", "relay", upstream.RelayName(relayURL), "opt_in", token.ABRDirectory, "suffix", suffix,
+	slog.Info("abr: starting", "relay", relaycred.RelayName(relayURL), "opt_in", token.ABRDirectory, "suffix", suffix,
 		"ladder", envconfig.String("ABR_LADDER", DefaultLadder), "codec", cfg.Encoder.Codec)
 	for {
 		// A TrackMux per session, so a session's ABR broadcasts end with it.
@@ -178,28 +177,11 @@ type relayDialer struct {
 
 // dial opens a session to the relay serving mux.
 func (d relayDialer) dial(ctx context.Context, mux *moqt.TrackMux) (*moqt.Session, error) {
-	target, lapses, err := d.target()
-	if err != nil {
-		return nil, err
-	}
-	sess, err := (&moqt.Dialer{TLSConfig: d.tls.Clone(), QUICConfig: d.quic}).Dial(ctx, target, mux)
+	sess, err := relaycred.Dial(ctx, &moqt.Dialer{TLSConfig: d.tls.Clone(), QUICConfig: d.quic}, d.url, mux, d.key, RelayGrant())
 	if err != nil {
 		return nil, fmt.Errorf("abr: dial relay: %w", err)
 	}
-	if d.key != nil {
-		go relaycred.Keep(sess, *d.key, RelayGrant(), lapses)
-	}
 	return sess, nil
-}
-
-// target returns the URL to dial, carrying a freshly signed credential when
-// the transcoder signs its own, and when that credential's grant lapses (zero
-// for none).
-func (d relayDialer) target() (string, time.Time, error) {
-	if d.key == nil {
-		return d.url, time.Time{}, nil
-	}
-	return relaycred.Target(d.url, *d.key, RelayGrant())
 }
 
 // A Transcoder publishes an ABR broadcast for every broadcast opted in

@@ -49,6 +49,7 @@ import (
 	"github.com/qumo-dev/qumo/internal/cors"
 	"github.com/qumo-dev/qumo/internal/envconfig"
 	"github.com/qumo-dev/qumo/internal/quicconfig"
+	"github.com/qumo-dev/qumo/internal/relaycred"
 	"github.com/qumo-dev/qumo/internal/upstream"
 )
 
@@ -157,7 +158,7 @@ func Run(_ []string) error {
 	}
 
 	log.Println("	Ingest  :", ingestAddr)
-	log.Println("	Relay   :", upstream.RelayName(relayURL))
+	log.Println("	Relay   :", relaycred.RelayName(relayURL))
 	log.Println("	Serve   :", orNone(serveAddr))
 	log.Println("	Ledger  :", objects)
 	log.Println("	Auth    :", authName)
