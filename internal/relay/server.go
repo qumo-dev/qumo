@@ -275,7 +275,7 @@ func (s *Server) serveUpgrade(w http.ResponseWriter, r *http.Request, upgrader h
 	// so the session counted at connect is closed.
 	if g != nil && !a.served.Load() {
 		s.sessionEnds.add()
-		s.reportEnd(r.Context(), req, moqt.SessionStats{}, endUpgradeFailed)
+		s.reportEnd(r.Context(), req, moqt.SessionStats{}, nil, endUpgradeFailed)
 		s.sessionEnds.done()
 	}
 }
@@ -809,7 +809,11 @@ func (s *Server) serveSession(sess *moqt.Session) {
 	a := admissionFrom(sess.Context())
 	checked := a != nil && a.grant != nil
 	var l *lease
+	// optIns counts the opt-in time of a checked session, whose usage is
+	// reported; nil counts none.
+	var optIns *optInClock
 	if checked {
+		optIns = &optInClock{}
 		a.served.Store(true)
 		// Registered first so that it runs last: after the close below,
 		// with the session's final byte totals and close cause. Counted in
@@ -817,7 +821,7 @@ func (s *Server) serveSession(sess *moqt.Session) {
 		s.sessionEnds.add()
 		defer func() {
 			defer s.sessionEnds.done()
-			s.reportEnd(sess.Context(), a.req, sess.Stats(), sessionEndReason(a, l, context.Cause(sess.Context())))
+			s.reportEnd(sess.Context(), a.req, sess.Stats(), optIns, sessionEndReason(a, l, context.Cause(sess.Context())))
 		}()
 	}
 	// Registered before the close below, so that it runs after it, with the
@@ -836,7 +840,7 @@ func (s *Server) serveSession(sess *moqt.Session) {
 	}()
 	defer sess.CloseWithError(moqt.NoError, moqt.NoError.String())
 	if checked {
-		if l = startLease(sess.Context(), sess, s.Authorize, a.req, a.grant.Revalidate()); l != nil {
+		if l = startLease(sess.Context(), sess, s.Authorize, a.req, a.grant.Revalidate(), optIns); l != nil {
 			defer l.stop()
 		}
 		if a.grant.Anonymous() {
@@ -873,6 +877,8 @@ func (s *Server) serveSession(sess *moqt.Session) {
 				"sess_ctx_err", sess.Context().Err())
 			return
 		}
+
+		optIns.track(ann)
 
 		slog.Debug("relay: received announcement",
 			"node", s.Config.NodeID,

@@ -42,6 +42,26 @@ func TestBroadcast(t *testing.T) {
 	}
 }
 
+func TestOf(t *testing.T) {
+	tests := map[moqt.BroadcastPath]struct {
+		want   token.OptIn
+		wantOK bool
+	}{
+		"/.abr/live/cam1": {want: token.OptInABR, wantOK: true},
+		"/.hls/live/cam1": {want: token.OptInHLS, wantOK: true},
+		"/live/cam1":      {},
+		"/.abrx/cam1":     {},
+		"/live/.abr/cam1": {},
+	}
+	for p, tt := range tests {
+		t.Run(string(p), func(t *testing.T) {
+			got, ok := Of(p)
+			assert.Equal(t, tt.wantOK, ok)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
 func TestHasDotSegment(t *testing.T) {
 	tests := map[string]struct {
 		path string

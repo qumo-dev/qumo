@@ -9,6 +9,10 @@
 // outnumber publishers by orders of magnitude, so a record per viewer would
 // make a receiver's load grow with the audience.
 //
+// A publishing session's records also carry how long it kept broadcasts
+// opted into each egress (OptInSeconds), so that a control plane can bill an
+// option such as ABR by the time it was used.
+//
 // Byte counts are cumulative and from the relay's point of view (what it
 // received is ingress), so a receiver can take a resent record without
 // counting it twice. A relay that restarts begins a new Run, whose viewer
@@ -45,6 +49,16 @@ const (
 	// EgressBytes is what the relay sent.
 	EgressBytes = "gateway.egress_bytes"
 )
+
+// OptInSeconds names the metric of how long a publishing session kept
+// broadcasts opted into the egress named optIn ("hls", "abr"), in whole
+// seconds, added up over its broadcasts: two broadcasts opted into ABR for
+// a minute each are 120. A session that opted none in carries none.
+//
+//	OptInSeconds("abr") is "gateway.opt_in_seconds.abr"
+func OptInSeconds(optIn string) string {
+	return "gateway.opt_in_seconds." + optIn
+}
 
 // Why a publishing session ended, the Reason of its SessionClose.
 const (

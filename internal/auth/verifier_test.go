@@ -405,8 +405,8 @@ func TestUsageReporter(t *testing.T) {
 		sink := &fakeUsageSink{}
 		r := newTestUsage(t, sink)
 		r.open("s1", testUsageSession)
-		r.revalidated("s1", Bytes{Sent: 1, Received: 10}, true)
-		r.revalidated("s1", Bytes{Sent: 2, Received: 20}, true)
+		r.revalidated("s1", Bytes{Sent: 1, Received: 10}, nil, true)
+		r.revalidated("s1", Bytes{Sent: 2, Received: 20}, nil, true)
 		require.NoError(t, r.meter.Flush(context.Background()))
 		batches := sink.received()
 		require.Len(t, batches, 1)
@@ -419,9 +419,9 @@ func TestUsageReporter(t *testing.T) {
 		sink := &fakeUsageSink{statuses: []int{http.StatusBadGateway, http.StatusOK}}
 		r := newTestUsage(t, sink)
 		r.open("s1", testUsageSession)
-		r.revalidated("s1", Bytes{Received: 10}, true)
+		r.revalidated("s1", Bytes{Received: 10}, nil, true)
 		assert.Error(t, r.meter.Flush(context.Background()))
-		r.revalidated("s1", Bytes{Received: 20}, true)
+		r.revalidated("s1", Bytes{Received: 20}, nil, true)
 		require.NoError(t, r.meter.Flush(context.Background()))
 		retry := sink.received()[1]
 		require.Len(t, retry, 2)
@@ -435,8 +435,8 @@ func TestUsageReporter(t *testing.T) {
 	t.Run("an unknown session's end and usage are ignored", func(t *testing.T) {
 		sink := &fakeUsageSink{}
 		r := newTestUsage(t, sink)
-		assert.False(t, r.close("nope", Bytes{Sent: 1}, ""))
-		r.revalidated("nope", Bytes{Sent: 1}, true)
+		assert.False(t, r.close("nope", Bytes{Sent: 1}, nil, ""))
+		r.revalidated("nope", Bytes{Sent: 1}, nil, true)
 		require.NoError(t, r.meter.Flush(context.Background()))
 		assert.Empty(t, sink.received(), "nothing pending, nothing sent")
 	})
@@ -450,13 +450,13 @@ func TestUsageReporter(t *testing.T) {
 		r.open("live", testUsageSession)
 
 		now = now.Add(sessionGrace + time.Second)
-		r.revalidated("refused", Bytes{Sent: 1}, false)
-		r.revalidated("live", Bytes{}, true)
+		r.revalidated("refused", Bytes{Sent: 1}, nil, false)
+		r.revalidated("live", Bytes{}, nil, true)
 		r.forgetStale()
 
-		assert.False(t, r.close("gone", Bytes{}, ""), "not revalidated within the grace")
-		assert.False(t, r.close("refused", Bytes{}, ""), "a refused revalidate doesn't keep it")
-		assert.True(t, r.close("live", Bytes{}, ""), "revalidated: still remembered")
+		assert.False(t, r.close("gone", Bytes{}, nil, ""), "not revalidated within the grace")
+		assert.False(t, r.close("refused", Bytes{}, nil, ""), "a refused revalidate doesn't keep it")
+		assert.True(t, r.close("live", Bytes{}, nil, ""), "revalidated: still remembered")
 	})
 }
 
@@ -556,7 +556,7 @@ func TestVerifier_RevalidateAfterEnd(t *testing.T) {
 		types = append(types, rec.Type)
 	}
 	assert.Equal(t, []usage.Type{usage.SessionOpen, usage.SessionClose}, types)
-	assert.False(t, v.usage.close(late.ID, Bytes{}, ""), "the session isn't known again")
+	assert.False(t, v.usage.close(late.ID, Bytes{}, nil, ""), "the session isn't known again")
 }
 
 // writeKeySet writes a key set file holding keys and returns its path.
@@ -972,7 +972,7 @@ func TestUsageReporter_OpenAfterClose(t *testing.T) {
 	now := time.Now()
 	r.now = func() time.Time { return now }
 
-	r.close("s1", Bytes{}, "closed")
+	r.close("s1", Bytes{}, nil, "closed")
 	r.open("s1", usageSession{kid: "k1", publishes: true})
 	r.publishing("s1")
 

@@ -193,7 +193,7 @@ func TestServer_ReportEnd(t *testing.T) {
 			connect := auth.Request{ID: "00ff", Event: auth.EventConnect, Path: "/acme", Query: "jwt=h.p.s"}
 
 			delta := counterDelta(t, func() {
-				srv.reportEnd(context.Background(), connect, stats, endDropped)
+				srv.reportEnd(context.Background(), connect, stats, nil, endDropped)
 			}, metricAuthRequests.WithLabelValues(auth.EventEnd, tt.wantResult))
 
 			assert.Equal(t, 1.0, delta)
@@ -210,7 +210,7 @@ func TestServer_ReportEnd(t *testing.T) {
 // reports nothing.
 func TestServer_ReportEnd_Off(t *testing.T) {
 	delta := counterDelta(t, func() {
-		(&Server{}).reportEnd(context.Background(), auth.Request{ID: "00ff"}, moqt.SessionStats{}, endClosed)
+		(&Server{}).reportEnd(context.Background(), auth.Request{ID: "00ff"}, moqt.SessionStats{}, nil, endClosed)
 	}, metricAuthRequests.WithLabelValues(auth.EventEnd, authOK))
 
 	assert.Zero(t, delta)
